@@ -211,6 +211,10 @@ function writeSpec(name: string, body: unknown): string {
   // must not mint an authority-root agent.
   const roleCap = loadLaunchSpec(writeSpec("c1.json", agent1({ capabilities: ["spawn", "role:worker"] })));
   check("role:<r> capability accepted", roleCap.agents[0].capabilities?.includes("role:worker") === true, roleCap.agents[0].capabilities);
+  // The `artifacts` capability token (A1, draft) is a known manifest capability, so a persona or
+  // spawn that asks for it reaches the mint instead of being refused at the manager boundary.
+  const artifactsCap = loadLaunchSpec(writeSpec("c5.json", agent1({ capabilities: ["artifacts"] })));
+  check("artifacts capability accepted", artifactsCap.agents[0].capabilities?.includes("artifacts") === true, artifactsCap.agents[0].capabilities);
   throws("unsafe role capability rejected", () => loadLaunchSpec(writeSpec("c2.json", agent1({ capabilities: ["role:a b"] }))));
   throws("nested role capability rejected", () => loadLaunchSpec(writeSpec("c3.json", agent1({ capabilities: ["role:a:b"] }))));
   throws("unknown namespaced capability rejected", () => loadLaunchSpec(writeSpec("c4.json", agent1({ capabilities: ["teleport:x"] }))));

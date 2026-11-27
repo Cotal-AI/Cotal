@@ -72,8 +72,8 @@ export function checkConversationSelection(value: unknown): ConversationSelectio
   if (s.role !== null && typeof s.role !== "string") fail("role must be a role token or null");
   const role = s.role === null ? null : assertValidRole(s.role as string);
   const capabilities = list(s.capabilities, "capabilities").map((item) => {
-    if (item !== "run" && item !== "spawn" && !(typeof item === "string" && item.startsWith("role:")))
-      fail(`capability ${JSON.stringify(item)} is not run, spawn or role:<role>`);
+    if (item !== "run" && item !== "spawn" && item !== "artifacts" && !(typeof item === "string" && item.startsWith("role:")))
+      fail(`capability ${JSON.stringify(item)} is not run, spawn, artifacts or role:<role>`);
     const capability = item as string;
     if (capability.startsWith("role:")) assertValidRole(capability.slice(5));
     return capability;
@@ -99,7 +99,7 @@ export function checkConversationSelection(value: unknown): ConversationSelectio
 export function conversationSelection(input: {
   channels?: { channel: string; access: ConversationChannelAccess }[];
   role?: string;
-  capabilities?: ("run" | "spawn")[];
+  capabilities?: ("run" | "spawn" | "artifacts")[];
 }): ConversationSelection {
   const capabilities = [...(input.capabilities ?? []), ...(input.role !== undefined ? [`role:${input.role}`] : [])];
   return checkConversationSelection({

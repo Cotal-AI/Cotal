@@ -135,7 +135,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
             subscribe: z.array(z.string()).optional().describe("Channels the helper reads at start. Omit every channel field to take your own read and post grants; pass [] for none."),
             allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
             allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
-            capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
+            capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn, run or artifacts. Each must be one you hold."),
             endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Endpoint commands to hand on, as { endpoint, commands } entries such as { endpoint: \"com.example.orders\", commands: [\"list\"] }. Each must be one you hold. Add instanceId to hand on a command you hold on one instance of the endpoint."),
             save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
           })
@@ -511,7 +511,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
         subscribe: z.array(z.string()).optional().describe("Optional active read set written into the persona file. Wins over subscribe: in the prompt's frontmatter."),
         allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
         allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
-        capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
+        capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn, run or artifacts. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
         endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Optional endpoint commands written into the persona file, as { endpoint, commands } entries, with instanceId for a command held on one instance. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Endpoints in the prompt's frontmatter are dropped."),
         announce: z
           .string()

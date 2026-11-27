@@ -3,7 +3,7 @@ import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } fro
 import { EVENT_CHANNEL_PREFIX } from "./event-channel.js";
 import { spacePrefix, chatSubject, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
-import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
+import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, artifactsCallerCapabilities, ARTIFACTS_CAPABILITY, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
 import { epcStreamName } from "./endpoint-binding.js";
 import { epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant } from "./issued-authority.js";
@@ -134,6 +134,16 @@ const ROLE_CAPABILITY = /^role:([A-Za-z0-9_-]+)$/;
 /** The role a `role:<r>` capability token names, or `undefined` for any other token. */
 export function capabilityRole(token: string): string | undefined {
   return ROLE_CAPABILITY.exec(token)?.[1];
+}
+
+/** The `artifacts` capability (A1, draft): the `artifacts` endpoint's request rows, for an agent
+ *  minted with this token only, appended without duplicates. The baseline never carries them, so a
+ *  credential without the token is byte-identical to one minted before the endpoint existed. */
+function addArtifactsCapabilityRows(space: string, opts: MintOpts, caller: EpCaller, pub: string[], sub: string[]): void {
+  if (!opts.capabilities?.includes(ARTIFACTS_CAPABILITY)) return;
+  const rows = epCallerGrantRows(space, artifactsCallerCapabilities(), caller);
+  for (const p of rows.pub) if (!pub.includes(p)) pub.push(p);
+  for (const s of rows.sub) if (!sub.includes(s)) sub.push(s);
 }
 
 /** The roles whose task queue an agent credential binds: its own role, and the role of each
@@ -678,6 +688,7 @@ export function permissionsFor(
     for (const p of rows.pub) if (!pubAllow.includes(p)) pubAllow.push(p);
     for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
   }
+  addArtifactsCapabilityRows(space, opts, epCaller, pubAllow, epSub);
   if (opts.capabilities?.includes("admin"))
     // The admin capability grants the admin instrument set on the ep rails, the set a
     // `control-caller-admin` holds — the any-mode rows + the `manager.admin` family + the reads. In

@@ -13,8 +13,8 @@
  *  - a candidate with an extra row is refused by claims equality and the last-good keeps answering;
  *  - nativeConnections lists artifacts-serve, artifact-data and artifact-sweeper beside the rest.
  *
- * The caller's `artifacts list` row is minted explicitly here (endpointCapabilities), because how an
- * agent gets it by default is the open caller-grant decision; the cell exercises the served path.
+ * The caller's `artifacts list` row comes from the `artifacts` capability token (option A): the
+ * member and the peer are minted with it, and a third agent without it is refused by the broker.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -25,7 +25,7 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, CotalEndpoint, DEV_OWNER, RECORD_KINDS, SERVICE_READY,
+  ARTIFACTS_CAPABILITY, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, CotalEndpoint, DEV_OWNER, RECORD_KINDS, SERVICE_READY,
   artifactAttachBucket, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, credsFingerprint, idFromCreds, provisionAgentDurables,
   isReachable, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, readSvcRecordLeader, recordStatusKey,
   serverConfig, setupSpaceStreams, type SecretStore,
@@ -38,7 +38,7 @@ import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smo
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 12;
+const EXPECTED_CELLS = 13;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -135,14 +135,15 @@ try {
   await attach.put(`${channel}.deeper.${digests[0]!.slice(7)}`, JSON.stringify({ state: "attached", confirmerLifecycleUid: "x", name: "no", mediaType: "text/plain", size: 1, createdAt: now, expiresAt: now + 1, pinned: false }));
   await attach.put(`=d.${digests[0]!.slice(7)}.${channel}`, JSON.stringify({}));
 
-  const agentOf = async (actor: string, allowSubscribe: string[]) => {
+  const agentOf = async (actor: string, allowSubscribe: string[], token = true) => {
     const uid = mintLifecycleUid();
     const principal = { owner: DEV_OWNER, actor };
     // The real provisioning path: durables, and the read ACL row written beside the mint.
     await provisionAgentDurables(provisionerEp, { ...principal, lifecycleUid: uid }, { subscribe: [], allowSubscribe });
     const id = newIdentity();
+    // The caller's rows come from the `artifacts` capability token (option A), never the baseline.
     const creds = await mintCreds(auth, id, "agent", { principal, lifecycleUid: uid, allowSubscribe, allowPublish: [],
-      endpointCapabilities: [{ endpoint: ARTIFACTS_ENDPOINT, command: ARTIFACTS_LIST_COMMAND }] });
+      ...(token ? { capabilities: [ARTIFACTS_CAPABILITY] } : {}) });
     const ep = new CotalEndpoint({ space, servers, creds, lifecycleUid: uid, channels: [], allowSubscribe, watchChannels: false, watchPresence: false, registerPresence: false,
       card: { id: id.id, owner: DEV_OWNER, actor, name: actor, kind: "agent" } });
     ep.on("error", () => {});
@@ -171,6 +172,16 @@ try {
   const unknownChannel = (await peer.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel: "nothing.here" })).reply;
   check("an empty channel the peer also cannot read gets the same refusal, byte for byte",
     JSON.stringify(unknownChannel.ok ? unknownChannel : unknownChannel.error) === JSON.stringify(refused.ok ? refused : refused.error), unknownChannel);
+
+  // ---- an agent with no `artifacts` token cannot even send the request: the broker refuses it ----
+  const untokened = await agentOf("untokened", [channel], false);
+  let brokerRefused: string | undefined;
+  try {
+    const r = (await untokened.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel })).reply;
+    if (r.ok) brokerRefused = undefined; else brokerRefused = `${r.error?.code}: ${r.error?.message}`;
+  } catch (e) { brokerRefused = (e as Error).message; }
+  check("an agent that may read the channel but holds no artifacts token is refused before any handler runs",
+    brokerRefused !== undefined && /permission|denied|not permitted|violation/i.test(brokerRefused), brokerRefused);
 
   // ---- a candidate with an extra row never binds; last-good keeps answering ----
   const good = minted!;

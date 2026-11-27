@@ -1,4 +1,4 @@
-import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadCotalConfig, modelPolicyEnv, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, isDelegableCapability, loadCotalConfig, modelPolicyEnv, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
 import type { Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, isTrustedProject, loadTrustCheckedPersona, manifestPersonaLaunchOptionsRefusal, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash, randomBytes } from "node:crypto";
@@ -18,9 +18,10 @@ import { ownedBySibling } from "./static-lifecycle.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
-/** Scope written by local user-mode provisioning from the persona capabilities. */
+/** Scope written by local user-mode provisioning from the persona capabilities: the tokens a spawner
+ *  may hand on ({@link isDelegableCapability}), so a token the mint understands is never dropped here. */
 export function localUserAgentScope(capabilities: readonly string[] = []): string[] {
-  return capabilities.filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+  return capabilities.filter(isDelegableCapability);
 }
 
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's

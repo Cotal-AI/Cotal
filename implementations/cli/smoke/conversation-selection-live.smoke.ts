@@ -141,6 +141,10 @@ try {
     assert.throws(() => checkConversationSelection({ v: 1, channels: [], role: null, capabilities: [], endpoints: [] }), /selects nothing/);
     assert.throws(() => checkConversationSelection({ ...selection, role: null }), /role must be set exactly/);
   });
+  await check("a connection approval may propose the artifacts capability, and an unknown one is refused", () => {
+    assert.deepEqual(conversationSelection({ capabilities: ["artifacts", "spawn"] }).capabilities, ["artifacts", "spawn"]);
+    assert.throws(() => checkConversationSelection({ v: 1, channels: [], role: null, capabilities: ["teleport"], endpoints: [] }), /is not run, spawn, artifacts or role/);
+  });
   for (const mode of ["absent", "old"]) {
     selectionMode = mode;
     await check(`${mode} selection discovery refuses before authenticated effects`, async () => {
@@ -219,7 +223,7 @@ try {
   createMode = "exact";
   for (const dir of [s.retire.dir, plain.retire.dir, recovered.retire.dir, narrower.retire.dir]) await retireUserApp(dir);
   await check("selected identities retire by the unchanged v1 wire", () => assert(!existsSync(s.retire.dir) && !existsSync(narrower.retire.dir)));
-  assert.equal(assertions, 23);
+  assert.equal(assertions, 24);
   console.log(`conversation-selection-live: ${assertions} checks passed; isolated HTTPS only, no hosted selection server exists yet`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));

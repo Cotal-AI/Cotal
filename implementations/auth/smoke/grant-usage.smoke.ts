@@ -121,7 +121,7 @@ try {
   {
     const scopes = await failureOf("validate", authCommand, bare, { sub: "someone", scope: "spwan,admn", "allow-subscribe": ">", "allow-publish": ">" }, ["grant", "alice"]);
     assertUsage(scopes, "auth grant with unknown capabilities");
-    assert.match(scopes.message, /--scope: unknown capabilities "spwan", "admn"; the capabilities are admin, run, spawn, supervise and role:<role>/, "unknown capabilities: names each one and the valid set");
+    assert.match(scopes.message, /--scope: unknown capabilities "spwan", "admn"; the capabilities are admin, artifacts, run, spawn, supervise and role:<role>/, "unknown capabilities: names each one and the valid set");
     assert.match(scopes.message, /no grant was changed$/, "unknown capabilities: nothing was written");
     const one = await failureOf("validate", actorCommand, bare, { sub: "someone", scope: "fliegen", "allow-subscribe": "", "allow-publish": "" }, ["grant", "alice"]);
     assert.match(one.message, /--scope: an unknown capability "fliegen"/, "one unknown capability is named alone");
@@ -135,7 +135,7 @@ try {
     assertUsage(owner, "actor revoke with an invalid --owner");
     assert.match(owner.message, /--owner: invalid derived owner token "notatoken"/, "revoke: names --owner");
     // Every known capability passes, so the grant reaches its capability refusal on this space.
-    const known = { space: "static-space", sub: "someone", scope: "admin,run,spawn,supervise,role:reviewer", "allow-subscribe": ">", "allow-publish": "" };
+    const known = { space: "static-space", sub: "someone", scope: "admin,artifacts,run,spawn,supervise,role:reviewer", "allow-subscribe": ">", "allow-publish": "" };
     process.chdir(staticRoot);
     try { authCommand.validate?.({ values: known, positionals: ["grant", "alice"], raw: [] }); }
     finally { process.chdir(startCwd); }

@@ -759,9 +759,12 @@ export async function mintCreds(
   const userJwtBytes = Buffer.byteLength(userJwt, "utf8");
   if (userJwtBytes > MAX_MINTED_JWT_BYTES) {
     const channelCount = (opts.allowSubscribe?.length ?? 0) + (opts.allowPublish?.length ?? 0);
+    // Name the capability tokens too: a token such as `artifacts` adds rows, so a channel set that fit
+    // without it can stop fitting with it. The refusal says which, and drops no row to make it fit.
+    const tokens = opts.capabilities?.length ? `, capabilities [${opts.capabilities.join(", ")}]` : "";
     throw new Error(
       `mintCreds: minted JWT is ${userJwtBytes} bytes, exceeding the ${MAX_MINTED_JWT_BYTES}-byte ` +
-        `mint bound (${channelCount} allowSubscribe+allowPublish channel(s)) - the composed credential ` +
+        `mint bound (${channelCount} allowSubscribe+allowPublish channel(s)${tokens}) - the composed credential ` +
         `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
     );
   }
