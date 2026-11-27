@@ -219,6 +219,31 @@ async function verifyUnreadableOwnedModeRepairWarning(
   }
 }
 
+async function verifyReadonlyGenerationsModeRepairWarning(
+  workDir: string, prefix: string, installed: string, currentVersion: string, cleanEnv: NodeJS.ProcessEnv,
+): Promise<void> {
+  const generations = join(prefix, "lib", ".cotal-generations");
+  const manifest = join(installed, "package.json");
+  const warning = `Could not finish permission repair in Cotal's install at ${installed} (EACCES).`;
+  const priorMode = statSync(generations).mode & 0o777;
+  try {
+    for (const cmd of ["cotal update --self", "cotal update"] as const) {
+      chmodSync(generations, priorMode);
+      chmodSync(manifest, 0o664);
+      chmodSync(generations, 0o555);
+      const res = await runShell("022", cmd, workDir, cleanEnv);
+      assert.equal(res.status, 0, `${cmd} under 0555 .cotal-generations: ${res.stdout + res.stderr}`);
+      assert.ok(res.stderr.includes(warning), res.stderr);
+      assert.equal(statSync(manifest).mode & 0o777, 0o644);
+    }
+    const verWhileReadonly = await runShell("022", "cotal --version", workDir, cleanEnv);
+    assert.equal(verWhileReadonly.status, 0, verWhileReadonly.stderr);
+    assert.equal(verWhileReadonly.stdout.split("\n")[0], `cotal-ai ${currentVersion}`);
+  } finally {
+    chmodSync(generations, priorMode);
+  }
+}
+
 async function verifyWritableExtensionStagesSkipped(
   stageParent: string, stageNames: readonly string[], workDir: string, cleanEnv: NodeJS.ProcessEnv,
 ): Promise<void> {
@@ -306,7 +331,7 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
     const quietRetry = await runShell("022", "cotal update --self", workDir, cleanEnv);
     assert.equal(quietRetry.status, 0, quietRetry.stdout + quietRetry.stderr);
     assert.doesNotMatch(quietRetry.stdout, /removed group and other write/);
-    await verifyWritableExtensionStagesSkipped(cfgCotal, [".extensions.stage-Ab1234"], workDir, cleanEnv);
+    await verifyWritableExtensionStagesSkipped(cfgCotal, [".extensions.stage-Ab1234", ".extensions.stage-Gh3456.ready"], workDir, cleanEnv);
 
     rmSync(prefix, { recursive: true, force: true });
     mkdirSync(prefix, { recursive: true, mode: 0o755 });
@@ -347,6 +372,7 @@ async function verifyGlobalNpmSelfUpdateModes(): Promise<void> {
     assert.equal(installKeys.length, 1, "retained connector reconciliation creates one installation key");
     const setCotalDir = join(cfgCotal, "installs", installKeys[0]!, "sets", currentVersion, "cotal");
     await verifyWritableExtensionStagesSkipped(setCotalDir, [".extensions.stage-Cd5678", ".extensions.stage-Ef9012.ready"], workDir, cleanEnv);
+    await verifyReadonlyGenerationsModeRepairWarning(workDir, prefix, installed, currentVersion, cleanEnv);
 
     await verifyUnreadableOwnedModeRepairWarning(workDir, prefix, installed, cfgCotal, currentVersion, cleanEnv);
   } finally {
