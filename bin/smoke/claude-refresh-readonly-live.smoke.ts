@@ -1,7 +1,7 @@
 /** Exercise the reconciliation used by self-update and rollback through the built CLI. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,7 @@ for (const name of [
   }
   const env: NodeJS.ProcessEnv = {
     PATH: `${native}:${process.env.PATH}`, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime,
-    COTAL_HOME: state, TMPDIR: root, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1",
+    COTAL_HOME: state, CODEX_HOME: join(home, ".codex"), TMPDIR: root, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1",
     COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
   };
   const anchor = recordSmokeSandbox({ root: project, cotalHome: state, xdgConfigHome: config });
@@ -111,5 +111,187 @@ exit 1
     if (name === "readonly-plugins" && existsSync(plugins)) chmodSync(plugins, 0o700);
   }
 }
+
+function runNonwritableParentPair(kind: "claude" | "codex") {
+  const base = join(root, `parent-pair-${kind}`);
+  const parent = join(base, "users");
+  const home = join(parent, "account");
+  const project = join(base, "project");
+  const native = join(base, "native");
+  const config = join(home, ".config");
+  const state = join(home, ".cotal");
+  const runtime = join(base, "runtime");
+  const codexHome = join(home, ".codex");
+  for (const dir of [home, project, native, config, state, runtime, codexHome]) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+  for (const tool of ["systemctl", "loginctl", "launchctl", "schtasks"]) {
+    writeFileSync(join(native, tool), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    PATH: `${native}:${process.env.PATH}`,
+    HOME: home,
+    USERPROFILE: home,
+    XDG_CONFIG_HOME: config,
+    XDG_RUNTIME_DIR: runtime,
+    COTAL_HOME: state,
+    CODEX_HOME: codexHome,
+    TMPDIR: root,
+    COTAL_ALLOW_CHECKOUT_SEED: "1",
+    COTAL_NO_UPDATE_CHECK: "1",
+    COTAL_SKIP_ASSIST: "1",
+    COTAL_TELEMETRY: "off",
+    DO_NOT_TRACK: "1",
+    NO_COLOR: "1",
+  };
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.CLAUDE_CODE_PLUGIN_CACHE_DIR;
+
+  let calls = 0;
+  function execCli(...args: string[]) {
+    const result = spawnSync(process.execPath, [cli, ...args], {
+      env,
+      cwd: project,
+      encoding: "utf8",
+      timeout: 180_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    writeFileSync(
+      join(base, `${args[0]}-${calls++}.log`),
+      `${result.stdout ?? ""}${result.stderr ?? ""}\nexit=${result.status} signal=${result.signal}\n`,
+    );
+    assert.ifError(result.error);
+    return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  }
+
+  const market = join(state, kind === "claude" ? "claude-plugin" : "codex-plugin");
+  const claudePlugin = join(state, "claude-plugin", "cotal");
+  const claudeConfig = join(home, ".claude.json");
+  const codexCache = join(codexHome, "plugins", "cache", "cotal-mesh", "cotal");
+  const codexConfig = join(codexHome, "config.toml");
+
+  if (kind === "claude") {
+    const plugins = join(home, ".claude", "plugins");
+    mkdirSync(plugins, { recursive: true, mode: 0o700 });
+    writeFileSync(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "cotal@cotal-mesh": [{ scope: "user", version: "0.1.0" }] } }));
+    writeFileSync(claudeConfig, "{}");
+    writeFileSync(join(native, "claude"), `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const manifestPath = ${JSON.stringify(join(claudePlugin, ".claude-plugin", "plugin.json"))};
+const version = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")).version : "0.1.0";
+switch (args.slice(0, 3).join(" ")) {
+  case "--version": console.log("2.0.0"); break;
+  case "plugin list --json": console.log(JSON.stringify([{ id: "cotal@cotal-mesh", scope: "user", enabled: true, version, readFromFolder: ${JSON.stringify(claudePlugin)} }])); break;
+  case "plugin marketplace list": console.log(JSON.stringify([{ name: "cotal-mesh", source: "directory", path: ${JSON.stringify(market)} }])); break;
+  case "plugin marketplace add": case "plugin marketplace update": case "plugin install cotal@cotal-mesh": case "plugin update cotal@cotal-mesh": break;
+  case "mcp remove --scope": writeFileSync(${JSON.stringify(claudeConfig)}, "{}"); break;
+  case "mcp add --scope": writeFileSync(${JSON.stringify(claudeConfig)}, JSON.stringify({ mcpServers: { cotal: { command: args[6], args: args.slice(7) } } })); break;
+  default: process.exit(1);
+}
+`, { mode: 0o700 });
+  } else {
+    mkdirSync(join(codexCache, "0.1.0"), { recursive: true, mode: 0o700 });
+    writeFileSync(codexConfig, '[plugins."cotal@cotal-mesh"]\nenabled = true\n');
+    writeFileSync(join(native, "codex"), `#!${process.execPath}
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2).join(" ");
+const cacheRoot = ${JSON.stringify(codexCache)};
+const market = ${JSON.stringify(market)};
+if (args === "--version") console.log("0.172.0");
+else if (args === "plugin list") {
+  const versions = readdirSync(cacheRoot).sort();
+  if (versions.length) console.log("cotal@cotal-mesh  installed, enabled  " + versions.at(-1));
+} else if (args === "plugin marketplace list") console.log("cotal-mesh");
+else if (args === "plugin marketplace list --json") console.log(JSON.stringify({ marketplaces: [{ name: "cotal-mesh", root: market }] }));
+else if (args === "plugin marketplace add " + market) {}
+else if (args === "plugin add cotal@cotal-mesh") {
+  const manifest = readFileSync(market + "/plugins/cotal/.codex-plugin/plugin.json", "utf8");
+  const version = JSON.parse(manifest).version;
+  mkdirSync(cacheRoot + "/" + version + "/.codex-plugin", { recursive: true });
+  writeFileSync(cacheRoot + "/" + version + "/.codex-plugin/plugin.json", manifest);
+} else process.exit(1);
+`, { mode: 0o700 });
+  }
+
+  try {
+    assert.equal(execCli("space", "create", "alpha", "--root", project).status, 0);
+
+    // 1. Non-writable home parent (0555) + writable marketplace: refresh RUNS and updates to the new version.
+    chmodSync(parent, 0o555);
+    const refreshedUnder0555 = execCli("update");
+    assert.equal(refreshedUnder0555.status, 0, refreshedUnder0555.output);
+    assert.doesNotMatch(refreshedUnder0555.output, /deferred because/);
+    const manifestPath = kind === "claude"
+      ? join(claudePlugin, ".claude-plugin", "plugin.json")
+      : join(market, "plugins", "cotal", ".codex-plugin", "plugin.json");
+    const newVersion = (JSON.parse(readFileSync(manifestPath, "utf8")) as { version: string }).version;
+    assert.notEqual(newVersion, "0.1.0");
+    if (kind === "codex") assert.deepEqual(readdirSync(codexCache), [newVersion]);
+    chmodSync(parent, 0o700);
+
+    // 2. Writable parent + read-only marketplace: update defers with exit 0; explicit setup fails with the same sentence and remedy; restoring write access refreshes on next update.
+    if (kind === "claude") {
+      writeFileSync(manifestPath, JSON.stringify({ name: "cotal", version: "0.1.0" }));
+    } else {
+      rmSync(join(codexCache, newVersion), { recursive: true, force: true });
+      mkdirSync(join(codexCache, "0.1.0"), { recursive: true, mode: 0o700 });
+    }
+    chmodSync(market, 0o500);
+    const deferredUpdate = execCli("update");
+    assert.equal(deferredUpdate.status, 0, deferredUpdate.output);
+    const expectedUpdate = kind === "claude"
+      ? `Claude integration refresh deferred because ${market} is read-only.`
+      : `Codex plugin refresh deferred because ${market} is read-only. cotal@cotal-mesh remains at 0.1.0.`;
+    assert.ok(deferredUpdate.output.includes(expectedUpdate), deferredUpdate.output);
+    assert.ok(
+      ["cotal update", "pnpm cotal update"].some((cmd) => deferredUpdate.output.includes(`Make that directory writable, then run \`${cmd}\`.`)),
+      deferredUpdate.output,
+    );
+
+    const failedSetup = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
+    assert.notEqual(failedSetup.status, 0, failedSetup.output);
+    assert.ok(failedSetup.output.includes(`${market} is read-only.`), failedSetup.output);
+    assert.ok(
+      ["cotal setup", "pnpm cotal setup"].some((cmd) => failedSetup.output.includes(`Make that directory writable, then run \`${cmd}\`.`)),
+      failedSetup.output,
+    );
+
+    chmodSync(market, 0o700);
+    const recoveredUpdate = execCli("update");
+    assert.equal(recoveredUpdate.status, 0, recoveredUpdate.output);
+    assert.doesNotMatch(recoveredUpdate.output, /deferred because/);
+    const recoveredVersion = (JSON.parse(readFileSync(manifestPath, "utf8")) as { version: string }).version;
+    assert.equal(recoveredVersion, newVersion);
+    if (kind === "codex") assert.deepEqual(readdirSync(codexCache), [newVersion]);
+
+    // 3. Dangling symbolic link marketplace: update defers naming the link and target; explicit setup fails naming the same link and target.
+    rmSync(market, { recursive: true, force: true });
+    const missingTarget = join(base, `missing-${kind}-marketplace`);
+    symlinkSync(missingTarget, market);
+    const danglingUpdate = execCli("update");
+    assert.equal(danglingUpdate.status, 0, danglingUpdate.output);
+    assert.ok(
+      danglingUpdate.output.includes(`${market} is a symbolic link to a missing target (${missingTarget}).`),
+      danglingUpdate.output,
+    );
+    const danglingSetup = execCli("setup", "--destination", "local", "--harness", kind, "--project", project, "--space", "alpha", "--yes");
+    assert.notEqual(danglingSetup.status, 0, danglingSetup.output);
+    assert.ok(
+      danglingSetup.output.includes(`${market} is a symbolic link to a missing target (${missingTarget}).`),
+      danglingSetup.output,
+    );
+    rmSync(market, { force: true });
+    passed++;
+    console.log(`PASS parent-pair-${kind}: 0555 home parent refreshes; read-only or dangling-link marketplace defers update, fails explicit setup, and refreshes after repair`);
+  } finally {
+    if (existsSync(parent)) chmodSync(parent, 0o700);
+    if (existsSync(market)) chmodSync(market, 0o700);
+  }
+}
+
+runNonwritableParentPair("claude");
+runNonwritableParentPair("codex");
 console.log(`CLI evidence retained at ${root}`);
 emitSentinel({ passed, failed: 0 });

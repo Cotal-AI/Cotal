@@ -10,7 +10,12 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
-import { isConfigProtected } from "@cotal-ai/connector-core";
+import {
+  danglingSymbolicLinkTarget,
+  isConfigProtected,
+  isDirectoryProtected,
+  isExistingPathProtected,
+} from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -257,7 +262,32 @@ function repairMovedMarketplace(previous: string): string | undefined {
   }
 }
 
+function protectedMarketplaceCause(remedyCommand: string): { cause: string; remedy: string } | undefined {
+  const market = codexMarketplaceDir();
+  const dangling = danglingSymbolicLinkTarget(market);
+  if (dangling !== undefined) {
+    return {
+      cause: `${market} is a symbolic link to a missing target (${dangling})`,
+      remedy: `Restore the link's target or replace the broken link, then run \`${remedyCommand}\`.`,
+    };
+  }
+  const lock = join(market, ".setup.lock");
+  if (isDirectoryProtected(market)) {
+    return { cause: `${market} is read-only`, remedy: `Make that directory writable, then run \`${remedyCommand}\`.` };
+  }
+  if (isExistingPathProtected(lock)) {
+    return { cause: `${lock} is read-only`, remedy: `Make that file writable, then run \`${remedyCommand}\`.` };
+  }
+  if (isConfigProtected(lock)) {
+    const parent = dirname(market);
+    return { cause: `${parent} is read-only`, remedy: `Make that directory writable, then run \`${remedyCommand}\`.` };
+  }
+  return undefined;
+}
+
 function withLock<T>(run: () => T): T {
+  const blocked = protectedMarketplaceCause("cotal setup");
+  if (blocked) throw new Error(`${blocked.cause}. ${blocked.remedy}`);
   mkdirSync(codexMarketplaceDir(), { recursive: true });
   const lock = acquireLock(join(codexMarketplaceDir(), ".setup.lock"), { label: "Codex plugin setup" });
   try { return run(); } finally { lock.release(); }
@@ -279,13 +309,16 @@ function statusRow({ version }: ConnectorStatusInput): ConnectorStatusRow {
   return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", `stale · ${remedy}`);
 }
 
-function readInstalledForRefresh(): { version: string; disabled: boolean } | string {
+function readInstalledForRefresh(allowRepair: boolean): { version: string; disabled: boolean } | string {
   if (!hasCachedPlugin()) return "not installed";
   try {
     let listed = codex("plugin", "list");
     // Codex's diagnostic identifies the failing registration even when no listing is available.
     const missing = missingMarketplace(listed);
     if (missing) {
+      if (!allowRepair) {
+        return `Codex marketplace ${MARKETPLACE} could not be refreshed. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
+      }
       const deferred = repairMovedMarketplace(missing);
       if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
       listed = codex("plugin", "list");
@@ -326,19 +359,20 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     context: [DOCS_URL],
     run({ cotal }: ConnectorSetupInput) {
       if (!hasCachedPlugin()) return "not installed";
-      const market = codexMarketplaceDir();
-      if (isConfigProtected(market) || isConfigProtected(join(market, ".setup.lock"))) {
-        const installed = readInstalledForRefresh();
+      const blocked = protectedMarketplaceCause("cotal update");
+      if (blocked) {
+        const installed = readInstalledForRefresh(false);
         if (typeof installed === "string") return installed;
-        return `Codex plugin refresh deferred because ${market} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
+        return `Codex plugin refresh deferred because ${blocked.cause}. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. ${blocked.remedy}`;
       }
       return withLock(() => {
-        const installed = readInstalledForRefresh();
+        const installed = readInstalledForRefresh(true);
         if (typeof installed === "string") return installed;
         const version = pluginVersion(pluginFiles(cotal, ""));
         const cache = pluginCache();
         if (installed.version !== version && isConfigProtected(cache)) {
-          return `Codex plugin refresh deferred because ${cache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
+          const protectedCache = isDirectoryProtected(cache) ? cache : dirname(cache);
+          return `Codex plugin refresh deferred because ${protectedCache} is read-only. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. Make that directory writable, then run \`cotal update\`.`;
         }
         materializeCodexPlugin(cotal, version);
         const marketplace = configuredMarketplace();

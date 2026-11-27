@@ -18,7 +18,13 @@ import {
   type McpServerSpec,
   type SignedInSpace,
 } from "@cotal-ai/core";
-import { ENV_REFERENCE, isConfigProtected } from "@cotal-ai/connector-core";
+import {
+  danglingSymbolicLinkTarget,
+  ENV_REFERENCE,
+  isConfigProtected,
+  isDirectoryProtected,
+  isExistingPathProtected,
+} from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 import { desktopConfigPath, desktopEntryCurrent, desktopNameClash, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
 import { claudeUserMcpPath, claudeUserMcpServers } from "./user-mcp.js";
@@ -280,8 +286,44 @@ function assertRegistrationHome(): void {
   if (foreign) throw Object.assign(new Error(foreign), { name: "ForeignConnectorRegistrationError" });
 }
 
+function protectedLockCause(remedyCommand: string): { path: string; kind: "directory" | "file" | "dangling"; target?: string; message: string } | undefined {
+  const market = marketplaceDir();
+  const dangling = danglingSymbolicLinkTarget(market);
+  if (dangling !== undefined) {
+    return {
+      path: market,
+      kind: "dangling",
+      target: dangling,
+      message: `${market} is a symbolic link to a missing target (${dangling}). Restore the link's target or replace the broken link, then run \`${remedyCommand}\`.`,
+    };
+  }
+  const marketLock = join(market, ".setup.lock");
+  if (isDirectoryProtected(market)) {
+    return { path: market, kind: "directory", message: `${market} is read-only. Make that directory writable, then run \`${remedyCommand}\`.` };
+  }
+  if (isExistingPathProtected(marketLock)) {
+    return { path: marketLock, kind: "file", message: `${marketLock} is read-only. Make that file writable, then run \`${remedyCommand}\`.` };
+  }
+  if (isConfigProtected(marketLock)) {
+    const parent = dirname(market);
+    return { path: parent, kind: "directory", message: `${parent} is read-only. Make that directory writable, then run \`${remedyCommand}\`.` };
+  }
+  for (const dir of [dirname(claudeUserMcpPath()), pluginCacheDir()]) {
+    const lock = join(dir, ".cotal-setup.lock");
+    if (isExistingPathProtected(lock)) {
+      return { path: lock, kind: "file", message: `${lock} is read-only. Make that file writable, then run \`${remedyCommand}\`.` };
+    }
+    if (isConfigProtected(lock)) {
+      return { path: dir, kind: "directory", message: `${dir} is read-only. Make that directory writable, then run \`${remedyCommand}\`.` };
+    }
+  }
+  return undefined;
+}
+
 /** Keep materialization, native registration and verification in one cross-process transaction. */
 function withPluginLock<T>(run: () => T): T {
+  const blocked = protectedLockCause("cotal setup");
+  if (blocked) throw new Error(blocked.message);
   const locks: ReturnType<typeof acquireLock>[] = [];
   try {
     const paths = [
@@ -789,12 +831,10 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       const installed = installedPluginForRefresh();
       const path = desktopConfigPath();
       if (!installed && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
-      const protectedDir = (
-        [[marketplaceDir(), ".setup.lock"], [dirname(claudeUserMcpPath()), ".cotal-setup.lock"], [pluginCacheDir(), ".cotal-setup.lock"]] as const
-      ).find(([dir, lock]) => isConfigProtected(dir) || isConfigProtected(join(dir, lock)))?.[0];
-      if (protectedDir) {
+      const blocked = protectedLockCause("cotal update");
+      if (blocked) {
         const integration = installed === "cotal-skills" ? "Claude skills refresh" : "Claude integration refresh";
-        return `${integration} deferred because ${protectedDir} is read-only. Make that directory writable, then run \`cotal update\`.`;
+        return `${integration} deferred because ${blocked.message}`;
       }
       // Re-read installed state under the mutation locks before changing any integration.
       return withPluginLock(() => {
