@@ -1,10 +1,11 @@
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import { TimeoutError } from "@nats-io/transport-node";
-import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
+import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
@@ -13,17 +14,9 @@ import { isPresenceRow, assertPresenceRow } from "./subjects.js";
 import { assertValidName } from "./resolve.js";
 import { AGENT_LABEL_META_KEY, AGENT_MODEL_SET_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
 
-type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
-
 /** Live connection dependencies shared with the endpoint's other broker readers. */
 export interface EndpointPresenceDeps {
-  /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
-  prompts: () => PresencePrompts | undefined;
-  /** The `agentEndpoint` field this process's presence carries now, or none (SPEC §6). */
-  agentEndpoint: () => PresenceAgentEndpoint | undefined;
   notLiveMsg: () => string;
-  bindWatch: (kv: KV) => Promise<{ iter: PresenceWatch; info: ConsumerInfo } | undefined>;
-  retireWatch: (iter: PresenceWatch) => void;
   emit: (event: string, value: unknown) => boolean;
   recoverable: (error: Error) => void;
   isPublishPermissionDenied: (error: unknown) => boolean;
@@ -162,11 +155,9 @@ export class EndpointPresence {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointPresenceDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointPresenceDeps, private readonly parts: Pick<EndpointParts, "connection" | "principalServe">) {}
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
-  private bindKvWatch(kv: KV) { return this.deps.bindWatch(kv); }
-  private retireKvWatch(iter: PresenceWatch) { this.deps.retireWatch(iter); }
   private emit(event: string, value: unknown) { return this.deps.emit(event, value); }
   private emitRecoverable(error: Error) { this.deps.recoverable(error); }
 
@@ -178,7 +169,7 @@ export class EndpointPresence {
   values(): IterableIterator<Presence> { return this.roster.values(); }
   cancelRebind(): void { this.presenceRebind = undefined; }
   retireWatch(): void {
-    if (this.presenceWatchIter) this.retireKvWatch(this.presenceWatchIter);
+    if (this.presenceWatchIter) this.parts.connection.retireKvWatch(this.presenceWatchIter);
     this.presenceWatchIter = undefined;
   }
   async publishOffline(): Promise<void> {
@@ -435,8 +426,8 @@ export class EndpointPresence {
       activeAt: this.activeAt,
       attention: this.attentionMode,
       channelModes: this.channelModes,
-      prompts: this.deps.prompts(),
-      agentEndpoint: this.deps.agentEndpoint(),
+      prompts: this.parts.principalServe.servedPrompts(),
+      agentEndpoint: this.parts.principalServe.servedAgentEndpoint(),
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
@@ -574,7 +565,7 @@ export class EndpointPresence {
 
   /** Bind a presence watch on the current connection. Resolves the bound consumer's info when
    *  the watch was installed, undefined when the endpoint stopped or rebuilt while the bind was
-   *  in flight: that bind's watch is retired by {@link bindKvWatch} and nothing is installed,
+   *  in flight: that bind's watch is retired by {@link EndpointConnection.bindKvWatch} and nothing is installed,
    *  because the epoch that asked for it is gone and the epoch that replaced it binds its own
    *  watch through the endpoint connection bind. Without this fence a bind that completes after
    *  endpoint shutdown would resurrect a watch on a stopped endpoint, and one that completes after a
@@ -583,7 +574,7 @@ export class EndpointPresence {
     if (!this.conn.kv) return undefined;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
-    const bound = await this.bindKvWatch(this.conn.kv);
+    const bound = await this.parts.connection.bindKvWatch(this.conn.kv);
     if (!bound) {
       hydrated();
       return undefined;
@@ -660,7 +651,7 @@ export class EndpointPresence {
         if (!info) return;
         // The predecessor's consumer goes with it: left alone, every rebind of a silent bucket
         // would add one idle consumer to the presence stream per TTL (#3914).
-        if (old && old !== this.presenceWatchIter) this.retireKvWatch(old);
+        if (old && old !== this.presenceWatchIter) this.parts.connection.retireKvWatch(old);
         // A bucket with no keys replays nothing, so the new watch cannot refresh
         // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
         // bind's consumer info carries the initial pending count for that one fact; nats.js's KV

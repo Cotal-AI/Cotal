@@ -57,6 +57,7 @@ import {
   findMesh,
   materializeSecretToFile,
   mergeLaunchOptions,
+  parseLaunchModes,
   parseLaunchOptions,
   preflightOrThrow,
   provenance,
@@ -75,6 +76,7 @@ import {
 import { c, stderrLine } from "../ui.js";
 import { parseChannelFlag } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
+import { checkLaunch, launchModes } from "../lib/launch-modes.js";
 import { displayCmd, displayProjectTrustFailure } from "../lib/self-exec.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
@@ -249,6 +251,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
     if (values.role !== undefined) assertValidRole(values.role);
     parseShareSelection(values["share-tools"]);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid launch options, native role or tool-sharing selection; use declared keys and unique key=value option pairs"); }
+  try { parseLaunchModes(values.mode); } catch (e) { throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(e), { remedy: "pass each mode once as --mode <id>=<value>; `cotal models` lists each model's modes" }); }
   const channels = {
     subscribe: parseChannelFlag("--subscribe", values.subscribe, true),
     "allow-subscribe": parseChannelFlag("--allow-subscribe", values["allow-subscribe"], true),
@@ -681,6 +684,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (values.prompt !== undefined && !connector.supportsPrompt) {
     throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support an initial prompt (prompt)`, { target: { space, path } });
   }
+  const modes = launchModes(connector, values.mode, { space, path });
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
   // config (global ~/.config/cotal + the target mesh's .cotal), narrowed by an optional
   // --share-tools selection. Without a selection the connector keeps its native discovery default.
@@ -744,18 +748,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const launchOpts: LaunchOpts = {
     space, name, role, servers: server, configPath: path,
-    model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
+    model, variant, modes, launchOptions, subscribe, allowSubscribe, allowPublish,
     endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
     resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,
     mcpServers, mcpServersExclusive: shareTools !== undefined, envAllow,
     // Keep the foreground directory on the child spawn. Connector cwd marks a supervised seat.
     workspaceRoot: target.root,
   };
-  try {
-    if (connector.supportsLaunchValidation) connector.buildLaunch({ ...launchOpts, validateOnly: true });
-  } catch (error) {
-    throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
-  }
+  await checkLaunch(connector, launchOpts, handoffText !== undefined, { space, path });
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
   // endpoint: the mesh grants the row and pre-creates the durables inside the owner's envelope,
   // because the material to do that locally — the space's owner secret and account signer — only

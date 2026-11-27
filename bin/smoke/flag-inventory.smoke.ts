@@ -179,13 +179,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--enrollment-file` redeems a one-time enrollment for that seat. `--config`, `--agent` and
   // `--expect-owner`/`--expect-lifecycle-uid` (2026-10, #2420) are the delegated launch contract
   // version 0 an older manager writes. `--allow-stale`/`--runtime` refuse and name `team deploy`.
+  // `--mode` (2026-11) chooses a model's modes, which the catalog lists beside its variants.
   spawn: {
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string:C", "detach:boolean:d", "dry-run:boolean",
       "enrollment-file:string", "events:boolean", "expect-lifecycle-uid:string", "expect-owner:string",
       "expires-at:string", "expires-in:string", "file:string:f", "foreground:boolean", "harness:string:H", "json:boolean:j", "live-only:boolean",
-      "model:string:m", "name:string:n", "no-event-payloads:boolean", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
+      "mode:string", "model:string:m", "name:string:n", "no-event-payloads:boolean", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
       "prompt:string:p", "restart-window:string", "restarts:string", "resume:string", "role:string",
       "runtime:string", "server:string", "share-tools:string", "space:string:s", "subscribe:string",
       "variant:string",
