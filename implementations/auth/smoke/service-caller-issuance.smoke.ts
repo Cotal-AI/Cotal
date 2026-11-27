@@ -106,6 +106,34 @@ try {
     assert.equal(read.answer.state, "present");
     c.check("the owner reads the root expiry in UTC from the exact approved instance",
       diagnostic.includes(`Root credential expiry: ${new Date(approved.approval.rootExpiresAt * 1000).toISOString()} (UTC).`), diagnostic);
+    const hostUrl = service.url, hostCap = service.cap;
+    let supplementalReads = 0;
+    const server = createServer(async (req, res) => {
+      try {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        if (JSON.parse(body).request.operation === "instance-read") {
+          supplementalReads++;
+          res.writeHead(400, { "content-type": "application/json" });
+          return void res.end('{"error":"operation not supported"}');
+        }
+        const answer = await fetch(`${hostUrl}${req.url}`, { method: "POST", body,
+          headers: { "content-type": "application/json", authorization: `Bearer ${hostCap}` } });
+        res.writeHead(answer.status, { "content-type": "application/json" });
+        res.end(await answer.text());
+      } catch { res.writeHead(502).end(); }
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+    try {
+      saveAuthServiceInfo(clientDir, { url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, pid: process.pid, cap: hostCap });
+      const legacy = await ownerCli(["proposal", first.proposalId], {}, () => assert.fail("an unsupported read has no diagnosis"));
+      c.check("a host without the instance read still returns the proposal", legacy.answer.state === "present" && supplementalReads === 1, legacy.answer.state);
+      await ownerCli(["proposal", first.proposalId], {});
+      assert.equal(supplementalReads, 1, "the JSON caller does not ask for instance diagnostics");
+    } finally {
+      saveAuthServiceInfo(clientDir, { url: hostUrl, pid: process.pid, cap: hostCap });
+      await new Promise<void>(r => server.close(() => r()));
+    }
   }
   const registered = await authority(registration); assert.equal(registered.state, "registered"); if (registered.state !== "registered") throw new Error("fixture registration");
   const witness: ServiceRegistrationWitness = registered.witness;

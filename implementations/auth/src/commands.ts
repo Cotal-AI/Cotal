@@ -486,8 +486,7 @@ function validateServiceEndpointArguments(args: ParsedArgs): void {
   }
 }
 
-/** `cotal service-endpoint`: one host request ({@link serviceEndpointHostCall}) at the resolved
- *  local authority root, and its answer rendered. */
+/** Render the host answer and any supplemental diagnostics for human output. */
 async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise<void> {
   const { dir, space } = actorState(target);
   const presentation = presentationOf(args.values);

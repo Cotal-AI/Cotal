@@ -148,7 +148,7 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
         if (instance?.operation === "instance-read" && instance.state === "present") {
           const view = instance.record.value;
           if (view.endpoint === endpoint && view.instanceId === instanceId && view.approvalDigest === ("approvalDigest" in answer.record.value ? answer.record.value.approvalDigest : null))
-            showDiagnosis(serviceInstanceDiagnosis(view, Math.floor(Date.now() / 1000)));
+            showDiagnosis(serviceInstanceDiagnosis(view));
         }
       }
       return result;
@@ -228,20 +228,15 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
 
 type ServiceHostTarget = { endpoint: string; idpUrl: string; authorization?: string };
 
-function serviceInstanceDiagnosis(view: import("./service-host-contract.js").ServiceInstanceView, now: number): string[] {
+function serviceInstanceDiagnosis(view: import("./service-host-contract.js").ServiceInstanceView): string[] {
   if (view.state === "revoking" || view.state === "retired") return ["The service approval is revoked or being revoked."];
   const lines: string[] = [];
-  const { rootExpiresAt, approvalExpiresAt } = view;
-  if (rootExpiresAt !== null) {
-    const utc = new Date(rootExpiresAt * 1000).toJSON();
-    if (utc !== null) lines.push(rootExpiresAt <= now ? `The root credential expired at ${utc} (UTC).` : `Root credential expiry: ${utc} (UTC).`);
+  // This read carries deadlines, not the host's admission verdict. A client's clock cannot infer it.
+  for (const [label, timestamp] of [["Root credential expiry", view.rootExpiresAt], ["Service approval expiry", view.approvalExpiresAt]] as const) {
+    if (timestamp === null) continue;
+    const utc = new Date(timestamp * 1000).toJSON();
+    if (utc !== null) lines.push(`${label}: ${utc} (UTC).`);
   }
-  if (approvalExpiresAt !== null && approvalExpiresAt <= now) {
-    const utc = new Date(approvalExpiresAt * 1000).toJSON();
-    lines.push(utc === null ? "The service approval expired." : `The service approval expired at ${utc} (UTC).`);
-  }
-  if (rootExpiresAt !== null && rootExpiresAt <= now)
-    lines.push("Restarting this instance or replaying its approval does not replace the root. Ask the integration operator whether it can register a replacement. A replacement needs its own approval and caller grants.");
   return lines;
 }
 

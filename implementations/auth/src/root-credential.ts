@@ -69,7 +69,7 @@ function rootRepair(row: (ActorRow & { kind: ActorKind }) | undefined, space: st
     return `Ask the space operator to re-grant exactly the same access with \`${grantCommandLine(row.owner, row.actor, row)}${parent} ${spaceFlag}\` on the machine that holds the grant.`;
   }
   if (row?.kind === "interactive") return "Ask the space operator to re-grant this actor with the same access and event payload restriction.";
-  if (row?.custody?.kind === "foreground") return "End this foreground launch, then rerun its original `cotal spawn` command.";
+  if (row?.custody?.kind === "foreground") return "End this foreground launch. Rerun its original `cotal spawn` command with `--name <new-name>` to launch a new actor. A same-name restart does not replace the root.";
   if (row?.custody) return `Find this lifecycle's seat with \`cotal ps --wide --on ${row.custody.instanceId} ${spaceFlag}\` and stop that seat on the same manager. Then rerun its original \`cotal spawn\` command.`;
   return NO_REPAIR_COORDINATES;
 }

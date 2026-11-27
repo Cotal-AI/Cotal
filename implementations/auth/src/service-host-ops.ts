@@ -139,7 +139,7 @@ function servingApprovalLive(authority: ServiceGateAuthority, now: number, insta
     if (approvalExpiresAt !== null && approvalExpiresAt <= now)
       console.error(`Service instance ${instanceId}: The approval expired${at(approvalExpiresAt)}.`);
     if (rootExpiresAt <= now)
-      console.error(`Service instance ${instanceId}: The root credential expired${at(rootExpiresAt)}. Restarting this instance does not replace its root. Ask the integration operator whether it can register a replacement.`);
+      console.error(`Service instance ${instanceId}: The root credential expired${at(rootExpiresAt)}. Restarting this instance does not replace its root. Ask whoever runs the integration whether it can register a replacement.`);
   }
   return false;
 }

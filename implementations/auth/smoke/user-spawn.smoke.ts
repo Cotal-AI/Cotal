@@ -600,6 +600,13 @@ try {
   await observer.start();
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
+  const { foregroundRootExpiry } = await import("./_foreground-root-expiry.js");
+  grantActor(dir, { ...cliRow0, allowPublish: [...cliRow0.allowPublish, eventChannel({ owner: OWNER, actor: "cli" })] });
+  try {
+    await foregroundRootExpiry({ root, dir, space: SPACE, server: SERVER, owner: OWNER, auth,
+      env: { ...cliEnv, NODE_EXTRA_CA_CERTS: cert, DO_NOT_TRACK: "1" }, observer, childProgram: CHILD });
+  } finally { grantActor(dir, cliRow0); }
+  check("expired foreground root refuses the same name and the named replacement joins", true);
 
   // ---- B1b. THE SECOND SPAWN OF THE SAME NAME (the arm nothing covered) ----------------------
   // Every other spawn in this suite uses a DISTINCT name — alpha, iota, kappa. That is exactly why
