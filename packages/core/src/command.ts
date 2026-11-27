@@ -184,22 +184,41 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
   }
   // A value such as `-1` reads as an option to `parseArgs`, which refuses it as ambiguous. No option
   // name starts with a digit, so a dash and a digit after a string option is that option's value.
-  // `origin` keeps each word's raw index for `positionalIndices`.
+  // `parseArgs` ends options at the first `--`, so a declared flag written after a positional there
+  // would become another positional. Flags stay flags on either side of `--`. A word that is not one
+  // of this command's flags stays a positional, which is how a program argument that starts with `-`
+  // passes through. `origin` keeps each word's raw index for `positionalIndices`.
   const args: string[] = [];
   const origin: number[] = [];
+  const held: string[] = [];
+  const heldAt: number[] = [];
+  const declared = new Set((cmd.flags ?? []).map((flag) => flag.name));
+  const flagName = (word: string): { name?: string; attached: boolean } => {
+    const inline = /^--([^=]+)=/.exec(word);
+    if (inline) return { name: declared.has(inline[1]!) ? inline[1] : undefined, attached: true };
+    const long = /^--([^=]+)$/.exec(word)?.[1];
+    if (long !== undefined) return { name: declared.has(long) ? long : undefined, attached: false };
+    const letter = /^-([^-])$/.exec(word)?.[1];
+    const name = letter === undefined ? undefined : Object.keys(options).find((key) => options[key]!.short === letter);
+    return { name, attached: false };
+  };
+  let optionsEnded = false;
   for (let i = 0; i < argv.length; i++) {
     const word = argv[i]!;
-    if (word === "--") {
-      for (let j = i; j < argv.length; j++) { args.push(argv[j]!); origin.push(j); }
-      break;
-    }
-    const long = /^--([^=]+)$/.exec(word)?.[1];
-    const short = /^-([^-])$/.exec(word)?.[1];
-    const name = long ?? (short === undefined ? undefined : Object.keys(options).find((key) => options[key]!.short === short));
+    if (word === "--") { optionsEnded = true; continue; }
+    const found = flagName(word);
     const next = argv[i + 1];
-    if (name !== undefined && options[name]?.type === "string" && next !== undefined && /^-\d/.test(next)) {
-      args.push(long !== undefined ? `${word}=${next}` : `${word}${next}`);
+    const takesSeparatedValue = optionsEnded && !found.attached && found.name !== undefined && options[found.name]?.type === "string"
+      && next !== undefined && next !== "--" && flagName(next).name === undefined;
+    if (takesSeparatedValue || (!found.attached && found.name !== undefined && options[found.name]?.type === "string" && next !== undefined && /^-\d/.test(next))) {
+      const joined = found.name === word.slice(2) || takesSeparatedValue ? `${word}=${next}` : `${word}${next}`;
+      args.push(joined);
       origin.push(i++);
+      continue;
+    }
+    if (optionsEnded && found.name === undefined) {
+      held.push(word);
+      heldAt.push(i);
       continue;
     }
     args.push(word);
@@ -213,7 +232,8 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
     tokens: true,
   });
   // parseArgs keeps the last value of a repeated option with no error. Count the option tokens
-  // (`-f` and `--file` are the same option; words after `--` are positionals) and refuse a repeat.
+  // (`-f` and `--file` are the same option; a word after `--` that is not a declared flag is a
+  // positional) and refuse a repeat.
   const seen = new Set<string>();
   for (const t of tokens) {
     if (t.kind !== "option" || options[t.name]?.multiple) continue;
@@ -225,7 +245,12 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
     }
     seen.add(t.name);
   }
-  return { values: values as ParsedArgs["values"], positionals, raw: argv, positionalIndices: tokens.filter((token) => token.kind === "positional").map((token) => origin[token.index]!) };
+  const parsedIndices = tokens.filter((token) => token.kind === "positional").map((token) => origin[token.index]!);
+  const ordered = [
+    ...positionals.map((value, index) => ({ value, at: parsedIndices[index]! })),
+    ...held.map((value, index) => ({ value, at: heldAt[index]! })),
+  ].sort((a, b) => a.at - b.at);
+  return { values: values as ParsedArgs["values"], positionals: ordered.map((item) => item.value), raw: argv, positionalIndices: ordered.map((item) => item.at) };
 }
 
 /** The command `word` names on a surface, by exact name or alias. A prefix never matches. */
