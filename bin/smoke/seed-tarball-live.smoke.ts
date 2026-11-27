@@ -339,7 +339,6 @@ async function checkReview2PackageLockCells(
   mkdirSync(candidateOut, { recursive: true });
   const [maj, min, pat] = version.split(".").map(Number);
   const targetVer = `${maj}.${min}.${(pat ?? 0) + 1}`;
-  const prevVer = (pat ?? 0) > 0 ? `${maj}.${min}.${(pat ?? 0) - 1}` : "0.182.0";
   const allDirs = [
     "bin",
     ...["packages", "implementations", "extensions"].flatMap(group =>
@@ -445,6 +444,8 @@ async function checkReview2PackageLockCells(
       PATH: `${join(upPrefix, "bin")}${delimiter}${upTools}${delimiter}${cleanEnv.PATH ?? ""}`,
     };
     writeFileSync(upNpmrc, "");
+    const cotalUp = await (await fetch("https://registry.npmjs.org/cotal-ai", { signal: AbortSignal.timeout(30_000) })).json() as { "dist-tags"?: { latest?: string } };
+    const prevVer = cotalUp["dist-tags"]?.latest ?? "0.183.0";
     const globalInstall = await exec(realNpm, ["install", "-g", "--prefix", upPrefix, `cotal-ai@${prevVer}`, "--no-audit", "--no-fund"], { env: upEnv, timeout: 240_000 });
     check(`installed previous release cotal-ai@${prevVer} globally`, globalInstall.stdout !== undefined, globalInstall.stderr);
     const globalBin = join(upPrefix, "bin", "cotal");

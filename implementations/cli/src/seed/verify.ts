@@ -399,7 +399,7 @@ function lockedTreeDiffers(
   return undefined;
 }
 
-/** Top-level local-path package directories in `prefix` whose recorded source directory no longer exists. */
+/** Top-level local-path package directories in `prefix` whose recorded source directory is absent on disk. */
 function unrepairableLocalPackages(prefix: string, configPrefix: string): Set<string> {
   const dirs = new Set<string>();
   let deps: Record<string, string> = {};
@@ -409,8 +409,11 @@ function unrepairableLocalPackages(prefix: string, configPrefix: string): Set<st
   } catch { /* unreadable manifest leaves deps empty */ }
   let recorded: InstalledExtension[] = [];
   try {
-    const inv = JSON.parse(readFileSync(join(configPrefix, "extensions.json"), "utf8")) as { extensions?: InstalledExtension[] };
-    if (Array.isArray(inv.extensions)) recorded = inv.extensions;
+    const inv = JSON.parse(readFileSync(join(configPrefix, "extensions.json"), "utf8")) as { extensions?: unknown };
+    if (Array.isArray(inv.extensions)) {
+      recorded = inv.extensions.filter((item): item is InstalledExtension =>
+        item !== null && typeof item === "object" && !Array.isArray(item) && typeof (item as { pkg?: unknown }).pkg === "string");
+    }
   } catch { /* unreadable inventory leaves recorded empty */ }
   const names = new Set([...Object.keys(deps), ...recorded.map((entry) => entry.pkg)]);
   for (const pkg of names) {
@@ -432,8 +435,11 @@ function unrepairableLocalPackages(prefix: string, configPrefix: string): Set<st
 
 function isSeededBuiltInEntry(prefix: string, pkg: string): boolean {
   try {
-    const { extensions } = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")) as { extensions?: InstalledExtension[] };
-    const entry = Array.isArray(extensions) ? extensions.find((item) => item.pkg === pkg) : undefined;
+    const { extensions } = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")) as { extensions?: unknown };
+    const entry = Array.isArray(extensions)
+      ? extensions.find((item): item is InstalledExtension =>
+        item !== null && typeof item === "object" && !Array.isArray(item) && (item as { pkg?: unknown }).pkg === pkg)
+      : undefined;
     return entry === undefined || entry.source === "seeded";
   } catch {
     return true;
