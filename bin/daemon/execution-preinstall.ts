@@ -17,6 +17,13 @@ export interface ExecutionPreinstallRequest {
   readonly flags: Record<string, unknown>;
 }
 
+export function settledHostedStatus<T>(reply: Awaited<ReturnType<typeof askManager>>, fallback: string): T {
+  if (!reply.ok) throw new Error(reply.error ?? fallback);
+  if (((reply.data as { stopImpact?: { reservedLaunches?: number } } | undefined)?.stopImpact?.reservedLaunches ?? 0) > 0)
+    throw new Error("the hosted Manager has an unsettled launch");
+  return reply.data as T;
+}
+
 /** Read-only target policy. Unknown custody permits software publication, never a destructive restart. */
 export async function readExecutionPreinstall(request: ExecutionPreinstallRequest) {
   const daemon = await observeUpdateDaemon();
@@ -49,10 +56,8 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
           const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
           const client = { versionSkew: (text: string) => text, roster: async () => [] };
           const status = await askManager(client, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId });
-          if (!status.ok) throw new Error(status.error ?? `Manager ${manager.space} did not answer`);
-          if ((status.data as { instanceId?: unknown }).instanceId !== instanceId || processBirth(manager.pid!) !== birth) throw new Error(`Manager ${manager.space} identity changed`);
-          const { agentCount: count, stopImpact } = status.data as { agentCount?: unknown; stopImpact?: { reservedLaunches?: number } };
-          if ((stopImpact?.reservedLaunches ?? 0) > 0) throw new Error("the hosted Manager has an unsettled launch");
+          const { agentCount: count, instanceId: answered } = settledHostedStatus<{ agentCount?: unknown; instanceId?: unknown }>(status, `Manager ${manager.space} did not answer`);
+          if (answered !== instanceId || processBirth(manager.pid!) !== birth) throw new Error(`Manager ${manager.space} identity changed`);
           if (!Number.isSafeInteger(count) || (count as number) < 0) throw new Error(`Manager ${manager.space} work count is unknown`);
           occupied += count as number;
           if (count === 0) return;

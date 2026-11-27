@@ -19,6 +19,7 @@ import { cleanupExecutionStore } from "../execution-store.js";
 import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
+import { settledHostedStatus } from "./execution-preinstall.js";
 import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
@@ -551,9 +552,7 @@ const composed: Command = { ...command, async run(args) {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
-      if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { reservedLaunches?: number } };
-      if ((status.stopImpact?.reservedLaunches ?? 0) > 0) throw new Error("the hosted Manager has an unsettled launch");
+      const status = settledHostedStatus<{ agentCount?: number; custody?: string }>(reply, "hosted Manager status did not answer");
       if (status.custody === "legacy" && status.agentCount !== 0) {
         const instanceId = manager.instanceId;
         const inventory = await withIdpSessionDir(homeCotalDir(), async () => {
