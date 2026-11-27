@@ -2324,9 +2324,10 @@ witness names, which the service host reads, on its own writer connection
 to the base writer grant; a broker grant cannot confine those families to service assignments, and
 the native mint writes only the bearer's own rows. A fenced plane or a latched host refuses the
 mint. Registered closures are read back from the contract store on the issuer connection's
-exact-subject Direct Get. Revocation, the Describe view, caller policy, terminal retirement and
-restore remain unsupported: a revoked assignment's bearer is refused at its next connect, but a
-connection already open keeps its original expiry of at most 60 s.
+exact-subject Direct Get. The Describe view, caller policy, terminal retirement and restore remain
+unsupported: a host revoke refuses new activation, renewal, readiness and connections and evicts
+the assignment's open serving connection until it is verified gone before confirming
+`cancelled-nonterminal`, while root and assignment records remain nonterminal.
 
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of

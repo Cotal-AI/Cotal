@@ -12,6 +12,7 @@ import {
   setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
 } from "@cotal-ai/core";
 import { startHostedAuthFixture, MemoryStore } from "../../auth/smoke/_hosted-auth-fixture.js";
+import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
 import { deriveOwnerForIdpSubject } from "../../auth/src/derive.js";
 import { grantActor } from "../../auth/src/ledger.js";
 import { saveIdpSession } from "../../auth/src/login.js";
@@ -61,6 +62,7 @@ const stranger = grantActor(stateDir, { owner, actor: "stranger", scope: [], all
 const clientStore = new MemoryStore({ kind: "injected", coordinate: "linear-client" });
 await clientStore.put(authClientSentinelKey(a.space), a.sentinelCreds);
 let service: AuthServiceHandle | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 const conns: NatsConnection[] = [];
 const endpoints: CotalEndpoint[] = [];
 let running: Promise<void> | undefined;
@@ -116,6 +118,7 @@ const start = (onInitialized?: () => void) => serveLinearUserAuth({ account: "fi
   servers: fx.servers, tls: false, provider, store: clientStore, dir, upstream: upstream(), signal: ctl.signal, onInitialized });
 try {
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
+  delivery = await bootDeliveryDaemon({ space: a.space, servers: fx.servers, auth: a.auth, reloadStoreIdentity: a.store.identity });
   service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "linear-fixture" }, space: a.space,
     servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }) } } });
@@ -356,7 +359,7 @@ try {
     if (approved.state !== "approved") throw new Error("approval missing");
     const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner }, input: {
       endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" } });
-    assert.equal(revoked.state, "pending", "the host confirms deny-new, not completed eviction");
+    assert.equal(revoked.state, "pending", "the host confirms deny-new and verified live eviction while keeping the assignment nonterminal");
     const shutdownDeadline = setTimeout(() => ctl.abort(), 55_000);
     try { await assert.rejects(running, /stopped after its remote authority/); }
     finally { clearTimeout(shutdownDeadline); }
@@ -378,6 +381,7 @@ try {
   ctl.abort(); await running?.catch(() => {});
   for (const nc of conns) await nc.close();
   await service?.close();
+  await delivery?.stop().catch(() => {});
   await new Promise<void>(resolve => idp.close(() => resolve()));
   if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
   await fx.close();

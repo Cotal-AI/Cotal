@@ -101,7 +101,7 @@ invoke path works for ordinary and managed user-auth callers. Controlled policy 
 requires the application's approved service-host instance. Native control endpoints retain their
 existing ledger/scope and typed authority contracts, not fabricated application approvals. Scoped
 Describe is not available, and complete terminal retirement and restore remain unsupported. A host revoke refuses new activation, renewal, readiness
-and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
+and connections and evicts the endpoint's open serving connection until it is verified gone before confirming nonterminal cancellation. Approval
 runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
 exclusion remain unavailable. Do not seed service reservations in an existing space, adopt old
 service-shaped rows, or use ordinary retirement to make them terminal. A signing-key or raw-store

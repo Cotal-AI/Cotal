@@ -17,6 +17,7 @@ import {
   SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
   serveAuthenticityOf, singleDocumentClosure, type ParsedArgs, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
+import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
@@ -78,8 +79,10 @@ const space = a.space, accountPublicKey = a.accountPublicKey;
 const handles: AuthServiceHandle[] = [];
 const prevHome = process.env.COTAL_HOME;
 let harness: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: fx.servers, space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
+  delivery = await bootDeliveryDaemon({ space, servers: fx.servers, auth: a.auth, reloadStoreIdentity: a.store.identity });
   const stateDir = join(fx.dir, "svauth-state"), clientDir = join(fx.dir, "svauth-client"), home = join(fx.dir, "svauth-home");
   for (const d of [stateDir, clientDir, home]) mkdirSync(d, { recursive: true });
   ensurePinnedIdp(stateDir, idpUrl); ensurePinnedIdp(clientDir, idpUrl);
@@ -515,6 +518,7 @@ try {
   await harness?.close().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prevHome;
   for (const h of handles) await h.close().catch(() => {});
+  await delivery?.stop().catch(() => {});
   await fx.close();
   idp.closeAllConnections();
   await new Promise<void>((r) => idp.close(() => r()));

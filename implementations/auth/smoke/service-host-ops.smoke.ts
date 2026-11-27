@@ -464,6 +464,25 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
       c.check("G7 (S-8) an operator revoke still reaches deny-new", rv.state === "pending" && rv.denyNew === "landed", rv);
       grantActor(dir, { owner: f.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
     }
+    // V5-evict: unverified connection eviction holds at V5-evict with denyNew landed; replay after verifiedGone reaches cancelled-nonterminal.
+    {
+      let verified = false;
+      const ev = await engine(f, dir, {
+        evictPrincipal: async (principal) => ({ principal, kicked: verified ? 1 : 0, remaining: verified ? 0 : 1, verifiedGone: verified, scanComplete: true }),
+      });
+      const p = await registered(f, ev);
+      const ap = await ev.handle(decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f)));
+      const d = ap.state === "approved" ? ap.approval.assignment.assignmentDigest : "";
+      const rq = revoke(f.endpoint, p.instanceId, d, "owner-request", ownerOf(f));
+      const r1 = await ev.handle(rq);
+      parsesClosed("G8 V5-evict held", r1);
+      verified = true;
+      const r2 = await ev.handle(rq);
+      parsesClosed("G8 V5-evict resumed", r2);
+      c.check("G8 (V5-evict) unverified eviction holds at V5-evict with denyNew landed, then replay reaches cancelled-nonterminal once verifiedGone",
+        r1.state === "held" && r1.reason === "eviction-unverified" && r1.phase === "V5-evict" && r1.denyNew === "landed"
+          && r2.state === "pending" && r2.phase === "cancelled-nonterminal" && r2.denyNew === "landed", { r1, r2 });
+    }
     // S-27 / T5: a late A1 after the approver's expired-admitted settlement; refuse closes the stale approving{X}.
     {
       const p = await registered(f, e), req = decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f));
