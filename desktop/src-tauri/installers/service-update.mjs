@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -63,7 +63,9 @@ async function load() {
 }
 async function assertDetachedSeatsIdle() {
   const helper = join(root, 'runtime', 'dist', 'daemon', 'manager-custody-win32.js');
-  if (!existsSync(helper)) return; // Only runtimes with this adapter publish Windows custody.
+  const info = lstatSync(helper, { throwIfNoEntry: false });
+  if (!info) return; // Runtimes predating the adapter have no Windows custody records.
+  if (!info.isFile()) throw new Error('The installed Windows PTY custody helper is not a regular file.');
   const { windowsDetachedSeatOccupancy } = await import(pathToFileURL(helper).href);
   const occupancy = windowsDetachedSeatOccupancy(root);
   if (occupancy === 'held') throw Object.assign(new Error('Detached Windows PTY seats remain active.'), { code: 'SEATS_ACTIVE' });

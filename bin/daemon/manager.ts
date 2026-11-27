@@ -107,7 +107,7 @@ function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
   };
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, windowsOwned?: () => boolean) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, windowsOwned?: () => Promise<boolean>) {
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
@@ -522,7 +522,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown };
       if (frame.kind === "machine-pty-install-request") {
         if (process.platform === "linux" && desktopInstall && child.connected) child.send({ kind: "machine-pty-install", entry: desktopInstall }, () => {});
-        if (process.platform === "win32" && child.connected) child.send({ kind: "machine-pty-install", entry: windowsOwned?.() ? argv.at(-1) : null }, () => {});
+        if (process.platform === "win32") void Promise.resolve(windowsOwned?.()).then(owned => {
+          if (child.connected && l.child === child) child.send({ kind: "machine-pty-install", entry: owned ? argv.at(-1) : null }, () => {});
+        }).catch(() => {});
         return;
       }
       if (frame.kind === "manager-refusal" && typeof frame.reason === "string") {
@@ -734,6 +736,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return { prepared: generationPrepared, managers: rows };
     },
     async generationSeats(): Promise<{ space: string; seats: number }[]> {
+      assertWindowsCustodyIdle();
       return Promise.all([...live.values()].filter((l) => l.child).map(async (l) => {
         const child = l.child!;
         const seats = await generationCall(child, randomUUID(), "inspect");

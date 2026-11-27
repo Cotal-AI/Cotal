@@ -549,7 +549,6 @@ async function serve(args: ParsedArgs): Promise<void> {
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;
-  let admittedWindows = false;
   let ownershipPending = process.env.COTAL_DAEMON_NATIVE_SERVICE === "1";
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
@@ -564,6 +563,8 @@ async function serve(args: ParsedArgs): Promise<void> {
     }
     return result;
   };
+  let initialOwnership: Promise<DaemonOwnershipObservation> | undefined;
+  const nativeOwnership = () => initialOwnership ??= observe();
   let stopObservation: Promise<DaemonOwnershipObservation> | undefined;
   const stopAllowed = (): Promise<DaemonOwnershipObservation> => {
     if (owned) return Promise.resolve({ state: "owned", reason: "verified" });
@@ -577,9 +578,7 @@ async function serve(args: ParsedArgs): Promise<void> {
   };
   try {
     running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,
-      ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? {
-        admit: () => { admitWindowsNativeDaemon(paths, home); admittedWindows = true; }, windowsOwned: () => admittedWindows,
-      } : {}),
+      ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home), windowsOwned: async () => (await nativeOwnership()).state === "owned" } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -597,7 +596,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     }
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
-  const ownership = observe();
+  const ownership = nativeOwnership();
   await new Promise<void>((resolve, reject) => {
     let closed = false;
     let stopWatching = () => {};

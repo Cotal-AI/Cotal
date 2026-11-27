@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { inspectWindowsAliasHold, launchManagedSharedSeat, launchManagedWindowsSeat, linuxSharedCustodyAvailable } from "@cotal-ai/seat";
 import type { AgentHandle, LaunchSpec } from "@cotal-ai/core";
-import { executionIdentity, resolveOnPath } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, executionIdentity, installationWriter, resolveOnPath } from "@cotal-ai/workspace";
 import { custodyRoot } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 
@@ -46,9 +46,13 @@ export class SharedPtyRuntime extends LegacyPtyRuntime {
   /** Manager-only entry point for the shared host client. */
   async spawnShared(name: string, spec: LaunchSpec, cwd: string, onReceipt: (child: Readonly<{ pid: number; start: string; boot: string }> | undefined) => void): Promise<AgentHandle> {
     if (this.windows) {
+      if (this.holdsNativeAlias(name)) throw new Error("Windows PTY alias custody is held or unknown");
       const command = resolveOnPath(spec.command, spec.env ?? {});
       if (!command) return super.spawn(name, spec, cwd);
-      const launched = await launchManagedWindowsSeat(this.windows.installation, this.windows.space, { name, spec: { ...spec, command }, cwd });
+      const launched = await launchManagedWindowsSeat(this.windows.installation, this.windows.space, { name, spec: { ...spec, command }, cwd }, () => {
+        if (installationWriter()) throw new Error("the installation is changing before Windows PTY launch");
+        return claimUpdateClosureAccess();
+      });
       if (launched.state === "ineligible") return super.spawn(name, spec, cwd);
       const { release: _release, reference: _reference, childIdentity: _identity, ...controlled } = launched.handle;
       // A conservative reservation must outlive the Windows root process when its job still has descendants.

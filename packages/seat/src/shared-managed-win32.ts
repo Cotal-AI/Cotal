@@ -18,6 +18,7 @@ import { SharedSeatClient } from "./shared-seat-client.js";
 
 const opening = new Map<string, Promise<HostBootstrap<WindowsHostRecord>>>();
 const channels = new Map<string, { host: WindowsHostRecord; controller: SharedController }>();
+const PROOF_WAIT_MS = 12_000;
 
 function sameSlot(a: WindowsSeatSlot, b: WindowsSeatSlot): boolean {
   return a.root === b.root && a.name === b.name && a.sid === b.sid && a.key === b.key &&
@@ -68,16 +69,18 @@ function requestBootstrap(slot: WindowsSeatSlot, session: number): HostBootstrap
   return { state: "unknown" };
 }
 
-async function ensureHost(slot: WindowsSeatSlot, session: number): Promise<Exclude<HostBootstrap<WindowsHostRecord>, { state: "unknown" }>> {
+async function ensureHost(slot: WindowsSeatSlot, session: number): Promise<HostBootstrap<WindowsHostRecord>> {
   try {
     const request = withWindowsSeatStoreFence(slot, () => withWindowsCustodyLock(join(slot.root, "start.lock"), () => requestBootstrap(slot, session)));
     if (request.state !== "unknown") return request;
   } catch { /* A failed registration or native observation may be indeterminate. */ }
-  for (;;) {
+  const deadline = Date.now() + PROOF_WAIT_MS;
+  do {
     const state = observeBootstrap(slot, session);
     if (state.state !== "unknown") return state;
     await delay(250);
-  }
+  } while (Date.now() < deadline);
+  return { state: "unknown" };
 }
 
 function controllerFor(slot: WindowsSeatSlot, host: WindowsHostRecord): SharedController {
@@ -142,34 +145,40 @@ type WindowsLaunch = { state: "ready"; handle: WindowsSharedHandle } | { state: 
 const ineligible = { state: "ineligible" } as const;
 
 /** Only a known pre-dispatch refusal permits legacy fallback. An unresolved admission stays held. */
-export async function launchManagedWindowsSeat(installation: string, space: string, opts: Pick<LaunchSeatOpts, "name" | "spec" | "cwd" | "id">): Promise<WindowsLaunch> {
+export async function launchManagedWindowsSeat(installation: string, space: string, opts: Pick<LaunchSeatOpts, "name" | "spec" | "cwd" | "id">, holdInstallation: () => () => void): Promise<WindowsLaunch> {
   if (process.platform !== "win32") return ineligible;
   const self = windowsWriterProof.current();
   if (!self || self.session <= 0) return ineligible;
-  while (inspectWindowsAliasHold(installation, space, opts.name) !== "clear") await delay(250);
+  if (inspectWindowsAliasHold(installation, space, opts.name) !== "clear") throw new Error("Windows PTY alias custody is held or unknown");
   let slot: WindowsSeatSlot;
   try {
     const runtime = retainWindowsSeatRuntime(installation);
     slot = windowsSeatSlot(installation, space, runtime.key);
     prepareWindowsSeatSlot(slot);
   } catch { return ineligible; }
-  while (!publishWindowsControllerClaim(slot, slot.generation)) await delay(250);
+  if (!publishWindowsControllerClaim(slot, slot.generation)) throw new Error("Windows PTY controller custody is unknown");
   let active = opening.get(slot.root);
   if (!active) {
     active = ensureHost(slot, self.session).finally(() => opening.delete(slot.root));
     opening.set(slot.root, active);
   }
   const bootstrap = await active;
-  if (bootstrap.state !== "ready") return ineligible;
+  if (bootstrap.state === "ineligible") return ineligible;
+  if (bootstrap.state === "unknown") throw new Error("Windows PTY task startup could not be confirmed");
   const host = bootstrap.host, id = opts.id ?? seatId(), controller = controllerFor(slot, host);
+  const deadline = Date.now() + PROOF_WAIT_MS;
   for (;;) {
     try { await controller.connect(); break; }
     catch {
       if (windowsWriterProof.observe(host) === "gone") return ineligible;
+      if (Date.now() >= deadline) throw new Error("Windows PTY host authentication could not be confirmed");
       await delay(250);
     }
   }
-  const reserved = withWindowsSeatStoreFence(slot, () => reserveWindowsAliasHold(slot, opts.name, host, id));
+  const releaseInstallation = holdInstallation();
+  let reserved: WindowsAliasHold | undefined;
+  try { reserved = withWindowsSeatStoreFence(slot, () => reserveWindowsAliasHold(slot, opts.name, host, id)); }
+  finally { releaseInstallation(); }
   // Reservation publication can have completed even if its confirmation was lost. Do not dispatch
   // or fall back on that path. The existing hold is reconciled from its own evidence.
   if (!reserved) throw new Error("Windows PTY alias custody could not be reserved");

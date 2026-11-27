@@ -107,7 +107,7 @@ export interface ServeOptions {
   readonly stopAllowed?: () => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
   /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
   readonly admit?: () => void;
-  readonly windowsOwned?: () => boolean;
+  readonly windowsOwned?: () => Promise<boolean>;
 }
 
 /** A published endpoint: closing it stops new connections and removes only what it published. */

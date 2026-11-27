@@ -42,7 +42,7 @@ async function sharedInstallEntry(): Promise<string | undefined> {
     const entry = executionIdentity()?.logicalEntry;
     if (!entry || (process.platform !== "win32" && !existsSync(join(dirname(dirname(entry)), "desktop-runtime.json")))) return entry;
     if (!desktopInstall && process.connected) await new Promise<void>(resolve => {
-      const timer = setTimeout(resolve, process.platform === "win32" ? 12_000 : 1_000);
+      const timer = setTimeout(resolve, process.platform === "win32" ? 66_000 : 1_000);
       completeInstall = () => { clearTimeout(timer); resolve(); };
       report({ kind: "machine-pty-install-request" });
     });
