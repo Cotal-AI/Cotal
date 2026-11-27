@@ -1187,6 +1187,21 @@ input and requires both on every `status.connectors` row (§13.7). The closed sc
 reject either.
 Revision 57 adds the optional `machine` to the closed `status` output (§13.9, Manager status
 metadata). The closed status schema of revision 56 rejects it.
+Revision 58 adds the `spawn` input field `modes`, a map of 1 to 32 mode ids to a boolean or a
+non-empty option id. A model row in a `models` catalog MAY carry `isDefault`, `defaultVariant` and
+`modes`, where a mode is `{ id, label, kind: "toggle", default: boolean }` or
+`{ id, label, kind: "choice", options: [{ id, label }], default }`. At most one row is the default,
+and each default MUST name one of its own variants or options. A mode MAY carry `unavailable`, a
+non-empty reason the logged-in account cannot run it; a catalog with an empty reason is unreadable.
+Before anything is minted, the Manager MUST refuse a `spawn` whose `variant` or `modes` the
+connector's catalog does not list for the launched model, or for the default row when the spawn
+names no model. It MUST refuse a `spawn` that turns an unavailable mode on, a toggle set to
+`true` or a choice set to any option but its `default`, and the refusal MUST carry the reason. A
+spawn that sets such a mode off, `false` or the choice's `default`, launches. It MUST also refuse
+`modes` for a connector that does not render them, and for a runtime that starts seats outside its
+host. It checks against the last catalog it
+read and reads one only when it holds none for the harness files it would launch. A resumed seat
+replays its recorded modes, and a connector that no longer renders them refuses the resume.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -8432,6 +8447,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | Date | Revision |
 | --- | --- |
 | 2026-11-26 | **Targeted session evictions run outside the in-order admin chain (Appendix B).** A slow eviction can hold one slot without holding the other targeted requests. A delivery daemon runs at most four `evictSessionConnections` requests at once, alongside other admin commands. The verb's request and reply are unchanged. |
+| 2026-11-25 | **A spawn runs only the variant and modes its model catalog lists (§13.6), breaking.** The Manager cluster advances to revision 58. A variant the catalog does not list was launched and then run at another effort by the harness; it is now refused. `spawn` takes `modes`, a map of mode ids to a toggle's boolean or a choice's option id. A `models` row MAY carry `isDefault`, `defaultVariant` and `modes`. Before anything is minted, the Manager refuses a variant or mode the connector's catalog does not list for the launched model, or for the default row when none is named, and refuses `modes` for a connector that does not render them or a runtime that starts seats elsewhere. A seat's modes are recorded with its launch and replayed on resume. A launch that names no variant and no mode is unchanged. |
 | 2026-11-25 | **The owner labels an agent (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 7 with `set-label`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ label }` of any string and output `{ label }`. It sets `meta["ai.cotal.label"]`, which readers show in place of the name, and leaves `card.name`, so `@mentions`, direct messages and name lookups still resolve it. It refuses as `bad-request`, `not-executed`, a label that breaks the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words. It runs in turn with `set-name`, and a `set-label` before naming settles ends naming with the owner's label. An interactive ledger row's mint and a static `agent-caller` mint add the `owner` row for `set-label`; no `grant` row admits it. Earlier commands and their digests are unchanged. No subject changes. |
 | 2026-11-25 | **The owner switches a running agent's model (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 6 with `set-model`, capability `agent.model.write`, `authorities: ["owner"]`, input `{ model?, variant? }` and output `{ model, variant? }`. It switches the model and the variant the harness runs from its next turn at the latest; an absent `model` keeps the model and changes the variant, and an absent `variant` leaves the variant to the harness. It refuses the agent itself as `permission-denied`, a connector that cannot switch as `unimplemented`, an agent launched under a governed role's model policy as `failed-precondition`, a model the harness lacks as `not-found` and any other harness refusal as `failed-precondition`, each with nothing changed. The card then shows the switch as `meta.model`, `meta.variant` and the new `meta["ai.cotal.model-set"]`, which a launcher that starts the same lifecycle again SHOULD launch on. Presence `agentEndpoint` gains an optional boolean `setModel`, read as false when absent. An `interactive` ledger row gains the `owner` row for `set-model`; no `grant` row admits it. Earlier commands and their digests are unchanged. |
 | 2026-11-24 | **Managers name their machine (§6, §9, §13.9), additive.** The Manager cluster advances to revision 57. Its `status` output gains the optional `machine`, and its presence card's `meta` carries the same value: HMAC-SHA256 keyed by the host's OS machine identity over `cotal manager host`, never the identity itself. A caller on the same machine recognises its own Managers by it, because a host name can change while a Manager runs. The closed status schema of revision 56 rejects the field, so Managers and their callers update together. No subject changes. |

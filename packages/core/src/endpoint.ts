@@ -18,12 +18,11 @@ import {
 } from "./liveness.js";
 import { EndpointPresence, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 export { PresenceWriteStuckError, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
-import { idFromCreds } from "./identity.js";
 import { BIND_SPLIT_REISSUES, resolveService, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./endpoint-subjects.js";
-import { assertGeneration, assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
+import { assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
 import { type EpPrincipalCommandDef } from "./endpoint-serve.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
@@ -35,7 +34,6 @@ import type { RegistryEndpointsInput, RegistryEndpointsOutput } from "./registry
 import { listRegistryEndpoints } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
-import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import {
   JetStreamApiCodes,
@@ -95,7 +93,7 @@ import {
   readChannelDefaults,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
-import { endpointUserInboxId, type EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { newConnectionState, type ConnectionState } from "./endpoint-connection-state.js";
 import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
 import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
@@ -103,7 +101,6 @@ import { newChannelRegistryState, type ChannelRegistryState } from "./endpoint-c
 import { newDeliveryState, type DeliveryState } from "./endpoint-delivery-state.js";
 import type { AnycastStatus } from "./anycast-requests.js";
 import {
-  assertValidRole,
   chatStream,
   controlServiceSubject,
   CONTROL_DELIVERY,
@@ -111,11 +108,7 @@ import {
   dmStream,
   isConcreteChannel,
   MEMBERSHIP_FEED_KEY,
-  principalKey,
   parsePrincipalKey,
-  assertLifecycleToken,
-  mintLifecycleUid,
-  DEV_OWNER,
   spaceWildcard,
   unicastSubject,
   unicastRecvFilter,
@@ -124,11 +117,9 @@ import {
 import { isPermissionDenied } from "./permission-denied.js";
 export { isPermissionDenied };
 import {
-  DEFAULT_SERVER,
   isPublishPermissionDenied,
   isAuthRejection,
   kvWatchConsumer,
-  decodeBearerPrincipal,
   RepeatedRefusal,
   describeStatusError, expiryAwareErrorEvent,
 } from "./endpoint-dial.js";
@@ -144,7 +135,9 @@ export {
   probeConnect,
 } from "./endpoint-dial.js";
 import {
-  DEFAULT_OPEN_DM_INACTIVE_MS, type PrincipalServeIntent,
+  resolveEndpointPrincipal,
+  resolveEndpointSettings,
+  type PrincipalServeIntent,
   type EndpointOptions,
   type TransportState,
   type ChannelMember,
@@ -282,161 +275,13 @@ export class CotalEndpoint extends EventEmitter {
   constructor(opts: EndpointOptions) {
     super();
     this.on("transport", (state: TransportState) => { this.conn.nativeBound = state.connected; });
-    /** Did the dev/static branch fall through to a random connId? Set on every path that assigns
-     *  `connId` so the ephemeral verdict below can never read an unassigned value. */
-    let selfMintedConnId = false;
-    this.identity.space = opts.space;
-    this.identity.omitFromLiveMembership = opts.omitFromLiveMembership === true;
-    // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
-    // (the future owner/name separator) and surrounding whitespace at the one identity choke
-    // point every join/spawn path flows through. A role is an address too, refused here before
-    // presence can advertise it.
-    assertValidName(opts.card.name);
-    assertValidKind(opts.card.kind);
-    if (opts.card.role !== undefined) assertValidRole(opts.card.role);
-    // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
-    if (opts.bearer) {
-      if (opts.creds || opts.token || opts.user || opts.pass)
-        throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
-      if (!opts.sentinelCreds)
-        throw new Error("user-mode bearer requires sentinelCreds (the shared auth-account creds presented alongside it)");
-    }
-    if (opts.bearer) {
-      // USER MODE. The owner+actor PRINCIPAL comes from the bearer (server-authored: owner is callout-
-      // derived, actor is the spawn-ledger actor) — never from the card. The connection nkey is minted
-      // per-connect by NATS and is unknown to the client pre-connect, so the client cannot key its inbox
-      // on it; the client builds the connId from the bearer's principal and a random nonce.
-      // It sends that as the connect `name`. `card.id`, if given, must match the bearer.
-      this.identity.userMode = true;
-      if (typeof opts.bearer === "function") {
-        // Bearer SOURCE: no token exists yet, so the principal must be declared up front; every
-        // fetched bearer is checked against it (refreshBearer), keeping the card honest for life.
-        if (!opts.card.owner || !opts.card.actor)
-          throw new Error("a bearer source requires explicit card.owner + card.actor (no bearer to derive them from at construction)");
-        this.identity.owner = opts.card.owner;
-        this.identity.actor = opts.card.actor;
-        this.identity.bearerSource = opts.bearer;
-      } else {
-        const claims = decodeBearerPrincipal(opts.bearer);
-        if (opts.card.owner && opts.card.owner !== claims.owner)
-          throw new Error(`card.owner ${opts.card.owner} != bearer owner ${claims.owner}`);
-        if (opts.card.actor && opts.card.actor !== claims.actor)
-          throw new Error(`card.actor ${opts.card.actor} != bearer actor ${claims.actor}`);
-        this.identity.owner = claims.owner;
-        this.identity.actor = claims.actor;
-        this.cred.currentBearer = opts.bearer;
-      }
-      this.identity.connId = endpointUserInboxId(this.identity.owner, this.identity.actor, this.identity.omitFromLiveMembership);
-      this.identity.sentinelCreds = opts.sentinelCreds;
-      // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
-      // them), never self-minted. Only the inbox nonce is ephemeral.
-      this.identity.actorIsEphemeral = false;
-    } else {
-      // DEV / STATIC. Connection identity precedence: an explicit card.id, else the creds' identity, else
-      // a random (dash-free, valid-actor-token) id. When both an id and creds are given they MUST name the
-      // same nkey — else the connection would authenticate as one user while its grants name another. The
-      // owner+actor PRINCIPAL defaults to owner = DEV_OWNER ("local"), actor = the connection id.
-      if (typeof opts.creds === "function") {
-        // Creds SOURCE (standing renewal): no cred exists yet, so the identity must be declared up
-        // front; every fetched cred is checked against it (refreshCreds), so a renewal can never
-        // silently swap the connection's nkey.
-        if (!opts.card.id)
-          throw new Error("a creds source requires an explicit card.id (no cred to derive the identity from at construction)");
-        this.identity.credsSource = opts.creds;
-        this.identity.connId = opts.card.id;
-        selfMintedConnId = false;
-      } else {
-        const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
-        if (opts.card.id && credId && opts.card.id !== credId)
-          throw new Error(`card.id ${opts.card.id} != creds identity ${credId} - they must be the same nkey`);
-        this.cred.currentCreds = opts.creds;
-        selfMintedConnId = opts.card.id === undefined && credId === undefined;
-        this.identity.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
-      }
-      this.identity.owner = opts.card.owner ?? DEV_OWNER;
-      this.identity.actor = opts.card.actor ?? this.identity.connId;
-      // The actor is EPHEMERAL only when it inherited a self-minted connId — a declared `card.actor`
-      // is stable even on an otherwise identity-less connection. Recorded here, at the one site the
-      // fallback fires, so no caller has to re-derive the precedence rule from the outside.
-      this.identity.actorIsEphemeral = opts.card.actor === undefined && selfMintedConnId;
-    }
-    // The incarnation's lifecycle UID (SPEC §13.1). AUTH mode (JWT creds/bearer) REQUIRES the
-    // launcher to supply it — the dm/dlv/chathist durable names must match the exact names the
-    // provisioner minted into the credential, so a self-minted uid would name a durable the cred
-    // cannot bind; absent, `requireLifecycleUid` fails loud at the first consuming path. OPEN/token
-    // mode is self-identifying (one process is one lifecycle, no provisioner, no ledger, no
-    // same-alias respawn), so it mints its OWN uid here exactly as it self-assigns `connId`/`actor`
-    // — NOT an alias fallback (a fresh CSPRNG uid), just the open-mode identity source.
-    this.identity.ownLifecycleUid =
-      opts.lifecycleUid !== undefined
-        ? assertLifecycleToken(opts.lifecycleUid)
-        : this.authed
-          ? undefined
-          : mintLifecycleUid();
-    if (opts.backfillFloor !== undefined) {
-      if (!Number.isInteger(opts.backfillFloor) || opts.backfillFloor < 0)
-        throw new Error(`EndpointOptions.backfillFloor must be a non-negative integer stream sequence, got ${opts.backfillFloor}`);
-      this.identity.backfillFloor = opts.backfillFloor;
-    }
-    if (opts.acceptedToken !== undefined) {
-      if (!opts.creds) throw new Error("EndpointOptions.acceptedToken names a static issuance and needs creds beside it (SPEC 13.15)");
-      this.identity.acceptedToken = assertGeneration(opts.acceptedToken, "acceptedToken");
-    }
-    // `card.id` is the principal DOT-FORM `<owner>.<actor>` — the wire identity every `from.id` carries;
-    // principalKey validates both tokens.
-    const principal = principalKey(this.identity.owner, this.identity.actor);
-    this.identity.card = { ...opts.card, id: principal.key, owner: this.identity.owner, actor: this.identity.actor };
+    resolveEndpointPrincipal(opts, this.identity, this.cred);
     this.presence.configureEnvironment(
       (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined);
-    this.identity.servers = opts.servers ?? DEFAULT_SERVER;
-    this.identity.token = opts.token;
-    this.identity.user = opts.user;
-    this.identity.pass = opts.pass;
-    this.identity.tls = opts.tls ?? false;
-    for (const [label, value] of [["transportPingIntervalMs", opts.transportPingIntervalMs], ["transportMaxPingOut", opts.transportMaxPingOut], ["transportConnectTimeoutMs", opts.transportConnectTimeoutMs]] as const) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
-        throw new Error(`EndpointOptions.${label} must be a positive safe integer`);
-    }
-    if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
-      throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
-    this.identity.onConnection = opts.onConnection;
-    this.identity.overlapOnConnectionRenewal = opts.overlapOnConnectionRenewal === true;
-    this.identity.beforeBind = opts.beforeBind;
-    this.identity.transportPingIntervalMs = opts.transportPingIntervalMs ?? 10_000;
-    this.identity.transportMaxPingOut = opts.transportMaxPingOut ?? 2;
-    this.identity.transportConnectTimeoutMs = opts.transportConnectTimeoutMs;
-    // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
-    this.identity.channels = opts.channels ?? [];
-    this.identity.allowSubscribe = opts.allowSubscribe;
-    this.identity.heartbeatMs = opts.heartbeatMs ?? 2000;
-    this.identity.ttlMs = opts.ttlMs ?? 6000;
-    this.identity.doRegister = opts.registerPresence ?? true;
-    this.identity.doWatch = opts.watchPresence ?? true;
-    this.identity.doWatchChannels = opts.watchChannels ?? true;
-    this.identity.doConsume = opts.consume ?? true;
-    this.identity.readOnce = opts.readOnce ?? false;
-    if (this.identity.readOnce && (this.identity.doConsume || this.identity.doRegister))
-      throw new Error("EndpointOptions.readOnce requires consume and registerPresence false: a one-time read cannot keep a consumer's channel cache or its own presence current");
-    if (opts.dmOnly !== undefined) {
-      if (typeof opts.dmOnly.handler !== "function")
-        throw new Error("EndpointOptions.dmOnly.handler must be a function");
-      const settle = opts.dmOnly.settleTimeoutMs;
-      if (settle !== undefined && (!Number.isSafeInteger(settle) || settle <= 0))
-        throw new Error("EndpointOptions.dmOnly.settleTimeoutMs must be a positive safe integer");
-      if (!this.authed)
-        throw new Error("EndpointOptions.dmOnly requires creds or a bearer: it binds a provisioned durable and never creates one");
-      if (!this.identity.doConsume || this.identity.doRegister || this.identity.doWatch || this.identity.doWatchChannels || this.identity.readOnce)
-        throw new Error("EndpointOptions.dmOnly requires consume true and registerPresence, watchPresence, watchChannels and readOnce false");
-      if (this.identity.channels.length || opts.card.role || opts.acceptedToken !== undefined)
-        throw new Error("EndpointOptions.dmOnly takes no channels, role or acceptedToken: the endpoint reads only its own DM durable");
-      this.requireLifecycleUid("EndpointOptions.dmOnly");
-      this.identity.dmOnly = opts.dmOnly;
-    }
+    resolveEndpointSettings(opts, this.identity, this.cred);
     // Seed the presence mirror so file-default channel modes are visible from the first publish
     // (not only after the first runtime toggle). Mirror only — delivery reads the connector's state.
     this.presence.seedChannelModes(opts.channelModes);
-    this.identity.ackWaitMs = opts.ackWaitMs ?? 60_000;
-    this.identity.inactiveThresholdMs = opts.inactiveThresholdMs ?? DEFAULT_OPEN_DM_INACTIVE_MS;
     this.card = this.identity.card;
     this.space = this.identity.space;
     this.channels = this.identity.channels;
