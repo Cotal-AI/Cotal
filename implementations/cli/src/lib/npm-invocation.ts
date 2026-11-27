@@ -136,10 +136,11 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   } else file = resolveOnPath("npm", windows ? env : lookup);
   // An absolute Node invocation often leaves that Node's directory off PATH. npm installed
   // beside it is the same npm a PATH that included the directory would have selected.
+  // Windows keeps the PATH search. A sibling there is not selected.
   const runtimeBin = dirname(process.execPath);
-  if (!file && !directories.includes(runtimeBin) && !runtimeBin.includes(delimiter)) {
-    file = inDirectory(runtimeBin, "npm");
-    if (file) directories.push(runtimeBin);
+  if (!windows && !file && !directories.includes(runtimeBin) && !runtimeBin.includes(delimiter)) {
+    const sibling = inDirectory(runtimeBin, "npm");
+    if (sibling && npmEngine(sibling)) file = sibling;
   }
   if (!file) return { file: "npm", args, env, cwd };
   const engine = npmEngine(file);
