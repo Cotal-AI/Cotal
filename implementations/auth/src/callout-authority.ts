@@ -18,13 +18,13 @@ import { chatAwareAclResolver, type ChatSessionAuthority } from "./chat-session-
 import { authorizeConnectCredential, type ConnectReader } from "./connect-reader.js";
 import type { ConnectLimiter } from "./connect-limit.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
+import { findActorUnified, ledgerAclResolver, ledgerAuthorizeConnect } from "./ledger.js";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { recordSessionConnection } from "./session-connections.js";
 import { makeNativeIssuanceRecorder, type NativeIssuanceRecorder } from "./native-issuance.js";
 import type { NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
-import { effectiveEndpointCaller } from "./service-caller-effective.js";
+import { effectiveEndpointCaller, type VerifyAgentLink } from "./service-caller-effective.js";
 import { verifySessionRedemption } from "./session-redemption.js";
 import type { ServiceKeys } from "./store.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
@@ -105,7 +105,7 @@ export interface CalloutAuthority {
   ) => Promise<UserTokenSession>;
 }
 
-interface CalloutAuthorityDeps {
+interface CalloutAuthorityBaseDeps {
   space: string;
   /** The issuer session this process holds for user-caller issuance. Its owner closes it. */
   issuer: HeldIssuerSession;
@@ -126,14 +126,38 @@ interface CalloutAuthorityDeps {
   refuse: () => void;
 }
 
+/** Only trusted isolated composition installs both linked-lifecycle checks. */
+type CalloutAuthorityDeps = CalloutAuthorityBaseDeps & (
+  | { verifyAgentLink?: never; assertNoLinkedLifecycle?: never }
+  | { verifyAgentLink: VerifyAgentLink; assertNoLinkedLifecycle: (registry: LifecycleRegistry, lifecycleUid: string) => Promise<void> }
+);
+
+function connectAgentLink(dir: string, t: ValidatedUserToken, verify: VerifyAgentLink | undefined) {
+  const row = findActorUnified(dir, t.owner, t.act.actor);
+  const agentUid = t.act.agentUid;
+  if (agentUid === undefined && row?.agentUid === undefined && row?.linkOperationId === undefined) return undefined;
+  if (!verify || !agentUid || !t.credentialId || t.act.view !== undefined || row?.kind !== "managed-agent"
+    || row.agentUid !== agentUid || !row.linkOperationId || row.lifecycleUid !== t.act.lifecycleUid)
+    throw new EpEnvelopeError("permission-denied", "agent link claim does not match an enabled current linked run");
+  return { verify, agentUid, linkOperationId: row.linkOperationId, credentialId: t.credentialId };
+}
+
 export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
   const { space, issuer, dir, dataAccount, registry, chat, gate, refuse } = deps;
   const fileArm = ledgerAuthorizeConnect(dir);
   // A chat principal (its alias is in the chat row space) is checked by the chat arm: its active
   // row, its parent pin and its holder index. Every other principal by the grant-file arm.
   const connectArm = async (t: ValidatedUserToken): Promise<void> => {
-    if (chat.isChatPrincipal(t.owner, t.act.actor)) await chat.authorizeConnect(t);
-    else fileArm(t);
+    if (chat.isChatPrincipal(t.owner, t.act.actor)) {
+      if (t.act.agentUid !== undefined) throw new EpEnvelopeError("permission-denied", "chat bearer cannot carry an agent link");
+      await chat.authorizeConnect(t);
+      return;
+    }
+    fileArm(t);
+    const link = connectAgentLink(dir, t, deps.verifyAgentLink);
+    if (link) await link.verify(registry, { owner: t.owner, actor: t.act.actor, lifecycleUid: t.act.lifecycleUid!,
+      agentUid: link.agentUid, linkOperationId: link.linkOperationId, credentialId: link.credentialId }, dataAccount.pub);
+    else await deps.assertNoLinkedLifecycle?.(registry, t.act.lifecycleUid!);
   };
   // The callout's issuance evidence: create-only natkey row, then the connect authority re-read
   // in the same stream before the minted JWT may leave. For a chat session this re-read is the
@@ -160,7 +184,8 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
       // endpoint capability, and the chat arm above is its connect authority.
       if (chat.isChatPrincipal(t.owner, t.act.actor)) return { capabilities: [] };
       const grantee = { owner: t.owner, actor: t.act.actor, lifecycleUid: assertLifecycleToken(t.act.lifecycleUid ?? "", "caller lifecycleUid") };
-      const effective = await effectiveEndpointCaller(registry, dataAccount.pub, dir, grantee);
+      const read = () => effectiveEndpointCaller(registry, dataAccount.pub, dir, grantee, connectAgentLink(dir, t, deps.verifyAgentLink));
+      const effective = await read();
       const checkCallerPayload = deps.checkCallerPayload;
       if (effective.capabilities.length && !checkCallerPayload)
         throw new EpEnvelopeError("failed-precondition", "endpoint caller rights require actual host payload bootstrap");
@@ -170,7 +195,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
         refuse();
         if (effective.capabilities.length) await checkCallerPayload!();
         refuse();
-        const current = await effectiveEndpointCaller(registry, dataAccount.pub, dir, grantee);
+        const current = await read();
         if (canonicalJson(current) !== image) throw new EpEnvelopeError("permission-denied", "endpoint caller authority changed before release");
       } };
     },

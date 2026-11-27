@@ -36,9 +36,12 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   acquireLock,
+  agentIdentityKey,
   assertDerivedOwnerToken,
+  assertLifecycleToken,
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
@@ -58,12 +61,13 @@ import {
 import { grantCommandLine } from "./grant-command.js";
 import { chatSessionAliasPresent } from "./chat-session-row.js";
 import type { ActorGrant } from "./idp.js";
-import type { ValidatedUserToken } from "./token.js";
+import { LINKED_USER_TOKEN_VER, USER_TOKEN_VER, type ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
 
 const ACTORS_DIR = "actors";
 const MANAGED_DIR = "managed-actors";
 const LEDGER_VER = 1;
+const LINKED_LEDGER_VER = 2;
 
 /** The two row spaces. The KIND is the directory — never a field a partial write could flip. */
 export type ActorKind = "interactive" | "managed-agent";
@@ -116,6 +120,9 @@ export interface ActorRow {
    *  next mint can never name the successor's broker resources. Absent on legacy/interactive rows:
    *  the callout refuses to mint agent creds without one (the v0.4 hard cut). */
   lifecycleUid?: string;
+  /** Stable identity and operation of a linked managed grant. Both are required in version 2. */
+  agentUid?: string;
+  linkOperationId?: string;
   /** Who holds this managed lifecycle, recorded by the writer that granted it: a manager on this
    *  host attesting its own logical instance id, the auth service enrolling for an authenticated
    *  remote manager, or a foreground spawn with no manager. REQUIRED on every managed row written
@@ -129,6 +136,19 @@ export interface ActorRow {
 
 interface RowFile extends ActorRow {
   ver: number;
+}
+
+function assertUnlinkedRow(row: ActorRow | Omit<ActorRow, "grantedAt"> | undefined): void {
+  if (row?.agentUid !== undefined || row?.linkOperationId !== undefined)
+    throw new Error("linked actor grant requires the exact linked mutation path");
+}
+
+function assertLinkedCoordinates(row: Pick<ActorRow, "agentUid" | "linkOperationId" | "lifecycleUid">): void {
+  if (typeof row.agentUid !== "string" || typeof row.lifecycleUid !== "string"
+    || typeof row.linkOperationId !== "string" || !/^[0-9a-f]{32}$/.test(row.linkOperationId))
+    throw new Error("linked actor grant requires agentUid, lifecycleUid and a valid linkOperationId");
+  agentIdentityKey(row.agentUid);
+  assertLifecycleToken(row.lifecycleUid);
 }
 
 function spaceDir(dir: string, kind: ActorKind): string {
@@ -169,8 +189,15 @@ function readRow(path: string, kind: ActorKind): ActorRow {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
-  if (parsed === null || typeof parsed !== "object" || parsed.ver !== LEDGER_VER)
-    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
+  if (parsed === null || typeof parsed !== "object" || (parsed.ver !== LEDGER_VER && parsed.ver !== LINKED_LEDGER_VER))
+    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} - refusing to guess at an authorization row`);
+  if (parsed.ver === LINKED_LEDGER_VER) {
+    if (kind !== "managed-agent" || parsed.custody === undefined)
+      throw new Error(`${path}: linked actor grants require the managed row space and custody`);
+    assertLinkedCoordinates(parsed);
+  } else {
+    assertUnlinkedRow(parsed);
+  }
   assertDerivedOwnerToken(parsed.owner);
   if (parsed.eventPayloads !== undefined && parsed.eventPayloads !== false)
     throw new Error(`${path}: eventPayloads restriction must be false`);
@@ -264,7 +291,8 @@ function writeRow(dir: string, kind: ActorKind, row: ActorRow): void {
   mkSecretDir(dir);
   mkSecretDir(spaceDir(dir, kind));
   const tmp = `${path}.${process.pid}.tmp`;
-  writeSecretFile(tmp, JSON.stringify({ ver: LEDGER_VER, ...row } satisfies RowFile, null, 2));
+  const ver = row.agentUid === undefined ? LEDGER_VER : LINKED_LEDGER_VER;
+  writeSecretFile(tmp, JSON.stringify({ ...row, ver } satisfies RowFile, null, 2));
   renameSync(tmp, path);
 }
 
@@ -319,6 +347,7 @@ export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): Actor
 }
 
 function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
+  assertUnlinkedRow(row);
   assertRowInputs(row);
   assertNotChatAlias(dir, row.owner, row.actor, "grantActor");
   if (row.tokenHash !== undefined)
@@ -488,6 +517,8 @@ function widenGrantCommand(
 
 /** The managed-row input: every grant field plus the REQUIRED secret hash and custody. */
 type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody"> & { tokenHash: string; custody: ManagedGrantCustody };
+type LinkedGrantInput = ManagedGrantInput & { lifecycleUid: string; agentUid: string; linkOperationId: string };
+type LinkedGrantIdentity = Pick<LinkedGrantInput, "owner" | "actor" | "lifecycleUid" | "agentUid" | "linkOperationId" | "tokenHash">;
 
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
  *  with the secret hash and custody REQUIRED — and never shadowing an interactive row. Takes the
@@ -497,10 +528,17 @@ export function grantManagedActor(dir: string, row: ManagedGrantInput): ActorRow
   return withManagedGrantTransaction(dir, (tx) => tx.grantManaged(row));
 }
 
-function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
+/** Create a linked row, or return the unchanged row on an exact retry. Never replace a grant. */
+export function grantLinkedActor(dir: string, row: LinkedGrantInput): ActorRow {
+  return withManagedGrantTransaction(dir, (tx) => tx.grantLinked(row));
+}
+
+function rawGrantManaged(dir: string, row: ManagedGrantInput, linked = false): ActorRow {
+  if (linked) assertLinkedCoordinates(row);
+  else assertUnlinkedRow(row);
   assertRowInputs(row);
   assertNotChatAlias(dir, row.owner, row.actor, "grantManagedActor");
-  if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
+  if (typeof row.tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(row.tokenHash))
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
   // Custody is checked at runtime as well as by type: an untyped caller must not write a managed
   // row that cannot say who holds its lifecycle.
@@ -514,7 +552,15 @@ function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
   // name a lifecycle nobody runs. Only the interactive grantActor mints its own.
   if (row.lifecycleUid === undefined || row.lifecycleUid === "")
     throw new Error("grantManagedActor: a managed grant must carry the lifecycle uid the spawn path provisioned under; the ledger never mints one");
-  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid, custody: row.custody, grantedAt: new Date().toISOString() };
+  const existing = findIn(dir, "managed-agent", row.owner, row.actor);
+  if (!linked) assertUnlinkedRow(existing);
+  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid, custody: row.custody, grantedAt: linked && existing ? existing.grantedAt : new Date().toISOString() };
+  if (linked && existing) {
+    // Compare the persisted form so absent optional fields and explicit undefined are equivalent.
+    if (!isDeepStrictEqual(existing, JSON.parse(JSON.stringify(full))))
+      throw new Error(`actor "${row.actor}" already has a different managed grant`);
+    return existing;
+  }
   writeRow(dir, "managed-agent", full);
   // Symmetric post-write compensation (see grantActor) — at most one surviving row per principal.
   if (findIn(dir, "interactive", row.owner, row.actor)) {
@@ -535,6 +581,24 @@ export function revokeManagedActor(dir: string, owner: string, actor: string): b
   return withManagedGrantTransaction(dir, (tx) => tx.revokeManaged(owner, actor));
 }
 
+/** Retire only the named linked grant. A foreign row is an error, not evidence of retirement. */
+export function revokeLinkedActor(dir: string, expected: LinkedGrantIdentity): boolean {
+  return withManagedGrantTransaction(dir, (tx) => tx.revokeLinked(expected));
+}
+
+function rawRevokeLinked(dir: string, expected: LinkedGrantIdentity): boolean {
+  assertLinkedCoordinates(expected);
+  if (typeof expected.tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(expected.tokenHash))
+    throw new Error("revokeLinkedActor: tokenHash must be a sha256 hex digest");
+  const { owner, actor, lifecycleUid, agentUid, linkOperationId, tokenHash } = expected;
+  const row = findActorUnified(dir, owner, actor);
+  if (!row) return false;
+  if (row.kind !== "managed-agent" || row.lifecycleUid !== lifecycleUid || row.agentUid !== agentUid
+    || row.linkOperationId !== linkOperationId || row.tokenHash !== tokenHash)
+    throw new Error(`actor "${actor}" does not match the exact linked grant`);
+  return revokeIn(dir, "managed-agent", owner, actor);
+}
+
 /** The outcome of a custody-pinned revoke. Only `revoked` removed a row. */
 type ManagedRevokeIfResult = "revoked" | "absent" | "superseded" | "custody-mismatch";
 
@@ -546,13 +610,16 @@ export function revokeManagedActorIf(dir: string, owner: string, actor: string, 
 }
 
 function rawRevokeManagedAt(dir: string, owner: string, actor: string, lifecycleUid: string): boolean {
-  if (findIn(dir, "managed-agent", owner, actor)?.lifecycleUid !== lifecycleUid) return false;
+  const row = findIn(dir, "managed-agent", owner, actor);
+  assertUnlinkedRow(row);
+  if (row?.lifecycleUid !== lifecycleUid) return false;
   return revokeIn(dir, "managed-agent", owner, actor);
 }
 
 function rawRevokeManagedIf(dir: string, owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }): ManagedRevokeIfResult {
   assertManagedGrantCustody(expected.custody);
   const row = findIn(dir, "managed-agent", owner, actor);
+  assertUnlinkedRow(row);
   if (row === undefined) return "absent";
   if (row.lifecycleUid !== expected.lifecycleUid) return "superseded";
   if (row.custody === undefined || !sameManagedGrantCustody(row.custody, expected.custody)) return "custody-mismatch";
@@ -580,6 +647,7 @@ export interface ManagedGrantTransaction {
    *  {@link findActorUnified}. */
   read(owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined;
   grantManaged(row: ManagedGrantInput): ActorRow;
+  grantLinked(row: LinkedGrantInput): ActorRow;
   grantInteractive(row: Omit<ActorRow, "grantedAt">): ActorRow;
   /** Set an interactive row's display label and keep every other field, its lifecycle UID and grant
    *  time included. The label is outside the authorization digest, so a bearer issued under the row
@@ -587,6 +655,7 @@ export interface ManagedGrantTransaction {
   relabelInteractive(owner: string, actor: string, label: string): ActorRow | undefined;
   revokeInteractive(owner: string, actor: string): boolean;
   revokeManaged(owner: string, actor: string): boolean;
+  revokeLinked(expected: LinkedGrantIdentity): boolean;
   revokeManagedAt(owner: string, actor: string, lifecycleUid: string): boolean;
   revokeManagedIf(owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }): ManagedRevokeIfResult;
 }
@@ -624,6 +693,7 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
   const tx: ManagedGrantTransaction = Object.freeze({
     read: live((owner: string, actor: string) => findActorUnified(dir, owner, actor)),
     grantManaged: live((row: ManagedGrantInput) => rawGrantManaged(dir, row)),
+    grantLinked: live((row: LinkedGrantInput) => rawGrantManaged(dir, row, true)),
     grantInteractive: live((row: Omit<ActorRow, "grantedAt">) => rawGrantInteractive(dir, row)),
     relabelInteractive: live((owner: string, actor: string, label: string) => {
       const row = findIn(dir, "interactive", owner, actor);
@@ -633,7 +703,11 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
       return relabeled;
     }),
     revokeInteractive: live((owner: string, actor: string) => revokeIn(dir, "interactive", owner, actor)),
-    revokeManaged: live((owner: string, actor: string) => revokeIn(dir, "managed-agent", owner, actor)),
+    revokeManaged: live((owner: string, actor: string) => {
+      assertUnlinkedRow(findIn(dir, "managed-agent", owner, actor));
+      return revokeIn(dir, "managed-agent", owner, actor);
+    }),
+    revokeLinked: live((expected: LinkedGrantIdentity) => rawRevokeLinked(dir, expected)),
     revokeManagedAt: live((owner: string, actor: string, lifecycleUid: string) => rawRevokeManagedAt(dir, owner, actor, lifecycleUid)),
     revokeManagedIf: live((owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }) => rawRevokeManagedIf(dir, owner, actor, expected)),
   });
@@ -718,6 +792,9 @@ export function ledgerAuthorizeConnect(dir: string): (t: ValidatedUserToken) => 
       throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
     if (t.act.lifecycleUid !== row.lifecycleUid)
       throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - the alias was respawned; re-exchange for a fresh bearer`);
+    const expectedVersion = row.agentUid === undefined ? USER_TOKEN_VER : LINKED_USER_TOKEN_VER;
+    if (t.ver !== expectedVersion || t.act.agentUid !== row.agentUid)
+      throw new Error("bearer does not match the actor's current identity binding");
   };
 }
 
@@ -826,6 +903,8 @@ export function ledgerAuthorizeAgentExchange(
   role?: string;
   parent?: string;
   lifecycleUid?: string;
+  agentUid?: string;
+  linkOperationId?: string;
 } {
   const deny = () =>
     new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
@@ -856,5 +935,6 @@ export function ledgerAuthorizeAgentExchange(
     ...(row.role ? { role: row.role } : {}),
     ...(row.parent ? { parent: row.parent } : {}),
     ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),
+    ...(row.agentUid !== undefined ? { agentUid: row.agentUid, linkOperationId: row.linkOperationId } : {}),
   };
 }

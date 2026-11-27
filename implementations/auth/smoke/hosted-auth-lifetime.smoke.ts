@@ -8,15 +8,24 @@
  * Run: pnpm smoke:hosted-auth-lifetime   (needs nats-server on PATH)
  */
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
-import { epAuthBucket, mintCreds, newIdentity, setupSpaceStreams, type SecretStore } from "@cotal-ai/core";
+import { epAuthBucket, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, setupSpaceStreams, type SecretStore } from "@cotal-ai/core";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
 import { Kvm } from "@nats-io/kv";
+import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from "jose";
 import { openAuthorityClient, authorityBarrierGrants } from "../src/authority-client.js";
+import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { planeClaimRefusal, startAuthService, type AuthServiceHandle } from "../src/index.js";
+import { findActorUnified } from "../src/ledger.js";
+import { LINK_ENABLE_KEY } from "../src/linked-agent-records.js";
 import { parsePlaneClaimRow, PLANE_CLAIM_KEY } from "../src/plane-claim.js";
+import { ensurePinnedIdp, loadOwnerSecret } from "../src/store.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { startDeliveryService } from "../../delivery/src/index.js";
 
 const fx = await startHostedAuthFixture("hosted-auth");
 const handles: AuthServiceHandle[] = [];
@@ -120,3 +129,146 @@ await import("./hosted-auth-start-close.smoke.js");
 await import("./auth-public-closure.smoke.js");
 await import("./plane-claim-public.smoke.js");
 await import("./account-liveness-public.smoke.js");
+
+const LINK_GRANT = "/managed-lifecycle/linked-grant";
+const MANAGED_RETIRE = "/managed-lifecycle/retire";
+const LINK_AUD = "fixture-linked-approval";
+
+async function startLinkedProofFixture() {
+  const { privateKey, publicKey } = await generateKeyPair("EdDSA");
+  const jwk = { ...await exportJWK(publicKey), kid: "owner-proof" };
+  const jwks = createServer((req, res) => {
+    if (req.url !== "/api/auth/jwks") {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: [jwk] }));
+  });
+  await new Promise<void>(resolve => jwks.listen(0, "127.0.0.1", resolve));
+  const address = jwks.address();
+  assert.ok(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
+  return {
+    origin,
+    sign: (sub: string, aud = origin, claims: JWTPayload = {}) => new SignJWT(claims)
+      .setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setSubject(sub).setAudience(aud)
+      .setIssuedAt().setExpirationTime("2m").setJti(randomUUID()).sign(privateKey),
+    close: () => new Promise<void>((resolve, reject) => jwks.close(error => error ? reject(error) : resolve())),
+  };
+}
+
+async function linkedForegroundSmoke() {
+  const fixture = await startHostedAuthFixture("linked-foreground", 1);
+  let proof: Awaited<ReturnType<typeof startLinkedProofFixture>> | undefined;
+  let host: AuthServiceHandle | undefined;
+  let delivery: Awaited<ReturnType<typeof startDeliveryService>> | undefined;
+  let admin: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+  try {
+    const idp = proof = await startLinkedProofFixture();
+    const a = fixture.accounts[0]!;
+    const { space, accountPublicKey: account } = a;
+    const stateDir = join(fixture.dir, "linked-state");
+    mkdirSync(stateDir);
+    ensurePinnedIdp(stateDir, `${idp.origin}/api/auth`);
+    const secret = await loadOwnerSecret(a.store, space);
+    assert.ok(secret);
+    const owner = deriveOwnerForIdpSubject(secret, idp.origin, "human");
+    const inputs = { context: { accountPublicKey: account, lifecycleUid: mintLifecycleUid() }, space,
+      servers: fixture.servers, store: a.store, storeIdentity: a.store.identity, stateDir };
+    const start = (enabled: boolean) => startAuthService({ ...inputs, ...(enabled ? { linkedForeground: { approvalAudience: LINK_AUD } } : {}) });
+    await setupSpaceStreams({ servers: fixture.servers, space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
+    const composition = { injected: true as const };
+    await a.store.put(deliveryCredsKey(space, composition), await mintCreds(a.auth, newIdentity(), "delivery"));
+    await a.store.put(membershipRwCredsKey(space, composition), await mintCreds(a.auth, newIdentity(), "membership-rw"));
+    await a.store.put(membershipObserverCredsKey(space, composition), await mintMembershipObserverCreds(a.auth, newIdentity()));
+    await a.store.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(a.auth, newIdentity()));
+    const post = async (path: string, body: unknown, token = host!.cap) => {
+      const r = await fetch(`${host!.url}${path}`, { method: "POST", headers: {
+        "content-type": "application/json", authorization: `Bearer ${token}`,
+      }, body: JSON.stringify(body) });
+      return { status: r.status, body: await r.json() as Record<string, unknown> };
+    };
+    const request = async (actor: string, selection: { mode: "create" } | { mode: "select"; agentUid: string } = { mode: "create" }) => {
+      const requestId = randomUUID(), scope: string[] = [], allowSubscribe = ["work.ready"], allowPublish: string[] = [];
+      const requestDigest = createHash("sha256").update(JSON.stringify(["cotal/linked-agent-grant/v1", account, space, owner,
+        actor, requestId, selection.mode, selection.mode === "select" ? selection.agentUid : null, scope, allowSubscribe, allowPublish])).digest("hex");
+      const claims = { account, space, owner, actor, requestDigest, purpose: "linked-agent-grant", auth_time: Math.floor(Date.now() / 1000), amr: ["pwd"] };
+      const approval = await idp.sign("human", LINK_AUD, claims);
+      return { body: { actor, requestId, scope, allowSubscribe, allowPublish, agentLink: { ...selection, approval } }, claims };
+    };
+    const signIn = await idp.sign("human");
+    const first = await request("linked_one");
+    host = await start(false);
+    assert.equal((await post(LINK_GRANT, first.body)).body.code, "unavailable", "host capability absent");
+    await host.close();
+    host = await start(true);
+    delivery = await startDeliveryService(inputs);
+    for (let i = 0; i < 50 && (await delivery.readiness()).state !== "ready"; i++) await new Promise(r => setTimeout(r, 200));
+    assert.equal((await delivery.readiness()).state, "ready");
+    assert.ok(!(await post(LINK_GRANT, first.body)).body.actorToken, "private enable row is absent");
+    admin = await openAuthorityClient({ server: fixture.servers, space, dataAccount: { pub: account, signingSeed: a.auth.account.signingSeed! },
+      label: "linked-foreground-smoke", grants: id => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
+    const kv = await new Kvm(admin.nc).open(epAuthBucket(space));
+    const enable = (enabled: boolean) => kv.put(LINK_ENABLE_KEY, new TextEncoder().encode(JSON.stringify({ v: 1, accountPublicKey: account, space, enabled })));
+    await enable(true);
+
+    assert.equal((await post(LINK_GRANT, { ...first.body, owner })).status, 400);
+    assert.equal((await post(LINK_GRANT, { ...first.body, agentLink: { ...first.body.agentLink, approval: signIn } })).status, 403);
+    const stale = await idp.sign("human", LINK_AUD, { ...first.claims, auth_time: first.claims.auth_time - 301 });
+    assert.equal((await post(LINK_GRANT, { ...first.body, agentLink: { ...first.body.agentLink, approval: stale } })).status, 403);
+    assert.equal((await post(LINK_GRANT, { ...first.body, allowSubscribe: ["work.other"] })).status, 403);
+    assert.equal((await post(LINK_GRANT, { ...first.body, scope: ["manager-service"] })).status, 403);
+    assert.equal((await post(LINK_GRANT, { ...first.body, allowPublish: ["work.*"] })).status, 403);
+    assert.equal(findActorUnified(stateDir, owner, first.body.actor), undefined, "refusals left no file grant");
+
+    const pending = await post(LINK_GRANT, first.body);
+    assert.equal(pending.status, 200, String(pending.body.error));
+    assert.deepEqual(Object.keys(pending.body).sort(), ["actor", "actorToken", "agentLink", "lifecycleUid", "owner", "state", "v"]);
+    const { actor, lifecycleUid, actorToken, agentLink } = pending.body;
+    assert.equal(pending.body.v, 1);
+    assert.equal(pending.body.state, "pending");
+    assert.equal(pending.body.owner, owner);
+    assert.equal(actor, first.body.actor);
+    assert.equal(typeof lifecycleUid, "string");
+    assert.equal(typeof actorToken, "string");
+    assert.ok(agentLink && typeof agentLink === "object" && "agentUid" in agentLink);
+    assert.match(String(agentLink.agentUid), /^ag_[a-z2-7]{26}$/);
+    assert.deepEqual(agentLink, { mode: "create", agentUid: agentLink.agentUid });
+    assert.notEqual((await post(LINK_GRANT, first.body)).status, 200, "admitted proof was consumed");
+    const target = { actor, lifecycleUid };
+    assert.equal((await post(MANAGED_RETIRE, target, first.body.agentLink.approval)).status, 401);
+    assert.equal((await post(MANAGED_RETIRE, target, await idp.sign("human", idp.origin, first.claims))).status, 401);
+    assert.equal((await post(MANAGED_RETIRE, { ...target, owner }, signIn)).status, 400);
+    assert.equal((await post(MANAGED_RETIRE, { ...target, actor: "different" }, signIn)).status, 403);
+    assert.equal((await post(MANAGED_RETIRE, target, await idp.sign("different-owner"))).status, 403);
+    await enable(false);
+    const retired = await post(MANAGED_RETIRE, target, signIn);
+    assert.equal(retired.status, 200, String(retired.body.error));
+    assert.equal(retired.body.retired, true, "owner ends exact pending lifecycle while admission is off");
+    assert.equal((await post(MANAGED_RETIRE, target, signIn)).body.alreadyRetired, true);
+
+    await enable(true);
+    const bootRequest = await request("abandoned");
+    const abandoned = await post(LINK_GRANT, bootRequest.body);
+    assert.equal(abandoned.status, 200, String(abandoned.body.error));
+    assert.ok(findActorUnified(stateDir, owner, bootRequest.body.actor), "bootstrap grant existed before restart");
+    await host.close();
+    host = await start(true);
+    assert.equal(findActorUnified(stateDir, owner, bootRequest.body.actor), undefined, "boot closed the exact pending grant");
+    const ended = await post(MANAGED_RETIRE, { actor: abandoned.body.actor, lifecycleUid: abandoned.body.lifecycleUid }, signIn);
+    assert.equal(ended.body.alreadyRetired, true, String(ended.body.error));
+    assert.notEqual((await post("/exchange", { owner, actor: abandoned.body.actor, actorToken: abandoned.body.actorToken })).status, 200,
+      "stale bootstrap cannot mint after boot containment");
+    const fresh = await request(bootRequest.body.actor);
+    assert.equal((await post(LINK_GRANT, fresh.body)).status, 200, "fresh owner approval can reuse the retired alias");
+    console.log("hosted linked foreground: owner proof, disabled admission, exact retirement and pending boot recovery passed");
+  } finally {
+    await host?.close().catch(() => {});
+    await delivery?.close().catch(() => {});
+    await admin?.close().catch(() => {});
+    await proof?.close();
+    await fixture.close();
+  }
+}
+
+await linkedForegroundSmoke();

@@ -19,11 +19,19 @@
  */
 import { decodeProtectedHeader, errors, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, credentialLifetime, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { agentIdentityKey, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, credentialLifetime, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
 
-/** Current normative token-shape version. Bump only with a SPEC change; validators reject
- *  anything else (older = downgrade, newer = from-the-future misconfig). */
+/** Ordinary user bearer shape, including service access. */
 export const USER_TOKEN_VER = 1;
+/** Linked run bearers must be rejected by validators that do not understand their binding. */
+export const LINKED_USER_TOKEN_VER = 2;
+
+export function assertLinkedRunClaims(act: Pick<UserTokenActor, "agentUid" | "lifecycleUid" | "view">): void {
+  if (typeof act.agentUid !== "string" || typeof act.lifecycleUid !== "string" || act.view !== undefined)
+    throw new Error("linked run bearer requires act.agentUid and act.lifecycleUid and cannot carry a view");
+  agentIdentityKey(act.agentUid);
+  assertLifecycleToken(act.lifecycleUid);
+}
 
 /** A renewal proof is a distinct JWT class, never a user/connect bearer. */
 export const SERVICE_RENEWAL_TYP = "cotal-service-renewal+jwt";
@@ -120,6 +128,7 @@ export interface UserTokenActor {
    *  connect authorization requires exact equality with the CURRENT row; a bearer minted for a
    *  retired incarnation is refused, never resolved to the successor. */
   lifecycleUid?: string;
+  agentUid?: string;
   /** The credential-ledger row id this bearer was issued under (SPEC 13.1: `cred.<uid>.<credid>`).
    *  The connect boundary leader-reads that row and refuses a bearer whose credential row is
    *  revoked or absent (the deny-new lever) — and for a root credential, whose credid is not the
@@ -151,7 +160,7 @@ export interface ValidatedUserToken {
   /** The credential-ledger row id this bearer was minted under (== `act.credentialId`, hoisted for
    *  the connect boundary's leader-served revocation read). Absent on a pre-cut bearer. */
   credentialId?: string;
-  /** Token-shape version (== {@link USER_TOKEN_VER}). */
+  /** Ordinary or linked run token-shape version. */
   ver: number;
   /** Bearer expiry (unix seconds) — the callout binds the minted NATS user JWT's lifetime to it,
    *  so broker access dies with the bearer (the v1 revocation lever, enforced server-side). */
@@ -239,14 +248,16 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   if (payload.exp - payload.iat > maxTtl)
     throw new Error(`user token: lifetime ${payload.exp - payload.iat}s exceeds the ${maxTtl}s cap - short-lived tokens are the revocation lever`);
 
-  if (payload.ver !== USER_TOKEN_VER)
-    throw new Error(`user token: ver ${String(payload.ver)} != ${USER_TOKEN_VER} - stale or unknown token shape (downgrade defense)`);
+  if (payload.ver !== USER_TOKEN_VER && payload.ver !== LINKED_USER_TOKEN_VER)
+    throw new Error(`user token: ver ${String(payload.ver)} - stale or unknown token shape (downgrade defense)`);
 
   if (typeof payload.sub !== "string") throw new Error("user token: sub must be a string token - no coercion at a trust boundary");
   const owner = assertDerivedOwnerToken(payload.sub);
 
   const act = payload.act as UserTokenActor | undefined;
   if (!act || typeof act !== "object") throw new Error("user token: act claim is required (server-authored owner/actor)");
+  if (payload.ver === LINKED_USER_TOKEN_VER) assertLinkedRunClaims(act);
+  else if (act.agentUid !== undefined) throw new Error("user token: act.agentUid requires the linked run bearer version");
   if (act.owner !== owner) throw new Error(`user token: act.owner "${String(act.owner)}" != sub "${owner}" - inconsistent principal`);
   if (typeof act.actor !== "string") throw new Error("user token: act.actor must be a string token - no coercion at a trust boundary");
   assertValidOwnerToken(act.actor);
@@ -333,9 +344,9 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}), ...(service ? { service } : {}) },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, ...(act.agentUid !== undefined ? { agentUid: act.agentUid } : {}), credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}), ...(service ? { service } : {}) },
     credentialId: act.credentialId,
-    ver: USER_TOKEN_VER,
+    ver: payload.ver,
     exp: payload.exp,
   };
 }

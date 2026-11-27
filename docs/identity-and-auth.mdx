@@ -30,6 +30,14 @@ The broker pins sender tokens in publish subjects to the connection's principal.
 
 Each space is a NATS account. The broker operator signs that account, and the account signing key mints per-agent user JWTs.
 
+## Linked foreground runs [#linked-foreground-runs]
+
+An isolated user-auth host can let an owner launch a foreground run under a stable agent ID without a Manager. An identity provider that supports a separate launch approval must confirm each new linked run. Stock local meshes and identity providers without that approval keep ordinary launches and do not offer linking.
+
+A linked ID belongs to one owner and can be associated with only one live run at a time. Stop the exact linked lifecycle through the host's retirement endpoint before starting another run under the same ID. Losing a process or letting its token expire does not retire it. The host can apply one configured endpoint caller policy to successive runs without giving a retired run's credentials or handles to its successor.
+
+[SPEC §10](../SPEC.md#10-connection-and-onboarding) defines the host's launch and retirement requests.
+
 ## Provisioner [#provisioner]
 
 The provisioner holds signing authority. It mints scoped credentials and creates the DM and role-task consumers that agents can bind but cannot create for themselves. The manager can host this work, but a space does not require a manager.

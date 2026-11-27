@@ -24,9 +24,10 @@
  *     an explicit grant object; anything else is a deny;
  *  5. the issuer mints (which re-asserts every claim shape — the issuer ↔ validator inverse).
  */
-import { decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
+import { createHash } from "node:crypto";
+import { decodeJwt, decodeProtectedHeader, errors, jwtVerify } from "jose";
 import type { CryptoKey, JWTPayload, JWTVerifyGetKey } from "jose";
-import { assertValidOwnerToken, type UserAuthGrant } from "@cotal-ai/core";
+import { assertValidOwnerToken, EpEnvelopeError, type UserAuthGrant } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
@@ -212,6 +213,57 @@ export async function verifyDmReaderProof(token: string, idp: IdpConfig, audienc
     if (typeof payload[claim] !== "string" || !payload[claim])
       throw new Error(`dm-reader proof: the ${claim} claim must be a non-empty string`);
   return { sub: payload.sub, exp: payload.exp, actor: payload.actor as string, lifecycle: payload.lifecycle as string, space: payload.space as string };
+}
+
+interface LinkedAgentApprovalTarget {
+  account: string;
+  space: string;
+  actor: string;
+  spaceSecret: string | Uint8Array;
+  requestDigest: (derivedOwner: string) => string;
+}
+
+const LINKED_AGENT_GRANT_PURPOSE = "linked-agent-grant";
+const LINKED_AGENT_APPROVAL_WINDOW_SEC = 300;
+
+function linkedApprovalKey(key: IdpConfig["key"]): IdpConfig["key"] {
+  if (typeof key !== "function") return key;
+  return async (header, jws) => {
+    try {
+      return await key(header, jws);
+    } catch (error) {
+      if (error instanceof errors.JWKSNoMatchingKey) throw error;
+      throw new EpEnvelopeError("unavailable", "linked agent approval verification key is unavailable", undefined, "not-executed");
+    }
+  };
+}
+
+/** Verify a foreground approval, leaving durable one-use consumption to the grant authority. */
+export async function verifyLinkedAgentApproval(
+  token: string, idp: IdpConfig, audience: string, target: LinkedAgentApprovalTarget,
+): Promise<{ owner: string; approvalId: string; approvalExpiresAtMs: number }> {
+  if (!audience || audience === idp.audience)
+    throw new Error("linked agent approval needs a dedicated IdP audience");
+  const p = await verifyPinnedIdpJwt(token, { ...idp, key: linkedApprovalKey(idp.key) }, audience);
+  if (p.purpose !== LINKED_AGENT_GRANT_PURPOSE || typeof p.jti !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(p.jti))
+    throw new Error("linked agent approval needs the grant purpose and a valid unique jti");
+  const owner = deriveOwnerForIdpSubject(target.spaceSecret, idp.issuer, p.sub);
+  if (p.account !== target.account || p.space !== target.space || p.owner !== owner || p.actor !== target.actor ||
+      p.requestDigest !== target.requestDigest(owner))
+    throw new Error("linked agent approval does not name this exact grant");
+
+  const at = p.auth_time;
+  const now = Date.now();
+  if (typeof at !== "number" || !Number.isSafeInteger(at) || at < 0 ||
+      !Number.isSafeInteger(p.iat) || !Number.isSafeInteger(p.exp) || at > p.iat || p.iat * 1000 > now ||
+      (p.nbf !== undefined && (!Number.isSafeInteger(p.nbf) || p.nbf * 1000 > now)) ||
+      p.exp <= p.iat || p.exp - p.iat > LINKED_AGENT_APPROVAL_WINDOW_SEC ||
+      !Array.isArray(p.amr) || !p.amr.every(method => typeof method === "string" && method.length > 0) || !p.amr.includes("pwd"))
+    throw new Error("linked agent approval needs a fresh signed password proof");
+  const approvalExpiresAtMs = Math.min(p.exp, at + LINKED_AGENT_APPROVAL_WINDOW_SEC) * 1000;
+  if (approvalExpiresAtMs <= now) throw new Error("linked agent approval has expired");
+  const approvalId = createHash("sha256").update(JSON.stringify([idp.issuer, p.jti])).digest("hex");
+  return { owner, approvalId, approvalExpiresAtMs };
 }
 
 /** A private-result consent proof, not consent or permission to read any result. */

@@ -9,6 +9,7 @@ import { callerParentRefs } from "./service-caller-ancestry.js";
 import { findActorUnified } from "./ledger.js";
 import { registryStores, registryMaxPayload, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { readNativeServiceCallerPolicy } from "./service-caller-policy.js";
+import { readStableServiceCallerPolicy } from "./service-caller-stable-policy.js";
 import { parseServiceAdmissionRecord, parseServiceAssignmentRecord } from "./service-host-ops.js";
 import { readNativeServiceGate } from "./native-service-gate.js";
 import { readNativeServiceName } from "./native-service-name.js";
@@ -17,14 +18,71 @@ import { parseServiceCallerPayloadRecord, serviceCallerPayloadCheck, SERVICE_CAL
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 interface EffectiveEndpointCaller { capabilities: EpCapability[]; expiresAt?: number; evidenceDigest?: string }
+export type VerifyAgentLink = (registry: LifecycleRegistry, binding: ServicePrincipal & {
+  agentUid: string; linkOperationId: string; credentialId?: string;
+}, accountPublicKey: string) => Promise<string>;
+interface CallerLinkChecks { verify: VerifyAgentLink; agentUid: string; credentialId: string }
+
+function callerPolicies(registry: LifecycleRegistry, accountPublicKey: string, ledgerDir: string, space: string, link?: CallerLinkChecks) {
+  const reads: Array<() => Promise<unknown>> = [];
+  const observations: unknown[] = [];
+  const observe = async <T>(read: () => Promise<T>): Promise<T> => {
+    const result = await read();
+    reads.push(read);
+    observations.push(result ?? null);
+    return result;
+  };
+  return {
+    observations,
+    lifecycle: async (grantee: ServicePrincipal) => (await observe(async () => {
+      const row = findActorUnified(ledgerDir, grantee.owner, grantee.actor);
+      if (!row || row.lifecycleUid !== grantee.lifecycleUid)
+        throw new EpEnvelopeError("permission-denied", "endpoint caller ancestry changed during issuance");
+      const policy = await readNativeServiceCallerPolicy(registry, { accountPublicKey, space, grantee });
+      return { grantee, kind: row.kind, parent: row.parent ?? null, policy: policy ?? null };
+    })).policy ?? undefined,
+    stable: (principal: ServicePrincipal, leaf = false) => observe(async () => {
+      const row = findActorUnified(ledgerDir, principal.owner, principal.actor);
+      if (!row || row.lifecycleUid !== principal.lifecycleUid || (leaf && row.agentUid !== link?.agentUid))
+        throw new EpEnvelopeError("permission-denied", "endpoint caller lifecycle or agent link changed during issuance");
+      const { agentUid, linkOperationId } = row;
+      if (agentUid === undefined && linkOperationId === undefined) return undefined;
+      if (!link || !agentUid || !linkOperationId || row.kind !== "managed-agent")
+        throw new EpEnvelopeError("permission-denied", "endpoint caller requires a verified agent link");
+      const binding = { ...principal, agentUid, linkOperationId, ...(leaf ? { credentialId: link.credentialId } : {}) };
+      const evidence = await link.verify(registry, binding, accountPublicKey);
+      const policy = await readStableServiceCallerPolicy(registry, { accountPublicKey, space, owner: principal.owner, agentUid });
+      return { evidence, linkOperationId, policy: policy ?? null };
+    }),
+    async recheck() {
+      for (const [i, read] of reads.entries()) {
+        if (canonicalJson(await read() ?? null) !== canonicalJson(observations[i]))
+          throw new EpEnvelopeError("permission-denied", "endpoint caller policy or agent link changed during issuance");
+      }
+    },
+  };
+}
+
 export async function effectiveEndpointCaller(registry: LifecycleRegistry, accountPublicKey: string, ledgerDir: string,
-  grantee: ServicePrincipal): Promise<EffectiveEndpointCaller> {
+  grantee: ServicePrincipal, link?: CallerLinkChecks): Promise<EffectiveEndpointCaller> {
   const { space, authKv, jsm } = registryStores(registry);
   const current = findActorUnified(ledgerDir, grantee.owner, grantee.actor);
   if (!current || current.lifecycleUid !== grantee.lifecycleUid)
     throw new EpEnvelopeError("permission-denied", "endpoint caller lifecycle is not the current actor grant");
-  const policy = await readNativeServiceCallerPolicy(registry, { accountPublicKey, space, grantee });
-  if (!policy) return { capabilities: [] };
+  const policies = callerPolicies(registry, accountPublicKey, ledgerDir, space, link);
+  const policy = await policies.lifecycle(grantee);
+  const stable = await policies.stable(grantee, true);
+  if (!policy && !stable) return { capabilities: [] };
+  const grants = [
+    ...(policy?.row.grants ?? []).map(grant => ({ grant, stable: false })),
+    ...(stable?.policy?.row.grants ?? []).map(grant => ({ grant, stable: true })),
+  ];
+  if (new Set(grants.map(({ grant }) => grant.grantId)).size !== grants.length)
+    throw new EpEnvelopeError("permission-denied", "endpoint caller grant id is ambiguous across policy sources");
+  if (!policy && !grants.length) {
+    await policies.recheck();
+    return { capabilities: [], evidenceDigest: contractDigest(policies.observations) };
+  }
   // Eligibility is re-established from current exact ledger ancestry below for every grant.
   const read = async <T>(key: string, parse: (raw: unknown) => T): Promise<T | undefined> => {
     const entry = await authKv.get(key);
@@ -39,17 +97,19 @@ export async function effectiveEndpointCaller(registry: LifecycleRegistry, accou
   if (!serviceCallerPayloadCheck(payload, { maxPayload: registryMaxPayload(registry), authMaxMsgSize: info.config.max_msg_size }).holds)
     throw new EpEnvelopeError("failed-precondition", "endpoint caller payload precondition is not asserted and live");
   const capabilities: EpCapability[] = [];
-  const evidence: unknown[] = [{ policyRevision: policy.revision, policy: policy.row }];
+  const evidence: unknown[] = [];
   let expiresAt = Number.MAX_SAFE_INTEGER;
-  for (const grant of policy.row.grants) {
+  for (const { grant, stable } of grants) {
     if (grant.status.state !== "active") continue;
     const source = grant.source;
     if (source.kind !== "service-owner")
       throw new EpEnvelopeError("permission-denied", "delegated endpoint caller issuance is unsupported");
-    const parents = await callerParentRefs({ space, ledgerDir, grantee, capabilities: grant.capabilities, expectedRefs: grant.parentRefs,
+    const parents = await callerParentRefs({ space, ledgerDir, grantee, capabilities: grant.capabilities,
+      ...(stable ? { stableSource: source, readStableGrants: async (parent: ServicePrincipal) => (await policies.stable(parent))?.policy?.row.grants ?? [] }
+        : { expectedRefs: grant.parentRefs }),
       service: { endpoint: grant.endpoint, instanceId: grant.instanceId, approvalDigest: grant.serviceApprovalDigest },
-      readPolicy: async parent => (await readNativeServiceCallerPolicy(registry, { accountPublicKey, space, grantee: parent }))?.row });
-    if (canonicalJson(parents) !== canonicalJson(grant.parentRefs))
+      readPolicy: async parent => (await policies.lifecycle(parent))?.row });
+    if (!stable && canonicalJson(parents) !== canonicalJson(grant.parentRefs))
       throw new EpEnvelopeError("permission-denied", "endpoint caller parent lifecycle or covering grants changed");
     const asg = await read(`svcasg.${endpointToken(grant.endpoint)}.${grant.instanceId}`, parseServiceAssignmentRecord);
     if (!asg || asg.state !== "bound" || asg.cancel !== null || asg.owner !== source.owner) continue;
@@ -79,11 +139,10 @@ export async function effectiveEndpointCaller(registry: LifecycleRegistry, accou
   }
   // Reads are fresh observations, not a linearized revoke fence. Re-read the complete policy after
   // authority resolution so a revoke/append that landed during the walk never releases stale rows.
-  const final = await readNativeServiceCallerPolicy(registry, { accountPublicKey, space, grantee });
-  if (!final || final.revision !== policy.revision || canonicalJson(final.row) !== canonicalJson(policy.row))
-    throw new EpEnvelopeError("permission-denied", "endpoint caller policy changed during issuance");
+  await policies.recheck();
   const latest = findActorUnified(ledgerDir, grantee.owner, grantee.actor);
-  if (!latest || latest.lifecycleUid !== grantee.lifecycleUid || latest.kind !== current.kind || latest.parent !== current.parent)
+  if (!latest || latest.lifecycleUid !== grantee.lifecycleUid || latest.kind !== current.kind || latest.parent !== current.parent
+    || latest.agentUid !== current.agentUid || latest.linkOperationId !== current.linkOperationId)
     throw new EpEnvelopeError("permission-denied", "endpoint caller lifecycle changed during issuance");
-  return { capabilities, ...(capabilities.length ? { expiresAt } : {}), evidenceDigest: contractDigest(evidence) };
+  return { capabilities, ...(capabilities.length ? { expiresAt } : {}), evidenceDigest: contractDigest([policies.observations, evidence]) };
 }

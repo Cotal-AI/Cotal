@@ -425,6 +425,8 @@ export async function startAuthService(inputs: HostedContextInputs & {
   toolResultConsents?: ToolResultConsentSignerOptions;
   /** Default off. Forwarded unchanged to {@link openAuthAuthorityPlane}. No CLI flag sets it. */
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
+  /** Host attests exclusive filesystem custody. The IdP must mint fresh proofs for this separate audience. */
+  linkedForeground?: { approvalAudience: string };
   /** Default off. Auth hosts this registry using this context's own assigned secret store. */
   registry?: RegistryService;
   /** Trusted-host-only credential lifetime for registry renewal rehearsal, 5..900 seconds. */
@@ -477,6 +479,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: inputs.issuerSessionTtlSeconds } : {}),
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
     ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
+    ...(inputs.linkedForeground !== undefined ? { linkedForeground: inputs.linkedForeground } : {}),
     ...(inputs.registry !== undefined ? { registry: inputs.registry } : {}),
     ...(inputs.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: inputs.registryCredentialTtlSeconds } : {}),
     ...(inputs.calloutLimits !== undefined ? { calloutLimits: inputs.calloutLimits } : {}),
@@ -492,6 +495,7 @@ type AuthContextEnd = { kind: "fenced"; cause: string } | { kind: "broker"; caus
 type AuthContextStatus = { state: "ready" | "draining" } | { state: "unavailable"; cause: string };
 
 interface AuthContextOptions extends AuthServiceRuntimeOptions {
+  linkedForeground?: { approvalAudience: string };
   toolResultConsents?: ToolResultConsentSignerOptions;
   space: string;
   server: string;
@@ -524,6 +528,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
   const issuer = await loadIssuer(secrets, space);
   const ownerSecret = await loadOwnerSecret(secrets, space);
   const idp = loadPinnedIdp(dir);
+  if (o.linkedForeground !== undefined && (!o.context || !o.linkedForeground || typeof o.linkedForeground.approvalAudience !== "string" ||
+      !o.linkedForeground.approvalAudience || o.linkedForeground.approvalAudience === idp?.audience || o.linkedForeground.approvalAudience === idp?.dmReaderAudience))
+    throw new Error("auth-service: linked foreground requires an isolated hosted context and a dedicated IdP approval audience");
   if (!keys || !callout || !issuer || !ownerSecret || !idp) {
     const missing = [
       ...(keys ? [] : ["service keys"]),
@@ -563,6 +570,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
     ...(o.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: o.issuerSessionTtlSeconds } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
+    ...(o.linkedForeground !== undefined ? { isolatedLinkedForeground: true as const } : {}),
     sessionCalloutTimeoutMs: o.calloutLimits?.authTimeoutMs ?? 2000,
     ...(o.registry !== undefined ? { registry: o.registry, registryStore: secrets } : {}),
     ...(o.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.registryCredentialTtlSeconds } : {}),
@@ -634,6 +642,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     });
     const serviceEngine = plane.serviceEndpointHost !== undefined ? serviceHostEngineOf(plane.serviceEndpointHost) : undefined;
     const ctx: HandlerCtx = {
+      ...(plane.linkedAgents && o.linkedForeground ? { linkedAgents: plane.linkedAgents, linkedGrant: {
+        account: keys.dataAccount.pub, space, spaceSecret: ownerSecret, idp: bridgeIdp, approvalAudience: o.linkedForeground.approvalAudience,
+        cap, failures, badCaps, admit: plane.linkedAgents.admit,
+      } } : {}),
       connectLimiter,
       ...(issueToolResultConsent ? { issueToolResultConsent } : {}),
       ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine, material: issuer } } : {}),

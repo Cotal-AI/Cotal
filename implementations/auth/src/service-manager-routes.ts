@@ -3,10 +3,11 @@ import { type IncomingMessage, type ServerResponse } from "node:http";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { verifyIdpToken } from "./idp.js";
+import { parseLinkedAgentRetirementBody } from "./linked-agent-routes.js";
 import { findInteractiveActor, ledgerAuthorizeGrant } from "./ledger.js";
 import { completeRemoteRetainedAgentValidation } from "./retained-manager-validation.js";
 import { readJsonBody, REFUSAL_STATUS, refuseCapability, refuseExchange, RequestBodyError, send, sendRequestError } from "./service-http.js";
-import type { ExchangePolicy } from "./service-exchange-routes.js";
+import { LOOPBACK_POLICY, type ExchangePolicy } from "./service-exchange-routes.js";
 import type { HandlerCtx, ManagedLifecycleActivationRequest, ManagedLifecycleActivationResult } from "./service.js";
 
 type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "authorizeManagerParticipation" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun" | "cancelManagerRun">;
@@ -134,11 +135,14 @@ export async function handleManagedLifecycleRetirement(
   req: IncomingMessage,
   res: ServerResponse,
   ctx: HandlerCtx,
+  publicPolicy?: ExchangePolicy,
 ): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json" });
+  if (ctx.linkedAgents && (publicPolicy !== undefined || req.headers.authorization !== `Bearer ${ctx.cap}`))
+    return handleLinkedLifecycleRetirement(req, res, ctx, publicPolicy);
   if (req.headers.authorization !== `Bearer ${ctx.cap}`)
     return refuseCapability(res, ctx, "missing/invalid exchange capability - managed lifecycle retirement is a loopback host action");
   const body = await readJsonBody(req);
@@ -158,6 +162,28 @@ export async function handleManagedLifecycleRetirement(
   } catch (e) {
     if (e instanceof EpEnvelopeError && e.code === "conflict") return send(res, 409, { error: e.message });
     throw e;
+  }
+}
+
+async function handleLinkedLifecycleRetirement(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, publicPolicy?: ExchangePolicy): Promise<void> {
+  const policy = publicPolicy ?? LOOPBACK_POLICY;
+  const peer = policy.peerKey(req);
+  let owner: string;
+  try {
+    const token = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
+    if (!token) throw new Error("missing owner proof");
+    const proof = await verifyIdpToken(token, ctx.bridgeIdp);
+    owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, proof.sub);
+  } catch {
+    return refuseExchange(res, ctx, policy, peer, policy.throttled(ctx, peer), "refused linked lifecycle retirement: invalid owner proof", 401,
+      { code: "unauthenticated", error: "linked lifecycle retirement requires ordinary owner sign-in", outcome: "not-executed" });
+  }
+  const target = parseLinkedAgentRetirementBody(await readJsonBody(req));
+  try {
+    return send(res, 200, await ctx.linkedAgents!.retire({ owner, ...target }), { "cache-control": "no-store" });
+  } catch (e) {
+    if (e instanceof EpEnvelopeError) return send(res, REFUSAL_STATUS[e.code] ?? 503, { code: e.code, error: e.message, lifecycleUid: target.lifecycleUid });
+    return send(res, 503, { code: "unavailable", error: "linked retirement is incomplete; retry the exact lifecycle", lifecycleUid: target.lifecycleUid });
   }
 }
 

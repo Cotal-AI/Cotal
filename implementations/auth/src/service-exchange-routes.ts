@@ -172,10 +172,18 @@ async function selectExchangeManagerInstance(
   }
 }
 
-/** The exchange body, shared by every face; `policy` says how this face proves and attributes the
- *  caller, and whether authenticated manager-selection refusals use the public face's two
- *  per-principal class windows (`pinned` and `unpinned`) or the loopback face's existing
- *  refusal classification. */
+async function exchangeLinkedBearer(ctx: HandlerCtx, grant: ReturnType<typeof ledgerAuthorizeAgentExchange>, actorToken: string, view: unknown, ttlSec?: number) {
+  const { owner, actor, lifecycleUid, agentUid, linkOperationId, scope } = grant;
+  if (!ctx.linkedAgents || !lifecycleUid || !agentUid || !linkOperationId || view !== undefined)
+    throw new Error("linked agent exchange only supports the foreground bearer");
+  const token = await ctx.linkedAgents.exchange({ owner, actor, lifecycleUid, agentUid, linkOperationId, actorToken }, claims => ctx.issuer.issue({
+    owner, actor, space: ctx.space, lifecycleUid, scope, ...claims,
+    ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
+  }));
+  return { token, owner, exp: decodeJwt(token).exp };
+}
+
+/** The exchange body, shared by every face; `policy` supplies its authentication and refusal budgets. */
 export async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
@@ -265,6 +273,7 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
       if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
         throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
       ctx.connectLimiter.check({ owner, actor });
+      if (grant.agentUid !== undefined) return send(res, 200, await exchangeLinkedBearer(ctx, grant, actorToken, view, ttlSec), { "cache-control": "no-store" });
       let selectedManagerInstanceId: string | undefined;
       if (view === "manager-caller") {
         selectedManagerInstanceId = await selectExchangeManagerInstance(

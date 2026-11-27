@@ -513,6 +513,7 @@ try {
       scanEndpointCredentialFamily: async () => [],
       scanBysrc: async () => [],
       scanStageFamily: async () => [],
+      scanLinkedAgentJournals: async () => [],
       scanSessions: async () => [],
       close: async () => {},
     };

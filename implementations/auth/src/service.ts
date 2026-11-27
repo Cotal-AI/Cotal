@@ -1,5 +1,10 @@
 import { handleExchange, LOOPBACK_POLICY, ManagerSelectionRefusal } from "./service-exchange-routes.js";
 import type { ExchangePolicy } from "./service-exchange-routes.js";
+import { assertNoLinkedLifecycle, linkedAgentAuthority, readVerifiedAgentLink } from "./linked-agent-authority.js";
+import { LINK_WRITE_KEYS } from "./linked-agent-records.js";
+import { provisionForegroundFootprint, type FootprintTarget } from "./foreground-footprint.js";
+import { handleLinkedAgentGrant, type LinkedAgentGrantOptions } from "./linked-agent-routes.js";
+import { genuinePlaneHold } from "./plane-claim.js";
 export type { ExchangePolicy } from "./service-exchange-routes.js";
 import { handleInteractiveLifecycleRetirement, handleManagedLifecycleRetirement, handleManagedLifecycleActivation, handleVerifyManagedAgentEnrollment, handleManagerInstances, handleManagerServiceAuthority } from "./service-manager-routes.js";
 export { dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx } from "./service-manager-routes.js";
@@ -69,10 +74,9 @@ import { makeToolResultConsentRecorder } from "./tool-result-consent.js";
 import { createHash } from "node:crypto";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import { type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isDerivedOwner, deprovisionAgent, fenceLifecycleAcl, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, mintCreds, newIdentity, parseEndpointGate, parseServiceSpec, readRunAdmission, readSvcRecordLeader, recordSpecKey, RECORD_KINDS, remoteManagerServePrincipal, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, holdIssuerSession, parseActorLedgerSource, type IssuedSourceRef, type IssuerSession, DEV_OWNER, mintLifecycleUid, principalKey, registerServiceInstance, registerServingInstance, type EpErrorCode, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant } from "@cotal-ai/core";
+import { isDerivedOwner, deprovisionAgent, fenceLifecycleAcl, isChannelFamily, isConcreteChannel, contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, mintCreds, newIdentity, parseEndpointGate, parseServiceSpec, readRunAdmission, readSvcRecordLeader, recordSpecKey, RECORD_KINDS, remoteManagerServePrincipal, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, holdIssuerSession, parseActorLedgerSource, type IssuedSourceRef, type IssuerSession, DEV_OWNER, mintLifecycleUid, principalKey, registerServiceInstance, registerServingInstance, type EpErrorCode, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant } from "@cotal-ai/core";
 import { createAuthInstanceIdentity, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthNativeConnection, type AuthServiceClosed } from "./owned-connections.js";
@@ -249,6 +253,8 @@ export function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServic
 
 /** Inputs to the sealed authority-plane composition. */
 export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions {
+  /** Trusted isolated auth host only. The private enable row independently gates new admissions. */
+  isolatedLinkedForeground?: true;
   server: string;
   space: string;
   /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
@@ -404,7 +410,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     ...(opts.issuerSessionTtlSeconds !== undefined ? { ttlSeconds: opts.issuerSessionTtlSeconds } : {}),
   });
   unwind.push(() => issuer.close());
-  const writer = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
+  const writer = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => {
+    const grants = authorityWriterGrants(space, id);
+    if (opts.isolatedLinkedForeground === true) grants.publish.push(...LINK_WRITE_KEYS.map(key => `$KV.${epAuthBucket(space)}.${key}`));
+    return grants;
+  }, log });
   unwind.push(() => writer.close());
   await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
   const registry = await openLifecycleRegistry(writer.nc, space);
@@ -955,36 +965,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // A chat session's footprint (admission a7): its DM durable, a DELIVER durable when readable, and the
   // read-ACL row the delivery daemon authorizes its history and durable joins from, written by a
   // short-lived provisioner and read back on that same connection (part of a8).
-  const provisionChatFootprint = async ({ owner, actor, lifecycleUid, read }: { owner: string; actor: string; lifecycleUid: string; read: string[] }): Promise<void> => {
-    const identity = newIdentity();
-    let conn: NatsConnection | undefined;
-    const provisioner = new CotalEndpoint({
-      space,
-      servers: server,
-      onConnection: (nc) => { conn = nc; onConnection?.(nc, `cotal:chat-provisioner:${space}`); },
-      channels: [],
-      creds: await mintCreds(issuerAuth(), identity, "provisioner"),
-      card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
-      registerPresence: false,
-      watchPresence: false,
-      watchChannels: false,
-      consume: false,
-    });
-    await provisioner.start();
-    try {
-      const resolvedRead = await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: read });
-      if (conn === undefined) throw new EpEnvelopeError("unavailable", "the chat provisioner connection is unavailable for the read-back", undefined, "unknown");
-      const jsm = await jetstreamManager(conn);
-      await jsm.consumers.info(dmStream(space), dmDurable(owner, actor, lifecycleUid));
-      if (resolvedRead.length > 0)
-        await jsm.consumers.info(dlvStream(space), dlvDurable(owner, actor, lifecycleUid));
-      const acl = await provisioner.aclForOwner(principalKey(owner, actor).key, lifecycleUid);
-      if (acl === undefined || JSON.stringify(acl) !== JSON.stringify(read))
-        throw new EpEnvelopeError("unavailable", `the chat session's read-ACL row did not read back for ${lifecycleUid}`, undefined, "unknown");
-    } finally {
-      await provisioner.stop();
-    }
-  };
+  const provisionChatFootprint = (target: FootprintTarget) => provisionForegroundFootprint({ server, space, issuerAuth, onConnection }, target);
   const chat = openChatSessionAuthority({
     space,
     dir: opts.dir,
@@ -1022,13 +1003,24 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     dir: opts.dir, space, dataAccount, barrierReg, retirement, retirementFlights, observeLegacyManagerGate, refuseIfFenced,
     deprovisionManagedFootprint, serializedForAlias,
   });
-  const callout = calloutAuthority({
+  const linked = opts.isolatedLinkedForeground === true ? linkedAgentAuthority({
+    reg: registry, barrierReg, dir: opts.dir, accountPublicKey: dataAccount.pub, space, log, eventPayloadsWithheld: opts.eventPayloadsWithheld,
+    assertHeld: async () => { refuseIfFenced(); await genuinePlaneHold(hold)!.assertHeld("before"); refuseIfFenced(); },
+    serializedAlias: (owner, actor, fn) => serializedForAlias(opts.dir, owner, actor, fn),
+    provision: j => provisionChatFootprint({ ...j, read: j.allowSubscribe }),
+    deprovision: j => deprovisionManagedFootprint(j.owner, j.actor, j.lifecycleUid, j.allowSubscribe),
+    retire: managedRetirement.retireManagedLifecycle,
+  }) : undefined;
+  if (linked) await linked.recover();
+  const calloutBase = {
     space, issuer, dir: opts.dir, dataAccount, registry, reader: () => reader.current(), chat, gate: gateReads, recordsJsm,
     ...(verifyCallerPayload !== undefined ? { checkCallerPayload } : {}),
     refuse: refuseIfFenced,
-  });
+  };
+  const callout = calloutAuthority(linked ? { ...calloutBase, verifyAgentLink: readVerifiedAgentLink, assertNoLinkedLifecycle } : calloutBase);
   return {
     ...callout,
+    ...(linked ? { linkedAgents: { admit: linked.admit, exchange: linked.exchange, retire: linked.retire } } : {}),
     openChatSession: async (args) => {
       refuseIfFenced();
       return chat.admit(args);
@@ -1042,8 +1034,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       return chat.retire(args);
     },
     recordToolResultConsent,
-    mintConnectCredential: (args) => {
+    mintConnectCredential: async (args) => {
       refuseIfFenced();
+      if (linked) await assertNoLinkedLifecycle(registry, args.lifecycleUid);
       return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` });
     },
     selectManagerInstance,
@@ -1085,6 +1078,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     retireManagedLifecycle: managedRetirement.retireManagedLifecycle,
     activateManagedLifecycle: async (args) => {
       refuseIfFenced();
+      if (linked) await assertNoLinkedLifecycle(registry, args.lifecycleUid);
       await activateLifecycleAtUid(registry, {
         owner: assertDerivedOwnerToken(args.owner),
         actor: assertValidOwnerToken(args.actor),
@@ -1235,6 +1229,8 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 export interface HandlerCtx {
+  linkedGrant?: LinkedAgentGrantOptions;
+  linkedAgents?: AuthAuthorityPlane["linkedAgents"];
   deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** The callout's connect limits, which the exchange checks before it mints. */
   connectLimiter: ConnectLimiter;
@@ -1320,6 +1316,7 @@ const ROUTES = new Map<string, RouteHandler>([
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
   [MANAGED_ACTIVATE_PATH, handleManagedLifecycleActivation],
   [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
+  ["/managed-lifecycle/linked-grant", (req, res, ctx) => handleLinkedAgentGrant(req, res, ctx.linkedGrant)],
   [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
   [TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultHumanProof],
   [TOOL_RESULT_CONSENT_PATH, handleToolResultConsent],
@@ -1416,6 +1413,9 @@ export function makePublicHandler(
     ],
     ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
     ["/manager-service-authority", (req, res, c) => handleManagerServiceAuthority(req, res, c, policy)],
+    [MANAGED_RETIRE_PATH, (req, res, c) => c.linkedAgents
+      ? handleManagedLifecycleRetirement(req, res, c, policy)
+      : send(res, 404, { error: "unknown path" })],
     ["/endpoint-deregister", (req, res, c) => handleEndpointDeregister(req, res, c, policy)],
     ["/manager-instances", (req, res, c) => handleManagerInstances(req, res, c, policy)],
     [SERVICE_ENDPOINT_AUTHORITY_PATH, (req, res, c) => handleServiceEndpointAuthority(req, res, c, policy)],

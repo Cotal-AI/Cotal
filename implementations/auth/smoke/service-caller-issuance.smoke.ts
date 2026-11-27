@@ -7,12 +7,13 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { generateKeyPair, exportJWK, SignJWT } from "jose";
+import { decodeJwt, generateKeyPair, exportJWK, SignJWT } from "jose";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { authorizeServeGrant, compileContract, contractArtifactCanonicalBytes, contractDigest, contractStoreContext, epAuthBucket,
-  invokeCommand, mintCreds, newIdentity, publishContractArtifact, recordSpecKey, RECORD_KINDS, resolveService, serveEndpoint,
+  invokeCommand, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, publishContractArtifact, recordSpecKey, RECORD_KINDS, resolveService, serveEndpoint,
   setupSpaceStreams, singleDocumentClosure, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../src/service-caller-payload.js";
@@ -25,8 +26,11 @@ import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { checks } from "./_service-custody-fixture.js";
+import { parseStableServiceCallerPolicy, stableServicePolicyKey } from "../src/service-caller-stable-policy.js";
+import { startDeliveryService } from "../../delivery/src/index.js";
 
 const baseline = process.argv.includes("--baseline"), second = process.argv.includes("--second"), cli = process.argv.includes("--cli"), c = checks(), rid = () => randomBytes(16).toString("hex");
+const stableLink = process.argv.includes("--stable-link"), approvalAudience = "caller-fixture-linked-approval";
 const enc = new TextEncoder();
 const fx = await startHostedAuthFixture("callerissue", 1, baseline ? {} : { maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR }), a = fx.accounts[0]!;
 const { publicKey, privateKey } = await generateKeyPair("EdDSA"), jwk = { ...await exportJWK(publicKey), kid: "caller-fixture" };
@@ -51,13 +55,23 @@ const managedRow = grantManagedActor(stateDir, { owner, actor: "managed", lifecy
   scope: [], allowSubscribe: [], allowPublish: [], tokenHash: createHash("sha256").update(managedToken).digest("hex"), custody: { kind: "foreground" } });
 const idpToken = await mintIdpToken();
 let service: AuthServiceHandle | undefined, admin: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+let delivery: Awaited<ReturnType<typeof startDeliveryService>> | undefined;
 const connections: NatsConnection[] = [];
 let serve: ReturnType<typeof serveEndpoint> | undefined, runs = 0;
 let beforeObserver: (() => Promise<void>) | undefined;
 try {
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
+  if (stableLink) {
+    const composition = { injected: true as const };
+    await a.store.put(deliveryCredsKey(a.space, composition), await mintCreds(a.auth, newIdentity(), "delivery"));
+    await a.store.put(membershipRwCredsKey(a.space, composition), await mintCreds(a.auth, newIdentity(), "membership-rw"));
+    await a.store.put(membershipObserverCredsKey(a.space, composition), await mintMembershipObserverCreds(a.auth, newIdentity()));
+    await a.store.put(connectionEvictorCredsKey(a.space, composition), await mintConnectionEvictorCreds(a.auth, newIdentity()));
+  }
   service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "caller-fixture" }, space: a.space,
-    servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" }, ...(!baseline ? { callerPayload: { observerCreds: async () => { await beforeObserver?.(); return mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }); } } } : {}) } });
+    servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir,
+    ...(stableLink ? { linkedForeground: { approvalAudience } } : {}),
+    serviceEndpoints: { startup: { kind: "normal" }, ...(!baseline ? { callerPayload: { observerCreds: async () => { await beforeObserver?.(); return mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }); } } } : {}) } });
   // --cli: the owner's grants and revoke go through `cotal service-endpoint`'s own client, from a
   // separate root that knows the running service and holds the owner's login session.
   const clientDir = join(fx.dir, "caller-client"), cliHome = join(fx.dir, "caller-home");
@@ -69,8 +83,8 @@ try {
     saveIdpSession(cliHome, `${origin}/api/auth`, { token: "session-human", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "human" });
   }
   const ownerCli = (positionals: string[], values: ServiceEndpointValues) => serviceEndpointHostCall(clientDir, a.space, positionals, values);
-  const post = async (path: string, body: unknown) => {
-    const r = await fetch(`${service!.url}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify(body) });
+  const post = async (path: string, body: unknown, authorization = service!.cap) => {
+    const r = await fetch(`${service!.url}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${authorization}` }, body: JSON.stringify(body) });
     const out = await r.json() as Record<string, any>;
     if (!r.ok) throw new Error(`${path}: HTTP ${r.status} ${out.error ?? out.reason ?? "refused"}`);
     return out;
@@ -120,6 +134,66 @@ try {
   // Baseline seeds the already-existing native policy syntax, not substitute broker permissions.
   // Fixed acceptance uses the controlled host append below instead.
   const authKv = await new Kvm(admin.nc).open(epAuthBucket(a.space));
+  const dialBearer = async (token: string) => {
+    const nonce = rid();
+    const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000,
+      authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(token)] });
+    connections.push(nc);
+    return nc;
+  };
+  if (stableLink) {
+    const binding = { accountPublicKey: a.accountPublicKey, space: a.space };
+    delivery = await startDeliveryService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() },
+      space: a.space, servers: fx.servers, stateDir, store: a.store, storeIdentity: a.store.identity });
+    for (let i = 0; i < 50 && (await delivery.readiness()).state !== "ready"; i++) await new Promise(r => setTimeout(r, 200));
+    assert.equal((await delivery.readiness()).state, "ready");
+    await authKv.create("agentlink.enable", enc.encode(JSON.stringify({ v: 1, ...binding, enabled: true })));
+    const actor = "stablecaller";
+    const launch = async (agentUid?: string) => {
+      const requestId = rid(), mode = agentUid ? "select" : "create";
+      const requestDigest = createHash("sha256").update(JSON.stringify([
+        "cotal/linked-agent-grant/v1", binding.accountPublicKey, binding.space, owner, actor, requestId, mode, agentUid ?? null, [], [], [],
+      ])).digest("hex");
+      const iat = Math.floor(Date.now() / 1000);
+      const approval = await new SignJWT({ purpose: "linked-agent-grant", auth_time: iat, amr: ["pwd"],
+        account: binding.accountPublicKey, space: binding.space, owner, actor, requestDigest })
+        .setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(approvalAudience).setSubject("human")
+        .setJti(rid()).setIssuedAt(iat).setExpirationTime(iat + 120).sign(privateKey);
+      const response = await post("/managed-lifecycle/linked-grant", { actor, requestId, scope: [], allowSubscribe: [], allowPublish: [],
+        agentLink: { mode, ...(agentUid ? { agentUid } : {}), approval } });
+      return { agentUid: response.agentLink.agentUid as string, uid: response.lifecycleUid as string, actorToken: response.actorToken as string };
+    };
+    const exchange = async ({ actorToken }: { actorToken: string }) => (await post("/exchange", { owner, actor, actorToken })).token as string;
+    const resolve = (nc: NatsConnection, uid: string) => resolveService(nc, a.space, endpoint, { owner, actor, uid }, { instanceId, deadlineMs: 3000 });
+    const invoke = (nc: NatsConnection, target: Awaited<ReturnType<typeof resolve>>) =>
+      invokeCommand(nc, a.space, target, command, second ? { n: 7 } : {}, { deadlineMs: 3000 });
+    const firstRun = await launch(), key = stableServicePolicyKey(firstRun.agentUid);
+    const policyRevision = await authKv.create(key, enc.encode(JSON.stringify(parseStableServiceCallerPolicy({ v: 1, ...binding, owner, agentUid: firstRun.agentUid,
+      grants: [{ grantId: rid(), endpoint, instanceId, serviceApprovalDigest: witness.approvalDigest, capabilities: [capability], parentRefs: [], status: { state: "active" },
+        source: { kind: "service-owner", owner, approvalDigest: witness.approvalDigest, nameAuthorityRevision: witness.nameAuthorityRevision } }] }))));
+    const firstBearer = await exchange(firstRun), firstNc = await dialBearer(firstBearer), firstHandle = await resolve(firstNc, firstRun.uid);
+    assert.equal((decodeJwt(firstBearer).act as { agentUid?: string }).agentUid, firstRun.agentUid);
+    assert.equal((await invoke(firstNc, firstHandle)).reply.ok, true);
+    await assert.rejects(() => launch(firstRun.agentUid), /conflict|retire/i);
+    const renewedNc = await dialBearer(await exchange(firstRun));
+    assert.equal((await invoke(renewedNc, await resolve(renewedNc, firstRun.uid))).reply.ok, true);
+    await post("/managed-lifecycle/retire", { actor, lifecycleUid: firstRun.uid }, idpToken);
+    for (let i = 0; i < 25 && (!firstNc.isClosed() || !renewedNc.isClosed()); i++) await new Promise(r => setTimeout(r, 40));
+    assert.equal(firstNc.isClosed(), true);
+    assert.equal(renewedNc.isClosed(), true);
+    await assert.rejects(() => dialBearer(firstBearer));
+    await assert.rejects(() => exchange(firstRun));
+    const secondRun = await launch(firstRun.agentUid);
+    assert.notEqual(secondRun.uid, firstRun.uid);
+    assert.equal(secondRun.agentUid, firstRun.agentUid);
+    const secondNc = await dialBearer(await exchange(secondRun));
+    assert.equal((await invoke(secondNc, await resolve(secondNc, secondRun.uid))).reply.ok, true);
+    assert.equal(firstHandle.caller.uid, firstRun.uid);
+    await assert.rejects(async () => { assert.equal((await invoke(secondNc, firstHandle)).reply.ok, true); });
+    assert.equal((await authKv.get(key))?.revision, policyRevision);
+    c.check("one stable grant reaches the endpoint on each run's first native mint while the former lifecycle stays denied", runs === 3);
+    runs = 0;
+  }
   let grantId = rid();
   if (baseline) {
     await authKv.create(`servicepolicy.${grantee.lifecycleUid}`, enc.encode(JSON.stringify({ v: 1, accountPublicKey: a.accountPublicKey, space: a.space, grantee, grants: [{
@@ -175,9 +249,8 @@ try {
     }
   }
   const dial = async (actor: string) => {
-    const exchange = await post("/exchange", actor === "managed" ? { owner, actor, actorToken: managedToken } : { idpToken, actor }); const nonce = rid();
-    const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000,
-      authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)] }); connections.push(nc); return nc;
+    const exchange = await post("/exchange", actor === "managed" ? { owner, actor, actorToken: managedToken } : { idpToken, actor });
+    return dialBearer(exchange.token);
   };
   const invoke = async (actor: string, uid: string) => {
     const nc = await dial(actor); const target = await resolveService(nc, a.space, endpoint, { owner, actor, uid }, { instanceId, deadlineMs: 3000 });
@@ -251,7 +324,7 @@ try {
 } finally {
   await serve?.stop().catch(() => {});
   for (const nc of connections) await nc.close().catch(() => {});
-  await admin?.close().catch(() => {}); await service?.close(); await fx.close();
+  await admin?.close().catch(() => {}); await delivery?.close().catch(() => {}); await service?.close(); await fx.close();
   await new Promise<void>(r => idp.close(() => r()));
 }
 c.finish(); process.exitCode = c.failed ? 1 : 0;

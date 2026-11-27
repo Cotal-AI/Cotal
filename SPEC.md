@@ -1297,6 +1297,14 @@ See [docs/security.mdx](docs/security.mdx).
 
 ## 10. Connection and onboarding
 
+**Owner-approved linked foreground launch.** An isolated auth host MAY serve `POST /managed-lifecycle/linked-grant` on its capability-gated loopback listener. It MUST disable admission unless its private enable record is present and enabled and its pinned identity provider supports the dedicated approval audience. Stock local meshes do not enable this route. No Manager is required. A linked request MUST NOT fall back to an ordinary launch.
+
+The closed request is `{ actor, requestId, scope, allowSubscribe, allowPublish, agentLink }`. `scope` is empty. Each ACL holds at most 32 distinct concrete channels. `requestId` has 1 to 128 ASCII letters, digits, underscores or hyphens. The selector is exactly `{ mode: "create", approval }` or `{ mode: "select", agentUid, approval }`. The host requires an EdDSA JWT from the pinned identity provider with purpose `linked-agent-grant`, a dedicated audience, a unique `jti`, fresh signed password authentication (`auth_time`, `amr` including `pwd`), and `iat` and `exp`. The approval expires by the earlier of `exp` and five minutes after `auth_time`. The host derives `owner` from issuer and subject. The proof's `account`, `space`, `owner`, `actor` and `requestDigest` MUST match. The digest is lowercase SHA-256 hex of the UTF-8 JSON tuple `["cotal/linked-agent-grant/v1",account,space,owner,actor,requestId,mode,agentUidOrNull,scope,allowSubscribe,allowPublish]` with no insignificant whitespace. The host consumes the approval once at admission. It does not require the approval to remain unexpired at first bearer exchange.
+
+A successful grant returns `{ v: 1, state: "pending", owner, actor, lifecycleUid, agentLink: { mode, agentUid }, actorToken }`. The caller MUST check the acknowledgment against its request and use the token only with the existing agent exchange. This answer does not commit the link. The token cannot mint an elevated view, drive a Manager launch or delegate a link. No separate client-side identity credential exists.
+
+On a linked host, `POST /managed-lifecycle/retire` accepts ordinary owner identity-provider sign-in as an `Authorization: Bearer` JWT and the closed body `{ actor, lifecycleUid }`. A link approval is not sign-in. The host derives the owner, resolves the exact linked or pending lifecycle, and completes its retirement before answering `{ retired: true, lifecycleUid, alreadyRetired? }`. The owner can retry the exact action even when new admission is disabled. The existing capability-authenticated loopback arm is unchanged.
+
 Join link grammar:
 
 ```text
@@ -1677,6 +1685,10 @@ boundary; §13.10 receipts and signing anchors; §13.11 the hard cut; §13.12 th
 §13.13 plane ownership; §13.14 conformance.
 
 ### 13.1 Lifecycle identity
+
+**Stable agent identity.** A linked ID is `ag_` followed by 26 lowercase base32 characters and belongs to one owner. The auth host binds it to only one run at a time. Each run has a fresh lifecycle UID. A live, pending or retiring predecessor occupies the ID. Unknown predecessor state never permits replacement. The owner retirement action closes the exact run, verifies eviction where authority was issued, and records the end before permitting another link. Token expiry or an absent process is not terminal evidence. A revoked ID is final. Revoking the ID does not itself end a committed run.
+
+The host reserves the ID in its never-deleted create journal, reserves the lifecycle UID, and writes the pending marker before it releases any bootstrap material. First exchange stages and stamps the ordinary root credential, writes the immutable binding, commits the identity, and records the link audit. Only then may it sign a linked bearer. It rechecks the exact file grant, operation, binding, active head, epoch and credential stamp, and touches the open issuance gate at the observed revision before returning the bearer. Recovery runs before accepting requests. It finishes a committed link forward or closes an uncommitted lifecycle without releasing its credential. There is no pending timeout. The owner or boot recovery can end an unresolved pending link.
 
 The principal `owner.actor` (§2) is a **recyclable routing alias**: despawning an agent frees
 its actor name, and a later spawn may legitimately reuse it. An alias is therefore never
@@ -3489,6 +3501,8 @@ facts.
 
 ### 13.6 Composites
 
+The linked foreground launch in §10 is not a Manager composite. Manager spawn, held conversations and delegated intents do not link an agent in this binding.
+
 Patterns over the verbs and contracts; zero new transport.
 
 The reference manager's spawn goal uses the submitted request's `id`. If the caller's
@@ -4158,6 +4172,8 @@ session binds the target's `(principal, lifecycleUid)` and the serving epoch (§
 incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct session.
 
 ### 13.7 Contracts and discovery
+
+A linked ID is not an endpoint address or a discovery coordinate. Endpoint caller privileges resolved from a stable policy compile to the ordinary current-lifecycle rows. Discovery, handle and presence formats are unchanged.
 
 **Clusters.** An endpoint's surface is a set of composable **capability clusters**, each
 `{ urn, revision, attributes[], commands[], events[] }`:
@@ -4882,6 +4898,8 @@ field exists to stop, so it refuses the document instead.
 
 ### 13.9 Authority boundary
 
+Only an isolated auth host with exclusive custody of its managed actor files may enable linked foreground admission. Linked version 2 rows carry `agentUid` and `linkOperationId`, with foreground custody. Ordinary rows stay at version 1. An ordinary writer MUST NOT overwrite or revoke a linked row. A reader that does not support linked rows rejects version 2 rather than treating it as an ordinary grant. The auth host keeps the private enable record independent of those fences. Before reverting to ordinary writers, stop admissions and settle all linked operations and lifecycles, preserving journals and bindings.
+
 The credential is the coarse boundary; every subject in §13.2 is default-deny. Every
 **statically expressible** authorization dimension is broker-enforced through the subject
 grammar: caller identity + lifecycle, endpoint,
@@ -5513,6 +5531,8 @@ boundary); `1.0` is a separate, later stability declaration (§11).
 
 ### 13.12 NATS + JetStream binding
 
+Linked foreground state is private to auth KV. `agentlink.enable` binds the account and space to an explicit boolean enable. `agentid.<agentUid>` records the owner, state, link sequence and exact current link. `agentlinkjournal.create.<agentUid>` and `agentlinkjournal.select.<operationId>` record admission, exact grant and token digest, root stamp pins, and release or retirement progress. `agentlinkwinner.<agentUid>` names the current operation. `agentlinkpending.<uid>` and `agentlinkbinding.<uid>` pin the exact run, and the binding is immutable. `agentlinkapproval.<approvalId>` consumes the proof once. The host derives `approvalId` as lowercase SHA-256 hex of the UTF-8 JSON pair `[issuer,jti]`. `agentlinkaudit.<operationId>.link` and `agentlinkaudit.<operationId>.unlink` are write-once events with the owner, run, actor class, and time. Only the isolated host writes linked operation state. Its sealed scanner enumerates only the linked journal family for this recovery walk. No public lookup or audit feed is defined here.
+
 **Broker floor.** The control surface REQUIRES NATS server ≥ 2.12 (message schedules, atomic
 create-CAS, counters) AND a `max_control_line` large enough for the deployment's
 maximum-capability CONNECT line. The two floors are checked at the tier that can see them:
@@ -5775,6 +5795,8 @@ a stored message on its reply read, and accepts a reply only on the subject the 
 derives, waiting past a message under any other head (§13.21).
 
 ### 13.15 Issued authority
+
+An auth bearer signed for a linked run uses `ver: 2` and includes `act.agentUid` alongside the exact lifecycle and root credential claims. Ordinary bearers retain `ver: 1` and MUST NOT carry the linked claim. Elevated, service-endpoint and chat bearers cannot carry it. The callout MUST check the linked ledger row, authoritative binding, release-ready journal, current head and issuance gate before native mint and recheck the evidence before release. Legacy validators reject the linked version. The stable ID does not extend a handle's lifetime or change its target.
 
 The caller triple (§13.1) says WHO is calling. It does not say what the credential they are
 calling with was granted, and a host that performs an effect on a caller's behalf needs that:
@@ -8007,6 +8029,8 @@ The participant manager refuses a program that places a spawn on any other insta
 | §14 Workflow runs, [`spec/cotal-lang.md`](spec/cotal-lang.md) | `packages/lang/src/` (the language, journal, keys, pins), `packages/core/src/run-record.ts`, `run-journal.ts`, `checkpoint-answer.ts`, `run-notice.ts`, `run-migration.ts`, `endpoint-binding.ts` (WFJ, grants), `run-admission.ts` (§14.8), `implementations/runtime/src/` (driver, migrate, fork), `implementations/manager/src/run-hosting.ts` (admission) |
 
 ## Appendix B: Profile ACLs
+
+An isolated host may provision `servicepolicy.<agentUid>` as an additional endpoint caller policy key. Its row binds version, account, space, owner and stable ID to native service caller grants. The callout reads it only for a verified live linked run and checks the current service instance, approval, ancestry and ceiling together with any lifecycle policy. Ambiguous grant IDs refuse issuance. The broker receives the same lifecycle-specific subject grammar and permissions as for an ordinary caller. The ID itself grants nothing and adds no profile or ACL wildcard.
 
 This appendix is normative for the NATS binding. *(The operator-facing summary of these
 grants is [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx).)* Names below use these

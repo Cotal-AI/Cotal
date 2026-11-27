@@ -3,13 +3,15 @@
 import { EpEnvelopeError, canonicalJson, endpointCapabilitiesWithin, parsePrincipalKey, type EpCapability, type ServicePrincipal } from "@cotal-ai/core";
 import { findActorUnified } from "./ledger.js";
 import type { NativeServiceCallerPolicy } from "./service-caller-policy.js";
-import type { ServiceParentRef } from "./service-host-contract.js";
+import type { ServiceCallerGrant, ServiceParentRef } from "./service-host-contract.js";
 
 export async function callerParentRefs(args: {
   space: string; ledgerDir: string; grantee: ServicePrincipal; capabilities: EpCapability[];
   service: { endpoint: string; instanceId: string; approvalDigest: string };
+  stableSource?: { owner: string; nameAuthorityRevision: number };
   expectedRefs?: ServiceParentRef[];
   readPolicy: (principal: ServicePrincipal) => Promise<NativeServiceCallerPolicy | undefined>;
+  readStableGrants?: (principal: ServicePrincipal) => Promise<ServiceCallerGrant[]>;
 }): Promise<ServiceParentRef[]> {
   const fail = (): never => { throw new EpEnvelopeError("permission-denied", "endpoint caller ancestry has no current exact-lifecycle covering grants"); };
   const seen = new Set<string>();
@@ -20,7 +22,8 @@ export async function callerParentRefs(args: {
     const row = findActorUnified(args.ledgerDir, principal.owner, principal.actor);
     if (!row || row.lifecycleUid !== principal.lifecycleUid) return fail();
     if (!row.parent) {
-      if (row.kind !== "interactive") return fail();
+      if (row.kind === "interactive") return [];
+      if (row.kind !== "managed-agent" || !args.readStableGrants || !(await args.readStableGrants(principal)).length) return fail();
       return [];
     }
     if (row.kind !== "managed-agent") return fail();
@@ -30,17 +33,24 @@ export async function callerParentRefs(args: {
     if (!parentRow?.lifecycleUid) return fail();
     const p = { owner: parent.owner, actor: parent.actor, lifecycleUid: parentRow.lifecycleUid };
     const policy = await args.readPolicy(p);
-    if (!policy || canonicalJson(policy.grantee) !== canonicalJson(p)) return fail();
-    const covering = policy.grants.filter(g => g.status.state === "active" && g.endpoint === args.service.endpoint
+    if (policy && canonicalJson(policy.grantee) !== canonicalJson(p)) return fail();
+    const stable = await args.readStableGrants?.(p) ?? [];
+    const grants = [...(policy?.grants ?? []), ...stable];
+    if (new Set(grants.map(g => g.grantId)).size !== grants.length) return fail();
+    const covering = grants.filter(g => g.status.state === "active" && g.endpoint === args.service.endpoint
       && g.instanceId === args.service.instanceId && g.serviceApprovalDigest === args.service.approvalDigest
-      && g.source.kind === "service-owner" && g.source.approvalDigest === args.service.approvalDigest);
+      && g.source.kind === "service-owner" && g.source.approvalDigest === args.service.approvalDigest
+      && (!args.stableSource || (g.source.owner === args.stableSource.owner
+        && g.source.nameAuthorityRevision === args.stableSource.nameAuthorityRevision
+        && g.capabilities.every(c => c.endpoint === g.endpoint && c.instanceId === g.instanceId && c.instanceOnly === true
+          && !c.journal && c.target?.mode !== "any" && c.target?.mode !== "ledger"))));
     const expected = args.expectedRefs?.find(ref => ref.principal.lifecycleUid === p.lifecycleUid);
     if (args.expectedRefs && (!expected || canonicalJson(expected.principal) !== canonicalJson(p))) return fail();
     const wantedIds = expected && new Set(expected.grants.map(ref => ref.grantId));
     const usable = covering.filter(g => !wantedIds || wantedIds.has(g.grantId));
     if (expected && usable.length !== expected.grants.length) return fail();
     const ancestors = await walk(p);
-    if (usable.some(g => canonicalJson(g.parentRefs) !== canonicalJson(ancestors))) return fail();
+    if (usable.some(g => !stable.includes(g) && canonicalJson(g.parentRefs) !== canonicalJson(ancestors))) return fail();
     if (!usable.length || !endpointCapabilitiesWithin({ space: args.space,
       child: { caller: caller(args.grantee), capabilities: args.capabilities },
       parent: { caller: caller(p), capabilities: usable.flatMap(g => g.capabilities) } })) return fail();

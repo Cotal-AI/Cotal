@@ -26,7 +26,7 @@ import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generat
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isCredentialTransportUrl, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { issueServiceRenewalProof, type ServiceRenewalClaims } from "./service-renewal.js";
-import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
+import { LINKED_USER_TOKEN_VER, USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertLinkedRunClaims, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
 export const USER_TOKEN_ALG = "EdDSA";
@@ -97,6 +97,8 @@ export interface IssueClaims {
    *  exact equality with the CURRENT row at connect, so a predecessor incarnation's still-unexpired
    *  bearer can never mint the successor's broker authority. Stamped whenever the row carries one. */
   lifecycleUid?: string;
+  /** Server-verified committed identity binding for a linked run. */
+  agentUid?: string;
   /** The credential-ledger row id (SPEC 13.1: `cred.<uid>.<credid>`) this bearer is issued under.
    *  Stamped whenever the issuance ledgered a row; the connect boundary leader-reads it and denies
    *  a revoked/absent-row bearer (deny-new), so the issuer ↔ validator inverse must carry it. */
@@ -179,6 +181,8 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       assertDerivedOwnerToken(parts[0]);
       assertValidOwnerToken(parts[1]);
     }
+    const linked = claims.agentUid !== undefined;
+    if (linked) assertLinkedRunClaims(claims);
     if (claims.credentialId !== undefined) assertCredentialIdClaim(claims.credentialId); // never sign a credid the validator would reject
     if (claims.view !== undefined && !USER_TOKEN_VIEWS.includes(claims.view))
       throw new Error(
@@ -209,8 +213,8 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     const exp = claims.notAfter === undefined ? now + ttl : Math.min(now + ttl, claims.notAfter);
     return new SignJWT({
       scope: claims.scope ?? [],
-      ver: USER_TOKEN_VER,
-      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}), ...(claims.session ? { session: claims.session } : {}), ...(claims.transferWriter ? { transferWriter: claims.transferWriter } : {}) },
+      ver: linked ? LINKED_USER_TOKEN_VER : USER_TOKEN_VER,
+      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(linked ? { agentUid: claims.agentUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}), ...(claims.session ? { session: claims.session } : {}), ...(claims.transferWriter ? { transferWriter: claims.transferWriter } : {}) },
     })
       .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
       .setSubject(claims.owner)

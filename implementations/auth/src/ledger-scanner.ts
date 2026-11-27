@@ -117,6 +117,8 @@ export interface AuthLedgerScanner {
   /** LastPerSubject over `stage.>` — every durable operation intent and session release pin (the
    *  caller separates the single-segment operation intents from the multi-segment pins). */
   scanStageFamily(): Promise<RawScanEntry[]>;
+  /** LastPerSubject over the private linked-lifecycle operation journal, including markers. */
+  scanLinkedAgentJournals(): Promise<RawScanEntry[]>;
   /** LastPerSubject over `session.>` — the current last of every session-ledger row (markers
    *  included, so the sweep sees a DEL/PURGE a bucket's own `keys()`/`watch()` would hide). Shares
    *  this instance's ONE literal consumer name + lock with the credential-ledger scans (fact-5:
@@ -246,6 +248,7 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     scanBysrc: (issuerKeyId: string, id: string) =>
       serialized(() => guardedScan(guard, () => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`))),
     scanStageFamily: () => serialized(() => guardedScan(guard, () => scanOnce("stage."))),
+    scanLinkedAgentJournals: () => serialized(() => guardedScan(guard, () => scanOnce("agentlinkjournal."))),
     scanSessions: () => serialized(() => guardedScan(guard, () => scanOnce("session."))),
     close: onClose,
   });

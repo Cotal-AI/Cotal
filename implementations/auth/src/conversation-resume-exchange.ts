@@ -13,7 +13,7 @@ export function checkConversationResumeExchange(dir: string, owner: string, acto
   let live: ReturnType<typeof ledgerAuthorizeAgentExchange>;
   try { live = ledgerAuthorizeAgentExchange(dir, owner, actor, actorToken); }
   catch { return refused; }
-  if (live.lifecycleUid !== lifecycleUid || canonicalJson(resume.grant) !== canonicalJson({
+  if (live.agentUid !== undefined || live.lifecycleUid !== lifecycleUid || canonicalJson(resume.grant) !== canonicalJson({
     scope: live.scope, role: live.role ?? null, allowSubscribe: live.allowSubscribe, allowPublish: live.allowPublish, subscribe: [], endpoints: [],
   })) return refused;
   return { status: 200, body: { v: 1, lifecycleUid, status: "resumed" } };
