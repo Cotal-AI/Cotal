@@ -766,8 +766,9 @@ body input. Leading frontmatter follows the native persona merge:
 the supplied name wins, explicit model/role/application and channel fields override the file,
 and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
 1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
-If the manager instance ID is invalid, find the full ID with `cotal ps` in the same space and replace
-only the `--on` value. Keep the definition options and pipe any standard input again.
+If the manager instance ID is invalid, use the suggested roster lookup. It keeps the selected
+space, broker and output format. If the broker address contains private details, use the original
+broker options yourself. Replace only the `--on` value and pipe any standard input again.
 
 The remote wire accepts name, body, model, role, application, initial read channels and read/post
 ACLs. `--harness`, `--subscribe`, `--allow-subscribe` and `--allow-publish` name those fields.
