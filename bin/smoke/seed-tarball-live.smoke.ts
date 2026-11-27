@@ -19,7 +19,7 @@
  */
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve, sep } from "node:path";
@@ -54,70 +54,6 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
     calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
   check("self-update reconciles the built-ins with an unsupported Node first on PATH",
     result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
-}
-
-function checkSelfUpdateWithoutPackageLock(
-  selfUpdate: () => string,
-  prefix: string,
-  npmrc: string,
-  claudePayload: string,
-  updateEnv: NodeJS.ProcessEnv,
-  native: readonly [string, { version?: string }],
-  nativeManifest: string,
-): void {
-  const userConfig = readFileSync(npmrc, "utf8");
-  const lockPath = join(prefix, "package-lock.json");
-  const hiddenLockPath = join(prefix, "node_modules", ".package-lock.json");
-  const contents = readFileSync(lockPath, "utf8");
-  const stale = JSON.parse(contents);
-  stale.packages["node_modules/@cotal-ai/connector-claude-code"].version = "0.0.0";
-  const staleContents = JSON.stringify(stale, null, 2) + "\n";
-  const payload = readFileSync(claudePayload);
-  writeFileSync(npmrc, `${userConfig}package-lock=false\n`);
-  writeFileSync(lockPath, staleContents);
-  try {
-    const current = selfUpdate();
-    check("self-update keeps all current built-ins when npm leaves a stale lockfile",
-      current.includes("installed package closure is current"), current);
-    writeFileSync(claudePayload, Buffer.concat([payload, Buffer.from("\n")]));
-    const repaired = selfUpdate();
-    check("self-update reinstalls only the damaged built-in with package-lock disabled",
-      repaired.match(/Reconciling built-in \w+/g)?.join(", ") === "Reconciling built-in claude" &&
-      readFileSync(claudePayload).equals(payload), repaired);
-    check("self-update leaves the stale public lockfile unchanged", readFileSync(lockPath, "utf8") === staleContents);
-    rmSync(lockPath);
-    const unlocked = selfUpdate();
-    check("self-update keeps current built-ins without creating a public lockfile",
-      unlocked.includes("installed package closure is current") && !existsSync(lockPath), unlocked);
-
-    const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
-      cwd: prefix, env: updateEnv, encoding: "utf8",
-    });
-    check("real npm with omit=optional and package-lock=false removes the host native dependency",
-      omitted.status === 0 && !existsSync(nativeManifest) && !existsSync(lockPath), omitted.stderr);
-    const optionalRepaired = selfUpdate();
-    check("self-update with package-lock=false repairs an omitted host native dependency",
-      /reinstalling every built-in/.test(optionalRepaired) && existsSync(nativeManifest) && !existsSync(lockPath), optionalRepaired);
-    const afterOptionalRepair = selfUpdate();
-    check("repeat self-update after optional repair keeps current built-ins",
-      afterOptionalRepair.includes("installed package closure is current") && !existsSync(lockPath), afterOptionalRepair);
-
-    const hidden = JSON.parse(readFileSync(hiddenLockPath, "utf8")) as { packages: Record<string, { version?: string; extraneous?: boolean }> };
-    hidden.packages[`../.extensions.stage-removed/config/cotal/extensions/${native[0]}`] = { version: native[1].version, extraneous: true };
-    writeFileSync(hiddenLockPath, JSON.stringify(hidden, null, 2) + "\n");
-    const stageRepaired = selfUpdate();
-    const repairedHidden = JSON.parse(readFileSync(hiddenLockPath, "utf8")) as { packages: Record<string, unknown> };
-    check("self-update with package-lock=false repairs a stale ../ stage entry in .package-lock.json",
-      /reinstalling every built-in/.test(stageRepaired) &&
-      Object.keys(repairedHidden.packages).every((key) => !key.includes(".extensions.stage-")), stageRepaired);
-    check("repeat self-update after hidden lock stage repair keeps current built-ins",
-      selfUpdate().includes("installed package closure is current") && !existsSync(lockPath));
-
-    check("self-update leaves the user's package-lock setting unchanged", readFileSync(npmrc, "utf8") === `${userConfig}package-lock=false\n`);
-  } finally {
-    writeFileSync(npmrc, userConfig);
-    writeFileSync(lockPath, contents);
-  }
 }
 
 async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
@@ -167,351 +103,107 @@ registry.register({ kind: 'command', name: '${command}', summary: 'Print a test 
   }
 }
 
-async function checkReview2PackageLockCells(
+function snapshotTree(root: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      const st = lstatSync(full);
+      if (st.isSymbolicLink()) out[rel] = `link:${realpathSync(full)}`;
+      else if (st.isDirectory()) walk(full, rel);
+      else out[rel] = createHash("sha256").update(readFileSync(full)).digest("hex");
+    }
+  };
+  walk(root, "");
+  return out;
+}
+
+async function checkPackageLockCellsAndUpgrade(
   entry: string,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
   version: string,
-  extensions: string,
-  claudePayload: string,
   seatClone: string,
+  packedTgzDir: string,
 ): Promise<void> {
-  const work = join(cwd, "review2-cells");
-  const optSrc = join(work, "sharp-wasm32");
-  const hostOptSrc = join(work, "host-opt");
-  const misreadOptName = `@probe/sharp-${process.platform}-${process.arch}`;
-  const misreadOptSrc = join(work, "sharp-misread");
-  const regUnfetchableSrc = join(work, "reg-unfetchable");
-  mkdirSync(optSrc, { recursive: true });
-  mkdirSync(hostOptSrc, { recursive: true });
-  mkdirSync(misreadOptSrc, { recursive: true });
-  mkdirSync(regUnfetchableSrc, { recursive: true });
-  writeFileSync(join(optSrc, "package.json"), JSON.stringify({ name: "@probe/sharp-wasm32", version: "1.0.0", cpu: ["wasm32"] }));
-  writeFileSync(join(optSrc, "index.js"), "");
-  writeFileSync(join(hostOptSrc, "package.json"), JSON.stringify({ name: "@probe/host-opt", version: "1.0.0", os: [process.platform], cpu: [process.arch] }));
-  writeFileSync(join(hostOptSrc, "index.js"), "");
-  writeFileSync(join(misreadOptSrc, "package.json"), JSON.stringify({ name: misreadOptName, version: "1.0.0", cpu: ["wasm32"] }));
-  writeFileSync(join(misreadOptSrc, "index.js"), "");
-  writeFileSync(join(regUnfetchableSrc, "package.json"), JSON.stringify({
-    name: "@probe/reg-unfetchable", version: "1.0.0", type: "module", main: "index.mjs",
-    peerDependencies: { "@cotal-ai/core": version },
-    optionalDependencies: { "@probe/host-opt": "1.0.0" },
-  }));
-  writeFileSync(join(regUnfetchableSrc, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'reg-unfetchable', summary: 'unfetchable probe', run() { console.log('reg-unfetchable ok'); } });\n`);
-  execFileSync("npm", ["pack", "--silent", "--pack-destination", work, optSrc], { env: cleanEnv });
-  execFileSync("npm", ["pack", "--silent", "--pack-destination", work, hostOptSrc], { env: cleanEnv });
-  execFileSync("npm", ["pack", "--silent", "--pack-destination", work, misreadOptSrc], { env: cleanEnv });
-  execFileSync("npm", ["pack", "--silent", "--pack-destination", work, regUnfetchableSrc], { env: cleanEnv });
-  const wasmBytes = readFileSync(join(work, readdirSync(work).find(f => f.startsWith("probe-sharp-wasm32-"))!));
-  const hostOptBytes = readFileSync(join(work, readdirSync(work).find(f => f.startsWith("probe-host-opt-"))!));
-  const misreadOptBytes = readFileSync(join(work, readdirSync(work).find(f => f.startsWith(`probe-sharp-${process.platform}-${process.arch}-`))!));
-  const regUnfetchableBytes = readFileSync(join(work, readdirSync(work).find(f => f.startsWith("probe-reg-unfetchable-"))!));
-  const integrityOf = (bytes: Buffer) => `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-  const shasumOf = (bytes: Buffer) => createHash("sha1").update(bytes).digest("hex");
-
-  let addressPort = 0;
-  let refuseUnfetchable = false;
-  const registry = createServer((req, res) => {
-    const path = decodeURIComponent(req.url!);
-    res.setHeader("content-type", "application/json");
-    if (refuseUnfetchable && (path === "/@probe/reg-unfetchable" || path === "/reg-unfetchable.tgz" || path === "/@probe/host-opt" || path === "/host-opt.tgz")) {
-      res.statusCode = 503;
-      res.end('{"error":"registry unavailable"}');
-      return;
-    }
-    if (path === "/cotal-ai") {
-      res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } }));
-    } else if (path === "/@probe/sharp-wasm32") {
-      res.end(JSON.stringify({
-        name: "@probe/sharp-wasm32", "dist-tags": { latest: "1.0.0" },
-        versions: { "1.0.0": { name: "@probe/sharp-wasm32", version: "1.0.0", cpu: ["wasm32"], dist: { tarball: `http://127.0.0.1:${addressPort}/wasm.tgz`, integrity: integrityOf(wasmBytes), shasum: shasumOf(wasmBytes) } } },
-      }));
-    } else if (path === "/@probe/host-opt") {
-      res.end(JSON.stringify({
-        name: "@probe/host-opt", "dist-tags": { latest: "1.0.0" },
-        versions: { "1.0.0": { name: "@probe/host-opt", version: "1.0.0", os: [process.platform], cpu: [process.arch], dist: { tarball: `http://127.0.0.1:${addressPort}/host-opt.tgz`, integrity: integrityOf(hostOptBytes), shasum: shasumOf(hostOptBytes) } } },
-      }));
-    } else if (path === `/${misreadOptName}`) {
-      res.end(JSON.stringify({
-        name: misreadOptName, "dist-tags": { latest: "1.0.0" },
-        versions: { "1.0.0": { name: misreadOptName, version: "1.0.0", cpu: ["wasm32"], dist: { tarball: `http://127.0.0.1:${addressPort}/misread-opt.tgz`, integrity: integrityOf(misreadOptBytes), shasum: shasumOf(misreadOptBytes) } } },
-      }));
-    } else if (path === "/@probe/reg-unfetchable") {
-      res.end(JSON.stringify({
-        name: "@probe/reg-unfetchable", "dist-tags": { latest: "1.0.0" },
-        versions: { "1.0.0": { name: "@probe/reg-unfetchable", version: "1.0.0", type: "module", main: "index.mjs", peerDependencies: { "@cotal-ai/core": version }, optionalDependencies: { "@probe/host-opt": "1.0.0" }, dist: { tarball: `http://127.0.0.1:${addressPort}/reg-unfetchable.tgz`, integrity: integrityOf(regUnfetchableBytes), shasum: shasumOf(regUnfetchableBytes) } } },
-      }));
-    } else if (path === "/wasm.tgz") {
-      res.setHeader("content-type", "application/octet-stream"); res.end(wasmBytes);
-    } else if (path === "/host-opt.tgz") {
-      res.setHeader("content-type", "application/octet-stream"); res.end(hostOptBytes);
-    } else if (path === "/misread-opt.tgz") {
-      res.setHeader("content-type", "application/octet-stream"); res.end(misreadOptBytes);
-    } else if (path === "/reg-unfetchable.tgz") {
-      res.setHeader("content-type", "application/octet-stream"); res.end(regUnfetchableBytes);
-    } else {
-      res.statusCode = 404; res.end('{"error":"not found"}');
-    }
-  });
-  await new Promise<void>((resolveListen, reject) => registry.once("error", reject).listen(0, "127.0.0.1", resolveListen));
   const exec = promisify(execFile);
-  const userNpmrc = join(work, "user.npmrc");
-  const cacheDir = join(work, "npm-cache");
-  try {
-    const addr = registry.address();
-    if (!addr || typeof addr === "string") throw new Error("loopback registry has no port");
-    addressPort = addr.port;
-    const probeScope = `@probe:registry=http://127.0.0.1:${addressPort}\n`;
-    writeFileSync(userNpmrc, probeScope);
-    const cellTools = join(work, "tools");
-    mkdirSync(cellTools, { recursive: true, mode: 0o700 });
-    const cellRealNpm = resolveOnPath("npm", cleanEnv)!;
-    const cellNpmLog = join(cellTools, "npm.log");
-    writeFileSync(join(cellTools, "npm"), `#!/usr/bin/env node\nconst fs = require("node:fs"), cp = require("node:child_process");\nfs.appendFileSync(${JSON.stringify(cellNpmLog)}, process.argv.slice(2).join(" ") + "\\n");\nprocess.exit(cp.spawnSync(${JSON.stringify(cellRealNpm)}, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);\n`, { mode: 0o755 });
-    const cellEnv = {
-      ...env,
-      COTAL_NO_UPDATE_CHECK: "1",
-      npm_config_userconfig: userNpmrc,
-      npm_config_cache: cacheDir,
-      npm_config_fetch_retries: "0",
-      PATH: `${cellTools}${delimiter}${env.PATH ?? ""}`,
+  const noNpmEnv: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(cleanEnv).filter(([key]) => !key.toLowerCase().startsWith("npm_config_")),
+  );
+  const realNpm = resolveOnPath("npm", noNpmEnv);
+  if (!realNpm) throw new Error("the smoke needs npm on PATH");
+  const root = mkdtempSync(join(tmpdir(), "cotal-r4-lock-"));
+  const builtInPkgs = [
+    "@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex",
+    "@cotal-ai/connector-hermes", "@cotal-ai/connector-jcode", "@cotal-ai/pi", "@cotal-ai/web",
+  ];
+  const makeCase = (name: string) => {
+    const dir = join(root, name);
+    const home = join(dir, "home");
+    const appData = join(dir, "appdata");
+    const cotalHome = join(dir, "cotal-home");
+    const xdg = join(dir, "xdg");
+    const tmp = join(dir, "tmp");
+    const globalPrefix = join(dir, "npm-global");
+    const cache = join(dir, "npm-cache");
+    for (const d of [dir, home, appData, cotalHome, xdg, tmp, globalPrefix, cache]) mkdirSync(d, { recursive: true, mode: 0o700 });
+    const userNpmrc = join(dir, "user.npmrc");
+    const globalNpmrc = join(dir, "global.npmrc");
+    writeFileSync(userNpmrc, "");
+    writeFileSync(globalNpmrc, "");
+    const env: NodeJS.ProcessEnv = {
+      ...noNpmEnv,
+      HOME: home, USERPROFILE: home, APPDATA: appData, LOCALAPPDATA: appData,
+      COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
+      npm_config_prefix: globalPrefix, npm_config_cache: cache,
+      npm_config_userconfig: userNpmrc, npm_config_globalconfig: globalNpmrc,
+      DO_NOT_TRACK: "1",
     };
-    const run = (...args: string[]) => exec(process.execPath, [entry, ...args], { cwd, env: cellEnv, timeout: 120_000 });
-    const runSelf = () => exec(process.execPath, [entry, "update", "--self"], {
-      cwd, env: { ...cellEnv, npm_config_registry: `http://127.0.0.1:${addressPort}` }, timeout: 120_000,
-    });
+    return { dir, home, xdg, globalPrefix, cache, userNpmrc, env };
+  };
+  const globalCliEntry = (globalPrefix: string): string =>
+    process.platform === "win32"
+      ? join(globalPrefix, "node_modules", "cotal-ai", "dist", "cotal.js")
+      : join(globalPrefix, "bin", "cotal");
+  const runNpm = (args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv; timeout?: number }) =>
+    exec(realNpm, args, { ...opts, shell: process.platform === "win32" });
+  const runGlobalCli = (globalPrefix: string, args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv; timeout?: number }) => {
+    const target = globalCliEntry(globalPrefix);
+    return process.platform === "win32"
+      ? exec(process.execPath, [target, ...args], opts)
+      : exec(target, args, opts);
+  };
+  const lockHasAllBuiltIns = (lockPath: string, ver: string): boolean => {
+    if (!existsSync(lockPath)) return false;
+    const lock = JSON.parse(readFileSync(lockPath, "utf8")) as { packages?: Record<string, { version?: string }> };
+    return builtInPkgs.every(pkg => lock.packages?.[`node_modules/${pkg}`]?.version === ver);
+  };
 
-    // Cell A: Default setting stage pass deletes nothing, and local-path extension with removed source + missing optional completes `cotal update`.
-    const localGoneDefault = join(work, "local-gone-default");
-    mkdirSync(localGoneDefault);
-    writeFileSync(join(localGoneDefault, "package.json"), JSON.stringify({
-      name: "local-gone-default", version: "1.0.0", type: "module", main: "index.mjs",
-      peerDependencies: { "@cotal-ai/core": version },
-      optionalDependencies: { "@probe/sharp-wasm32": "1.0.0", "@probe/host-opt": "1.0.0" },
-    }));
-    writeFileSync(join(localGoneDefault, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'local-gone-default', summary: 'probe', run() { console.log('default ok'); } });\n`);
-    rmSync(cellNpmLog, { force: true });
-    await run("ext", "add", localGoneDefault);
-    const defaultAdd1Calls = existsSync(cellNpmLog) ? readFileSync(cellNpmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    check("default ext add spawns exactly one npm process (install only, no config get)",
-      defaultAdd1Calls.length === 1 && defaultAdd1Calls[0]!.startsWith("install "), defaultAdd1Calls);
-    const defaultHiddenLock = JSON.parse(readFileSync(join(extensions, "node_modules", ".package-lock.json"), "utf8")) as {
-      packages?: Record<string, { resolved?: string }>;
-    };
-    const defaultHiddenResolved = defaultHiddenLock.packages?.["node_modules/local-gone-default"]?.resolved ?? "";
-    check("default ext add leaves npm's hidden .package-lock.json unrewritten",
-      defaultHiddenResolved.startsWith("file:") &&
-      resolve(realpathSync(extensions), defaultHiddenResolved.slice(5)) !== realpathSync(localGoneDefault),
-      defaultHiddenResolved);
-    const installedDefaultDir = join(extensions, "node_modules", "local-gone-default");
-    const markerDefault = join(installedDefaultDir, "stage-kept.txt");
-    writeFileSync(markerDefault, "kept");
-    rmSync(join(extensions, "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    rmSync(join(installedDefaultDir, "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    // Trigger a real staged install under default settings by damaging claude's payload while local source still exists: marker must survive.
-    const origClaude = readFileSync(claudePayload);
-    writeFileSync(claudePayload, Buffer.concat([origClaude, Buffer.from("\n")]));
-    const defaultStageOut = await run("update");
-    check("default-setting staged reconcile deletes no existing package from the stage",
-      defaultStageOut.stdout.includes("refreshed claude") && existsSync(markerDefault), defaultStageOut.stdout + defaultStageOut.stderr);
-    // Remove the local source folder while optional dependency is missing on disk, damage claude again, and run `cotal update`.
-    rmSync(localGoneDefault, { recursive: true, force: true });
-    rmSync(join(extensions, "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    writeFileSync(claudePayload, Buffer.concat([origClaude, Buffer.from("\n")]));
-    const defaultGoneUpdate = await run("update");
-    check("default setting: cotal update completes and keeps local-path extension when source is gone and optional is missing",
-      defaultGoneUpdate.stdout.includes("refreshed claude") && existsSync(join(installedDefaultDir, "index.mjs")) &&
-      (await run("local-gone-default")).stdout.trim() === "default ok", defaultGoneUpdate.stdout + defaultGoneUpdate.stderr);
-    await run("ext", "remove", "local-gone-default");
-    const defaultSecond = join(work, "default-second");
-    mkdirSync(defaultSecond);
-    writeFileSync(join(defaultSecond, "package.json"), JSON.stringify({
-      name: "default-second", version: "1.0.0", type: "module", main: "index.mjs",
-      peerDependencies: { "@cotal-ai/core": version },
-    }));
-    writeFileSync(join(defaultSecond, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'default-second', summary: 'probe2', run() { console.log('second ok'); } });\n`);
-    rmSync(cellNpmLog, { force: true });
-    await run("ext", "add", defaultSecond);
-    const defaultAdd2Calls = existsSync(cellNpmLog) ? readFileSync(cellNpmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    check("default ext add over an existing prefix with optionalDependencies still spawns only one npm install",
-      defaultAdd2Calls.length === 1 && defaultAdd2Calls[0]!.startsWith("install "), defaultAdd2Calls);
-    await run("ext", "remove", "default-second");
-    check("cotal ext remove after default ext add removes the target and keeps siblings working",
-      !existsSync(join(extensions, "node_modules", "default-second")) &&
-      (await run("local-peer-probe")).stdout.trim() === "probe loaded");
-
-    // Cell B: package-lock=false with non-suffix optional (`@probe/sharp-wasm32` cpu: ["wasm32"]) and local-path missing-source + missing-optional.
-    writeFileSync(userNpmrc, `${probeScope}package-lock=false\n`);
-    rmSync(join(extensions, "package-lock.json"), { force: true });
-    const localWasm = join(work, "local-wasm-ext");
-    const localGoneUnlocked = join(work, "local-gone-unlocked");
-    mkdirSync(localWasm);
-    mkdirSync(localGoneUnlocked);
-    writeFileSync(join(localWasm, "package.json"), JSON.stringify({
-      name: "local-wasm-ext", version: "1.0.0", type: "module", main: "index.mjs",
-      peerDependencies: { "@cotal-ai/core": version },
-      optionalDependencies: { "@probe/sharp-wasm32": "1.0.0" },
-    }));
-    writeFileSync(join(localWasm, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'local-wasm-ext', summary: 'wasm', run() { console.log('wasm ok'); } });\n`);
-    writeFileSync(join(localGoneUnlocked, "package.json"), JSON.stringify({
-      name: "local-gone-unlocked", version: "1.0.0", type: "module", main: "index.mjs",
-      peerDependencies: { "@cotal-ai/core": version },
-      optionalDependencies: { "@probe/host-opt": "1.0.0" },
-    }));
-    writeFileSync(join(localGoneUnlocked, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'local-gone-unlocked', summary: 'gone', run() { console.log('unlocked ok'); } });\n`);
-    await run("ext", "add", localWasm);
-    await run("ext", "add", localGoneUnlocked);
-    const localMisread = join(work, "local-misread-ext");
-    mkdirSync(localMisread);
-    writeFileSync(join(localMisread, "package.json"), JSON.stringify({
-      name: "local-misread-ext", version: "1.0.0", type: "module", main: "index.mjs",
-      peerDependencies: { "@cotal-ai/core": version },
-      optionalDependencies: { [misreadOptName]: "1.0.0" },
-    }));
-    writeFileSync(join(localMisread, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'local-misread-ext', summary: 'misread', run() { console.log('misread ok'); } });\n`);
-    await run("ext", "add", localMisread);
-    const unlockedConverge1 = await runSelf();
-    check("package-lock=false converges with real-npm cached %2f scoped optional whose name suffix matches this host",
-      unlockedConverge1.stdout.includes("installed package closure is current") && !existsSync(join(extensions, "package-lock.json")),
-      unlockedConverge1.stdout + unlockedConverge1.stderr);
-    const rewrittenHiddenBeforeRemove = JSON.parse(readFileSync(join(extensions, "node_modules", ".package-lock.json"), "utf8")) as {
-      packages?: Record<string, { version?: string }>;
-    };
-    check("package-lock=false keeps valid hidden .package-lock.json entries with no stage paths",
-      !JSON.stringify(rewrittenHiddenBeforeRemove).includes(".extensions.stage-") &&
-      Object.keys(rewrittenHiddenBeforeRemove.packages ?? {}).some((k) => k.endsWith("node_modules/local-wasm-ext")));
-    await run("ext", "remove", "local-misread-ext");
-    const rewrittenHiddenAfterRemove = JSON.parse(readFileSync(join(extensions, "node_modules", ".package-lock.json"), "utf8")) as { packages: Record<string, unknown> };
-    const afterRemoveKeys = Object.keys(rewrittenHiddenAfterRemove.packages);
-    check("cotal ext remove against the rewritten hidden .package-lock.json removes the package cleanly and converges",
-      !existsSync(join(extensions, "node_modules", "local-misread-ext")) &&
-      !afterRemoveKeys.some((k) => k.endsWith("node_modules/local-misread-ext")) &&
-      afterRemoveKeys.some((k) => k.endsWith("node_modules/local-wasm-ext")) &&
-      (await run("local-wasm-ext")).stdout.trim() === "wasm ok" &&
-      (await runSelf()).stdout.includes("installed package closure is current"),
-      afterRemoveKeys);
-
-    // Symlinked node_modules pointing outside the stage is never followed during a staged install.
-    if (process.platform !== "win32") {
-      const outsideNm = join(work, "outside-nm");
-      const outsideVictim = join(outsideNm, "victim");
-      mkdirSync(outsideVictim, { recursive: true });
-      writeFileSync(join(outsideVictim, "package.json"), JSON.stringify({
-        name: "victim", version: "1.0.0", optionalDependencies: { "@probe/host-opt": "1.0.0" },
-      }));
-      const wasmManifest = JSON.stringify({
-        name: "local-wasm-ext", version: "1.0.0", type: "module", main: "index.mjs",
-        peerDependencies: { "@cotal-ai/core": version },
-        optionalDependencies: { "@probe/sharp-wasm32": "1.0.0", victim: "1.0.0" },
-      });
-      writeFileSync(join(localWasm, "package.json"), wasmManifest);
-      writeFileSync(join(extensions, "node_modules", "local-wasm-ext", "package.json"), wasmManifest);
-      rmSync(join(extensions, "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-      const nestedLink = join(extensions, "node_modules", "local-wasm-ext", "node_modules");
-      rmSync(nestedLink, { recursive: true, force: true });
-      symlinkSync(outsideNm, nestedLink, "dir");
-      writeFileSync(claudePayload, Buffer.concat([origClaude, Buffer.from("\n")]));
-      const linkStageRepair = await run("update");
-      check("package-lock=false staged install never deletes outside the stage through a symlinked node_modules",
-        linkStageRepair.stdout.includes("refreshed claude") && existsSync(join(outsideVictim, "package.json")),
-        linkStageRepair.stdout + linkStageRepair.stderr);
-      writeFileSync(join(localWasm, "package.json"), JSON.stringify({
-        name: "local-wasm-ext", version: "1.0.0", type: "module", main: "index.mjs",
-        peerDependencies: { "@cotal-ai/core": version },
-        optionalDependencies: { "@probe/sharp-wasm32": "1.0.0" },
-      }));
-      rmSync(join(extensions, "node_modules", "local-wasm-ext", "node_modules"), { recursive: true, force: true });
-      await run("ext", "add", localWasm);
-      await run("ext", "add", localGoneUnlocked);
-    }
-
-    // Registry package that npm cannot fetch again (registry 503 + empty cache, and offline) does not fail a staged install that main completes.
-    await run("ext", "add", "@probe/reg-unfetchable@1.0.0");
-    check("registry extension @probe/reg-unfetchable runs after install",
-      (await run("reg-unfetchable")).stdout.trim() === "reg-unfetchable ok");
-    rmSync(join(extensions, "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    rmSync(join(extensions, "node_modules", "@probe", "reg-unfetchable", "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    refuseUnfetchable = true;
-    const unfetchableCache = join(work, "empty-unfetchable-cache");
-    const unfetchableEnv = { ...cellEnv, npm_config_cache: unfetchableCache };
-    try {
-      writeFileSync(claudePayload, Buffer.concat([origClaude, Buffer.from("\n")]));
-      const unfetchableUpdate = await exec(process.execPath, [entry, "update"], { cwd, env: unfetchableEnv, timeout: 120_000 });
-      check("package-lock=false staged update still completes when an installed registry package cannot be refetched",
-        unfetchableUpdate.stdout.includes("refreshed claude") &&
-        existsSync(join(extensions, "node_modules", "@probe", "reg-unfetchable", "index.mjs")) &&
-        (await run("reg-unfetchable")).stdout.trim() === "reg-unfetchable ok",
-        unfetchableUpdate.stdout + unfetchableUpdate.stderr);
-      const localOfflineExt = join(work, "local-offline-ext");
-      mkdirSync(localOfflineExt);
-      writeFileSync(join(localOfflineExt, "package.json"), JSON.stringify({
-        name: "local-offline-ext", version: "1.0.0", type: "module", main: "index.mjs",
-        peerDependencies: { "@cotal-ai/core": version },
-      }));
-      writeFileSync(join(localOfflineExt, "index.mjs"), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'local-offline-ext', summary: 'offline', run() { console.log('offline ok'); } });\n`);
-      await exec(process.execPath, [entry, "ext", "add", localOfflineExt], {
-        cwd, env: { ...unfetchableEnv, npm_config_offline: "true" }, timeout: 120_000,
-      });
-      check("package-lock=false ext add with npm_config_offline=true skips clearing unfetchable registry package and completes",
-        (await run("local-offline-ext")).stdout.trim() === "offline ok" &&
-        (await run("reg-unfetchable")).stdout.trim() === "reg-unfetchable ok");
-    } finally {
-      refuseUnfetchable = false;
-    }
-    await run("ext", "remove", "local-offline-ext");
-    await run("ext", "remove", "@probe/reg-unfetchable");
-    // Also verify convergence when the npm cache is cold (unknown absent optional fallback): reconcile makes zero npm calls, and update only runs the version check.
-    const coldEnv = { ...cellEnv, npm_config_cache: join(work, "cold-cache"), npm_config_registry: `http://127.0.0.1:${addressPort}` };
-    rmSync(cellNpmLog, { force: true });
-    const coldSeed = await exec(process.execPath, [entry, "ext", "seed"], { cwd, env: coldEnv, timeout: 120_000 });
-    const coldSeedNpmCalls = existsSync(cellNpmLog) ? readFileSync(cellNpmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    rmSync(cellNpmLog, { force: true });
-    const coldUpdate = await exec(process.execPath, [entry, "update"], { cwd, env: coldEnv, timeout: 120_000 });
-    const coldUpdateNpmCalls = existsSync(cellNpmLog) ? readFileSync(cellNpmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    check("package-lock=false converges with zero reconcile npm installs when npm cache has no packument for an absent non-suffix optional",
-      coldSeedNpmCalls.length === 0 &&
-      !/reinstalling every built-in|Reconciling built-in/.test(coldUpdate.stdout + coldUpdate.stderr) &&
-      coldUpdateNpmCalls.some((c) => c.startsWith("view cotal-ai@latest ")) &&
-      coldUpdateNpmCalls.every((c) => c.startsWith("view cotal-ai@latest ") || c.startsWith("config get ")),
-      { coldSeedOut: coldSeed.stdout + coldSeed.stderr, coldSeedNpmCalls, coldUpdateOut: coldUpdate.stdout + coldUpdate.stderr, coldUpdateNpmCalls });
-
-    // Remove localGoneUnlocked's source and its installed optional dependency, force a staged built-in repair, and verify update completes and converges.
-    rmSync(localGoneUnlocked, { recursive: true, force: true });
-    rmSync(join(extensions, "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    rmSync(join(extensions, "node_modules", "local-gone-unlocked", "node_modules", "@probe", "host-opt"), { recursive: true, force: true });
-    writeFileSync(claudePayload, Buffer.concat([origClaude, Buffer.from("\n")]));
-    const unlockedGoneRepair = await run("update");
-    check("package-lock=false: cotal update completes and keeps local-path extension when source is gone and optional is missing",
-      unlockedGoneRepair.stdout.includes("refreshed claude") &&
-      existsSync(join(extensions, "node_modules", "local-gone-unlocked", "index.mjs")) &&
-      (await run("local-gone-unlocked")).stdout.trim() === "unlocked ok", unlockedGoneRepair.stdout + unlockedGoneRepair.stderr);
-    const unlockedGoneRepeat = await runSelf();
-    check("package-lock=false: second update after missing-source local-path check is a no-op",
-      unlockedGoneRepeat.stdout.includes("installed package closure is current"), unlockedGoneRepeat.stdout + unlockedGoneRepeat.stderr);
-    await run("ext", "remove", "local-gone-unlocked");
-    await run("ext", "remove", "local-wasm-ext");
-  } finally {
-    await new Promise<void>((resolveClose, reject) => registry.close(error => error ? reject(error) : resolveClose()));
-  }
-
-  // Cell C: Real version upgrade with package-lock=false (published previous release -> packed candidate build under test -> second update is a no-op with 0 npm installs).
-  const upgradeRoot = join(work, "real-upgrade");
-  const candidateOut = join(upgradeRoot, "candidate");
-  mkdirSync(candidateOut, { recursive: true });
+  // Pack head packages both at current version (from packedTgzDir) and bumped to targetVer for real self-update.
   const [maj, min, pat] = version.split(".").map(Number);
   const targetVer = `${maj}.${min}.${(pat ?? 0) + 1}`;
+  const candidateOut = join(root, "cand-tgz");
+  mkdirSync(candidateOut, { recursive: true });
   const allDirs = [
     "bin",
     ...["packages", "implementations", "extensions"].flatMap(group =>
       readdirSync(join(REPO, group)).map(sub => `${group}/${sub}`).filter(rel => existsSync(join(REPO, rel, "package.json")))),
   ];
   const fixedNames = new Set((JSON.parse(readFileSync(join(REPO, ".changeset/config.json"), "utf8")) as { fixed: string[][] }).fixed.flat());
-  const cloneWs = join(upgradeRoot, "ws");
+  const cloneWs = join(root, "ws");
   mkdirSync(cloneWs, { recursive: true });
   for (const name of ["package.json", "pnpm-workspace.yaml", "tsconfig.base.json"]) cpSync(join(REPO, name), join(cloneWs, name));
   symlinkSync(join(REPO, "node_modules"), join(cloneWs, "node_modules"), "dir");
   const candidateEntries = new Map<string, { meta: Record<string, unknown>; archive: string }>();
-  const candidateTarballs = new Map<string, Buffer>();
+  const currentEntries = new Map<string, { meta: Record<string, unknown>; archive: string }>();
+  const archiveBytes = new Map<string, Buffer>();
+  for (const tgzName of readdirSync(packedTgzDir).filter(f => f.endsWith(".tgz"))) {
+    const full = join(packedTgzDir, tgzName);
+    const bytes = readFileSync(full);
+    const meta = JSON.parse(execFileSync("tar", ["xzf", full, "-O", "package/package.json"], { env: noNpmEnv, encoding: "utf8" })) as Record<string, unknown> & { name: string };
+    const key = `cur-${tgzName}`;
+    currentEntries.set(meta.name, { meta, archive: key });
+    archiveBytes.set(key, bytes);
+  }
   for (const rel of allDirs) {
     const srcRoot = rel === "packages/seat" ? seatClone : join(REPO, rel);
     const meta = JSON.parse(readFileSync(join(srcRoot, "package.json"), "utf8")) as Record<string, unknown> & { name?: string };
@@ -533,20 +225,28 @@ async function checkReview2PackageLockCells(
     if (!existsSync(join(dst, "package.json"))) continue;
     const skip = ["packages/workspace", "packages/seat"].includes(rel) ? ["--config.ignore-scripts=true"] : [];
     const before = new Set(readdirSync(candidateOut));
-    execFileSync("pnpm", ["-C", dst, "pack", ...skip, "--pack-destination", candidateOut], { env: cleanEnv, stdio: ["ignore", "ignore", "inherit"] });
+    execFileSync("pnpm", ["-C", dst, "pack", ...skip, "--pack-destination", candidateOut], { env: noNpmEnv, stdio: ["ignore", "ignore", "inherit"] });
     const tgzName = readdirSync(candidateOut).find(f => !before.has(f) && f.endsWith(".tgz"))!;
     const bytes = readFileSync(join(candidateOut, tgzName));
-    const packedMeta = JSON.parse(execFileSync("tar", ["xzf", join(candidateOut, tgzName), "-O", "package/package.json"], { env: cleanEnv, encoding: "utf8" })) as Record<string, unknown> & { name: string };
-    candidateEntries.set(packedMeta.name, { meta: packedMeta, archive: tgzName });
-    candidateTarballs.set(tgzName, bytes);
+    const packedMeta = JSON.parse(execFileSync("tar", ["xzf", join(candidateOut, tgzName), "-O", "package/package.json"], { env: noNpmEnv, encoding: "utf8" })) as Record<string, unknown> & { name: string };
+    const key = `cand-${tgzName}`;
+    candidateEntries.set(packedMeta.name, { meta: packedMeta, archive: key });
+    archiveBytes.set(key, bytes);
   }
+
   const upstreamCache = new Map<string, Record<string, unknown>>();
   let overlayUrl = "";
+  let serveMode: "current" | "candidate" = "current";
   const overlay = createServer(async (req, res) => {
     try {
-      const rawPath = decodeURIComponent(new URL(req.url!, "http://localhost").pathname).slice(1);
-      if (rawPath.startsWith("__cand/")) {
-        const bytes = candidateTarballs.get(rawPath.slice("__cand/".length));
+      const urlObj = new URL(req.url!, "http://localhost");
+      if (urlObj.pathname.startsWith("/refused")) {
+        res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "registry refused" }));
+        return;
+      }
+      const rawPath = decodeURIComponent(urlObj.pathname).slice(1);
+      if (rawPath.startsWith("__tar/")) {
+        const bytes = archiveBytes.get(rawPath.slice("__tar/".length));
         if (!bytes) { res.writeHead(404).end(); return; }
         res.writeHead(200, { "content-type": "application/octet-stream" }).end(bytes);
         return;
@@ -564,14 +264,16 @@ async function checkReview2PackageLockCells(
         upstreamCache.set(name, await up.json() as Record<string, unknown>);
       }
       const packument = structuredClone(upstreamCache.get(name)!) as { "dist-tags": Record<string, string>; versions: Record<string, unknown> };
-      const local = candidateEntries.get(name);
+      const localMap = serveMode === "candidate" ? candidateEntries : currentEntries;
+      const localVer = serveMode === "candidate" ? targetVer : version;
+      const local = localMap.get(name);
       if (local) {
-        const bytes = candidateTarballs.get(local.archive)!;
-        packument.versions[targetVer] = {
+        const bytes = archiveBytes.get(local.archive)!;
+        packument.versions[localVer] = {
           ...local.meta,
-          dist: { tarball: `${overlayUrl}/__cand/${local.archive}`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`, shasum: createHash("sha1").update(bytes).digest("hex") },
+          dist: { tarball: `${overlayUrl}/__tar/${local.archive}`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`, shasum: createHash("sha1").update(bytes).digest("hex") },
         };
-        packument["dist-tags"].latest = targetVer;
+        packument["dist-tags"].latest = localVer;
       }
       const body = selector ? packument.versions[packument["dist-tags"][selector] ?? selector] : packument;
       res.writeHead(body ? 200 : 404, { "content-type": "application/json" }).end(JSON.stringify(body ?? { error: "not found" }));
@@ -585,66 +287,218 @@ async function checkReview2PackageLockCells(
     const addr = overlay.address();
     if (!addr || typeof addr === "string") throw new Error("overlay has no port");
     overlayUrl = `http://127.0.0.1:${addr.port}`;
-    const upHome = join(upgradeRoot, "home");
-    const upCfg = join(upgradeRoot, "cfg");
-    const upCotal = join(upgradeRoot, "cotal");
-    const upPrefix = join(upgradeRoot, "global");
-    const upCache = join(upgradeRoot, "cache");
-    const upTmp = join(upgradeRoot, "tmp");
-    const upTools = join(upgradeRoot, "tools");
-    for (const d of [upHome, upCfg, upCotal, upPrefix, upCache, upTmp, upTools]) mkdirSync(d, { recursive: true, mode: 0o700 });
-    const upNpmrc = join(upHome, ".npmrc");
-    const realNpm = resolveOnPath("npm", cleanEnv)!;
-    const npmLog = join(upTools, "npm.log");
-    writeFileSync(join(upTools, "npm"), `#!/usr/bin/env node\nconst fs = require("node:fs"), cp = require("node:child_process");\nfs.appendFileSync(${JSON.stringify(npmLog)}, process.argv.slice(2).join(" ") + "\\n");\nprocess.exit(cp.spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);\n`, { mode: 0o755 });
-    const upEnv: NodeJS.ProcessEnv = {
-      ...cleanEnv,
-      HOME: upHome, COTAL_HOME: upCotal, XDG_CONFIG_HOME: upCfg, TMPDIR: upTmp,
-      npm_config_prefix: upPrefix, npm_config_cache: upCache, npm_config_userconfig: upNpmrc,
-      npm_config_registry: overlayUrl, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off",
-      PATH: `${join(upPrefix, "bin")}${delimiter}${upTools}${delimiter}${cleanEnv.PATH ?? ""}`,
+    const queryExtRoot = async (binEntry: string, dir: string, env: NodeJS.ProcessEnv): Promise<string> => {
+      const out = await exec(process.execPath, [binEntry, "ext", "root"], { cwd: dir, env, timeout: 60_000 });
+      return out.stdout.trim();
     };
-    writeFileSync(upNpmrc, "");
-    const cotalUp = await (await fetch("https://registry.npmjs.org/cotal-ai", { signal: AbortSignal.timeout(30_000) })).json() as { "dist-tags"?: { latest?: string } };
-    const prevVer = cotalUp["dist-tags"]?.latest ?? "0.183.0";
-    const globalInstall = await exec(realNpm, ["install", "-g", "--prefix", upPrefix, `cotal-ai@${prevVer}`, "--no-audit", "--no-fund"], { env: upEnv, timeout: 240_000 });
-    const globalBin = join(upPrefix, "bin", "cotal");
-    const installedPrevVer = (await exec(globalBin, ["--version"], { cwd: upHome, env: upEnv })).stdout.trim();
-    check(`installed previous release cotal-ai@${prevVer} globally`,
-      existsSync(globalBin) && installedPrevVer.split("\n")[0] === `cotal-ai ${prevVer}`,
-      { installedPrevVer, stderr: globalInstall.stderr });
-    await exec(globalBin, ["ext", "seed"], { cwd: upHome, env: upEnv, timeout: 240_000 });
-    // User now sets package-lock=false in .npmrc before upgrading to the candidate build under test.
-    writeFileSync(upNpmrc, "package-lock=false\n");
-    const upgraded = await exec(globalBin, ["update", "--self"], { cwd: upHome, env: upEnv, timeout: 300_000 });
-    const afterVer = (await exec(globalBin, ["--version"], { cwd: upHome, env: upEnv })).stdout.trim();
-    check(`real upgrade with package-lock=false reaches ${targetVer} and reconciles built-ins`,
-      afterVer.split("\n")[0] === `cotal-ai ${targetVer}` &&
-      afterVer.split("\n").slice(1).every(line => line.trim().endsWith(` ${targetVer}`)) &&
-      /connectors reconciled/.test(upgraded.stdout + upgraded.stderr),
-      { afterVer, output: upgraded.stdout + upgraded.stderr });
-    rmSync(npmLog, { force: true });
-    const secondUpgrade = await exec(globalBin, ["update", "--self"], { cwd: upHome, env: upEnv, timeout: 180_000 });
-    const secondNpmCalls = existsSync(npmLog) ? readFileSync(npmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    check("second update --self after real version upgrade with package-lock=false is a no-op with zero npm installs",
-      secondUpgrade.stdout.includes("installed package closure is current") &&
-      secondNpmCalls.some((c) => c.startsWith("view cotal-ai@latest ")) &&
-      secondNpmCalls.every((c) => c.startsWith("view cotal-ai@latest ") || c.startsWith("config get ")),
-      { stdout: secondUpgrade.stdout, stderr: secondUpgrade.stderr, secondNpmCalls });
-    rmSync(npmLog, { force: true });
-    const seedRepeat = await exec(globalBin, ["ext", "seed"], { cwd: upHome, env: upEnv, timeout: 180_000 });
-    const seedNpmCalls = existsSync(npmLog) ? readFileSync(npmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    rmSync(npmLog, { force: true });
-    const plainRepeat = await exec(globalBin, ["update"], { cwd: upHome, env: upEnv, timeout: 180_000 });
-    const plainNpmCalls = existsSync(npmLog) ? readFileSync(npmLog, "utf8").trim().split("\n").filter(Boolean) : [];
-    check("second reconcile and plain update after real version upgrade with package-lock=false verify all built-ins with zero npm installs",
-      seedNpmCalls.length === 0 &&
-      !/reinstalling every built-in|Reconciling built-in/.test(plainRepeat.stdout + plainRepeat.stderr) &&
-      plainNpmCalls.some((c) => c.startsWith("view cotal-ai@latest ")) &&
-      plainNpmCalls.every((c) => c.startsWith("view cotal-ai@latest ") || c.startsWith("config get ")),
-      { seedOut: seedRepeat.stdout + seedRepeat.stderr, seedNpmCalls, stdout: plainRepeat.stdout, stderr: plainRepeat.stderr, plainNpmCalls });
+    const queryGlobalExtRoot = async (globalPrefix: string, dir: string, env: NodeJS.ProcessEnv): Promise<string> => {
+      const out = await runGlobalCli(globalPrefix, ["ext", "root"], { cwd: dir, env, timeout: 60_000 });
+      return out.stdout.trim();
+    };
+
+    // 3a & 3b & 3c: built CLI over published layout with user .npmrc, env, project .npmrc, and default config parity.
+    {
+      serveMode = "current";
+      const c3a = makeCase("cell-3ab");
+      c3a.env.npm_config_registry = overlayUrl;
+      writeFileSync(c3a.userNpmrc, "package-lock=false\n");
+      const npmrcBytes = readFileSync(c3a.userNpmrc);
+      await exec(process.execPath, [entry, "ext", "seed"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
+      const extDir = await queryExtRoot(entry, c3a.dir, c3a.env);
+      const lockPath = join(extDir, "package-lock.json");
+      const claudeIdx = join(extDir, "node_modules/@cotal-ai/connector-claude-code/dist/index.js");
+      writeFileSync(claudeIdx, `${readFileSync(claudeIdx, "utf8")}\n`);
+      const u1 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
+      const u2 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: c3a.env, timeout: 240_000 });
+      check("3a: user .npmrc package-lock=false updates cleanly, writes current package-lock.json, and keeps .npmrc byte-identical",
+        /refreshed claude\b/.test(u1.stdout + u1.stderr)
+        && !/reinstalling every built-in|Reconciling built-in/.test(u2.stdout + u2.stderr)
+        && lockHasAllBuiltIns(lockPath, version)
+        && readFileSync(c3a.userNpmrc).equals(npmrcBytes),
+        { u1: u1.stdout + u1.stderr, u2: u2.stdout + u2.stderr });
+
+      writeFileSync(c3a.userNpmrc, "");
+      rmSync(lockPath);
+      const env1 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: { ...c3a.env, npm_config_package_lock: "false" }, timeout: 240_000 });
+      const env2 = await exec(process.execPath, [entry, "update"], { cwd: c3a.dir, env: { ...c3a.env, npm_config_package_lock: "false" }, timeout: 240_000 });
+      check("3b (env): npm_config_package_lock=false writes current package-lock.json and converges",
+        lockHasAllBuiltIns(lockPath, version)
+        && !/reinstalling every built-in|Reconciling built-in/.test(env2.stdout + env2.stderr),
+        { env1: env1.stdout + env1.stderr, env2: env2.stdout + env2.stderr });
+
+      const workProject = join(c3a.dir, "project-cwd");
+      mkdirSync(workProject, { recursive: true });
+      const projRc = join(workProject, ".npmrc");
+      writeFileSync(projRc, "package-lock=false\n");
+      const projRcBytes = readFileSync(projRc);
+      rmSync(lockPath);
+      const prj1 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: c3a.env, timeout: 240_000 });
+      const prj2 = await exec(process.execPath, [entry, "update"], { cwd: workProject, env: c3a.env, timeout: 240_000 });
+      check("3b (project .npmrc): working-folder package-lock=false writes current prefix lock and leaves project untouched",
+        lockHasAllBuiltIns(lockPath, version)
+        && !/reinstalling every built-in|Reconciling built-in/.test(prj2.stdout + prj2.stderr)
+        && readFileSync(projRc).equals(projRcBytes) && !existsSync(join(workProject, "package-lock.json")),
+        { prj1: prj1.stdout + prj1.stderr, prj2: prj2.stdout + prj2.stderr });
+
+      // 3c: default npm configuration: compare lock package list and installed tree against main's npm flags.
+      const c3c = makeCase("cell-3c-default");
+      c3c.env.npm_config_registry = overlayUrl;
+      await exec(process.execPath, [entry, "ext", "seed"], { cwd: c3c.dir, env: c3c.env, timeout: 240_000 });
+      const defaultExtDir = await queryExtRoot(entry, c3c.dir, c3c.env);
+      const defaultLock = JSON.parse(readFileSync(join(defaultExtDir, "package-lock.json"), "utf8")) as {
+        packages: Record<string, unknown>;
+      };
+      const defaultPkgJson = JSON.parse(readFileSync(join(defaultExtDir, "package.json"), "utf8")) as {
+        dependencies: Record<string, string>;
+      };
+      const controlDir = join(c3c.dir, "main-control-prefix");
+      mkdirSync(controlDir, { recursive: true });
+      writeFileSync(join(controlDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
+      const specs = Object.values(defaultPkgJson.dependencies).map(spec => spec.startsWith("file:") ? resolve(defaultExtDir, spec.slice(5)) : spec);
+      await runNpm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs, "--prefix", controlDir, "--include=optional", "--legacy-peer-deps"], {
+        cwd: c3c.dir, env: c3c.env, timeout: 240_000,
+      });
+      const controlLock = JSON.parse(readFileSync(join(controlDir, "package-lock.json"), "utf8")) as {
+        packages: Record<string, unknown>;
+      };
+      const topInstalled = (dir: string) => readdirSync(join(dir, "node_modules/@cotal-ai")).sort();
+      check("3c: default npm configuration produces the same lock package list and installed tree as main",
+        JSON.stringify(Object.keys(defaultLock.packages).sort()) === JSON.stringify(Object.keys(controlLock.packages).sort())
+        && JSON.stringify(topInstalled(defaultExtDir)) === JSON.stringify(topInstalled(controlDir)),
+        { defaultCount: Object.keys(defaultLock.packages).length, controlCount: Object.keys(controlLock.packages).length });
+    }
+
+    // 3d: Stale prefix made by published cotal-ai@0.183.0 with package-lock=false: first run of fixed binary reinstalls once, second changes nothing.
+    {
+      const c3d = makeCase("cell-3d-stale-from-01830");
+      writeFileSync(c3d.userNpmrc, "package-lock=false\n");
+      const npmrcBefore = readFileSync(c3d.userNpmrc);
+      await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, "cotal-ai@0.183.0", "--no-audit", "--no-fund"], {
+        cwd: c3d.dir, env: c3d.env, timeout: 240_000,
+      });
+      const pubVer = (await runGlobalCli(c3d.globalPrefix, ["--version"], { cwd: c3d.dir, env: c3d.env })).stdout.trim();
+      check("3d: installed published cotal-ai@0.183.0", pubVer.split("\n")[0] === "cotal-ai 0.183.0", pubVer);
+      await runGlobalCli(c3d.globalPrefix, ["ext", "seed"], { cwd: c3d.dir, env: c3d.env, timeout: 240_000 });
+      const staleExtDir = await queryGlobalExtRoot(c3d.globalPrefix, c3d.dir, c3d.env);
+      const staleLockPath = join(staleExtDir, "package-lock.json");
+      check("3d: published 0.183.0 with package-lock=false left the extension prefix without package-lock.json",
+        !existsSync(staleLockPath) && existsSync(join(staleExtDir, "extensions.json")));
+
+      // Replace the global binary in-place with the packed build of this head (same entry path and 0.183.0 version).
+      serveMode = "current";
+      const cotalCurTgz = join(packedTgzDir, readdirSync(packedTgzDir).find(f => /^cotal-ai-\d/.test(f))!);
+      await runNpm(["install", "-g", "--prefix", c3d.globalPrefix, cotalCurTgz, "--no-audit", "--no-fund"], {
+        cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl, npm_config_cache: join(c3d.dir, "head-cache") }, timeout: 240_000,
+      });
+      const run1 = await runGlobalCli(c3d.globalPrefix, ["update"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
+      console.log("=== 3d stale-prefix run 1 ===\n" + (run1.stdout + run1.stderr).trim());
+      const lockShaAfterRun1 = existsSync(staleLockPath) ? createHash("sha256").update(readFileSync(staleLockPath)).digest("hex") : "";
+      const run2 = await runGlobalCli(c3d.globalPrefix, ["update"], { cwd: c3d.dir, env: { ...c3d.env, npm_config_registry: overlayUrl }, timeout: 240_000 });
+      console.log("=== 3d stale-prefix run 2 ===\n" + (run2.stdout + run2.stderr).trim());
+      const lockShaAfterRun2 = existsSync(staleLockPath) ? createHash("sha256").update(readFileSync(staleLockPath)).digest("hex") : "";
+      check("3d: first run on stale 0.183.0 prefix reinstalls built-ins once and writes package-lock.json",
+        /reinstalling every built-in: the prefix lock is unreadable/.test(run1.stdout + run1.stderr)
+        && /connectors reconciled - refreshed /.test(run1.stdout + run1.stderr)
+        && lockHasAllBuiltIns(staleLockPath, version),
+        run1.stdout + run1.stderr);
+      check("3d: second run changes nothing and keeps user .npmrc byte-identical",
+        !/reinstalling every built-in|Reconciling built-in/.test(run2.stdout + run2.stderr)
+        && /connectors reconciled - verified /.test(run2.stdout + run2.stderr)
+        && lockShaAfterRun2 === lockShaAfterRun1
+        && readFileSync(c3d.userNpmrc).equals(npmrcBefore),
+        run2.stdout + run2.stderr);
+    }
+
+    // 3e: Linked extensions folder with a refused registry: nothing in the live prefix is removed.
+    {
+      const c3e = makeCase("cell-3e-linked-extensions-refused");
+      c3e.env.npm_config_registry = overlayUrl;
+      writeFileSync(c3e.userNpmrc, "package-lock=false\n");
+      await exec(process.execPath, [entry, "ext", "seed"], { cwd: c3e.dir, env: c3e.env, timeout: 240_000 });
+      const liveExtLink = await queryExtRoot(entry, c3e.dir, c3e.env);
+      const realLiveExt = join(c3e.dir, "moved-extensions-target");
+      renameSync(liveExtLink, realLiveExt);
+      symlinkSync(realLiveExt, liveExtLink, "junction");
+      const snapshotBefore = snapshotTree(realLiveExt);
+      let refusedStatus = 0;
+      try {
+        await exec(process.execPath, [entry, "ext", "add", "@probe/refused-live@1.0.0"], {
+          cwd: c3e.dir,
+          env: {
+            ...c3e.env,
+            npm_config_registry: `${overlayUrl}/refused`,
+            npm_config_cache: join(c3e.dir, "empty-cache"),
+            npm_config_fetch_retries: "0",
+          },
+          timeout: 60_000,
+        });
+      } catch (err) {
+        refusedStatus = typeof (err as { code?: number }).code === "number" ? (err as { code: number }).code : 1;
+      }
+      const snapshotAfter = snapshotTree(realLiveExt);
+      check("3e: linked extensions folder with refused registry removes nothing from the live prefix",
+        refusedStatus !== 0 && lstatSync(liveExtLink).isSymbolicLink()
+        && JSON.stringify(snapshotAfter) === JSON.stringify(snapshotBefore));
+    }
+
+    // 4: Real upgrade live: install published cotal-ai@0.183.0 with package-lock=false in user .npmrc, update to packed head, load a built-in connector.
+    {
+      const c4 = makeCase("item-4-real-upgrade");
+      writeFileSync(c4.userNpmrc, "package-lock=false\n");
+      const npmrcBefore = readFileSync(c4.userNpmrc);
+      await runNpm(["install", "-g", "--prefix", c4.globalPrefix, "cotal-ai@0.183.0", "--no-audit", "--no-fund"], {
+        cwd: c4.dir, env: c4.env, timeout: 240_000,
+      });
+      await runGlobalCli(c4.globalPrefix, ["ext", "seed"], { cwd: c4.dir, env: c4.env, timeout: 240_000 });
+      const beforeVer = (await runGlobalCli(c4.globalPrefix, ["--version"], { cwd: c4.dir, env: c4.env })).stdout.trim();
+      console.log("=== Item 4 versions BEFORE upgrade ===\n" + beforeVer);
+      check("4: installed published cotal-ai@0.183.0 with package-lock=false before upgrade",
+        beforeVer.split("\n")[0] === "cotal-ai 0.183.0"
+        && beforeVer.split("\n").slice(1).every(line => line.trim().endsWith(" 0.183.0")),
+        beforeVer);
+
+      serveMode = "candidate";
+      const globalBinDir = process.platform === "win32" ? c4.globalPrefix : join(c4.globalPrefix, "bin");
+      const upgradeEnv: NodeJS.ProcessEnv = {
+        ...c4.env,
+        npm_config_registry: overlayUrl,
+        PATH: `${globalBinDir}${delimiter}${c4.env.PATH ?? ""}`,
+      };
+      const upgraded = await runGlobalCli(c4.globalPrefix, ["update", "--self"], { cwd: c4.dir, env: upgradeEnv, timeout: 300_000 });
+      const afterVer = (await runGlobalCli(c4.globalPrefix, ["--version"], { cwd: c4.dir, env: upgradeEnv })).stdout.trim();
+      console.log("=== Item 4 versions AFTER upgrade ===\n" + afterVer);
+      const upgradedExtDir = await queryGlobalExtRoot(c4.globalPrefix, c4.dir, upgradeEnv);
+      const upgradedLockPath = join(upgradedExtDir, "package-lock.json");
+      check(`4: real upgrade with package-lock=false reaches ${targetVer}, writes current package-lock.json, and leaves .npmrc untouched`,
+        afterVer.split("\n")[0] === `cotal-ai ${targetVer}`
+        && afterVer.split("\n").slice(1).every(line => line.trim().endsWith(` ${targetVer}`))
+        && /connectors reconciled/.test(upgraded.stdout + upgraded.stderr)
+        && lockHasAllBuiltIns(upgradedLockPath, targetVer)
+        && readFileSync(c4.userNpmrc).equals(npmrcBefore),
+        { afterVer, out: upgraded.stdout + upgraded.stderr });
+
+      const repeatSelf = await runGlobalCli(c4.globalPrefix, ["update", "--self"], { cwd: c4.dir, env: upgradeEnv, timeout: 180_000 });
+      check("4: repeat update --self after real upgrade is current without reinstalling",
+        repeatSelf.stdout.includes("installed package closure is current"),
+        repeatSelf.stdout + repeatSelf.stderr);
+
+      const probeProject = join(c4.dir, "connector-load-project");
+      mkdirSync(probeProject, { recursive: true });
+      const setupOut = await runGlobalCli(c4.globalPrefix, ["setup", "--destination", "local", "-H", "claude", "--project", probeProject, "--space", "upgrade-probe", "--configure-only", "-y"], {
+        cwd: probeProject, env: upgradeEnv, timeout: 120_000,
+      });
+      const previewOut = await runGlobalCli(c4.globalPrefix, ["spawn", "--dry-run", "--harness", "claude", "--model", "claude-opus-5-5", "--json"], {
+        cwd: probeProject, env: upgradeEnv, timeout: 120_000,
+      });
+      console.log("=== Item 4 built-in connector load (spawn --dry-run) ===\n" + previewOut.stdout.trim());
+      const previewJson = JSON.parse(previewOut.stdout) as { ok?: boolean; result?: { harness?: string } };
+      check("4: upgraded CLI loads built-in claude connector cleanly in setup and spawn --dry-run",
+        setupOut.stdout.length + setupOut.stderr.length > 0 && previewJson.ok === true && previewJson.result?.harness === "claude",
+        previewOut.stdout);
+    }
   } finally {
     await new Promise<void>((resolveClose, reject) => overlay.close(error => error ? reject(error) : resolveClose()));
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -913,7 +767,6 @@ try {
     const loaded = importDashboard();
     check("the dashboard imports after self-update rebinds its peer", loaded.status === 0, loaded.stderr);
     check("a second self-update skips reconciliation", selfUpdate().includes("installed package closure is current"));
-    checkSelfUpdateWithoutPackageLock(selfUpdate, extensionPrefix, npmrc, installedAt("claude", "package.json"), updateEnv, native, nativeManifest);
   }
   // Real npm creates the reported existing installation while leaving its lock intact.
   const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
@@ -965,7 +818,7 @@ try {
   }
   if (process.platform === "linux") {
     await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
-    await checkReview2PackageLockCells(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix, installedAt("claude", "package.json"), seatClone);
+    await checkPackageLockCellsAndUpgrade(invokedBin, umbrellaVersion, seatClone, tgz);
   }
 } finally {
   rmSync(base, { recursive: true, force: true });

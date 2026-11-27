@@ -20,8 +20,6 @@ import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
-import { packagesMissingOptionalDependencies, publicPrefixLockCurrent } from "../seed/verify.js";
-import { assertExtensionPrefixIdle } from "@cotal-ai/workspace";
 
 export const extFlags = [
   jsonFlag,
@@ -131,12 +129,13 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // line (shared with the manager's PtyRuntime launch).
   // Use the same peer policy for installs and removals, including failed-add cleanup. Cotal links
   // its shared peers to the running binary's copies after npm changes the prefix.
-  // The prefix verifier requires every host-compatible dependency, including native optional
-  // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  // The prefix verifier requires a current package-lock.json and every host-compatible dependency,
+  // including native optional packages. CLI flags win over ambient package-lock=false or omit=optional,
+  // also when npm removes a sibling.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--package-lock=true", "--legacy-peer-deps"]);
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
@@ -282,43 +281,6 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
   }
 }
 
-async function installStagedSet(
-  stage: { readonly config: string; readonly prefix: string },
-  ownerConfig: string,
-  npmPrefix: string,
-  livePrefix: string,
-  specs: readonly string[],
-  offline: boolean,
-  isInterrupted: () => boolean,
-): Promise<{ status: number | null; output: string }> {
-  // npm's own update notifier can query the registry even in offline mode.
-  const cacheOnly = offline ? ["--offline", "--update-notifier=false"] : [];
-  const installArgs = ["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs];
-  let prefixIdle = true;
-  try { assertExtensionPrefixIdle(ownerConfig); } catch { prefixIdle = false; }
-  const cleared = prefixIdle && !offline
-    ? packagesMissingOptionalDependencies(stage.prefix, livePrefix).filter((dir) => {
-        const stat = lstatSync(dir, { throwIfNoEntry: false });
-        return Boolean(stat && !stat.isSymbolicLink() && stat.isDirectory() && realpathSync(dir).startsWith(npmPrefix + sep));
-      })
-    : [];
-  if (!cleared.length) return npm(installArgs, npmPrefix);
-  const preClearDir = join(dirname(stage.config), "pre-clear");
-  cpSync(stage.prefix, preClearDir, { recursive: true, verbatimSymlinks: true });
-  for (const dir of cleared) rmSync(dir, { recursive: true, force: true });
-  const first = await npm(installArgs, npmPrefix);
-  if (first.status === 0 || isInterrupted() || existsSync(extensionNpmMutationPath())) {
-    rmSync(preClearDir, { recursive: true, force: true });
-    return first;
-  }
-  for (const entry of readdirSync(stage.prefix)) rmSync(join(stage.prefix, entry), { recursive: true, force: true });
-  for (const entry of readdirSync(preClearDir)) {
-    cpSync(join(preClearDir, entry), join(stage.prefix, entry), { recursive: true, verbatimSymlinks: true });
-  }
-  rmSync(preClearDir, { recursive: true, force: true });
-  return npm(installArgs, npmPrefix);
-}
-
 /** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
@@ -373,7 +335,9 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await installStagedSet(stage, ownerConfig, npmPrefix, livePrefix, specs, Boolean(opts?.offline), () => interrupted);
+    // npm's own update notifier can query the registry even in offline mode.
+    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
@@ -415,20 +379,7 @@ export async function installExtensionSet(
     // The verifiers wrote one complete inventory inside the stage. Rebind every retained package,
     // including packages not changed by this pass, just as each former individual add did.
     linkExtensionPeers(loadExtensionsManifest().extensions, requests[0]!.pkg, console.error);
-    const stageLockPath = join(stage.prefix, "package-lock.json");
-    let lockHasAbsoluteFile = false;
-    if (existsSync(stageLockPath)) {
-      try {
-        JSON.parse(readFileSync(stageLockPath, "utf8"), (key, item: unknown) => {
-          if (key === "resolved" && typeof item === "string" && item.startsWith("file:") && isAbsolute(item.slice(5))) lockHasAbsoluteFile = true;
-          return item;
-        });
-      } catch { lockHasAbsoluteFile = true; }
-    }
-    const lockNames = !publicPrefixLockCurrent(stage.prefix) || lockHasAbsoluteFile
-      ? ["package.json", "package-lock.json", join("node_modules", ".package-lock.json")]
-      : ["package.json", "package-lock.json"];
-    for (const name of lockNames) {
+    for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) => {
@@ -436,7 +387,7 @@ export async function installExtensionSet(
         const destination = resolve(npmPrefix, item.slice(5));
         return `file:${relative(livePrefix, destination).split(sep).join("/")}`;
       });
-      if (name !== "package.json") dropForeignLockEntries(value);
+      if (name === "package-lock.json") dropForeignLockEntries(value);
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     const verified = loadExtensionsManifest();

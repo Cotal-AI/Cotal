@@ -398,11 +398,8 @@ connector installed in its harness to this release (the `cotal` plugin copy Clau
 load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator extensions against
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
-and every package the lock records is on disk at its recorded version. When npm's `package-lock`
-setting is false, update checks npm's installed-tree record and declared optional dependencies
-when the public lockfile is missing, stale, or incomplete, and still verifies each built-in against
-the shipped payload. The extension's entry file must also be present
-and loadable. The extension check does not compare file contents. Cotal keeps a working
+and every package the lock records is on disk at its recorded version. The extension's entry file
+must also be present and loadable. The extension check does not compare file contents. Cotal keeps a working
 local-path extension at the binary's version under the same lock and entry checks. If it needs
 repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
 needs repair is reinstalled at the binary's exact version. A built-in or extension
@@ -705,6 +702,9 @@ It performs no install, reconcile or process restart and takes no mesh selection
 afterwards, no log files and no npm update notifier, so it leaves nothing in npm's cache, log
 directory or notifier stamp. Missing registry data or an unreadable extension inventory remains
 unknown or partial, never an empty successful check.
+If npm is in offline mode, the temporary-cache lookup cannot contact the registry, so `cotal update --check`
+reports unknown availability, warns that npm is in offline mode and exits 4. Disable npm offline
+mode for that invocation if you want a live registry check.
 If the extension manifest is corrupt, the check still reports the running and registry versions,
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
 and the `EXTENSION_INVENTORY_UNREADABLE` warning. The check directs you to `cotal ext seed --repair`
@@ -914,6 +914,9 @@ Removing an extension or cleaning up a failed add keeps unrelated file-based ext
 installed copies, rather than turning them into links to their source or the built-in seed store.
 Removal uses the same peer policy as installation. Cotal relinks its shared packages without npm
 looking up peer dependencies for the remaining extensions in the registry.
+Extension installs, updates and removals maintain `package-lock.json` inside Cotal's extensions
+prefix even when npm configuration sets `package-lock=false`, without changing your `.npmrc` or
+other projects.
 On Windows, background extension installs and seeding do not open a terminal window.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,

@@ -467,22 +467,14 @@ record:
 
 - It compares a seeded entry at the running generation byte for byte with the shipped payload and
   with the seed-store copy (`seed/verify.ts`).
-- It compares the prefix tree with its lock once. When the public lockfile is valid and covers the
-  prefix manifest, verify mode excuses an absent optional entry through its recorded `os`, `cpu`, or
-  `libc` list under npm's `checkPlatform` rule, with negations and `any` included. When the public
-  lockfile is missing, stale, or incomplete, `node_modules/.package-lock.json` exists, and npm's
-  `package-lock` setting is false, verify mode checks that installed-tree record and declared
-  optional dependencies while still checking each seeded built-in separately. For an absent declared
-  optional dependency in that mode, verify mode reads `os`, `cpu`, and `libc` from a local `file:`
-  source, an existing public lock entry, or npm's local metadata cache without network access, falls
-  back to platform suffixes in the package name when none of those records exist, and excuses an
-  absent optional whose platform still cannot be determined so repeated updates converge.
-- Extension installs and removals explicitly include optional dependencies, even when npm configuration
-  sets `omit=optional`. In installed-tree mode (`package-lock=false`), a non-offline staged install
-  clears only installed packages whose missing optional dependencies verify mode would report, while
-  keeping installed local-path packages whose source folder is gone and restoring cleared packages if
-  npm cannot fetch them again in that run. Host-compatible native packages are installed, and npm still
-  excludes packages for other platforms. The operator's npm configuration is not rewritten.
+- It compares the prefix tree with its lock once. An optional entry can leave this host out through
+  its `os`, `cpu`, or `libc` list, under npm's own `checkPlatform` rule with negations and `any`
+  included. Such an entry is absent by design, and verify mode does not count it as missing.
+- Extension installs and removals explicitly include optional dependencies and enable the prefix
+  lockfile, even when npm configuration sets `omit=optional` or `package-lock=false`. Host-compatible
+  native packages are installed, npm still excludes packages for other platforms, and
+  `package-lock.json` stays current in the extensions prefix. The operator's npm configuration is
+  not rewritten.
 - It reinstalls a built-in only when something differs, so a current install pays no reinstall. An
   operator-managed entry always counts as a difference.
 

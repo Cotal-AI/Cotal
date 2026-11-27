@@ -25,7 +25,7 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   else { fail++; console.log(`  x FAIL: ${n}`, extra ?? ""); }
 };
 
-type Refresh = { refreshBearer: (initial?: boolean) => Promise<void> };
+type Refresh = { credentials: { refreshBearer: (initial?: boolean) => Promise<void> } };
 
 const ep = new CotalEndpoint({
   space: "s891",
@@ -44,7 +44,7 @@ ep.on("warning", (err: Error) => { warnings.push(err); });
 
 let threw: unknown;
 try {
-  await (ep as unknown as Refresh).refreshBearer(false);
+  await (ep as unknown as Refresh).credentials.refreshBearer(false);
 } catch (e) {
   threw = e;
 }
