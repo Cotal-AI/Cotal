@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimExtensionMutationLock, claimUpdateClosureAccess, inspectLock, installationWriter, previousUpdateConnectorConfig, processStartToken, protectedLocalDirectory, protectedResolvedDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimExtensionMutationLock, claimUpdateClosureAccess, inspectLock, installationWriter, liveUpdateClosureOwner, previousUpdateConnectorConfig, processStartToken, protectedLocalDirectory, protectedLocalEntry, protectedResolvedDirectory, assertProtectedFileAccess, readLocalRecordSource, readUpdateRecovery, updateSnapshotConfig } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -28,6 +28,25 @@ export function reclaimPreviousExtensionStages(): void {
   reclaimExtensionStages(previousUpdateConnectorConfig);
 }
 
+/** Reclaim stages from the rollback source once the bound target reconciliation has finished. */
+export function reclaimReplacedExtensionStages(targetVersion: string): void {
+  reclaimExtensionStages(() => {
+    if (process.env.COTAL_UPDATE_PARENT !== String(process.ppid)) return;
+    const record = readUpdateRecovery();
+    if (!record || (record.phase !== "replacing" && record.phase !== "verified-ready") ||
+        record.target !== targetVersion || record.owner?.pid !== process.ppid || !liveUpdateClosureOwner(record)) return;
+    const previous = updateSnapshotConfig(record);
+    return previous && realpathSync(previous) !== realpathSync(connectorConfigDir()) ? previous : undefined;
+  });
+}
+
+function protectedStageDirectory(path: string, uid: number): boolean {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat?.isDirectory() || stat.uid !== uid) return false;
+  try { protectedLocalEntry(path); return true; }
+  catch { return false; }
+}
+
 /** Reclaim unpublished stages only when their prefix has no live writer or promotion journal. */
 function reclaimExtensionStages(resolveConfig: () => string | undefined, canReclaim?: () => boolean): void {
   const uid = process.getuid?.();
@@ -45,10 +64,7 @@ function reclaimExtensionStages(resolveConfig: () => string | undefined, canRecl
           lstatSync(join(config, ".extensions-promotion.json"), { throwIfNoEntry: false })) return;
       for (const name of names) {
         const path = join(config, name);
-        const stat = lstatSync(path, { throwIfNoEntry: false });
-        // The renamed prefix keeps the verified install's mode. The mkdtemp wrapper is private.
-        const mask = name.endsWith(".ready") ? 0o022 : 0o077;
-        if (stat?.isDirectory() && stat.uid === uid && (stat.mode & mask) === 0) rmSync(path, { recursive: true, force: true });
+        if (protectedStageDirectory(path, uid)) rmSync(path, { recursive: true, force: true });
       }
     } finally { release(); }
   } catch { /* Optional cleanup must not refuse an update. */ }

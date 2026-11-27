@@ -45,7 +45,7 @@ import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-rec
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
-import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
+import { reclaimPreviousExtensionStages, reclaimReplacedExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
 import { repairOfflineExtensions } from "./update-offline.js";
@@ -409,6 +409,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   if (childBinding(rt).kind === "none") reclaimPreviousExtensionStages();
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
   if (code !== 0) process.exitCode = code;
+  else if (args.values.self !== true && childBinding(rt).kind === "bound") reclaimReplacedExtensionStages(rt.version());
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
     recordUpdateCompletion(rt.version(), "manual update reconciled", true);
