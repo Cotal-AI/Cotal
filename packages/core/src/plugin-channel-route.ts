@@ -1,4 +1,5 @@
-import { ROOT, assertValidChannel, ownerToken, spacePrefix, token } from "./subject-grammar.js";
+import { ROOT, assertValidChannel, assertValidRole, chatSubject, ownerToken, spacePrefix, token } from "./subject-grammar.js";
+import { chatStream } from "./subjects.js";
 
 export const PLUGIN_CHANNEL_ROOT = "ext";
 
@@ -21,7 +22,33 @@ export function pluginChannelSubject(space: string, owner: string, actor: string
   const family = classifyChannel(channel);
   if (family.kind !== PLUGIN_CHANNEL_ROOT)
     throw new Error(`expected a ${PLUGIN_CHANNEL_ROOT} channel, got "${channel}"`);
-  return `${spacePrefix(space)}.${PLUGIN_CHANNEL_ROOT}.${ownerToken(owner)}.${ownerToken(actor)}.${family.plugin}.${family.resource}`;
+  return pluginChannelAddress(space, owner, actor, family);
+}
+
+function pluginChannelAddress(space: string, owner: string, actor: string, rail: Extract<ChannelRail, { plugin: string }>): string {
+  return `${spacePrefix(space)}.${PLUGIN_CHANNEL_ROOT}.${ownerToken(owner)}.${ownerToken(actor)}.${rail.plugin}.${rail.resource}`;
+}
+
+export interface ChannelRoute {
+  rail: ChannelRail;
+  stream: string;
+  subject: string;
+}
+
+/** Resolve a channel or pattern using a mode obtained from trusted space state. */
+export function channelRoute(space: string, owner: string, actor: string, channel: string, mode: "legacy" | "isolated"): ChannelRoute {
+  let rail: ChannelRail;
+  if (mode === "legacy") {
+    assertValidChannel(channel);
+    rail = { kind: "chat" };
+  } else if (mode === "isolated") {
+    rail = classifyChannel(channel);
+  } else {
+    throw new Error("invalid channel routing mode");
+  }
+  return rail.kind === "chat"
+    ? { rail, stream: chatStream(space), subject: chatSubject(space, owner, actor, channel) }
+    : { rail, stream: pluginChannelStream(space), subject: pluginChannelAddress(space, owner, actor, rail) };
 }
 
 export interface ParsedPluginChannelSubject {
@@ -48,3 +75,14 @@ export function parsePluginChannelSubject(subject: string): ParsedPluginChannelS
   }
   return { kind, space, owner, actor, sender: `${owner}.${actor}`, rest };
 }
+
+export function pluginChannelStream(space: string): string {
+  return `BRIDGE_${token(space)}`;
+}
+
+/** Privileged history capture or per-plugin purge. Agent reads need an admitted channel pattern. */
+export function pluginChannelFilter(space: string, plugin?: string): string {
+  return `${spacePrefix(space)}.${PLUGIN_CHANNEL_ROOT}.*.*.${plugin === undefined ? "*" : assertValidRole(plugin)}.>`;
+}
+
+export const PLUGIN_FANOUT_DURABLE = "fanout";
