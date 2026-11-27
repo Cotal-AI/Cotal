@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
 import {
-  agentIdentityKey, assertLifecycleToken, createAgentContinuityKey, decideAgentLink, EpEnvelopeError, mintAgentUid,
-  mintedAgentIdentity, mintLifecycleUid, parseAgentIdentityRecord, signAgentLink,
-  type AgentIdentityRecord, type AgentLinkProof, type AgentLinkRequest, type EpErrorCode,
+  agentIdentityKey, assertLifecycleToken, decideAgentLink, EpEnvelopeError, mintAgentUid,
+  mintedAgentIdentity, mintLifecycleUid, parseAgentIdentityRecord,
+  type AgentLinkRequest, type EpErrorCode,
 } from "../src/index.js";
 
 let cases = 0;
@@ -11,31 +10,20 @@ const failed: string[] = [];
 const check = (name: string, fn: () => void): void => {
   try { fn(); cases++; } catch (e) { failed.push(name); console.error(`FAIL ${name}`, e); }
 };
-const refuses = (fn: () => unknown, code: EpErrorCode): void => {
-  assert.throws(fn, (e: unknown) => e instanceof EpEnvelopeError && e.code === code);
+const refuses = (fn: () => unknown, code: EpErrorCode, reason?: RegExp): void => {
+  assert.throws(fn, (e: unknown) => e instanceof EpEnvelopeError && e.code === code && (!reason || reason.test(e.message)));
 };
-const owner = (c: string): string => `u_${c.repeat(26)}`;
-const tokenHash = (): string => createHash("sha256").update(randomBytes(32)).digest("hex");
-
-const SPACE = "team";
-const OWNER = owner("a");
-const OTHER_OWNER = owner("b");
+const OWNER = `u_${"a".repeat(26)}`;
+const OTHER_OWNER = `u_${"b".repeat(26)}`;
 const T0 = 1_800_000_000_000;
 const T = T0 + 3_600_000;
-const key = createAgentContinuityKey();
-const otherKey = createAgentContinuityKey();
 const agentUid = mintAgentUid();
-const firstRun = { lifecycleUid: mintLifecycleUid(), actor: "builder", tokenHash: tokenHash() };
-const minted = mintedAgentIdentity({ agentUid, owner: OWNER, publicKey: key.publicKey, ...firstRun, now: T0 });
-
-const relaunch = { lifecycleUid: mintLifecycleUid(), actor: "builder", tokenHash: tokenHash() };
-const ctx = { space: SPACE, owner: OWNER, actor: relaunch.actor, tokenHash: relaunch.tokenHash };
-const claims = { agentUid, keyEpoch: 0, linkSeq: 1, issuedAt: T, expiresAt: T + 120_000 };
-const proof = signAgentLink(key.privateKey, ctx, claims);
+const firstRun = { lifecycleUid: mintLifecycleUid(), actor: "builder" };
+const mintArgs = { agentUid, owner: OWNER, ...firstRun, now: T0 };
+const minted = mintedAgentIdentity(mintArgs);
+const relaunch = { lifecycleUid: mintLifecycleUid(), actor: "builder_2" };
 const request = (over: Partial<AgentLinkRequest> = {}): AgentLinkRequest =>
-  ({ ...ctx, proof, lifecycleUid: relaunch.lifecycleUid, predecessor: "settled", now: T, ...over });
-const signedFor = (over: Partial<typeof ctx>, claimOver: Partial<typeof claims> = {}, privateKey = key.privateKey): AgentLinkProof =>
-  signAgentLink(privateKey, { ...ctx, ...over }, { ...claims, ...claimOver });
+  ({ agentUid, owner: OWNER, authority: "owner", ...relaunch, predecessor: "settled", now: T, ...over });
 
 check("agentUid grammar is disjoint from lifecycle UIDs", () => {
   const drawn = new Set<string>();
@@ -51,140 +39,93 @@ check("agentUid grammar is disjoint from lifecycle UIDs", () => {
     assert.throws(() => agentIdentityKey(bad));
 });
 
-check("a minted identity starts linked to the run that minted it", () => {
+check("a minted identity starts linked to the first run", () => {
   assert.deepEqual(minted, {
-    v: 1, agentUid, owner: OWNER, state: "active", key: { alg: "ed25519", publicKey: key.publicKey }, keyEpoch: 0, linkSeq: 1,
+    v: 1, agentUid, owner: OWNER, state: "active", linkSeq: 1,
     current: { ...firstRun, linkedAt: T0, via: "mint" }, createdAt: T0,
   });
   assert.deepEqual(parseAgentIdentityRecord(`agentid.${agentUid}`, JSON.parse(JSON.stringify(minted))), minted);
 });
 
 check("mint refuses malformed inputs and static owners", () => {
-  const args = { agentUid, owner: OWNER, publicKey: key.publicKey, ...firstRun, now: T0 };
-  for (const over of [
-    { owner: "UABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW" }, { owner: "cli" }, { publicKey: "short" },
-    { lifecycleUid: "has_underscore_aaaaaaaaaaaaaaa" }, { actor: "a.b" }, { tokenHash: firstRun.tokenHash.toUpperCase() }, { now: 0 },
-  ])
-    assert.throws(() => mintedAgentIdentity({ ...args, ...over }));
+  for (const over of [{ owner: "cli" }, { lifecycleUid: agentUid }, { actor: "a.b" }, { now: 0 }])
+    assert.throws(() => mintedAgentIdentity({ ...mintArgs, ...over }));
 });
 
-const linked = decideAgentLink(minted, request());
-
-check("the continuity key links a relaunch and advances the sequence", () => {
-  assert.equal(linked.changed, true);
-  assert.deepEqual(linked.record, { ...minted, linkSeq: 2, current: { ...relaunch, linkedAt: T, via: "key" } });
-  assert.deepEqual(parseAgentIdentityRecord(agentIdentityKey(agentUid), linked.record), linked.record);
+check("the owner and an authorized launcher can link a fresh lifecycle", () => {
+  for (const authority of ["owner", "launcher"] as const) {
+    const result = decideAgentLink(minted, request({ authority }));
+    assert.deepEqual(result, {
+      changed: true,
+      record: { ...minted, linkSeq: 2, current: { ...relaunch, linkedAt: T, via: authority } },
+    });
+    assert.equal(minted.linkSeq, 1);
+    assert.deepEqual(minted.current, { ...firstRun, linkedAt: T0, via: "mint" });
+  }
 });
 
-check("an exact retry of the linked enrollment changes nothing", () => {
-  const retry = decideAgentLink(linked.record, request({ now: T + 1000 }));
-  assert.equal(retry.changed, false);
-  assert.deepEqual(retry.record, linked.record);
+check("the ID and an exact run name do not grant link authority", () => {
+  refuses(() => decideAgentLink(minted, request({ authority: "none", ...firstRun, predecessor: "live" })), "permission-denied", /not authorized/);
 });
 
-check("a retry still needs the signature", () => {
-  const forged = { ...proof, signature: signedFor({}, {}, otherKey.privateKey).signature };
-  refuses(() => decideAgentLink(linked.record, request({ proof: forged })), "permission-denied");
+check("a run cannot link itself, including when renewing its own lifecycle", () => {
+  refuses(() => decideAgentLink(minted, request({ authority: "agent" })), "permission-denied", /cannot link itself/);
+  refuses(() => decideAgentLink(minted, request({ authority: "agent", ...firstRun, predecessor: "live" })), "permission-denied", /cannot link itself/);
 });
 
-check("a used proof never links another run", () => {
-  refuses(() => decideAgentLink(linked.record, request({ lifecycleUid: mintLifecycleUid() })), "permission-denied");
+check("link authorization is for the exact owner and identity", () => {
+  for (const authority of ["owner", "launcher"] as const) {
+    refuses(() => decideAgentLink(minted, request({ authority, owner: OTHER_OWNER, predecessor: "live" })), "permission-denied");
+    refuses(() => decideAgentLink(minted, request({ authority, agentUid: mintAgentUid() })), "permission-denied");
+  }
 });
 
-check("the next relaunch signs the next sequence, under any name", () => {
-  const run = { lifecycleUid: mintLifecycleUid(), actor: "builder_2", tokenHash: tokenHash() };
-  const next = signedFor({ actor: run.actor, tokenHash: run.tokenHash }, { linkSeq: 2 });
-  const out = decideAgentLink(linked.record, request({ ...run, proof: next }));
-  assert.equal(out.changed, true);
-  assert.equal(out.record.linkSeq, 3);
-  assert.deepEqual(out.record.current, { ...run, linkedAt: T, via: "key" });
+check("an authorized retry of the exact live enrollment changes nothing", () => {
+  for (const authority of ["owner", "launcher"] as const) {
+    const linked = decideAgentLink(minted, request({ authority })).record;
+    assert.deepEqual(decideAgentLink(linked, request({ authority, now: T + 1000, predecessor: "live" })), { record: linked, changed: false });
+  }
 });
 
-check("the proof binds the space", () => {
-  refuses(() => decideAgentLink(minted, request({ space: "other" })), "permission-denied");
+check("one live run per identity, even when a second launch uses its name", () => {
+  refuses(() => decideAgentLink(minted, request({ predecessor: "live" })), "conflict");
+  refuses(() => decideAgentLink(minted, request({ actor: firstRun.actor, predecessor: "live" })), "conflict");
+  refuses(() => decideAgentLink(minted, request({ lifecycleUid: firstRun.lifecycleUid, predecessor: "live" })), "conflict");
 });
 
-check("the key holder cannot move the identity to another owner", () => {
-  const forOther = signedFor({ owner: OTHER_OWNER });
-  refuses(() => decideAgentLink(minted, request({ owner: OTHER_OWNER, proof: forOther })), "permission-denied");
+check("an unknown predecessor blocks a new run and a retry", () => {
+  refuses(() => decideAgentLink(minted, request({ predecessor: "unknown" })), "unavailable");
+  refuses(() => decideAgentLink(minted, request({ ...firstRun, predecessor: "unknown" })), "unavailable");
 });
 
-check("the proof binds the actor", () => {
-  refuses(() => decideAgentLink(minted, request({ actor: "intruder" })), "permission-denied");
+check("a settled lifecycle cannot be reused", () => {
+  refuses(() => decideAgentLink(minted, request({ ...firstRun })), "conflict");
 });
 
-check("an intercepted proof cannot link a run holding another token", () => {
-  refuses(() => decideAgentLink(minted, request({ tokenHash: tokenHash() })), "permission-denied");
+check("a revoked identity does not link", () => {
+  const revoked = parseAgentIdentityRecord(agentIdentityKey(agentUid), { ...minted, state: "revoked", revokedAt: T });
+  refuses(() => decideAgentLink(revoked, request()), "failed-precondition", /revoked/);
+  refuses(() => decideAgentLink(revoked, request({ ...firstRun, predecessor: "live" })), "failed-precondition", /revoked/);
+  refuses(() => decideAgentLink(revoked, request({ authority: "none" })), "permission-denied");
 });
 
-check("another key does not link", () => {
-  refuses(() => decideAgentLink(minted, request({ proof: signedFor({}, {}, otherKey.privateKey) })), "permission-denied");
-});
-
-check("a proof for another identity does not link this one", () => {
-  refuses(() => decideAgentLink(minted, request({ proof: signedFor({}, { agentUid: mintAgentUid() }) })), "permission-denied");
-});
-
-check("the proof names the current key epoch and sequence", () => {
-  for (const over of [{ keyEpoch: 1 }, { linkSeq: 0 }, { linkSeq: 2 }])
-    refuses(() => decideAgentLink(minted, request({ proof: signedFor({}, over) })), "permission-denied");
-});
-
-check("a tampered or bare proof does not link", () => {
-  const sig = proof.signature;
-  const flipped = `${sig.slice(0, 40)}${sig[40] === "A" ? "B" : "A"}${sig.slice(41)}`;
-  refuses(() => decideAgentLink(minted, request({ proof: { ...proof, signature: flipped } })), "permission-denied");
-  refuses(() => decideAgentLink(minted, request({ proof: { ...proof, signature: randomBytes(64).toString("base64url") } })), "permission-denied");
-});
-
-check("the proof shape is closed", () => {
-  const { signature: _, ...unsigned } = proof;
-  for (const bad of [{ ...proof, persona: "builder" }, { ...proof, name: "builder" }, unsigned, { agentUid }, null, "proof", [proof]])
-    refuses(() => decideAgentLink(minted, request({ proof: bad })), "bad-request");
-});
-
-check("the window is at most 300 s and checked with 60 s of skew", () => {
-  const at = (issuedAt: number, expiresAt: number, now: number) =>
-    () => decideAgentLink(minted, request({ proof: signedFor({}, { issuedAt, expiresAt }), now }));
-  assert.equal(at(T, T + 300_000, T)().changed, true);
-  refuses(at(T, T + 300_001, T), "permission-denied");
-  refuses(at(T, T, T), "permission-denied");
-  assert.equal(at(T, T + 1000, T + 1000 + 59_999)().changed, true);
-  refuses(at(T, T + 1000, T + 1000 + 60_000), "permission-denied");
-  assert.equal(at(T + 60_000, T + 61_000, T)().changed, true);
-  refuses(at(T + 60_001, T + 61_000, T), "permission-denied");
-});
-
-check("a malformed enrollment is a bad request", () => {
-  for (const over of [{ lifecycleUid: agentUid }, { actor: "a.b" }, { actor: "a-b" }, { tokenHash: "00" }])
+check("a malformed launch is a bad request", () => {
+  for (const over of [{ lifecycleUid: agentUid }, { actor: "a.b" }, { agentUid: "builder" }, { owner: "cli" }, { now: NaN }])
     refuses(() => decideAgentLink(minted, request(over)), "bad-request");
 });
 
-check("a revoked identity never links", () => {
-  const revoked = parseAgentIdentityRecord(agentIdentityKey(agentUid), { ...minted, state: "revoked", revokedAt: T });
-  refuses(() => decideAgentLink(revoked, request()), "failed-precondition");
-});
-
-check("one live lifecycle per identity", () => {
-  refuses(() => decideAgentLink(minted, request({ predecessor: "live" })), "conflict");
-  refuses(() => decideAgentLink(minted, request({ predecessor: "unknown" })), "unavailable");
-});
-
-check("liveness is not revealed before the signature verifies", () => {
-  refuses(() => decideAgentLink(minted, request({ predecessor: "live", proof: signedFor({}, {}, otherKey.privateKey) })), "permission-denied");
-});
-
 check("a stored record outside the closed shape never authorizes", () => {
-  const k = agentIdentityKey(agentUid);
+  const key = agentIdentityKey(agentUid);
+  const { current, ...noCurrent } = minted;
   const bad: unknown[] = [
     { ...minted, extra: 1 }, { ...minted, v: 2 }, { ...minted, state: "paused" }, { ...minted, revokedAt: T },
-    { ...minted, state: "revoked" }, { ...minted, linkSeq: 0 }, { ...minted, keyEpoch: -1 }, { ...minted, owner: "cli" },
-    { ...minted, key: { alg: "ed448", publicKey: key.publicKey } }, { ...minted, current: { ...minted.current, via: "persona" } },
-    { ...minted, current: { ...minted.current, extra: 1 } }, { ...minted, agentUid: mintAgentUid() },
+    { ...minted, state: "revoked" }, { ...minted, linkSeq: 0 }, { ...minted, owner: "cli" },
+    { ...minted, key: {} }, { ...minted, keyEpoch: 0 }, { ...minted, current: { ...current, via: "key" } },
+    { ...minted, current: { ...current, tokenHash: "0".repeat(64) } }, { ...minted, current: { ...current, lifecycleUid: [firstRun.lifecycleUid] } },
+    { ...minted, agentUid: mintAgentUid() }, noCurrent, Object.create(minted), null, [],
   ];
-  const { current: _, ...noCurrent } = minted as AgentIdentityRecord;
-  bad.push(noCurrent, null, []);
-  for (const raw of bad) refuses(() => parseAgentIdentityRecord(k, raw), "failed-precondition");
+  for (const raw of bad) refuses(() => parseAgentIdentityRecord(key, raw), "failed-precondition");
+  refuses(() => decideAgentLink({ ...minted, linkSeq: 0 }, request()), "failed-precondition");
 });
 
 console.log(`agent identity: ${cases} cases passed, ${failed.length} failed`);
