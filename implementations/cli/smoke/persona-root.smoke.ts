@@ -552,6 +552,18 @@ try {
   check("a planned server still lists the named prepared project's local catalog",
     offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
     /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  const tagged = agentFilePath(realpathSync(offlineRoot), "tagged");
+  writeFileSync(tagged, "\uFEFF---\r\nname: checker\r\nmodel: !typo example/model\r\n---\r\nCheck the release.\r\n");
+  try {
+    for (const command of [args, ["persona", "show", "--space", "offline-audit", "--plain", "tagged"]]) {
+      const result = native(command, CWD);
+      check(`${command[1]} preserves the model and reports the unresolved tag at its file position`,
+        result.status === 0 && result.stdout.includes("example/model") &&
+        result.stderr.includes(`${JSON.stringify(tagged)}:3:8: unresolved YAML tag "!typo" in "model"`) &&
+        result.stderr.includes("Remove the tag if the value is meant to be a plain string.") &&
+        !/example\/model|TAG_RESOLVE_FAILED|trace-warnings/.test(result.stderr), result.stdout + result.stderr);
+    }
+  } finally { unlinkSync(tagged); }
   if (process.platform !== "win32") {
     const link = agentFilePath(realpathSync(offlineRoot), "shared");
     symlinkSync("../../shared.md", link);
