@@ -61,7 +61,8 @@ type WatchArg = {
   consumerName?: string;
   consumer?: PushConsumer;
 };
-const disarm = (ep as unknown as { disarmMembershipWatch(w: WatchArg): Promise<void> }).disarmMembershipWatch.bind(ep);
+const subscriptions = (ep as unknown as { subscriptions: { disarmMembershipWatch(w: WatchArg): Promise<void> } }).subscriptions;
+const disarm = subscriptions.disarmMembershipWatch.bind(subscriptions);
 
 let threw = false;
 let thrown: unknown;

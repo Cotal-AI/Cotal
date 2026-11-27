@@ -158,7 +158,7 @@ try {
     endpoint.on("error", () => {});
     let stubHits = 0;
     const stubMsg = "fixture post-connect bind failure";
-    (endpoint as unknown as { startPresenceWatch: () => Promise<void> }).startPresenceWatch = async () => {
+    (endpoint as unknown as { presence: { startPresenceWatch: () => Promise<void> } }).presence.startPresenceWatch = async () => {
       stubHits++;
       throw new Error(stubMsg);
     };
@@ -200,7 +200,7 @@ try {
     endpoint.on("transport", (state) => transportEdges.push(state.connected));
     endpoint.on("connection", (state) => connectionEdges.push(state.connected));
     const bindMsg = "fixture post-connect bind failure";
-    (endpoint as unknown as { startPresenceWatch: () => Promise<void> }).startPresenceWatch = async () => {
+    (endpoint as unknown as { presence: { startPresenceWatch: () => Promise<void> } }).presence.startPresenceWatch = async () => {
       throw new Error(bindMsg);
     };
     let thrownMessage = "";
@@ -233,7 +233,7 @@ try {
     endpointHandle = endpoint;
     endpoint.on("error", () => {});
     const bindMsg = "fixture close-throws bind failure";
-    (endpoint as unknown as { startPresenceWatch: () => Promise<void> }).startPresenceWatch = async () => {
+    (endpoint as unknown as { presence: { startPresenceWatch: () => Promise<void> } }).presence.startPresenceWatch = async () => {
       const nc = (endpoint as unknown as { conn: { nc?: { close: () => Promise<void> } } }).conn.nc;
       if (!nc) throw new Error("expected live nc before presence watch");
       nc.close = async () => {
