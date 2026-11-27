@@ -183,7 +183,7 @@ if (mode !== undefined) {
   {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
     const direct = /process\.stdout\.(?:on|once|prependListener|prependOnceListener|addListener)\(\s*"error"/;
-    for (const file of ["chat/frontend.ts", "watch-json.ts", "commands/service-log-follow.ts", "lib/service-journal.ts", "commands/down.ts"]) {
+    for (const file of ["chat/frontend.ts", "watch-json.ts", "commands/service-log-follow.ts", "lib/service-journal.ts", "commands/down.ts", "commands/update.ts"]) {
       const text = readFileSync(join(src, file), "utf8");
       check(`${file} owns stdout's errors and adds no listener of its own`, /\bownStdoutErrors\(/.test(text) && !direct.test(text));
     }
