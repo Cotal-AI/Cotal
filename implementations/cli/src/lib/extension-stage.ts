@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { connectorConfigDir, canRecoverConnectorConfig, claimExtensionMutationLock, claimUpdateClosureAccess, inspectLock, installationWriter, previousUpdateConnectorConfig, processStartToken, protectedLocalDirectory, protectedResolvedDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
@@ -137,7 +137,27 @@ export function stageExtensions(): ExtensionStage {
   const stage = mkdtempSync(join(config, ".extensions.stage-"));
   const stageConfig = join(stage, "config"), prefix = join(stageConfig, "cotal", "extensions");
   mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
-  if (existsSync(root)) cpSync(root, prefix, { recursive: true, verbatimSymlinks: true });
+  if (existsSync(root)) cpSync(root, prefix, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (from) => {
+      try { lstatSync(from); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EACCES" || code === "EPERM") return false;
+        throw error;
+      }
+      // A file the process cannot read fails the copy after the filter returns, so refuse it here.
+      try { closeSync(openSync(from, "r")); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EISDIR") return true;
+        if (code === "EACCES" || code === "EPERM") return false;
+        throw error;
+      }
+      return true;
+    },
+  });
   else { mkdirSync(prefix, { mode: 0o755 }); writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true })); }
   // The stage is this process's own: under a umask of 0002 the folder above, and on Node before
   // 24.22 every copied folder, would be group-writable and the protected-path rule would refuse it.

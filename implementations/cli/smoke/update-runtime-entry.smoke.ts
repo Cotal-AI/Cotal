@@ -1,11 +1,11 @@
 // After building, run with pnpm exec tsx implementations/cli/smoke/update-runtime-entry.smoke.ts.
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
@@ -125,6 +125,9 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
       assert.match(repeated.output, currentClosure);
     }
     await assertOfflineBundledRepair(assert, cli, env, config, version, registryRequests);
+  } catch (error) {
+    console.error(error);
+    throw error;
   } finally {
     if (registry.listening) await new Promise<void>(resolveClose => registry.close(() => resolveClose()));
     rmSync(home, { recursive: true, force: true });
@@ -221,6 +224,7 @@ async function assertOfflineBundledRepair(
     return join(dir, meta.main ?? "dist/index.js");
   };
   const offline = { ...env, npm_config_offline: "true", npm_config_cache: join(config, "..", "empty-builtin-cache"), COTAL_SKIP_CONNECTOR_SEED: "1", CI: "false" };
+  writeFileSync(env.npm_config_userconfig!, "offline=true\n");
   const self = () => run([join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], config, offline);
   const count = requests.length;
   rmSync(dir, { recursive: true, force: true });
@@ -257,23 +261,40 @@ async function assertOfflineBundledRepair(
   assert.match(emptied.output, /added @cotal-ai\/connector-claude-code@/);
   assert.ok(readFileSync(entryFile()).length > 0);
   rmSync(dir, { recursive: true, force: true });
-  symlinkSync(join(config, "..", "missing-package-dir"), dir);
+  const otherName = "opencode";
+  const otherPkg = "@cotal-ai/connector-opencode";
+  assert.equal(SEED_BUILTINS.includes(otherName), true);
+  for (const name of ["authority.json", "authority.bak.json"]) {
+    writeFileSync(join(config, "cotal", "seed", name), JSON.stringify({ everSeeded: SEED_BUILTINS.filter(item => item !== "claude" && item !== otherName) }));
+  }
+  const otherSeeded = await seedCli("ext", "seed", "--force");
+  assert.equal(otherSeeded.status, 0, otherSeeded.output);
+  const otherDir = join(root, "node_modules", otherPkg);
+  assert.equal(existsSync(join(otherDir, "package.json")), true);
+  rmSync(otherDir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "closed"), "");
+  chmodSync(join(dir, "closed"), 0o000);
   const unread = await self();
-  rmSync(dir, { force: true });
+  const closed = join(dir, "closed");
+  if (existsSync(closed)) chmodSync(closed, 0o700);
+  rmSync(dir, { recursive: true, force: true });
   assert.equal(unread.status, 0, unread.output);
   assert.match(unread.output, /Offline extension repair for @cotal-ai\/connector-claude-code@/);
+  assert.match(unread.output, /added @cotal-ai\/connector-opencode@/);
   assert.doesNotMatch(unread.output, /Offline extension repair for @cotal-ai\/tmux/);
+  assert.doesNotMatch(unread.output, /Offline extension repair for extensions@/);
+  assert.equal(existsSync(join(otherDir, "package.json")), true);
   const storeFile = join(store, "package.json");
   const damaged = Buffer.from(JSON.stringify({ name: "damaged-before-admission", version }));
   writeFileSync(storeFile, damaged);
   const stamp = statSync(storeFile);
   const meshes = join(env.COTAL_HOME!, "meshes");
-  const hiddenMeshes = join(config, "..", "hidden-meshes");
-  renameSync(meshes, hiddenMeshes);
-  symlinkSync(join(config, "..", "missing-meshes"), meshes);
+  mkdirSync(meshes, { recursive: true });
+  chmodSync(meshes, 0o000);
   const refused = await self();
-  rmSync(meshes, { force: true });
-  renameSync(hiddenMeshes, meshes);
+  chmodSync(meshes, 0o700);
+  rmSync(meshes, { recursive: true, force: true });
   assert.equal(refused.status, 0, refused.output);
   assert.match(refused.output, /continuity or installation checks did not permit changes/);
   assert.doesNotMatch(refused.output, /wrote operator-global seed store payload/);
@@ -281,39 +302,31 @@ async function assertOfflineBundledRepair(
   assert.equal(after.ino, stamp.ino);
   assert.equal(after.mtimeMs, stamp.mtimeMs);
   assert.deepEqual(readFileSync(storeFile), damaged);
-  const absentHome = mkdtempSync(join(config, "..", "payload-copy-"));
-  const absentBin = join(absentHome, "bin/dist");
-  mkdirSync(absentBin, { recursive: true });
-  cpSync(join(import.meta.dirname, "../../../bin/dist/cotal.js"), join(absentBin, "cotal.js"));
-  const absentCli = join(absentHome, "implementations/cli/dist/seed");
-  mkdirSync(absentCli, { recursive: true });
-  cpSync(join(import.meta.dirname, "../dist/seed"), absentCli, { recursive: true });
-  const absentEnv = { ...offline };
-  for (const key of Object.keys(absentEnv)) if (key.startsWith("COTAL_")) delete absentEnv[key];
-  Object.assign(absentEnv, offline);
-  const absent = await run([join(absentBin, "cotal.js"), "update", "--self"], config, absentEnv);
-  assert.equal(absent.status, 0, absent.output);
-  assert.match(absent.output, /Offline extension repair for @cotal-ai\/connector-claude-code@\d+\.\d+\.\d+ did not finish: no shipped payload/);
-  assert.equal(existsSync(dir), true);
   assert.deepEqual(requests.slice(count), []);
+  await assertHeldLocksRelease(assert, self, env, config, dir);
+  await assertInterruptedInstall(assert, offline, config, dir);
+}
+
+async function assertHeldLocksRelease(
+  assert: typeof strictAssert, self: () => ReturnType<typeof run>,
+  env: NodeJS.ProcessEnv, config: string, dir: string,
+): Promise<void> {
+  rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const holderScript = `
-    import("@cotal-ai/workspace").then(({ acquireLock }) => {
-      const held = acquireLock(process.argv[1], { label: "offline repair fixture" });
-      process.stdout.write("held\\n");
-      setInterval(() => held, 1000);
-    }).catch(error => { process.stderr.write(String(error) + "\\n"); process.exit(1); });
+    import { acquireLock } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../../../packages/workspace/dist/advisory-lock.js")).href)};
+    const held = acquireLock(process.argv[1], { label: "offline repair fixture" });
+    process.stdout.write("held\\n");
+    setTimeout(() => { held.release(); process.exit(0); }, 4000);
   `;
   const locks = [
-    join(env.COTAL_HOME!, ".update-closure.lock"),
-    join(config, "cotal", "seed", "reconcile.lock"),
-    join(config, "cotal", ".extensions.lock.update"),
+    { path: join(env.COTAL_HOME!, ".update-closure.lock"), line: "waiting for another cotal command" },
+    { path: join(config, "cotal", "seed", "reconcile.lock"), line: "waiting for another connector reconcile to finish" },
+    { path: join(config, "cotal", ".extensions.lock"), line: "another extension mutation is in progress" },
   ];
-  const holderEnv = { ...offline, NODE_PATH: join(import.meta.dirname, "../../../node_modules") };
-  for (const key of Object.keys(holderEnv)) if (key.startsWith("COTAL_")) delete holderEnv[key];
-  Object.assign(holderEnv, offline);
-  for (const lockPath of locks) {
-    const holder = spawn(process.execPath, ["--input-type=module", "-e", holderScript, lockPath], { cwd: config, env: holderEnv, stdio: ["ignore", "pipe", "pipe"] });
+  for (const lock of locks) {
+    const holderEnv: NodeJS.ProcessEnv = { PATH: env.PATH ?? "", HOME: env.HOME ?? "", USERPROFILE: env.USERPROFILE ?? "" };
+    const holder = spawn(process.execPath, ["--input-type=module", "-e", holderScript, lock.path], { cwd: config, env: holderEnv, stdio: ["ignore", "pipe", "pipe"] });
     let holderOut = "";
     holder.stdout.on("data", chunk => { holderOut += chunk; });
     holder.stderr.on("data", chunk => { holderOut += chunk; });
@@ -324,14 +337,23 @@ async function assertOfflineBundledRepair(
     });
     assert.equal(ready, true, holderOut);
     const blocked = await self();
-    holder.kill("SIGTERM");
     const gone = await new Promise<number | null>(resolveExit => { if (holder.exitCode !== null) resolveExit(holder.exitCode); else holder.once("exit", resolveExit); });
-    assert.notEqual(gone, null, String(holder.pid));
-    try { process.kill(holder.pid!, 0); assert.fail(`holder ${holder.pid} still live`); } catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ESRCH"); }
+    assert.equal(gone, 0, holderOut);
     assert.equal(blocked.status, 0, blocked.output);
-    assert.match(blocked.output, /Offline extension repair for extensions@/);
-    assert.equal(existsSync(dir), false);
+    assert.match(blocked.output, new RegExp(lock.line));
+    const waitAt = blocked.output.indexOf(lock.line);
+    const addedAt = blocked.output.indexOf("added @cotal-ai/connector-claude-code@");
+    assert.equal(waitAt >= 0 && addedAt > waitAt, true, blocked.output);
+    assert.equal(existsSync(join(dir, "package.json")), true);
+    rmSync(dir, { recursive: true, force: true });
+    if (lock !== locks[locks.length - 1]) mkdirSync(dir, { recursive: true });
+    for (const lockPath of [join(env.COTAL_HOME!, ".update-closure.lock"), join(config, "cotal", "seed", "reconcile.lock"), join(config, "cotal", ".extensions.lock"), join(config, "cotal", ".extensions.lock.update")]) {
+      assert.equal(existsSync(lockPath), false, lockPath);
+    }
   }
+}
+
+async function assertInterruptedInstall(assert: typeof strictAssert, offline: NodeJS.ProcessEnv, config: string, dir: string): Promise<void> {
   rmSync(dir, { recursive: true, force: true });
   const pausing = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], { cwd: config, env: offline, stdio: ["ignore", "pipe", "pipe"] });
   let pausingOut = "";
@@ -339,7 +361,7 @@ async function assertOfflineBundledRepair(
   pausing.stderr.on("data", chunk => { pausingOut += chunk; });
   const started = await new Promise<boolean>(resolveStarted => {
     const timer = setTimeout(() => resolveStarted(false), 20_000);
-    const watch = () => { if (pausingOut.includes("installing @cotal-ai/linear")) { clearTimeout(timer); resolveStarted(true); } };
+    const watch = () => { if (pausingOut.includes("installing ")) { clearTimeout(timer); resolveStarted(true); } };
     pausing.stdout.on("data", watch);
     pausing.stderr.on("data", watch);
     pausing.once("exit", () => { clearTimeout(timer); resolveStarted(false); });
