@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import {
   CorruptExtensionPackageError,
   claimExtensionMutationLock,
+  claimUpdateClosureAccess,
   extensionPackageDir,
   installedExtensionPackage,
   isExtensionPathSpec,
@@ -14,7 +15,7 @@ import { acquireReconcileLock } from "../seed/lock.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { stageSeedPayload } from "../seed/store.js";
 import { c } from "../ui.js";
-import { installExtensionSet, type ExtensionInstallRequest } from "./ext.js";
+import { ExtensionAddInterrupted, installExtensionSet, type ExtensionInstallRequest } from "./ext.js";
 import { message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
@@ -34,31 +35,52 @@ export async function repairOfflineExtensions(current: string, rt: UpdateRuntime
     for (const pkg of names) report(pkg, "continuity or installation checks did not permit changes.");
     return;
   }
-  const reconcile = acquireReconcileLock();
-  const release = claimExtensionMutationLock();
+  const release: (() => void)[] = [];
   try {
-    const operators = operatorRepairs(current, rt, builtIns);
+    // Same order as the online reconcile: closure, then the reconcile lock, then the mutation lock.
+    // The mutation claim counts the closure it finds already held. A lock that cannot be had is one line.
+    release.push(claimUpdateClosureAccess());
+    release.push(acquireReconcileLock().release);
+    release.push(claimExtensionMutationLock());
     const seeded = stagedSeedRepairs(current, rt, report);
-    for (const request of [...seeded, ...operators]) {
+    for (const request of seeded) {
       try {
         await installExtensionSet([request], line => rt.err(line), { offline: true });
       } catch (error) {
+        if (error instanceof ExtensionAddInterrupted) throw error;
         report(request.pkg, message(error));
       }
     }
+    for (const request of operatorRepairs(current, rt, builtIns)) {
+      try {
+        await installExtensionSet([request], line => rt.err(line), { offline: true });
+      } catch (error) {
+        if (error instanceof ExtensionAddInterrupted) throw error;
+        report(request.pkg, message(error));
+      }
+    }
+  } catch (error) {
+    if (error instanceof ExtensionAddInterrupted) throw error;
+    report("extensions", message(error));
   } finally {
-    release();
-    reconcile.release();
+    for (const unlock of release.reverse()) unlock();
   }
 }
 
-/** Packages a repair would touch. This reads the installed copies and writes nothing. */
+/** Packages a repair would touch. This reads the installed copies and writes nothing.
+ *  One built-in that cannot be read is named and skipped. The others are still listed. */
 function repairNames(current: string, rt: UpdateRuntime, builtIns: ReadonlySet<string>): string[] {
   const entries = rt.extensions();
   const seeded = SEED_BUILTINS.flatMap(name => {
     const pkg = SEEDED_EXTENSIONS[name].pkg;
     const entry = entries.find(item => item.pkg === pkg);
-    return entry !== undefined && bundledInstallTorn(pkg, entry, current) ? [pkg] : [];
+    if (entry === undefined) return [];
+    try {
+      return bundledInstallTorn(pkg, entry, current) ? [pkg] : [];
+    } catch (error) {
+      rt.err(c.yellow(`Offline extension repair for ${pkg}@${current} did not finish: ${message(error)}`));
+      return [];
+    }
   });
   const operators = entries.flatMap(entry => offlineNpmRepair(entry, current, builtIns) ? [entry.pkg] : []);
   return [...seeded, ...operators];

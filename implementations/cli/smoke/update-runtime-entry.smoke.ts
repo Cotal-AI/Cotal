@@ -1,11 +1,11 @@
 // After building, run with pnpm exec tsx implementations/cli/smoke/update-runtime-entry.smoke.ts.
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
@@ -227,8 +227,8 @@ async function assertOfflineBundledRepair(
   const missing = await self();
   assert.equal(missing.status, 0, missing.output);
   assert.match(missing.stdout, /The latest-version check was skipped/);
-  assert.match(missing.output, /Offline extension repair for @cotal-ai\/tmux@\d+\.\d+\.\d+ did not finish/);
-  assert.doesNotMatch(missing.output, /Offline extension repair for @cotal-ai\/connector-claude-code/);
+  assert.match(missing.output, /added @cotal-ai\/connector-claude-code@/);
+  assert.doesNotMatch(missing.output, /Offline extension repair for @cotal-ai\/tmux/);
   assert.ok(readFileSync(entryFile()).length > 0);
   offline.npm_config_cache = join(config, "..", "cache");
   const restored = readFileSync(entryFile());
@@ -251,45 +251,104 @@ async function assertOfflineBundledRepair(
   const reseeded = await seedCli("ext", "seed", "--force");
   assert.equal(reseeded.status, 0, reseeded.output);
   rmSync(dir, { recursive: true, force: true });
-  writeFileSync(join(store, "package.json"), JSON.stringify({ name: "damaged-store", version }));
-  const forced = await self();
-  assert.equal(forced.status, 0, forced.output);
-  assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).name, builtin);
+  mkdirSync(dir, { recursive: true });
+  const emptied = await self();
+  assert.equal(emptied.status, 0, emptied.output);
+  assert.match(emptied.output, /added @cotal-ai\/connector-claude-code@/);
+  assert.ok(readFileSync(entryFile()).length > 0);
   rmSync(dir, { recursive: true, force: true });
-  const before = readFileSync(join(store, "package.json"));
-  const saved = { ...process.env };
-  Object.assign(process.env, offline);
-  try {
-    const { repairOfflineExtensions } = await import("../dist/commands/update-offline.js");
-    const { updateRuntime } = await import("../dist/commands/update.js");
-    const lines: string[] = [];
-    await repairOfflineExtensions(version, { ...updateRuntime, env: offline, err: line => { lines.push(line); } }, async () => false);
-    assert.match(lines.join("\n"), new RegExp(`Offline extension repair for ${builtin.replace("/", "\\/")}@${version}`));
-  } finally {
-    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
-    Object.assign(process.env, saved);
-  }
-  assert.deepEqual(readFileSync(join(store, "package.json")), before);
-  assert.equal(existsSync(dir), false);
-  const repo = join(import.meta.dirname, "../../..");
-  const hidden: [string, string][] = [];
-  const hide = (from: string, to: string) => {
-    if (!existsSync(from)) return;
-    renameSync(from, to);
-    hidden.push([to, from]);
-  };
-  hide(join(repo, "extensions/connector-claude-code"), join(config, "..", "hidden-claude-payload"));
-  hide(join(repo, "bin/seeded-connectors/claude"), join(config, "..", "hidden-claude-published"));
-  try {
-    rmSync(dir, { recursive: true, force: true });
-    const absent = await self();
-    assert.equal(absent.status, 0, absent.output);
-    assert.match(absent.output, /Offline extension repair for @cotal-ai\/connector-claude-code@\d+\.\d+\.\d+ did not finish: no shipped payload/);
+  symlinkSync(join(config, "..", "missing-package-dir"), dir);
+  const unread = await self();
+  rmSync(dir, { force: true });
+  assert.equal(unread.status, 0, unread.output);
+  assert.match(unread.output, /Offline extension repair for @cotal-ai\/connector-claude-code@/);
+  assert.doesNotMatch(unread.output, /Offline extension repair for @cotal-ai\/tmux/);
+  const storeFile = join(store, "package.json");
+  const damaged = Buffer.from(JSON.stringify({ name: "damaged-before-admission", version }));
+  writeFileSync(storeFile, damaged);
+  const stamp = statSync(storeFile);
+  const meshes = join(env.COTAL_HOME!, "meshes");
+  const hiddenMeshes = join(config, "..", "hidden-meshes");
+  renameSync(meshes, hiddenMeshes);
+  symlinkSync(join(config, "..", "missing-meshes"), meshes);
+  const refused = await self();
+  rmSync(meshes, { force: true });
+  renameSync(hiddenMeshes, meshes);
+  assert.equal(refused.status, 0, refused.output);
+  assert.match(refused.output, /continuity or installation checks did not permit changes/);
+  assert.doesNotMatch(refused.output, /wrote operator-global seed store payload/);
+  const after = statSync(storeFile);
+  assert.equal(after.ino, stamp.ino);
+  assert.equal(after.mtimeMs, stamp.mtimeMs);
+  assert.deepEqual(readFileSync(storeFile), damaged);
+  const absentHome = mkdtempSync(join(config, "..", "payload-copy-"));
+  const absentBin = join(absentHome, "bin/dist");
+  mkdirSync(absentBin, { recursive: true });
+  cpSync(join(import.meta.dirname, "../../../bin/dist/cotal.js"), join(absentBin, "cotal.js"));
+  const absentCli = join(absentHome, "implementations/cli/dist/seed");
+  mkdirSync(absentCli, { recursive: true });
+  cpSync(join(import.meta.dirname, "../dist/seed"), absentCli, { recursive: true });
+  const absentEnv = { ...offline };
+  for (const key of Object.keys(absentEnv)) if (key.startsWith("COTAL_")) delete absentEnv[key];
+  Object.assign(absentEnv, offline);
+  const absent = await run([join(absentBin, "cotal.js"), "update", "--self"], config, absentEnv);
+  assert.equal(absent.status, 0, absent.output);
+  assert.match(absent.output, /Offline extension repair for @cotal-ai\/connector-claude-code@\d+\.\d+\.\d+ did not finish: no shipped payload/);
+  assert.equal(existsSync(dir), true);
+  assert.deepEqual(requests.slice(count), []);
+  mkdirSync(dir, { recursive: true });
+  const holderScript = `
+    import("@cotal-ai/workspace").then(({ acquireLock }) => {
+      const held = acquireLock(process.argv[1], { label: "offline repair fixture" });
+      process.stdout.write("held\\n");
+      setInterval(() => held, 1000);
+    }).catch(error => { process.stderr.write(String(error) + "\\n"); process.exit(1); });
+  `;
+  const locks = [
+    join(env.COTAL_HOME!, ".update-closure.lock"),
+    join(config, "cotal", "seed", "reconcile.lock"),
+    join(config, "cotal", ".extensions.lock.update"),
+  ];
+  const holderEnv = { ...offline, NODE_PATH: join(import.meta.dirname, "../../../node_modules") };
+  for (const key of Object.keys(holderEnv)) if (key.startsWith("COTAL_")) delete holderEnv[key];
+  Object.assign(holderEnv, offline);
+  for (const lockPath of locks) {
+    const holder = spawn(process.execPath, ["--input-type=module", "-e", holderScript, lockPath], { cwd: config, env: holderEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let holderOut = "";
+    holder.stdout.on("data", chunk => { holderOut += chunk; });
+    holder.stderr.on("data", chunk => { holderOut += chunk; });
+    const ready = await new Promise<boolean>(resolveReady => {
+      const timer = setTimeout(() => resolveReady(false), 10_000);
+      holder.stdout.on("data", () => { if (holderOut.includes("held")) { clearTimeout(timer); resolveReady(true); } });
+      holder.once("exit", () => { clearTimeout(timer); resolveReady(false); });
+    });
+    assert.equal(ready, true, holderOut);
+    const blocked = await self();
+    holder.kill("SIGTERM");
+    const gone = await new Promise<number | null>(resolveExit => { if (holder.exitCode !== null) resolveExit(holder.exitCode); else holder.once("exit", resolveExit); });
+    assert.notEqual(gone, null, String(holder.pid));
+    try { process.kill(holder.pid!, 0); assert.fail(`holder ${holder.pid} still live`); } catch (error) { assert.equal((error as NodeJS.ErrnoException).code, "ESRCH"); }
+    assert.equal(blocked.status, 0, blocked.output);
+    assert.match(blocked.output, /Offline extension repair for extensions@/);
     assert.equal(existsSync(dir), false);
-  } finally {
-    for (const [from, to] of hidden.reverse()) renameSync(from, to);
   }
-  assert.deepEqual(requests.slice(count), ["GET /@cotal-ai%2ftmux [install]", "GET /tmux.tgz [install]"]);
+  rmSync(dir, { recursive: true, force: true });
+  const pausing = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], { cwd: config, env: offline, stdio: ["ignore", "pipe", "pipe"] });
+  let pausingOut = "";
+  pausing.stdout.on("data", chunk => { pausingOut += chunk; });
+  pausing.stderr.on("data", chunk => { pausingOut += chunk; });
+  const started = await new Promise<boolean>(resolveStarted => {
+    const timer = setTimeout(() => resolveStarted(false), 20_000);
+    const watch = () => { if (pausingOut.includes("installing @cotal-ai/linear")) { clearTimeout(timer); resolveStarted(true); } };
+    pausing.stdout.on("data", watch);
+    pausing.stderr.on("data", watch);
+    pausing.once("exit", () => { clearTimeout(timer); resolveStarted(false); });
+  });
+  if (started) pausing.kill("SIGINT");
+  const paused = await new Promise<{ status: number | null }>(resolveExit => pausing.once("exit", status => resolveExit({ status })));
+  assert.equal(started, true, pausingOut);
+  assert.equal(paused.status, 130, pausingOut);
+  assert.doesNotMatch(pausingOut, /Offline extension repair for @cotal-ai\/connector-claude-code@.*did not finish/);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
