@@ -1,0 +1,129 @@
+/**
+ * Register an endpoint the delivery daemon serves, and mint its serve credential (A1, plan option A).
+ *
+ * The daemon holds no signer, so the signer holder does this for it: `ensureDelivery` at start and the
+ * manager's credential renewal after. The ceremony is the one every registered endpoint walks: publish
+ * the contract artifacts, provision the issuance gate bound to a persisted serve principal, run the
+ * registration barrier (which verify-evicts a superseded serve family on a restart, through the delivery
+ * daemon's own eviction oracle), then mint `endpoint-serve` behind the fence.
+ *
+ * It does NOT write `ready` status. The daemon reports a candidate bound only after it has checked the
+ * credential's rows against the grant it derived itself and the broker accepted every subscription, and
+ * names that candidate by its credential fingerprint. `writeDaemonEndpointReady` writes `ready` only when
+ * the daemon's report names the credential minted here.
+ *
+ * Generic over the endpoint so a later delivery-served endpoint reuses it unchanged.
+ */
+import { createHash } from "node:crypto";
+import {
+  authorizeServeGrant, contractArtifactCanonicalBytes, contractStoreContext,
+  DEV_OWNER, endpointRegistrationBarrier, mintCreds, mintLifecycleUid,
+  principalKey, provisionEndpointGateOpen, publishContractArtifact, readEndpointGateGeneration,
+  registerServiceInstance, serveIssuanceGateKv, SERVICE_READY, withEndpointServeExecutorSession,
+  writeServiceStatus, jwtFromCreds,
+  type ClusterDocument, type ContractClosureManifest, type EpServeGrant, type Identity,
+  type ServiceNameAuthority, type SpaceAuth,
+} from "@cotal-ai/core";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
+
+/** What a daemon-served endpoint brings: its name and its built-in contract. */
+export interface DaemonEndpointContract {
+  endpoint: string;
+  cluster: { document: ClusterDocument; rootDigest: string; manifest: ContractClosureManifest; closureDigest: string };
+  /** Every schema artifact the cluster document's commands name. */
+  artifactValues: () => unknown[];
+}
+
+/** Where the endpoint is registered and who signs for it. */
+export interface DaemonEndpointTarget {
+  auth: SpaceAuth;
+  servers: string;
+  space: string;
+  tls?: boolean;
+  /** The persisted instance id: the same id on every start, so a restart is a takeover. */
+  instanceId: string;
+  /** The persisted serve identity: the same nkey on every start, so the gate's principal holds. */
+  serveIdentity: Identity;
+  log: (line: string) => void;
+}
+
+/** The SHA-256 of a credential's user JWT, hex: the token a daemon's `serveState` reports. */
+export function credentialFingerprint(creds: string): string {
+  const jwt = jwtFromCreds(creds);
+  if (!jwt) throw new Error("credentialFingerprint: no NATS user JWT in the credential");
+  return createHash("sha256").update(jwt).digest("hex");
+}
+
+/** The executor session arguments for this endpoint instance. */
+const sessionArgs = (t: DaemonEndpointTarget) => ({ auth: t.auth, servers: t.servers, space: t.space, tls: t.tls === true });
+
+/** The core-name authority: the signer holder authorizes exactly this endpoint for exactly
+ *  DEV_OWNER, never a general authority (the `manager` rule). */
+function nameAuthority(endpoint: string): ServiceNameAuthority {
+  return { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
+}
+
+/** Publish the contract, provision the gate if this is the first registration, and register (a
+ *  takeover on restart, verify-evicting the superseded family). Returns the grant at the committed
+ *  epoch and the minted serve credential. */
+export async function registerDaemonEndpoint(t: DaemonEndpointTarget, contract: DaemonEndpointContract): Promise<{ grant: EpServeGrant; creds: string; fingerprint: string }> {
+  const { endpoint, cluster } = contract;
+  const store = new Map<string, unknown>([[cluster.rootDigest, cluster.document], [cluster.closureDigest, cluster.manifest]]);
+  const readClusterArtifact = (digest: string): unknown => store.get(digest);
+  const authority = nameAuthority(endpoint);
+  const principal = principalKey(DEV_OWNER, t.serveIdentity.id).key;
+  const opId = mintLifecycleUid();
+  return withEndpointServeExecutorSession(sessionArgs(t), { endpoint, instanceId: t.instanceId }, async ({ recordsKv, authKv, nc }) => {
+    const ctx = await contractStoreContext(nc, t.space);
+    for (const value of [...contract.artifactValues(), cluster.document, cluster.manifest])
+      await publishContractArtifact(ctx, contractArtifactCanonicalBytes(value));
+    const fence = serveIssuanceGateKv(authKv, t.space, { endpoint, instanceId: t.instanceId });
+    if ((await fence.observe()) === null)
+      await provisionEndpointGateOpen(authKv, { endpoint, instanceId: t.instanceId, principal });
+    const barrier = endpointRegistrationBarrier(authKv, t.space, {
+      endpoint, instanceId: t.instanceId, opId,
+      evict: makeManagerEndpointHolderEvictor({ space: t.space, servers: t.servers, auth: t.auth, tlsRequired: t.tls, log: t.log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
+    });
+    const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [cluster.closureDigest], protocol: { v: 1 as const } };
+    const { processEpoch } = await registerServiceInstance(recordsKv, {
+      space: t.space, spec, instanceId: t.instanceId, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+      observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint, instanceId: holder }),
+    });
+    const readProcessEpoch = async (): Promise<number> => {
+      const gate = await fence.observe();
+      if (gate === null) throw new Error(`no issuance gate for ${endpoint}/${t.instanceId} after its registration`);
+      return gate.processEpoch;
+    };
+    const grant = await authorizeServeGrant(recordsKv, {
+      space: t.space, endpoint, instanceId: t.instanceId, epoch: processEpoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch,
+    });
+    const creds = await mintCreds(t.auth, t.serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
+    return { grant, creds, fingerprint: credentialFingerprint(creds) };
+  });
+}
+
+/** Write `ready` for the instance only when the daemon reported the credential minted here as bound
+ *  at the grant's epoch. A report naming another credential (a last-good connection at the same epoch)
+ *  writes nothing and throws, so `ready` never stands for a candidate that did not bind. */
+export async function writeDaemonEndpointReady(
+  t: DaemonEndpointTarget,
+  endpoint: string,
+  minted: { grant: EpServeGrant; fingerprint: string },
+  reported: { epoch: number; credentialFingerprint: string },
+): Promise<void> {
+  if (reported.epoch !== minted.grant.epoch || reported.credentialFingerprint !== minted.fingerprint)
+    throw new Error(`the delivery daemon reports ${endpoint} bound at epoch ${reported.epoch} on another credential, not the one just minted at epoch ${minted.grant.epoch}; ready was not written`);
+  await withEndpointServeExecutorSession(sessionArgs(t), { endpoint, instanceId: t.instanceId }, async ({ recordsKv, authKv }) => {
+    const fence = serveIssuanceGateKv(authKv, t.space, { endpoint, instanceId: t.instanceId });
+    const readProcessEpoch = async (): Promise<number> => {
+      const gate = await fence.observe();
+      if (gate === null) throw new Error(`no issuance gate for ${endpoint}/${t.instanceId}`);
+      return gate.processEpoch;
+    };
+    await writeServiceStatus(recordsKv, {
+      endpoint, instanceId: t.instanceId, epoch: minted.grant.epoch,
+      status: { state: SERVICE_READY, epoch: minted.grant.epoch, observedSpecRevision: minted.grant.registrationRevision },
+      readProcessEpoch,
+    });
+  });
+}

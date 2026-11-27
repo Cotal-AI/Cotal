@@ -88,6 +88,24 @@ export async function withLifecycleExecutorSession<T>(
   }
 }
 
+/** One endpoint registration or serve-credential window on its own `endpoint-serve-executor`
+ *  connection, pinned to one (endpoint, instanceId). Hands the callback the records and auth KV
+ *  handles and the connection; it lives for the callback only. */
+export async function withEndpointServeExecutorSession<T>(
+  args: IssuerSessionArgs,
+  pin: { endpoint: string; instanceId: string },
+  fn: (s: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>,
+): Promise<T> {
+  const creds = await mintCreds(args.auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: pin });
+  const nc = await dialerFor(args.servers)({ servers: args.servers, ...standaloneConnectOpts({ creds, tls: args.tls }), reconnect: false, maxReconnectAttempts: 0 });
+  try {
+    const kvm = new Kvm(nc);
+    return await fn({ recordsKv: await kvm.open(recordsBucket(args.space)), authKv: await kvm.open(epAuthBucket(args.space)), nc });
+  } finally {
+    await drainAndClose(nc);
+  }
+}
+
 /** One issuance window on its own connection, which lives for the callback only. */
 export async function withIssuerSession<T>(args: IssuerSessionArgs, fn: (session: IssuerSession) => Promise<T>): Promise<T> {
   const { session } = await openIssuerSession(args);
