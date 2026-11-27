@@ -32,6 +32,7 @@ import {
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
+  maintenancePaths,
   preparedSpaceAt,
   protectedLocalDirectory,
   readMaintenanceJournal,
@@ -394,6 +395,43 @@ function overlaps(a: string, b: string): boolean {
   return contained(fromA) || contained(fromB);
 }
 
+/** A parent that is not a directory, a link loop, or a folder this account cannot search. */
+function assertDestinationTraversable(destinationPath: string, folder: string): boolean {
+  try { return lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      const withChmod = oneLine(folder) === folder && existsSync(folder)
+        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
+        target: { directory: destinationPath, folder },
+        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
+      });
+    }
+    if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
+    const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
+  }
+}
+
+/** Refuse a destination restore would refuse: the journal directory and both lock paths.
+ *  A sibling directly under `.cotal/maintenance` is not one of those paths. */
+function assertReservedMaintenanceDestination(root: string, destinationPath: string, missingFolder: boolean): void {
+  const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
+  if (!artifact) return;
+  const { versionDir, lock, reaper } = maintenancePaths(root);
+  const reserved = [
+    [versionDir, "this root's maintenance journal directory"],
+    [lock, "this root's maintenance lock path"],
+    [reaper, "this root's maintenance lock recovery path"],
+  ] as const;
+  const hit = reserved.find(([path]) => overlaps(artifact, path));
+  if (!hit) return;
+  const [path, what] = hit;
+  const relation = artifact === path ? "is" : overlaps(path, artifact) ? "is inside" : "holds";
+  throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}; nothing was written`, { target: { directory: destinationPath, overlaps: path }, remedy: `name a destination outside ${path}`, selfContained: true });
+}
+
 function assertBackupPaths(root: string, source: string, destinationPath: string): void {
   const artifact = canonicalFuturePath(destinationPath);
   const attempts = resolve(root, ".cotal", "maintenance", "attempts");
@@ -600,28 +638,13 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
   const folder = dirname(destinationPath);
-  let destinationExists: boolean;
-  try { destinationExists = lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES") {
-      const withChmod = oneLine(folder) === folder && existsSync(folder)
-        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
-        target: { directory: destinationPath, folder },
-        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
-      });
-    }
-    if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
-    const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
-  }
-  if (destinationExists) {
+  if (assertDestinationTraversable(destinationPath, folder)) {
     // The partial artifact of an interrupted create is named with the command that removes it.
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
   const missingFolder = missingBackupPath(destinationPath) === "folder";
+  assertReservedMaintenanceDestination(root, destinationPath, missingFolder);
   const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
   // A destination the preserved store holds, or one in a folder this account cannot write, is refused
   // here, before the lock, so it leaves no attempt behind.
