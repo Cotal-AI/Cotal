@@ -14,8 +14,6 @@ import { isPresenceRow, assertPresenceRow } from "./subjects.js";
 import { assertValidName } from "./resolve.js";
 import { AGENT_LABEL_META_KEY, AGENT_MODEL_SET_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
 
-type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
-
 /** Live connection dependencies shared with the endpoint's other broker readers. */
 export interface EndpointPresenceDeps {
   notLiveMsg: () => string;
