@@ -383,7 +383,7 @@ import {chmodSync,cpSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync,rmSync
 import {join,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
-const {retainConnectorConfig,connectorConfigDir,retainConnectorSeat}=await import(${JSON.stringify(module)});
+const {retainConnectorConfig,connectorConfigDir,retainConnectorSeat,previousUpdateConnectorConfig}=await import(${JSON.stringify(module)});
 const {claimUpdateClosureAccess,updateClosureChildEnv,updateClosureOwner}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/update-closure.ts")).href)});
 const {writeUpdateRecovery,clearUpdateRecovery}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/updates.ts")).href)});
 const metadata=${JSON.stringify(join(installed, "package.json"))};
@@ -403,8 +403,10 @@ try {
 writeUpdateRecovery({previous:'0.166.0',target:'0.165.4',installed:'0.166.0',phase:'replacing',reason:'test update',owner:updateClosureOwner(),snapshot});
 const child=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',${JSON.stringify(childScript)}],{env:{...updateClosureChildEnv(process.env),COTAL_UPDATE_PARENT:String(process.pid),SNAPSHOT:snapshot,STALE:stale},encoding:'utf8'});
 assert.equal(child.status,0,child.stdout+child.stderr);
+assert.equal(previousUpdateConnectorConfig(),undefined,'active recovery hides rollback source from stage cleanup');
 clearUpdateRecovery();
 const selected=connectorConfigDir();
+assert.equal(previousUpdateConnectorConfig(),current,'completed update exposes its validated rollback source');
 assert.equal(selected === stale,${canonical},'completed update keeps its published selection');
 assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),${JSON.stringify(expected)});
 } finally { release(); }
