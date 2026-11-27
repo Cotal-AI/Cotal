@@ -513,7 +513,8 @@ An empty or whitespace-only `--harness` or `-H` refuses with
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Hermes asks the connector's pinned Hermes which provider a launch's environment selects, and lists
 that provider's models.
-Claude Code lists the models its login can use, with their effort levels as variants, and pi lists
+Claude Code lists the models its login can use, with their effort levels as variants and its `fast` and
+`ultracode` modes, and pi lists
 the models of providers it holds credentials for, with their thinking levels as variants. Jcode lists
 the models `jcode model list` reports with an available route, without variants.
 A connector without a catalog says so with `supported: false`, and one whose install has no
@@ -765,8 +766,9 @@ body input. Leading frontmatter follows the native persona merge:
 the supplied name wins, explicit model/role/application and channel fields override the file,
 and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
 1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
-If the manager instance ID is invalid, find the full ID with `cotal ps` in the same space and replace
-only the `--on` value. Keep the definition options and pipe any standard input again.
+If the manager instance ID is invalid, use the suggested roster lookup. It keeps the selected
+space, broker and output format. If the broker address contains private details, use the original
+broker options yourself. Replace only the `--on` value and pipe any standard input again.
 
 The remote wire accepts name, body, model, role, application, initial read channels and read/post
 ACLs. `--harness`, `--subscribe`, `--allow-subscribe` and `--allow-publish` name those fields.
