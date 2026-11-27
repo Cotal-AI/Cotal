@@ -10,7 +10,7 @@ import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateI
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
 import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
-import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
+import { npmInvocation, npmProjectDirectory, npmUpdateChildEnvironment } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
 const counted = countedAssert(strictAssert);
@@ -221,11 +221,14 @@ async function npmNodeEngine(): Promise<void> {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
+    const lastPathFile = join(root, "npm-last-path");
     type NpmLaunch = { node: string; cwd: string; pathHead: string };
     const recordedLaunches = (): NpmLaunch[] => readFileSync(record, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
     writeFileSync(cli, `#!/usr/bin/env node
-require('node:fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(lastPathFile)}, process.env.PATH ?? '');
+fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({
   node: process.execPath, cwd: process.cwd(), pathHead: (process.env.PATH ?? '').split(require('node:path').delimiter)[0],
 }) + '\\n');
 console.log(JSON.stringify(${JSON.stringify(version)}));
@@ -440,13 +443,13 @@ esac
       assert.equal(unsetAsdf.status, 1, unsetAsdf.stdout + unsetAsdf.stderr);
       assert.match(unsetAsdf.stderr, /No version is set for nodejs/);
 
-      // Failure fallbacks: missing asdf, >2s hang, and relative / multi-line / non-executable answers
-      // each leave the original shim in place (main's behaviour).
+      // Failure fallbacks: missing absolute asdf (even with another asdf on PATH), >2s hang, and
+      // relative / multi-line / non-executable / non-npm answers each leave the original shim in place.
       const missingAsdfPath = join(root, "missing-asdf-dir", "asdf");
       writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec "${missingAsdfPath}" exec "npm" "$@"\n`, { mode: 0o755 });
       const missingAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
         cwd: project, encoding: "utf8", timeout: 60_000,
-        env: { ...cliEnv(["/usr/bin", "/bin"], asdfShims), ASDF_DATA_DIR: asdfData, NODE_OPTIONS: undefined },
+        env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
       });
       assert.equal(missingAsdf.status, 1, missingAsdf.stdout + missingAsdf.stderr);
       assert.match(missingAsdf.stderr, /missing-asdf-dir\/asdf/);
@@ -454,6 +457,8 @@ esac
 
       const nonExecNpm = join(root, "non-exec-npm");
       writeFileSync(nonExecNpm, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+      const nonNpmExec = join(root, "non-npm-exec");
+      writeFileSync(nonNpmExec, "#!/bin/sh\nexit 99\n", { mode: 0o755 });
       const fallbackShimCalls = join(root, "fallback-shim-calls");
       writeFileSync(join(asdfShims, "npm"), `#!/bin/sh
 # asdf-plugin: nodejs ${process.versions.node}
@@ -477,6 +482,7 @@ esac
         ["relative", { ASDF_TEST_WHICH_OUT: "relative/bin/npm\\n" }],
         ["multiline", { ASDF_TEST_WHICH_OUT: `${join(asdfInstall, "bin", "npm")}\\n${join(asdfInstall, "bin", "npm")}\\n` }],
         ["non-executable", { ASDF_TEST_WHICH_OUT: `${nonExecNpm}\\n` }],
+        ["non-npm", { ASDF_TEST_WHICH_OUT: `${nonNpmExec}\\n` }],
       ] as const) {
         rmSync(fallbackShimCalls, { force: true });
         const fallbackRes = spawnSync(join(onlyNode, exe), [entry, "update", "--check"], {
@@ -488,12 +494,31 @@ esac
           `${label} falls back to running the original shim from the isolated directory`);
       }
 
+      // Linear bounded shim check: a 64 KB one-line file (and a sub-4KB pathological spaces line)
+      // with `# asdf-plugin:` returns in well under 1 s and is treated as not a shim.
+      writeAsdfExe();
+      for (const [label, content] of [
+        ["64kb-one-line", `# asdf-plugin: nodejs ${" ".repeat(65_536)}exec asdf exec "npm" "$@"`],
+        ["3kb-spaces", `#!/bin/sh\n# asdf-plugin: nodejs\nexec ${" ".repeat(3000)}not-asdf\n`],
+      ] as const) {
+        const bigNpmDir = join(root, `big-shim-${label}`);
+        mkdirSync(bigNpmDir, { recursive: true });
+        writeFileSync(join(bigNpmDir, "npm"), content, { mode: 0o755 });
+        rmSync(asdfCalls, { force: true });
+        const started = performance.now();
+        const invoked = await npmProjectDirectory.run(project, () =>
+          npmInvocation({ ...cliEnv(asdfExtra, bigNpmDir), ASDF_DATA_DIR: asdfData, NODE_OPTIONS: undefined }, ["view", "cotal-ai@latest", "version", "--json"]));
+        const elapsedMs = performance.now() - started;
+        assert.ok(elapsedMs < 500, `${label} shim check took ${elapsedMs}ms (must be well under 1000ms)`);
+        assert.equal(invoked.npm, undefined, `${label} is treated as not an asdf shim`);
+        assert.throws(() => readFileSync(asdfCalls), { code: "ENOENT" }, `${label} never invokes asdf`);
+      }
+
       // Non-asdf npm wrapper on PATH is untouched and never consults asdf.
       const customNpmDir = join(root, "custom-npm-bin");
       mkdirSync(customNpmDir, { recursive: true });
       const customNpmLog = join(root, "custom-npm-calls");
       writeFileSync(join(customNpmDir, "npm"), `#!/bin/sh\nprintf '%s\\n' "$PWD" >> ${JSON.stringify(customNpmLog)}\nexec ${JSON.stringify(cli)} "$@"\n`, { mode: 0o755 });
-      writeAsdfExe();
       rmSync(asdfCalls, { force: true });
       const nonAsdfRes = spawnSync(join(onlyNode, exe), [entry, "update", "--check"], {
         cwd: project, encoding: "utf8", timeout: 60_000,
@@ -502,6 +527,93 @@ esac
       assert.equal(nonAsdfRes.status, 0, nonAsdfRes.stdout + nonAsdfRes.stderr);
       assert.equal(readFileSync(customNpmLog, "utf8").trim(), parse(root).root, "non-asdf npm wrapper runs directly from /");
       assert.throws(() => readFileSync(asdfCalls), { code: "ENOENT" }, "non-asdf npm never invokes asdf");
+
+      // Inherited COTAL_UPDATE_NPM is accepted only when npmEngine recognises it:
+      // a non-npm executable on PATH and one in a directory containing the PATH delimiter are both ignored.
+      writeGoAsdfShim();
+      writeFileSync(join(project, ".tool-versions"), `${asdfInstall}\n`);
+      const rogueLog = join(root, "rogue-update-npm-calls");
+      const rogueOnPath = join(asdfBin, "rogue-npm");
+      const rogueColonDir = join(root, `rogue${delimiter}npm`);
+      mkdirSync(rogueColonDir, { recursive: true });
+      const rogueInColonDir = join(rogueColonDir, "npm");
+      for (const rogue of [rogueOnPath, rogueInColonDir]) {
+        writeFileSync(rogue, `#!/bin/sh\nprintf 'ran\\n' >> ${JSON.stringify(rogueLog)}\nexit 99\n`, { mode: 0o755 });
+      }
+      for (const [label, inheritedValue] of [
+        ["non-npm on PATH", rogueOnPath],
+        ["non-npm in colon directory", rogueInColonDir],
+      ] as const) {
+        rmSync(rogueLog, { force: true });
+        const ignoredRes = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+          cwd: project, encoding: "utf8", timeout: 60_000,
+          env: { ...asdfBaseEnv, NODE_OPTIONS: undefined, COTAL_UPDATE_NPM: inheritedValue },
+        });
+        assert.equal(ignoredRes.status, 0, `${label}: ${ignoredRes.stdout}${ignoredRes.stderr}`);
+        assert.match(ignoredRes.stdout, /Registry latest:/);
+        assert.deepEqual(recordedLaunches().at(-1), {
+          node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+        }, `${label} is ignored in favour of the project's asdf npm`);
+        assert.throws(() => readFileSync(rogueLog), { code: "ENOENT" }, `${label} never executes`);
+      }
+
+      // Transient timeout retry: a first `asdf which npm` timeout is not cached as "no npm";
+      // a second call retries and caches a positive answer, while persistent timeouts ask at most once more.
+      {
+        const retryShimDir = join(root, "asdf-retry-shims");
+        const capShimDir = join(root, "asdf-cap-shims");
+        for (const dir of [retryShimDir, capShimDir]) {
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec asdf exec "npm" "$@"\n`, { mode: 0o755 });
+        }
+        const onceMarker = join(root, "asdf-timeout-once");
+        writeFileSync(asdfExe, `#!/bin/sh
+printf '%s\\n' "$1:$2:$PWD" >> ${JSON.stringify(asdfCalls)}
+if [ "$1:$2" = "which:npm" ] && [ -n "$ASDF_ONCE_MARKER" ] && [ ! -f "$ASDF_ONCE_MARKER" ]; then
+  : > "$ASDF_ONCE_MARKER"
+  exec /bin/sleep 3
+fi
+if [ -n "$ASDF_TEST_SLEEP" ]; then exec /bin/sleep "$ASDF_TEST_SLEEP"; fi
+case "$1:$2" in
+  which:npm) printf '%s\\n' ${JSON.stringify(asdfPluginShim)} ;;
+  where:nodejs) cat .tool-versions ;;
+  exec:npm) shift 2; exec ${JSON.stringify(asdfPluginShim)} "$@" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+
+        rmSync(asdfCalls, { force: true });
+        rmSync(onceMarker, { force: true });
+        const retryEnv = { ...cliEnv(asdfExtra, retryShimDir), ASDF_DATA_DIR: asdfData, ASDF_ONCE_MARKER: onceMarker, NODE_OPTIONS: undefined };
+        const firstTry = await npmProjectDirectory.run(project, () => npmInvocation(retryEnv, ["view"]));
+        assert.equal(firstTry.npm, undefined, "first call falls back when asdf which npm times out");
+        const secondTry = await npmProjectDirectory.run(project, () => npmInvocation(retryEnv, ["view"]));
+        assert.equal(secondTry.npm, join(asdfInstall, "bin", "npm"), "second call retries after a timeout and resolves the project's npm");
+        const thirdTry = await npmProjectDirectory.run(project, () => npmInvocation(retryEnv, ["view"]));
+        assert.equal(thirdTry.npm, join(asdfInstall, "bin", "npm"), "third call reuses the cached positive answer");
+        assert.deepEqual(readFileSync(asdfCalls, "utf8").trim().split(/\r?\n/), [
+          `which:npm:${realpathSync(project)}`,
+          `which:npm:${realpathSync(project)}`,
+          `where:nodejs:${realpathSync(project)}`,
+        ], "timeout is retried once and positive resolution is then cached");
+
+        rmSync(asdfCalls, { force: true });
+        const capEnv = { ...cliEnv(asdfExtra, capShimDir), ASDF_DATA_DIR: asdfData, ASDF_TEST_SLEEP: "3", NODE_OPTIONS: undefined };
+        const cap1 = await npmProjectDirectory.run(project, () => npmInvocation(capEnv, ["view"]));
+        const cap2 = await npmProjectDirectory.run(project, () => npmInvocation(capEnv, ["view"]));
+        const startedCap3 = performance.now();
+        const cap3 = await npmProjectDirectory.run(project, () => npmInvocation(capEnv, ["view"]));
+        const cap3Elapsed = performance.now() - startedCap3;
+        assert.equal(cap1.npm, undefined);
+        assert.equal(cap2.npm, undefined);
+        assert.equal(cap3.npm, undefined);
+        assert.ok(cap3Elapsed < 500, `third call after two timeouts returned without probing (${cap3Elapsed}ms)`);
+        assert.deepEqual(readFileSync(asdfCalls, "utf8").trim().split(/\r?\n/), [
+          `which:npm:${realpathSync(project)}`,
+          `which:npm:${realpathSync(project)}`,
+        ], "persistent timeouts probe at most once more per command");
+        writeAsdfExe();
+      }
 
       const compatibleAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
         cwd: project, encoding: "utf8", timeout: 60_000, env: asdfBaseEnv,
@@ -529,69 +641,37 @@ esac
             }, `reconcile and update children retain the resolved asdf npm from ${installName}`);
           }
         }
-      } finally { release(); }
 
-      // Real seedOne reconciliation cell: drive `runSeed` (`seed/reconcile.ts:seedOne` -> `ext add` child)
-      // from `/` under `npmProjectDirectory.run(project, ...)` with an asdf npm shim and unset global asdf.
-      {
-        const seedSandbox = join(root, "seed-reconcile-cell");
-        const seedXdg = join(seedSandbox, "config"), seedHome = join(seedSandbox, "home"), seedCotal = join(seedSandbox, "cotal");
-        const seedInstall = join(seedSandbox, "asdf-install"), seedNpmLog = join(seedSandbox, "seed-npm.jsonl");
-        const seedEntry = join(repoBin, "dist", "cotal.js");
-        for (const dir of [seedXdg, seedHome, seedCotal, join(seedInstall, "bin")]) {
-          mkdirSync(dir, { recursive: true, mode: 0o700 });
+        // When node and npm come from different directories, the child's appended PATH tail keeps
+        // main's `[node, npm]` order (`dirname(node)` ahead of `dirname(npm)`).
+        const separateNpmInstall = join(root, "asdf-separate-npm");
+        const separateNodeBin = join(root, "asdf-separate-node", "bin");
+        mkdirSync(join(separateNpmInstall, "bin"), { recursive: true });
+        mkdirSync(separateNodeBin, { recursive: true });
+        symlinkSync(cli, join(separateNpmInstall, "bin", "npm"));
+        copyFileSync(process.execPath, join(separateNodeBin, exe));
+        writeFileSync(dispatcher, `#!/bin/sh\n[ "\${0##*/}" = node ] || exit 1\nexec "${join(separateNodeBin, exe)}" "$@"\n`, { mode: 0o755 });
+        writeFileSync(join(project, ".tool-versions"), `${separateNpmInstall}\n`);
+        const originalVersion = process.version;
+        Object.defineProperty(process, "version", { value: incompatibleVersion });
+        try {
+          const splitEnv = cliEnv([shimDir, ...asdfExtra], asdfShims);
+          const prepared = await npmProjectDirectory.run(project, () => npmUpdateChildEnvironment(splitEnv));
+          const expectedTail = [realpathSync(separateNodeBin), join(separateNpmInstall, "bin")];
+          assert.deepEqual((prepared.PATH ?? "").split(delimiter).slice(-2), expectedTail,
+            "npmUpdateChildEnvironment appends dirname(node) before dirname(npm)");
+          const childFile = join(onlyNode, exe), childArgs = [entry, "update", "--check"];
+          for (const launch of [() => runGlobalProcess(root, "reconcile", childFile, childArgs, splitEnv), () => runProcess(childFile, childArgs, splitEnv)]) {
+            const child = await npmProjectDirectory.run(project, () => launch());
+            assert.equal(child.status, 0, child.stdout + child.stderr);
+            assert.deepEqual(readFileSync(lastPathFile, "utf8").split(delimiter).slice(-2), expectedTail,
+              "child PATH keeps dirname(node) before dirname(npm) on the appended tail");
+          }
+        } finally {
+          Object.defineProperty(process, "version", { value: originalVersion });
+          writeFileSync(dispatcher, `#!/bin/sh\n[ -f .tool-versions ] && exit 126\nexec "${alternate}.gone" "$@"\n`);
         }
-        const seedNpm = join(seedInstall, "bin", "npm"), seedNpmRoot = join(seedInstall, "lib", "node_modules", "npm"), seedNpmCli = join(seedNpmRoot, "bin", "npm-cli.js");
-        mkdirSync(dirname(seedNpmCli), { recursive: true });
-        writeFileSync(join(seedNpmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
-        writeFileSync(seedNpmCli, `#!/usr/bin/env node
-const fs = require("node:fs"), path = require("node:path");
-const args = process.argv.slice(2);
-const pIdx = args.indexOf("--prefix");
-const prefix = pIdx >= 0 ? args[pIdx + 1] : "";
-const spec = args.filter((a, i) => !a.startsWith("-") && i !== pIdx + 1)[1];
-fs.appendFileSync(${JSON.stringify(seedNpmLog)}, JSON.stringify({ node: process.execPath, cwd: process.cwd(), cmd: args[0], hasUpdateNpm: Object.prototype.hasOwnProperty.call(process.env, "COTAL_UPDATE_NPM") }) + "\\n");
-if (args[0] === "install" && prefix && spec) {
-  const meta = JSON.parse(fs.readFileSync(path.join(spec, "package.json"), "utf8"));
-  const dest = path.join(prefix, "node_modules", ...meta.name.split("/"));
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.cpSync(spec, dest, { recursive: true });
-  const rootPkgPath = path.join(prefix, "package.json");
-  const rootPkg = fs.existsSync(rootPkgPath) ? JSON.parse(fs.readFileSync(rootPkgPath, "utf8")) : { dependencies: {} };
-  rootPkg.dependencies = { ...rootPkg.dependencies, [meta.name]: "file:" + path.relative(prefix, spec) };
-  fs.writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + "\\n");
-}
-`, { mode: 0o755 });
-        symlinkSync(seedNpmCli, seedNpm);
-        writeFileSync(join(project, ".tool-versions"), `${seedInstall}\n`);
-        const seedReconcileUrl = pathToFileURL(join(import.meta.dirname, "../dist/seed/reconcile.js")).href;
-        const npmInvocationUrl = pathToFileURL(join(import.meta.dirname, "../dist/lib/npm-invocation.js")).href;
-        const seedDriver = join(seedSandbox, "drive-seed.mjs");
-        writeFileSync(seedDriver, `
-process.argv[1] = ${JSON.stringify(seedEntry)};
-const { npmProjectDirectory } = await import(${JSON.stringify(npmInvocationUrl)});
-const { runSeed } = await import(${JSON.stringify(seedReconcileUrl)});
-await npmProjectDirectory.run(${JSON.stringify(project)}, () => runSeed({}));
-`);
-        const seedRun = spawnSync(join(onlyNode, exe), [seedDriver], {
-          cwd: parse(root).root, encoding: "utf8", timeout: 60_000,
-          env: {
-            ...asdfBaseEnv, NODE_OPTIONS: undefined,
-            HOME: seedHome, USERPROFILE: seedHome, COTAL_HOME: seedCotal, XDG_CONFIG_HOME: seedXdg,
-            COTAL_SKIP_CONNECTOR_SEED: undefined,
-          },
-        });
-        assert.equal(seedRun.status, 0, `seedOne reconcile cell failed:\n${seedRun.stdout}\n${seedRun.stderr}`);
-        assert.match(seedRun.stdout, /connectors reconciled.*seeded claude/);
-        const seedEvents = readFileSync(seedNpmLog, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
-        const installEvents = seedEvents.filter(event => event.cmd === "install");
-        assert.equal(installEvents.length, SEED_BUILTINS.length);
-        for (const event of seedEvents) {
-          assert.equal(event.node, realpathSync(join(onlyNode, exe)));
-          assert.equal(event.cwd, parse(root).root);
-          assert.equal(event.hasUpdateNpm, false, "COTAL_UPDATE_NPM is stripped before npm runs");
-        }
-      }
+      } finally { release(); }
     }
     const updated = run("--self");
     assert.equal(updated.status, 0, updated.stdout + updated.stderr);

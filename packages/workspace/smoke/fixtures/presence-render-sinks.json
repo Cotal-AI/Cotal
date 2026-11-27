@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1161,
+    "total": 1163,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 939
+    "non-render/control": 941
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -8181,7 +8181,7 @@
     {
       "path": "implementations/cli/src/lib/npm-invocation.ts",
       "kind": "derived-output",
-      "anchor": "npmEngine(resolved)",
+      "anchor": "where` from cwd.\n  if (!npmEngine(resolved) && basename(dirname(res",
       "class": "non-render/control",
       "rationale": "Update npm resolution: checks whether the path from `asdf which npm` is already a direct npm or Corepack entry; `result.status` is the asdf child process exit code, not peer presence."
     },
@@ -8202,9 +8202,16 @@
     {
       "path": "implementations/cli/src/lib/npm-invocation.ts",
       "kind": "derived-output",
-      "anchor": "here\", basename(dirname(dirname(resolved)))]);\n    const installe",
+      "anchor": "here\", basename(dirname(dirname(resolved)))]);\n    if (timedOut(w",
       "class": "non-render/control",
       "rationale": "Update npm resolution: extracts the asdf plugin directory name to pass to `asdf where`; child process argv construction, not peer presence or rendered output."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "timedOut(where)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: checks whether `asdf where` timed out (`ETIMEDOUT`) so a transient timeout is not cached as a permanent negative; child process error handling, not peer presence."
     },
     {
       "path": "implementations/cli/src/lib/npm-invocation.ts",
@@ -8226,6 +8233,13 @@
       "anchor": "resolveOnPath(resolved, env)",
       "class": "non-render/control",
       "rationale": "Update npm resolution: verifies that the unwrapped npm binary is executable before returning it for child process launch; executable lookup, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "d, env) === resolved && npmEngine(resolved) ? { resolved } : {};\n}\n",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: accepts `asdf which npm` / `asdf where` output only when `npmEngine` recognises it as npm or Corepack; executable identity check, not peer presence."
     }
   ]
 }

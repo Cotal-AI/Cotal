@@ -12,8 +12,9 @@ const UPDATE_NPM = "COTAL_UPDATE_NPM";
 const UPDATE_NPM_NODE = "COTAL_UPDATE_NPM_NODE";
 const windows = process.platform === "win32";
 
+type AsdfCacheEntry = { kind: "resolved"; file: string } | { kind: "timeout" } | { kind: "none" };
 let updatePath: { value: string; directories: string[] } | undefined;
-const asdfNpmCache = new Map<string, string | null>();
+const asdfNpmCache = new Map<string, AsdfCacheEntry>();
 
 export function preserveUpdatePath(): void {
   const path = process.env.PATH;
@@ -105,20 +106,50 @@ function validInherited(candidate: string | undefined, directories: string[], en
       resolveOnPath(candidate, env) === candidate) return candidate;
 }
 
+function stripShellComment(line: string): string {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === quote && (quote === "'" || line[i - 1] !== "\\")) quote = undefined;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "#" && (i === 0 || line[i - 1] === " " || line[i - 1] === "\t")) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+function parseAsdfExecLine(line: string): string | undefined {
+  if (line.endsWith("\r")) line = line.slice(0, -1);
+  if (line.length > 512 || (!line.startsWith("exec ") && !line.startsWith("exec\t"))) return;
+  const body = stripShellComment(line).trimEnd();
+  const split = Math.max(body.lastIndexOf(" exec "), body.lastIndexOf("\texec "), body.lastIndexOf(" exec\t"), body.lastIndexOf("\texec\t"));
+  if (split < 4) return;
+  const raw = body.slice(4, split).trim();
+  const rest = body.slice(split + 5).trimStart();
+  if (!raw || !/^(?:"npm"|'npm'|npm)[ \t]+(?:"\$@"|\$@)$/.test(rest)) return;
+  return (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
+    ? raw.slice(1, -1) : raw;
+}
+
 function asdfShimExecutable(file: string, env: NodeJS.ProcessEnv): string | undefined {
   try {
     const entry = realpathSync(file);
     const info = lstatSync(entry);
-    if (!info.isFile() || info.size > 16_384) return;
-    const text = readFileSync(entry, "utf8");
-    if (!/^# asdf-plugin:/m.test(text)) return;
-    const raw = /^exec[ \t]+(.+?)[ \t]+exec[ \t]+(?:"npm"|'npm'|npm)[ \t]+(?:"\$@"|\$@)(?:[ \t]+#[^\r\n]*)?[ \t]*\r?$/m.exec(text)?.[1]?.trim();
-    if (!raw) return;
-    let candidate = (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
-      ? raw.slice(1, -1) : raw;
-    if (/^\$\{?ASDF_DIR\}?\/bin\/asdf$/.test(candidate))
-      candidate = env.ASDF_DIR && isAbsolute(env.ASDF_DIR) ? join(env.ASDF_DIR, "bin", "asdf") : "asdf";
-    if (candidate === "asdf" || (isAbsolute(candidate) && basename(candidate) === "asdf")) return candidate;
+    if (!info.isFile() || info.size > 4096) return;
+    const lines = readFileSync(entry, "utf8").split("\n");
+    if (!lines.some(line => line.startsWith("# asdf-plugin:"))) return;
+    for (const line of lines) {
+      let candidate = parseAsdfExecLine(line);
+      if (!candidate) continue;
+      if (/^\$\{?ASDF_DIR\}?\/bin\/asdf$/.test(candidate)) {
+        if (!env.ASDF_DIR || !isAbsolute(env.ASDF_DIR)) return;
+        candidate = join(env.ASDF_DIR, "bin", "asdf");
+      }
+      if (candidate === "asdf" || (isAbsolute(candidate) && basename(candidate) === "asdf")) return candidate;
+    }
   } catch { return undefined; }
 }
 
@@ -129,11 +160,13 @@ function resolveAsdfNpm(
   cwd: string,
   probeEnv: NodeJS.ProcessEnv,
   env: NodeJS.ProcessEnv,
-): string | undefined {
+): { resolved?: string; timedOut?: boolean } {
   const asdf = asdfCommand === "asdf"
     ? findOnPath("asdf")
-    : resolveOnPath(asdfCommand, env) === asdfCommand ? asdfCommand : findOnPath("asdf");
-  if (!asdf) return;
+    : resolveOnPath(asdfCommand, env) === asdfCommand ? asdfCommand : undefined;
+  if (!asdf) return {};
+  const timedOut = (res: ReturnType<typeof spawnSync>) =>
+    (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
   const runAsdf = (args: string[]) => {
     const first = spawnSync(asdf, args, {
       cwd: directory ?? cwd, env: probeEnv, encoding: "utf8", timeout: 2000, killSignal: "SIGKILL", windowsHide: true,
@@ -146,19 +179,60 @@ function resolveAsdfNpm(
     return first;
   };
   const result = runAsdf(["which", "npm"]);
-  if (result.status !== 0) return;
+  if (timedOut(result)) return { timedOut: true };
+  if (result.status !== 0) return {};
   const line = result.stdout.trim();
-  if (!line || line.includes("\n") || !isAbsolute(line)) return;
+  if (!line || line.includes("\n") || !isAbsolute(line)) return {};
   let resolved = resolve(line);
   // asdf-nodejs points `which npm` at its reshim wrapper, which still calls `asdf where` from cwd.
   if (!npmEngine(resolved) && basename(dirname(resolved)) === "shims" &&
       basename(dirname(dirname(dirname(resolved)))) === "plugins") {
     const where = runAsdf(["where", basename(dirname(dirname(resolved)))]);
+    if (timedOut(where)) return { timedOut: true };
     const installed = where.status === 0 ? where.stdout.trim() : "";
-    if (!installed || installed.includes("\n") || !isAbsolute(installed)) return;
+    if (!installed || installed.includes("\n") || !isAbsolute(installed)) return {};
     resolved = join(resolve(installed), "bin", "npm");
   }
-  return resolveOnPath(resolved, env) === resolved ? resolved : undefined;
+  return resolveOnPath(resolved, env) === resolved && npmEngine(resolved) ? { resolved } : {};
+}
+
+function selectAsdfNpm(
+  shim: string,
+  asdfCommand: string,
+  inheritedNpm: string | undefined,
+  directories: string[],
+  findOnPath: (bin: string) => string | undefined,
+  cwd: string,
+  lookup: NodeJS.ProcessEnv,
+  pathValue: string,
+  env: NodeJS.ProcessEnv,
+): { file: string; engine: NonNullable<ReturnType<typeof npmEngine>> } | undefined {
+  const inherited = validInherited(inheritedNpm, directories, env);
+  let resolved = inherited && npmEngine(inherited) ? inherited : undefined;
+  if (!resolved) {
+    const directory = callerDirectory(cwd);
+    const cacheKey = `${shim}\0${directory ?? ""}\0${pathValue}`;
+    const cached = asdfNpmCache.get(cacheKey);
+    if (cached?.kind === "resolved") {
+      resolved = resolveOnPath(cached.file, env) === cached.file ? cached.file : undefined;
+    } else if (!cached || cached.kind === "timeout") {
+      const probeEnv = { ...lookup };
+      delete probeEnv.NODE_OPTIONS;
+      const probe = resolveAsdfNpm(asdfCommand, findOnPath, directory, cwd, probeEnv, env);
+      if (probe.resolved) {
+        asdfNpmCache.set(cacheKey, { kind: "resolved", file: probe.resolved });
+        resolved = probe.resolved;
+      } else {
+        asdfNpmCache.set(cacheKey, !cached && probe.timedOut ? { kind: "timeout" } : { kind: "none" });
+      }
+    }
+  }
+  if (!resolved) return;
+  try {
+    if (realpathSync(resolved) === realpathSync(shim)) return;
+    const engine = npmEngine(resolved);
+    return engine ? { file: resolved, engine } : undefined;
+  } catch { return undefined; }
 }
 
 export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -228,27 +302,10 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   const project = npmProjectDirectory.getStore();
   const asdfCommand = !engine && !windows ? asdfShimExecutable(file, env) : undefined;
   if (asdfCommand) {
-    let resolved = validInherited(inheritedNpm, directories, env);
-    if (!resolved) {
-      const directory = callerDirectory(cwd);
-      const cacheKey = `${file}\0${directory ?? ""}\0${lookup[pathKey] ?? ""}`;
-      if (asdfNpmCache.has(cacheKey)) {
-        const cached = asdfNpmCache.get(cacheKey) ?? undefined;
-        resolved = cached && resolveOnPath(cached, env) === cached ? cached : undefined;
-      } else {
-        const asdfEnv = { ...lookup };
-        delete asdfEnv.NODE_OPTIONS;
-        resolved = resolveAsdfNpm(asdfCommand, findOnPath, directory, cwd, asdfEnv, env);
-        asdfNpmCache.set(cacheKey, resolved ?? null);
-      }
-    }
-    if (resolved) {
-      try {
-        if (realpathSync(resolved) !== realpathSync(file)) {
-          selectedNpm = file = resolved;
-          engine = npmEngine(file);
-        }
-      } catch { /* keep the original shim if its target disappeared */ }
+    const selected = selectAsdfNpm(file, asdfCommand, inheritedNpm, directories, findOnPath, cwd, lookup, lookup[pathKey] ?? "", env);
+    if (selected) {
+      selectedNpm = file = selected.file;
+      engine = selected.engine;
     }
   }
   const withNode = (node: string, preserveLiteral = literal !== undefined) => preserveLiteral && dirname(node).includes(delimiter) ? env
