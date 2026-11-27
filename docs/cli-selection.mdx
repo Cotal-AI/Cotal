@@ -30,6 +30,8 @@ cotal use [<space> | --clear] [--json|--plain]
 
 ### Space inventory
 
+If `space show` or `who --space` cannot find the named space, the suggested inventory command keeps the requested `--json` or `--plain` output.
+
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
 project whose root has one running registered space other than the automatically adopted selection,
