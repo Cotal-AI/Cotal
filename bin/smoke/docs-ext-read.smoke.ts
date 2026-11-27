@@ -456,4 +456,22 @@ for (const [args, why] of [
   check("help names the listing's structured output and no other mode's", /Structured output: json, plain/.test(listHelp.stdout) && !/Structured output: /i.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
 }
 
+{
+  const plugin = join(home, "factory plugin");
+  mkdirSync(plugin);
+  const metadata = join(plugin, "package.json");
+  writeFileSync(metadata, JSON.stringify({ name: "cotal-factory-proof", version: "1.0.0", type: "module", exports: "./entry.js" }));
+  writeFileSync(join(plugin, "entry.js"), 'export default (host) => host.register({kind: "runtime", name: "factory-proof", aliases: ["fp"]});\n');
+  const generated = run(["ext", "manifest", plugin]);
+  const next = readFileSync(metadata, "utf8");
+  const declaration = JSON.parse(next).cotal;
+  check("ext manifest runs without a space and writes the staged declaration",
+    generated.status === 0 && declaration?.contract === 1 && declaration?.core === VERSION &&
+      JSON.stringify(declaration?.provides) === JSON.stringify([{ kind: "runtime", name: "factory-proof", aliases: ["fp"] }]), shown(generated));
+  const repeated = run(["ext", "manifest", plugin]);
+  check("ext manifest produces stable metadata", repeated.status === 0 && readFileSync(metadata, "utf8") === next, shown(repeated));
+  const invalid = run(["ext", "manifest", plugin, "extra"]);
+  check("ext manifest rejects a second directory before writing", invalid.status === 1 && readFileSync(metadata, "utf8") === next, shown(invalid));
+}
+
 finish();

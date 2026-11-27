@@ -351,7 +351,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // `cotal supervise --roster`, the agent supervisor + container entrypoint, or `cotal manager start`,
   // which replaces it) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
-  if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
+  if (name === "ext" && (sub === "seed" || sub === "manifest")) return true;
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
   // token file, exchange it, print the bearer and exit. It must not depend on or mutate the
@@ -1231,7 +1231,7 @@ function prepareDispatchSurface(
   const extMode = builtin?.name === "ext" ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
   // Root only resolves a path. The JSON list classifies inventory errors in its handler.
   const extDiagnostics = builtin?.name === "ext" && !wantsHelp
-    && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
+    && (extMode === "root" || extMode === "manifest" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
   const readMode = builtin && !wantsHelp && (builtin.name === "config" || builtin.name === "completion")
     ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
   const configRead = builtin?.name === "config" && !wantsHelp && (readMode === undefined || readMode === "get");

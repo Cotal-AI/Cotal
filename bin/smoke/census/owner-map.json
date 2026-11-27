@@ -533,6 +533,7 @@
   "cli:ext": "current:ext",
   "cli:ext add": "current:ext add",
   "cli:ext list": "current:ext list",
+  "cli:ext manifest": "current:ext manifest",
   "cli:ext remove": "current:ext remove",
   "cli:ext root": "current:ext root",
   "cli:ext seed": "current:ext seed",

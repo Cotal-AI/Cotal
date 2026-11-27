@@ -20,6 +20,7 @@ import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
+import { generateExtensionManifest } from "../lib/extension-manifest-command.js";
 
 export const extFlags = [
   jsonFlag,
@@ -31,7 +32,7 @@ export const extFlags = [
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 const REGISTRY_SPEC = /^(@[^/@]+\/[^/@]+|[^/@]+)(@.*)?$/;
-const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
+const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force] | ext manifest [<dir>]";
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
@@ -68,6 +69,7 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
+  if (sub === "manifest" && args.positionals.length > 2) throw usage("cotal ext manifest takes at most one directory");
 }
 
 /**
@@ -110,6 +112,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     return;
   }
   if (sub === "remove") return remove(rest[0]!);
+  if (sub === "manifest") return generateExtensionManifest(rest[0]);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
