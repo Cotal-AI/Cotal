@@ -1,5 +1,26 @@
 # @cotal-ai/workspace
 
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- c3236a3: A stack journal this account owns but other accounts can read, as a restored project backup leaves it, refuses `doctor auth` and `ps` with the `chmod 600` command that makes it private again; a journal owned by another account names the owner it must be restored with.
+- 447e860: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- 0c10988: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- 06629ca: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [335d8e9]
+  - @cotal-ai/core@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes

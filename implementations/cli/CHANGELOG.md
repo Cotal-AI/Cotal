@@ -1,5 +1,54 @@
 # @cotal-ai/cli
 
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- 6813caf: Qualify the `cotal ps` recovery guidance for `--no-manager` controller stacks when `--max-payload` is below the manager's 263168-byte minimum.
+- da987e8: `cotal backup verify` accepts an unchanged Windows artifact whose NTFS file ids are larger than a JavaScript number can hold, and still refuses a file that was replaced.
+- 978764e: A foreground `cotal up` that refuses because another terminal holds the stack keeps `--max-sessions` in the restart command it prints, so following that command starts the manager at the ceiling you asked for.
+- 82c5f58: A help switch given a value, such as `cotal help --help=false`, says that `--help` takes no value and names `cotal help --help`, instead of telling you to pass the switch as a command name.
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- 297bd76: Detached Jcode spawns now show the corrected `--model` retry when a provider prefix precedes a catalog model ID that contains a slash.
+- 7898871: A `--creds` join refused for a missing channel read grant now prints a complete owner mint, with the space, `--no-persona` and a private `--out` file the guest can be handed, instead of an incomplete command that minted a standing credential under the space's project.
+- f00e874: Keep the requested preview, confirmation and store path when a stop through a linked project state directory points back at the real project.
+- 5906e3b: `cotal ext add` refuses a local or third-party extension whose declared core peer range does not match the bundled core, without changing the installed extensions.
+- bb5ecef: Component status reports a running stack as refused when its home records are missing, and names each verified member instead of calling the stack absent.
+- bd54d24: A JSON request that fails its leading flags is refused as one JSON document, and a mistyped plain option no longer recommends combining it with --json.
+- a206dcd: Point the OpenCode direct-file example at the catalog persona the guide tells readers to create.
+- acd3c32: When a prepared space cannot be preserved for restore, explain the limitation and show how to inspect the space instead.
+- 0cf031c: Report an unusable local stack journal when `cotal ps` names the stack's saved broker address.
+- 447e860: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- 3ceb545: Treat a Retry-After value that is neither whole seconds nor an HTTP date as absent, so a throttled conversation resume no longer prints "Wait at least 0 seconds".
+- 58985e3: A stopped stack starts again on its previous websocket port when that port is free.
+- 0c10988: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- 2b9b69f: Omit `--idle-exit` from named `service start` help when the target service is not the manager.
+- e4e22eb: Split CLI dispatch into smaller steps without changing how commands run or report results.
+- cb6e235: Restore a regular stdout file to its prior size when a JSON refusal write stops partway, while keeping the refusal exit status and the text report on stderr.
+- 06629ca: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- 02dac11: Manual `cotal update --self` can repair damaged first-party extensions from npm's cache without checking for a newer release when npm is offline.
+- da7db7e: On Windows, status and the entry card suggest `cotal.cmd` when the npm launcher is on PATH, so the commands run in PowerShell without changing execution policy.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [c3236a3]
+- Updated dependencies [335d8e9]
+- Updated dependencies [447e860]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/seat@0.183.0
+
 ## 0.182.1
 
 ### Patch Changes
