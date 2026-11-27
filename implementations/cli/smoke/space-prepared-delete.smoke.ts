@@ -99,7 +99,7 @@ check("a prepared roster lookup keeps the root, space and loopback port on the f
   roster.envelope.error.remedy === `start it with \`cotal up --root ${shellPath(realpathSync(root))} --space b4b --server ${shellPath(server)}\``, shown(roster));
 const remoteRoster = run(["ps", "--space", "b4b", "--server", "nats://broker.example.test:43842", "--json"], home);
 check("a remote dial address is not a first local start command",
-  remoteRoster.status === 2 && remoteRoster.envelope?.error?.remedy?.includes("no recorded broker") && !remoteRoster.stdout.includes("cotal up"), shown(remoteRoster));
+  remoteRoster.status === 2 && remoteRoster.envelope?.error?.remedy?.includes("no recorded broker") === true && !remoteRoster.stdout.includes("cotal up"), shown(remoteRoster));
 const beforeMint = readdirSync(join(root, ".cotal")).sort();
 const out = join(home, "alice.creds");
 const mint = run(["auth", "mint", "alice", "--server", server, "--out", out, "--json"]);
