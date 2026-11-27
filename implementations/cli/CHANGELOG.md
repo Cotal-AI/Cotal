@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.183.1
+
+### Patch Changes
+
+- f7ac8dc: `cotal update --check` now reports when npm offline mode skipped the registry version lookup instead of blaming registry access or an unreadable extension inventory.
+- @cotal-ai/core@0.183.1
+  - @cotal-ai/seat@0.183.1
+  - @cotal-ai/workspace@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes
