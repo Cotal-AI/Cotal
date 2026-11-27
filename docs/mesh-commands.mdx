@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 59. 48 commands.
+Cluster `ai.cotal.manager`, revision 60. 49 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -42,6 +42,7 @@ Cluster `ai.cotal.manager`, revision 59. 48 commands.
 | [`harness-commands`](#manager-harness-commands)           | `manager.spawn`     | ephemeral | untargeted   |
 | [`make-dir`](#manager-make-dir)                           | `manager.spawn`     | ephemeral | untargeted   |
 | [`clone`](#manager-clone)                                 | `manager.spawn`     | ephemeral | untargeted   |
+| [`worktree`](#manager-worktree)                           | `manager.spawn`     | ephemeral | untargeted   |
 | [`spawn`](#manager-spawn)                                 | `manager.spawn`     | ephemeral | untargeted   |
 | [`despawn`](#manager-despawn)                             | `manager.lifecycle` | ephemeral | owner, any   |
 | [`attach`](#manager-attach)                               | `manager.lifecycle` | ephemeral | owner, any   |
@@ -1700,6 +1701,89 @@ Output schema:
     },
     "existing": {
       "type": "boolean"
+    }
+  }
+}
+```
+
+### manager worktree
+
+Registered declaration:
+
+```json
+{
+  "name": "worktree",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:21ba4fbd00a67df3327377621b41a1d36f3b6f39e12cb90148a9ec112ecbbe2a",
+  "outputDigest": "sha256:43014990feddb48252f709201a85990d9fa85d035f5099e5ba05e378bfae27fc"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo",
+    "parent",
+    "name"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "path",
+    "branch",
+    "base",
+    "head"
+  ],
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "base": {
+      "type": "string"
+    },
+    "head": {
+      "type": "string"
     }
   }
 }

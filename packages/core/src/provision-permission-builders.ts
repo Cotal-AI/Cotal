@@ -18,11 +18,11 @@ import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
 /** The launch commands a spawn-scoped manager-caller view carries on its one pinned instance. A
  * launch reads `status` (execution mode and connectors), `models` (their catalogs), `resolve-cwd`
  * (canonical directory), `list-dir` (directory navigation) and `harness-commands` (what a harness
- * offers in that directory), and makes the folder it starts in with `make-dir` or `clone`. `ps`
+ * offers in that directory), and makes the folder it starts in with `make-dir`, `clone` or `worktree`. `ps`
  * lists the caller's own agents: the Manager bounds it to the caller's owner unless the caller
  * holds admin. The standing spawn set carries none of them, because it reaches every manager in
  * the space through the class rail. */
-const SPAWN_VIEW_COMMANDS = Object.freeze(["status", "models", "resolve-cwd", "list-dir", "harness-commands", "make-dir", "clone", "ps"] as const);
+const SPAWN_VIEW_COMMANDS = Object.freeze(["status", "models", "resolve-cwd", "list-dir", "harness-commands", "make-dir", "clone", "worktree", "ps"] as const);
 
 /** The reads a person's own manager view carries whatever their scope (SPEC 13.21): `inspect`
  * resolves a seat's name before every seat command, and `ps` lists their agents. The Manager bounds
