@@ -4,9 +4,10 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, join, win32 } from "node:path";
+import { basename, dirname, join, posix, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { HarnessInstall, HarnessInstaller } from "@cotal-ai/core";
-import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, loadExtensionsManifest, OFFICIAL_CONNECTORS, resolveOnPath } from "@cotal-ai/workspace";
+import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, connectorConfigDir, extensionConnectors, loadExtensionsManifest, OFFICIAL_CONNECTORS, resolveOnPath, SEEDED_EXTENSIONS, SEEDED_SHARED_DIR } from "@cotal-ai/workspace";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
 
@@ -157,13 +158,71 @@ export async function agentApps(): Promise<AgentApp[]> {
   return await Promise.all(declaredApps().map(app => row(app, path)));
 }
 
+function userHome(home?: string): string {
+  return home ?? (process.env.HOME || homedir());
+}
+
 /** `~/` and `%NAME%\` in a declared folder, made absolute for this account. */
-function folder(binDir: string): string {
-  if (binDir.startsWith("~/")) return join(homedir(), ...binDir.slice(2).split("/"));
+function folder(binDir: string, home = userHome()): string {
+  if (binDir.startsWith("~/")) return posix.join(home, ...binDir.slice(2).split("/"));
   const match = /^%([A-Z]+)%\\(.+)$/.exec(binDir);
   const base = match ? process.env[match[1]!] : undefined;
   if (!base || !win32.isAbsolute(base)) throw new CommandFailure("refused", "UNSUPPORTED", `the folder ${binDir} cannot be found on this account`);
   return win32.join(base, match![2]!);
+}
+
+function shippedConnectorBinDirs(os: "darwin" | "linux"): Record<string, string> {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const parent = dirname(here);
+  const binRoot = basename(parent) === "dist" ? dirname(parent) : parent;
+  const packed = join(binRoot, "seeded-connectors", SEEDED_SHARED_DIR, "installers.json");
+  if (existsSync(packed)) {
+    const data = JSON.parse(readFileSync(packed, "utf8")) as { v?: unknown; installers?: Record<string, Record<string, string>> };
+    if (data?.v === 1 && data.installers) {
+      return Object.fromEntries(Object.entries(data.installers).flatMap(([name, dirs]) => typeof dirs?.[os] === "string" ? [[name, dirs[os]!]] : []));
+    }
+  }
+  const repoRoot = join(binRoot, "..");
+  const result: Record<string, string> = {};
+  for (const [name, { srcDir }] of Object.entries(SEEDED_EXTENSIONS)) {
+    if (name === "web") continue;
+    for (const file of ["src/extension.ts", "src/connector.ts"]) {
+      const full = join(repoRoot, srcDir, file);
+      if (!existsSync(full)) continue;
+      const hit = new RegExp(`^\\s*${os}\\s*:[^\\n]*\\bbinDir\\s*:\\s*"([^"]+)"`, "m").exec(readFileSync(full, "utf8"))?.[1];
+      if (hit) { result[name] = hit; break; }
+    }
+  }
+  return result;
+}
+
+/** The absolute per-user installer folders declared by this OS's seeded and installed connectors. */
+export function serviceAgentAppBinDirs(os: "darwin" | "linux", home = userHome()): string[] {
+  const valid = (binDir: string | undefined): binDir is string => typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
+    && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
+  const dirs: string[] = [];
+  let manifestNames: Set<string> | undefined;
+  let everSeeded = new Set<string>();
+  try {
+    const apps = declaredApps();
+    manifestNames = new Set(apps.map(app => app.name));
+    for (const app of apps) {
+      const binDir = app.install?.installers[os]?.binDir;
+      if (valid(binDir)) dirs.push(folder(binDir, home));
+    }
+    const seedRoot = join(connectorConfigDir(), "seed");
+    for (const file of ["authority.json", "authority.bak.json"]) {
+      const path = join(seedRoot, file);
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { everSeeded?: unknown };
+      if (Array.isArray(parsed.everSeeded)) for (const item of parsed.everSeeded) if (typeof item === "string") everSeeded.add(item);
+    }
+  } catch { manifestNames = undefined; }
+  for (const [name, binDir] of Object.entries(shippedConnectorBinDirs(os))) {
+    if (manifestNames?.has(name) || everSeeded.has(name)) continue;
+    if (valid(binDir)) dirs.push(folder(binDir, home));
+  }
+  return [...new Set(dirs.filter(dir => dir.startsWith("/") && dir.length <= 4096 && !/[\u0000-\u001f\u007f]/u.test(dir)))];
 }
 
 /** Run the maker's installer: on macOS and Linux its script is downloaded with curl and piped to the
