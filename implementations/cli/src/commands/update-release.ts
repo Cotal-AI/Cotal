@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { oneLine, processStartToken, recordUpdateDeferral, type OutputWarning } from "@cotal-ai/workspace";
 import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
+import { updateCacheInstallKey } from "./update-caches.js";
 import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
@@ -138,7 +139,7 @@ async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promis
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
-function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
+async function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): Promise<void> {
   const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
@@ -149,7 +150,17 @@ function checkInstalledClosure(version: string, releasePackages: ReadonlySet<str
       overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
     }));
     const specs = names.map(name => `${name}@${version}`);
-    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
+    const args = ["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs];
+    const install = updateCacheInstallKey();
+    let recorded = false;
+    try {
+      const start = install && processStartToken(process.pid);
+      if (start) {
+        writeFileSync(join(staging, ".owner"), `${process.pid}\n${start}\n${install}\n`, { mode: 0o600, flag: "wx" });
+        recorded = true;
+      }
+    } catch { /* Without a readable owner record, a retry must leave this project alone. */ }
+    const result = recorded ? await rt.npmAsync(args, staging, true) : rt.npm(args);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
       const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;
@@ -302,7 +313,7 @@ export async function waitForReleasePreflight(version: string, current: string, 
         if (!prepareExtensions()) return "refused";
         rt.out(`Checking installed extension dependencies for ${version}`);
       }
-      checkInstalledClosure(version, releasePackages, rt);
+      await checkInstalledClosure(version, releasePackages, rt);
       return "ready";
     } catch (error) {
       if (!(error instanceof ReleaseNotAvailable)) throw error;

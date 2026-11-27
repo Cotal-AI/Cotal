@@ -184,7 +184,7 @@ export interface UpdateRuntime {
   /** The verified prefix of an installed POSIX npm CLI, absent for a checkout or local/npx copy. */
   installPrefix(): string | undefined;
   npm(args: string[], inherit?: boolean): CommandResult;
-  npmAsync(args: string[], archiveCache?: string): Promise<CommandResult>;
+  npmAsync(args: string[], cache?: string, stopOnSignal?: boolean): Promise<CommandResult>;
   spawn(file: string, args: string[], env: NodeJS.ProcessEnv, inherit?: boolean): CommandResult;
   spawnGlobal(
     root: string,
