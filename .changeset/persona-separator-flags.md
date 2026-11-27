@@ -1,7 +1,6 @@
 ---
-"@cotal-ai/core": patch
 "@cotal-ai/cli": patch
 "cotal-ai": patch
 ---
 
-Flags written after `--` stay flags, so `cotal persona create -- reviewer --prompt '...' --subscribe=` saves the persona instead of refusing the command's own separator guidance.
+`cotal persona create` now prints a command that works when a name starts with `-`: the flags come before `--` and only the name comes after it.

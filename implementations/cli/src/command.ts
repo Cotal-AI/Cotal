@@ -684,6 +684,38 @@ function operandLimit(cmd: Command, selected: Command | Subcommand, first: strin
   }
 }
 
+/** A persona invocation whose unknown word starts with `-`. Flags stay before `--` and only that
+ *  word follows it, which is the form the command can parse. Undefined when there is no such word. */
+function personaSeparatorRemedy(cmd: Command, rest: readonly string[]): string | undefined {
+  const end = rest.indexOf("--");
+  const head = end === -1 ? rest : rest.slice(0, end);
+  const flags: string[] = [];
+  const names: string[] = [];
+  for (let index = 0; index < head.length; index++) {
+    const word = head[index]!;
+    if (word === "--") continue;
+    const inline = /^--([^=]+)=/.exec(word)?.[1];
+    const long = inline ?? (/^--([^=]+)$/.exec(word)?.[1]);
+    const letter = /^-([^-])$/.exec(word)?.[1];
+    const flag = long !== undefined ? cmd.flags?.find((item) => item.name === long)
+      : letter === undefined ? undefined : cmd.flags?.find((item) => item.short === letter);
+    if (flag) {
+      flags.push(word);
+      const next = head[index + 1];
+      if (!inline && flag.type === "string" && next !== undefined && !next.startsWith("--") && (next === "-" || /^-\d/.test(next) || !next.startsWith("-"))) {
+        flags.push(shellWord(next));
+        index++;
+      }
+      continue;
+    }
+    names.push(word);
+  }
+  const dashed = names.find((word) => word.startsWith("-") && word !== "-");
+  if (dashed === undefined) return undefined;
+  const kept = names.filter((word) => word !== dashed);
+  return `repeat it as \`cotal persona ${[...kept, ...flags, "--", shellWord(dashed)].join(" ")}\``;
+}
+
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
  *  goes after `--` only where the command has room for an operand and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
@@ -707,9 +739,10 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       return { message: reason, remedy: `drop the unknown option${value}; --${flag.name} is already set` };
     }
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
-    const remedy = cmd.name === "completion" ? "drop the unknown option"
+    const personaSeparator = cmd.name === "persona" && !operandsFull() ? personaSeparatorRemedy(cmd, rest) : undefined;
+    const remedy = personaSeparator ?? (cmd.name === "completion" ? "drop the unknown option"
       : !takesOperands ? undefined : spellings ? `use ${spellings}`
-      : operandsFull() ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
+      : operandsFull() ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it");
     return { message, remedy };
   }
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {

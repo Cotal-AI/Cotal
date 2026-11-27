@@ -589,24 +589,27 @@ try {
     && unknownError.message === "Unknown option '--wibble'" && unknownError.remedy === "drop the unknown option"
     && fixedShow.status === 0 && fixedShow.stderr === "" && JSON.parse(fixedShow.stdout).outcome === "ok",
     { unknownShow: unknownShow.stdout, fixedShow: fixedShow.stdout });
-  const separatedName = "sep-review";
-  const separated = native(["persona", "create", "--", separatedName, "--prompt", "Review the patch.", "--subscribe=", "--json"], offlineRoot);
-  const separatedShow = native(["persona", "show", "--", separatedName, "--json"], offlineRoot);
-  const separatedBody = separatedShow.status === 0 ? JSON.parse(separatedShow.stdout).result?.definition?.persona : "";
-  check("persona create and show keep flags after -- and save the named definition",
-    separated.status === 0 && separated.stderr === "" && separatedShow.status === 0 && separatedShow.stderr === ""
-    && separatedBody === "Review the patch.",
-    separated.stdout + separated.stderr + separatedShow.stdout + separatedShow.stderr);
-  const dashName = "review_dash";
-  const dashRefused = native(["persona", "create", `-${dashName}`, "--prompt", "Review the patch.", "--subscribe=", "--json"], offlineRoot);
-  const dashCreated = native(["persona", "create", "--prompt", "Review the patch.", "--subscribe=", "--", dashName, "--json"], offlineRoot);
+  const dashName = "-review";
+  const legalName = "review";
+  const dashRefused = native(["persona", "create", dashName, "--prompt", "Review the patch.", "--subscribe=", "--json"], offlineRoot);
   const dashError = JSON.parse(dashRefused.stdout || "{}").error;
-  const dashShown = native(["persona", "show", "--json", "--", dashName], offlineRoot);
-  check("the separator remedy's form keeps later flags and saves the persona",
-    dashRefused.status === 1 && dashError?.remedy?.includes("put -- before it") === true
+  const printed = typeof dashError?.remedy === "string" ? /`(?:pnpm cotal|cotal) persona ([^`]+)`/.exec(dashError.remedy)?.[1] : undefined;
+  const printedWords = printed === undefined ? [] : [...printed.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]!);
+  const runnable = printedWords.map((word) => word === dashName ? legalName : word);
+  const dashCreated = runnable.length ? native(["persona", ...runnable], offlineRoot) : dashRefused;
+  const dashShown = dashCreated.status === 0 ? native(["persona", "show", "--json", "--", legalName], offlineRoot) : dashCreated;
+  check("the printed persona separator guidance, run with a legal name, saves the persona",
+    dashRefused.status === 1 && dashRefused.stderr === "" && printedWords.at(-2) === "--" && printedWords.at(-1) === dashName
+    && printedWords.indexOf("--prompt") < printedWords.indexOf("--")
     && dashCreated.status === 0 && dashCreated.stderr === "" && dashShown.status === 0
     && JSON.parse(dashShown.stdout).result?.definition?.persona === "Review the patch.",
     dashRefused.stdout + dashCreated.stdout + dashCreated.stderr + dashShown.stdout + dashShown.stderr);
+  const literal = native(["persona", "show", "review", "--json", "--", "--json"], offlineRoot);
+  const literalError = JSON.parse(literal.stdout || "{}").error;
+  check("a declared flag after -- stays a positional",
+    literal.status === 1 && literalError?.code === "USAGE_INVALID"
+    && literalError.message === "usage: cotal persona [show|create|edit|remove <name>]",
+    literal.stdout + literal.stderr);
   const create = plannedServer.stdout.match(/(?:cotal|pnpm cotal) (p create <name> --file <persona.md> --space offline-audit --server nats:\/\/127\.0\.0\.1:1)/)?.[1];
   const sourcePath = join(scratch, "catalog-input.md");
   const source = "---\nname: catalog-created\n---\nCreated in the other catalog.\n";
