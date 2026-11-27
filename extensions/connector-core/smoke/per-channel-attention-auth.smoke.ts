@@ -200,7 +200,7 @@ async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, pu
   }
 }
 
-async function checkNarrowedPluginPointer(provisioner: CotalEndpoint, publisher: CotalEndpoint, seat: MeshAgent, plugin: string, chat: string): Promise<void> {
+async function checkNarrowedPluginPointer(provisioner: Pick<CotalEndpoint, "commitAcl">, publisher: CotalEndpoint, seat: MeshAgent, plugin: string, chat: string): Promise<void> {
   const config = seat.config;
   const uid = config.lifecycleUid!;
   await seat.stop();
