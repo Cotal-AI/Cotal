@@ -650,6 +650,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/seat':
+        specifier: workspace:*
+        version: link:../../packages/seat
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace

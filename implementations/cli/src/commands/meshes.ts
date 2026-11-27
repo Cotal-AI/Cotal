@@ -13,6 +13,7 @@ import {
   isMeshRegistryError,
   meshFile,
   meshesDir,
+  migrateProjectTrust,
   loadMeshes,
   pinnedFetch,
   PinnedFetchRefused,
@@ -109,6 +110,7 @@ export async function meshes(args: ParsedArgs): Promise<void> {
 async function listMeshes(json: boolean): Promise<void> {
   const sweep = await pruneStaleMeshes();
   const all = loadMeshes();
+  migrateProjectTrust();
   if (all.length === 0) {
     // Zero meshes under --json is zero lines, not a prose line a JSONL reader would choke on.
     if (!json) console.log(c.dim("no meshes registered - `cotal up` starts one here, `cotal meshes add <space> --server <url>` registers one running elsewhere"));

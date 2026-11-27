@@ -1,15 +1,13 @@
 /**
- * The Hermes adapter bridge — a local unix-socket server the in-gateway Python plugin connects
+ * The Hermes adapter bridge, a local server the in-gateway Python plugin connects
  * to. It is the half of the integration that connector-core's one-shot control socket (used for
  * presence hooks, via the relay.ts pattern) can't do: a **persistent, bidirectional** channel so
  * the sidecar can *push* inbound mesh messages into a live gateway turn (wake / queue / interrupt)
  * and the plugin can route turn replies + cotal_* tool calls back out over the same {@link MeshAgent}.
  *
  * Wire format: newline-delimited JSON, both directions. The first frame on a connection must be a
- * subscribe carrying the bridge token, which {@link bridgeToken} derives from the launch's control
- * key, so the control key itself never crosses this socket. The socket sits beside the control
- * socket, in a directory only the seat's user can enter, and the adapter checks that directory
- * before it connects.
+ * subscribe. On Unix it carries a derived bridge token and the socket sits in a private directory.
+ * On Windows the owner-only pipe runs the control exchange using the derived key before subscribe.
  *
  *   Python → sidecar
  *     {t:"subscribe", token}                   adapter: start receiving inbound pushes
@@ -65,10 +63,10 @@
  * carries `answersQuestion` when it copies one from the peer the question went to, so the adapter
  * can run it in the session that asked (see replies.py).
  */
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, type ControlEndpoint } from "@cotal-ai/core";
+import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, serverExchange, type ControlEndpoint } from "@cotal-ai/core";
 import type { TurnImage } from "@cotal-ai/core";
 import { createTurnDesk } from "./bridge-turns.js";
 import {
@@ -82,6 +80,8 @@ import {
   type InboxItem,
   type CotalToolSpec,
 } from "@cotal-ai/connector-core";
+
+export type ListenBridgePipe = (path: string, accept: (socket: Socket) => void, failed: (error: Error) => void) => () => Promise<void>;
 
 /** Reply routing target the adapter derives from a turn's session/chat id. */
 interface ReplyTarget {
@@ -136,6 +136,7 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
 export interface BridgeServer {
   /** Stop accepting, end every accepted connection, and resolve once the server has closed. */
   close(): Promise<void>;
+  shutdownGateway(): void;
   /** Hand the gateway a turn in the user's own words, once: it waits for an adapter to subscribe,
    *  and resolves when the gateway took it. It rejects with {@link CommandRefused} when the gateway
    *  refused it. A turn handed to an adapter that disconnects before it answers is not handed again,
@@ -185,15 +186,15 @@ function tokenMatches(presented: unknown, digest: Buffer): boolean {
  *  the first frame has authenticated the connection as the subscribe carrying the bridge token. A
  *  connection that sends anything else first, an oversized or malformed frame before it, or nothing
  *  before the deadline, is destroyed. */
-function readFrames(sock: Socket, digest: Buffer, onFrame: (frame: Record<string, unknown>) => void): void {
+function readFrames(sock: Socket, digest: Buffer | undefined, onFrame: (frame: Record<string, unknown>) => void): void {
   let buf = "";
-  let authenticated = false;
+  let authenticated = digest === undefined;
   sock.setEncoding("utf8");
   // ABSOLUTE deadline (not an idle timeout) on an unauthenticated connection — a slow-loris
   // dribbling one byte at a time must not camp on the socket forever. Cleared the instant the
   // first frame is in hand (successful or not: either way the connection is decided).
-  const deadline = setTimeout(() => sock.destroy(), CONTROL_SERVER_AUTH_DEADLINE_MS);
-  deadline.unref?.();
+  const deadline = digest ? setTimeout(() => sock.destroy(), CONTROL_SERVER_AUTH_DEADLINE_MS) : undefined;
+  deadline?.unref?.();
   const dropUnauthenticated = (): void => {
     clearTimeout(deadline);
     log("bridge: dropped an unauthenticated connection");
@@ -226,7 +227,7 @@ function readFrames(sock: Socket, digest: Buffer, onFrame: (frame: Record<string
         // The first frame off an unauthenticated connection must be the subscribe carrying the
         // bridge token — anything else (a wrong/missing token, or any other frame type) is
         // dropped before `adapter` can be assigned or `onTool` reached.
-        if (frame.t !== "subscribe" || !tokenMatches(frame.token, digest)) {
+        if (frame.t !== "subscribe" || !tokenMatches(frame.token, digest!)) {
           dropUnauthenticated();
           return;
         }
@@ -241,6 +242,17 @@ function readFrames(sock: Socket, digest: Buffer, onFrame: (frame: Record<string
     }
   });
   sock.on("close", () => clearTimeout(deadline));
+}
+
+function readWindowsFrames(sock: Socket, control: ControlEndpoint, subscribe: () => void, onFrame: (frame: Record<string, unknown>) => void): void {
+  serverExchange(sock, { ...control, token: bridgeToken(control) }, ({ request, seal }) => {
+    let frame: { t?: unknown } | undefined;
+    try { frame = JSON.parse(request); } catch { /* A malformed request cannot subscribe. */ }
+    if (frame?.t !== "subscribe") { sock.destroy(); return; }
+    sock.write(seal("{}").line);
+    readFrames(sock, undefined, (next) => { if (next.t !== "subscribe") onFrame(next); });
+    subscribe();
+  });
 }
 
 /** Hand one of the subscribed adapter's approval, question or stream frames to its handler. */
@@ -264,7 +276,7 @@ function deskFrame(frame: Record<string, unknown>, desk: ReturnType<typeof creat
 
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
  *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, events: BridgeEvents = {}): BridgeServer {
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, events: BridgeEvents = {}, listenPipe?: ListenBridgePipe): BridgeServer {
   const digest = createHash("sha256").update(bridgeToken(control)).digest();
   assertControlSocketDir(socketPath);
 
@@ -448,10 +460,12 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   };
 
   const accepted = new Set<Socket>();
-  const server: Server = createServer((sock) => {
+  const accept = (sock: Socket): void => {
     accepted.add(sock);
     sock.once("close", () => accepted.delete(sock));
-    readFrames(sock, digest, (frame) => void handleFrame(sock, frame));
+    const onFrame = (frame: Record<string, unknown>): void => { void handleFrame(sock, frame); };
+    if (listenPipe) readWindowsFrames(sock, control, () => onFrame({ t: "subscribe" }), (frame) => { if (sock === adapter) onFrame(frame); });
+    else readFrames(sock, digest, onFrame);
     sock.on("close", () => {
       if (sock === adapter) {
         adapter = undefined;
@@ -463,23 +477,18 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     sock.on("error", () => {
       /* ignore client errors */
     });
-  });
-
-  let bound = false;
-  server.on("error", (e) => {
-    log(`server error: ${(e as Error).message}`);
-    // A bind we never held (e.g. EADDRINUSE from a squatter) is fatal: better to die than leave a
-    // dead bridge behind a live seat that thinks it has one.
-    if (!bound) process.exit(1);
-  });
-  server.listen(socketPath, () => {
-    bound = true;
-    log(`listening: ${socketPath}`);
-  });
+  };
+  const closeListener = listenPipe
+    ? listenPipe(socketPath, accept, (error) => { log(`bridge pipe failed: ${error.message}`); process.exit(1); })
+    : listenUnixBridge(socketPath, accept);
+  if (listenPipe) log(`listening: ${socketPath}`);
 
   return {
     submitTurn: desk.submitTurn,
     ask: desk.ask,
+    shutdownGateway() {
+      if (adapter) sendFrame(adapter, { t: "shutdown" });
+    },
     idle() {
       return adapter !== undefined && busy === 0 && desk.pending() === 0;
     },
@@ -491,10 +500,20 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     close() {
       // A subscription holds its connection open for the life of the gateway, so close ends each
       // accepted connection itself rather than waiting for the adapter to hang up.
-      return new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        for (const sock of accepted) sock.destroy();
-      });
+      const closed = closeListener();
+      for (const sock of accepted) sock.destroy();
+      return closed;
     },
   };
+}
+
+function listenUnixBridge(path: string, accept: (socket: Socket) => void): () => Promise<void> {
+  const server = createServer(accept);
+  let bound = false;
+  server.on("error", (error) => {
+    log(`server error: ${error.message}`);
+    if (!bound) process.exit(1);
+  });
+  server.listen(path, () => { bound = true; log(`listening: ${path}`); });
+  return () => new Promise<void>((resolve) => server.close(() => resolve()));
 }
