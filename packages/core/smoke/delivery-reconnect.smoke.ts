@@ -21,6 +21,7 @@ import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openChannelRegistry, readChannelRegistry } from "../src/channels.js";
 import type { ConnectionState } from "../src/endpoint-connection-state.js";
+import { recordsBucket } from "../src/endpoint-records.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
 
 const PORT = await pickFreePort();
@@ -185,7 +186,24 @@ try {
     daemonState.pluginChannelEpoch === 0 && !daemonState.pluginChannelsEnabled);
   let nativeReady = 0;
   daemon.on("transport", (event) => { if (event.connected && daemonState.nc === initialDaemonWire) nativeReady++; });
-  await initialDaemonWire.reconnect();
+  const request = initialDaemonWire.request;
+  const authorityApi = `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`;
+  let leaderReplyHeld = false;
+  let releaseLeaderReply!: () => void;
+  const leaderReply = new Promise<void>((resolve) => { releaseLeaderReply = resolve; });
+  initialDaemonWire.request = async (...args: Parameters<NatsConnection["request"]>) => {
+    if (args[0] !== authorityApi) return request.apply(initialDaemonWire, args);
+    try { return await request.apply(initialDaemonWire, args); }
+    finally { leaderReplyHeld = true; await leaderReply; }
+  };
+  try {
+    await initialDaemonWire.reconnect();
+    for (let i = 0; i < 100 && !leaderReplyHeld && !initialDaemonWire.isClosed(); i++) await wait(50);
+    check("native delivery readiness waits for the current wire's records leader reply", leaderReplyHeld && nativeReady === 0);
+  } finally {
+    initialDaemonWire.request = request;
+    releaseLeaderReply();
+  }
   for (let i = 0; i < 100 && nativeReady === 0 && !initialDaemonWire.isClosed(); i++) await wait(50);
   check("same authority admits the same native delivery connection after reconnect",
     nativeReady === 1 && daemonState.nc === initialDaemonWire && daemonState.pluginChannelEpoch === 0);
