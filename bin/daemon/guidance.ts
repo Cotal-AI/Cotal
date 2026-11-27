@@ -1,11 +1,48 @@
 import { existsSync } from "node:fs";
-import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath, windowsShellWord } from "@cotal-ai/workspace";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { canonicalRoot, codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath, windowsShellWord } from "@cotal-ai/workspace";
+import { nativeRun } from "./install-native-run.js";
 
-/** An unavailable systemd installation is different from an unreachable systemd user manager. */
+/** An unavailable systemd installation is different from an unreachable systemd user manager. A default
+ * install whose shell home the service cannot see is refused before either check writes anything. */
 export function daemonServiceRequirement(home?: string): CommandFailure | undefined {
+  if (home === undefined) {
+    const mismatch = serviceHomeMismatch();
+    if (mismatch) return mismatch;
+  }
   if (process.platform !== "linux" || (existsSync("/run/systemd/system") && resolveOnPath("systemctl"))) return undefined;
   return new CommandFailure("refused", "UNSUPPORTED", "The Linux background service requires systemd. This environment does not provide both a running systemd and systemctl on PATH.", {
     remedy: `Manage an existing systemd service from an environment with systemd and systemctl on PATH as the same user. If no daemon is installed or running, run ${codeSpan(daemonCommandCopy("serve", home))} under your own supervisor. Use \`cotal update --self\` for manual updates.`,
+  });
+}
+
+/** The Cotal directory the background service resolves with the account's own environment. The service
+ * definition carries no shell home, so a shell `COTAL_HOME` or Windows `LOCALAPPDATA` never reaches it. */
+function serviceAccountHome(): string {
+  if (process.platform !== "win32") return join(homedir(), ".cotal");
+  return join(accountProfilePath(), "AppData", "Local", "Cotal");
+}
+
+/** The signed-in account's profile directory, read from the account record rather than this shell. */
+function accountProfilePath(): string {
+  const system = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  const out = nativeRun(join(system, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"]);
+  const sid = out.status === 0 ? out.stdout.trim().split(",").pop()?.replace(/^"|"$/g, "").trim() : undefined;
+  if (!sid || !/^S-1-[0-9]+(?:-[0-9]+)+$/.test(sid)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the account profile could not be read; nothing was registered");
+  const listed = nativeRun(join(system, "System32", "reg.exe"), ["query", `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\${sid}`, "/v", "ProfileImagePath"]);
+  const profile = listed.status === 0 ? /REG_EXPAND_SZ\s+(\S.*)$/m.exec(listed.stdout)?.[1]?.trim() : undefined;
+  if (!profile || !/^[A-Za-z]:\\/.test(profile)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the account profile could not be read; nothing was registered");
+  return profile;
+}
+
+/** Refuse a default install when this command and the service resolve different Cotal directories. */
+function serviceHomeMismatch(): CommandFailure | undefined {
+  const shellHome = homeCotalDir();
+  const serviceHome = serviceAccountHome();
+  if (canonicalRoot(resolve(shellHome)) === canonicalRoot(resolve(serviceHome))) return undefined;
+  return new CommandFailure("refused", "CONFLICT", `this shell resolves the daemon home to ${shellHome}, but the background service resolves it to ${serviceHome}, so the service would not find this installation`, {
+    remedy: "unset the home override, or install with --daemon-home <directory>. Nothing was registered.",
   });
 }
 

@@ -32,6 +32,10 @@
  *     leaves refuse without writes or native changes; protected paths install, and a failed linger
  *     step leaves a recorded unit for uninstall. Publication rechecks a directory changed after plan.
  *     A source or ancestor changed during linger refuses before native registration.
+ *  N10 a default install whose shell home differs from the account home the service will resolve:
+ *     plain and JSON refuse CONFLICT before any unit, task or receipt, and name both directories.
+ *     No override, an equal `COTAL_HOME`, and `--daemon-home` stay allowed. A Windows shell that
+ *     overrides only `LOCALAPPDATA` is refused the same way.
  *
  * Real supervisor lifecycle acceptance belongs to daemon-install-real.smoke.mjs on disposable hosts.
  *
@@ -39,7 +43,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -758,7 +762,8 @@ try {
       const configFile = join(dir, "context.json"); writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
-      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin:${(process.env.PATH ?? "").split(":").filter(path => path.startsWith("/")).join(":")}`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      const defaultInstall = kind === "default" || kind === "unrecorded-default";
+      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, ...(defaultInstall ? {} : { COTAL_HOME: join(dir, "cotal") }), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin:${(process.env.PATH ?? "").split(":").filter(path => path.startsWith("/")).join(":")}`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
       const invoke = (verb: string, home: string | undefined, flags: string[] = []) => {
         const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N6 ${verb} did not exit normally`);
@@ -770,8 +775,8 @@ try {
         return { status: child.status, doc, out: child.stdout, err: child.stderr };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
-      const home = kind === "default" || kind === "unrecorded-default" ? undefined : a;
-      const receiptFile = join(home ?? join(dir, "cotal", "daemon"), "service-unit.json");
+      const home = defaultInstall ? undefined : a;
+      const receiptFile = join(home ?? join(defaultInstall ? join(context.home, ".cotal") : join(dir, "cotal"), "daemon"), "service-unit.json");
       if (kind.startsWith("unrecorded-")) {
         const unitPath = join(context.config, "systemd", "user", home ? context.units[1]! : context.units[0]!);
         const preview = call("install", home, ["--dry-run"]);
@@ -866,7 +871,7 @@ try {
               && !existsSync(home) && readFileSync(receipt.unitPath, "utf8") === sourceBefore, recoveryCalls);
           } finally { renameSync(savedHome, home); }
         }
-        const machineHome = home ?? env.COTAL_HOME!;
+        const machineHome = home ?? join(context.home, ".cotal");
         const recordDir = join(machineHome, "daemon", spaceSegment("retirement"));
         const store = join(recordDir, "service-store");
         mkdirSync(store, { recursive: true, mode: 0o700 });
@@ -976,8 +981,8 @@ try {
       const config = join(dir, "config");
       const unitDir = join(config, "systemd", "user");
       const unitPath = join(unitDir, "cotal-daemon.service");
-      const receiptFile = join(dir, "cotal", "daemon", "service-unit.json");
       const lingerFile = join(dir, "linger");
+      const receiptFile = join(dir, "home", ".cotal", "daemon", "service-unit.json");
       writeFileSync(lingerFile, "Linger=no\n", { mode: 0o600 });
       if (["group-leaf", "group-leaf-private", "protected-existing", "existing-unit"].includes(kind)) mkdirSync(unitDir, { recursive: true, mode: 0o700 });
       if (kind === "group-ancestor" || kind === "group-leaf") chmodSync(dir, 0o755);
@@ -997,7 +1002,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       // Only recording stand-ins can run, including during the private-group proof.
-      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       const call = (verb: string, flags: string[]) => {
         const child = spawnSync(process.execPath, [cli, "daemon", verb, ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N8 ${kind} ${verb} did not exit normally`);
@@ -1038,6 +1043,67 @@ try {
     }
     chmodSync(root, 0o700);
   } else console.log(`  ○ UNTESTED N8: Linux unit-directory preflight; this is ${process.platform}`);
+
+  console.log("N10 default install refuses a shell home the service cannot resolve");
+  {
+    const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+    const base = join(root, "home-mismatch");
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    const shellHome = join(base, "shell-home");
+    const fixtureHome = join(base, "account-home");
+    const accountHome = process.platform === "win32" ? join(process.env.USERPROFILE ?? homedir(), "AppData", "Local", "Cotal") : join(fixtureHome, ".cotal");
+    const explicitHome = join(base, "explicit");
+    mkdirSync(explicitHome, { mode: 0o700 });
+    const receipts = (): string[] => {
+      const roots = [base, accountHome];
+      return roots.flatMap((dir) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map((name) => join(dir, String(name))) : [])
+        .filter((name) => name.endsWith("service-unit.json") || name.endsWith("service-task.xml") || name.endsWith(".service") || name.endsWith(".plist"));
+    };
+    const shared = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH", "LOCALAPPDATA"].includes(key)));
+    const fixtureConfig = join(base, "config");
+    const fixtureCalls = join(base, "calls.jsonl");
+    const fixtureNative = join(base, "native");
+    for (const dir of [fixtureHome, fixtureConfig, fixtureNative]) mkdirSync(dir, { mode: 0o700 });
+    const fixtureContext = join(base, "context.json");
+    writeFileSync(fixtureContext, JSON.stringify({ home: fixtureHome, config: fixtureConfig, calls: fixtureCalls, units: ["cotal-daemon.service", `cotal-daemon-${sha(explicitHome).slice(0, 16)}.service`] }), { mode: 0o600 });
+    const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    for (const name of ["systemctl", "loginctl"]) writeFileSync(join(fixtureNative, name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+    Object.assign(shared, { HOME: fixtureHome, USER: "smoke", LOGNAME: "smoke", XDG_CONFIG_HOME: fixtureConfig, XDG_RUNTIME_DIR: base, PATH: `${fixtureNative}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: fixtureContext, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+    const invoke = (name: string, args: string[], env: NodeJS.ProcessEnv): { status: number | null; output: string; doc?: { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: { state?: string } } } => {
+      const before = receipts();
+      const child = spawnSync(process.execPath, [cli, "daemon", "install", ...args], { cwd: base, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
+      if (child.error || child.signal) throw new Error(`N10 ${name} did not exit normally: ${child.error ?? child.signal}`);
+      const output = `${child.stdout}${child.stderr}`;
+      const json = args.includes("--json");
+      const doc = json ? JSON.parse(child.stdout) as { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: { state?: string } } : undefined;
+      check(`N10 ${name} registers nothing`, receipts().length === before.length, receipts().filter((path) => !before.includes(path)));
+      return { status: child.status, output, ...(doc ? { doc } : {}) };
+    };
+    try {
+      for (const cell of [
+        { name: "no override", args: ["--dry-run", "--json"], env: shared },
+        { name: "equal home", args: ["--dry-run", "--json"], env: { ...shared, COTAL_HOME: accountHome } },
+        { name: "explicit home", args: ["--daemon-home", explicitHome, "--dry-run", "--json"], env: { ...shared, COTAL_HOME: shellHome } },
+      ]) {
+        const allowed = invoke(cell.name, cell.args, cell.env);
+        check(`N10 ${cell.name} reaches registration`, allowed.status === 0 && allowed.doc?.outcome === "ok" && allowed.doc.result?.state === "would-install", allowed);
+      }
+      const cases: Array<{ name: string; args: string[]; env: NodeJS.ProcessEnv; json: boolean; shell: string }> = [
+        { name: "mismatched home", args: ["--json"], env: { ...shared, COTAL_HOME: shellHome }, json: true, shell: shellHome },
+        { name: "mismatched preview", args: ["--dry-run", "--plain"], env: { ...shared, COTAL_HOME: shellHome }, json: false, shell: shellHome },
+      ];
+      if (process.platform === "win32") cases.push({ name: "local app data only", args: ["--json"], env: { ...shared, LOCALAPPDATA: base }, json: true, shell: join(base, "Cotal") });
+      for (const cell of cases) {
+        const refused = invoke(cell.name, cell.args, cell.env);
+        const expected = cell.json
+          ? refused.doc?.outcome === "refused" && refused.doc.error?.code === "CONFLICT" && refused.doc.error.message?.includes(cell.shell) === true && refused.doc.error.message.includes(accountHome) && refused.doc.error.remedy === "unset the home override, or install with --daemon-home <directory>. Nothing was registered."
+          : refused.output.includes("CONFLICT") && refused.output.includes(cell.shell) && refused.output.includes(accountHome);
+        check(`N10 ${cell.name} refuses before registration`, refused.status === 2 && expected, { status: refused.status, output: refused.output });
+      }
+    } finally {
+      rmSync(join(accountHome, "daemon"), { recursive: true, force: true });
+    }
+  }
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
   if (process.argv.includes("--keep-fixture")) console.log(`Retained native daemon fixture: ${root}`);
