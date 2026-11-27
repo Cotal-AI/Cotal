@@ -45,7 +45,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   const staging = executionStagingPrefix(installed);
   let generation: ReturnType<typeof retainExecutionGeneration>;
   try {
-    const args = ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--package-lock-only=false", "--dry-run=false", "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"];
+    const args = ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"];
     const result = await updateRuntime.spawnGlobal(globalRoot, "install", "npm", args, process.env, false, false, staging);
     if (result.status !== 0) {
       if (result.signal) throw new Error(`target staging interrupted: npm terminated by ${result.signal}`);

@@ -212,6 +212,8 @@ function globalConfigFallbacks(): void {
   const pin = ["install", "--prefix", join(root, "stage"), "fixture"];
   const path = join(root, "operator settings", "npmrc");
   try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "registry=http://127.0.0.1:1/\nsave-dev=true\n");
     for (const [name, script] of [
       ["timeout", "while :; do :; done"],
       ["nonzero", `printf '%s\\n' '${path}'; exit 7`],
@@ -225,22 +227,30 @@ function globalConfigFallbacks(): void {
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_globalconfig$/i.test(key)));
       env.PATH = `${tools}${delimiter}${env.PATH ?? ""}`;
       const ordinary = npmInvocation(env, []);
-      const expected = { ...ordinary, args: [...ordinary.args, ...pin], env: name === "absolute" ? { ...ordinary.env, npm_config_globalconfig: path } : ordinary.env };
-      assert.deepEqual(npmInvocation(env, pin), expected, name);
+      const expected = { ...ordinary, args: [...ordinary.args, ...pin] };
+      const check = () => {
+        const { config, ...invocation } = npmInvocation(env, pin, root);
+        try {
+          if (name !== "absolute") return assert.deepEqual(invocation, expected, name);
+          assert.ok(config);
+          assert.notEqual(config!.file, path);
+          assert.equal(readFileSync(config!.file, "utf8"), "registry=http://127.0.0.1:1/\n");
+          assert.deepEqual(invocation, { ...expected, args: [...expected.args, "--logs-max=0", "--timing=false"], env: { ...expected.env, npm_config_globalconfig: config!.file } });
+        } finally { config?.dispose(); }
+      };
+      check();
       const started = Date.now();
-      assert.deepEqual(npmInvocation(env, pin), expected, `${name} lookup is cached`);
+      check();
       if (name === "timeout") assert.ok(Date.now() - started < 2_000, "a timed-out probe is not repeated");
     }
     const keys = Object.keys(process.env).filter(key => /^npm_config_globalconfig$/i.test(key));
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, npm_config_prefix: join(root, "empty-prefix"), npm_config_userconfig: join(root, "empty-userconfig") };
     for (const key of keys) delete env[key];
     for (const args of [["root", "-g"], ["install", "@cotal-ai/fixture"], ["install", "-g", "cotal-ai@1.0.0"],
       ["install", "-g", "cotal-ai@0.9.0"], ["remove", "fixture"]]) {
       const ordinary = npmInvocation(env, args);
       const prefixed = npmInvocation(env, [...args, "--prefix", join(root, "stage")]);
-      const { npm_config_globalconfig: globalConfig, ...rest } = prefixed.env;
-      assert.ok(globalConfig, "real npm supplies its inherited default config path");
-      assert.deepEqual({ ...prefixed, env: rest }, { ...ordinary, args: [...ordinary.args, "--prefix", join(root, "stage")] });
+      assert.deepEqual(prefixed, { ...ordinary, args: [...ordinary.args, "--prefix", join(root, "stage")] });
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }

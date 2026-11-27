@@ -125,24 +125,29 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
 }
 
 export function runNpm(args: string[], inherit = false): CommandResult {
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
-    const npm = npmInvocation(process.env, args);
+    const prefix = args.indexOf("--prefix");
+    npm = npmInvocation(process.env, args, args[0] === "install" && prefix >= 0 ? args[prefix + 1] : undefined);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true,
+      ...(inherit && !npm.config ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true,
     });
+    const scrub = npm.config?.scrub ?? String;
+    const stdout = scrub(String(result.stdout ?? "")), stderr = scrub(String(result.stderr ?? ""));
+    if (inherit && npm.config) { process.stdout.write(stdout); process.stderr.write(stderr); }
     return {
       status: result.status,
       signal: result.signal,
-      stdout: `${result.stdout ?? ""}`,
-      stderr: `${result.stderr ?? ""}`,
-      error: result.error?.message,
+      stdout: inherit ? "" : stdout,
+      stderr: inherit ? "" : stderr,
+      error: result.error && scrub(result.error.message),
       errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
     };
   } catch (e) {
-    return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
-  }
+    return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(e)) ?? message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
+  } finally { npm?.config?.dispose(); }
 }
 
 export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
@@ -159,9 +164,9 @@ export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv,
 export function runGlobalProcess(
   ...args: Parameters<typeof runGlobalChild>
 ): Promise<CommandResult> {
-  const [root, operation, file, argv, env, inherit = false, verbatim = false] = args;
+  const [root, operation, file, argv, env, inherit = false, verbatim = false, staging] = args;
   return process.platform === "win32" && operation === "install"
-    ? runWindowsInstall(root, file, argv, env, inherit, verbatim)
+    ? runWindowsInstall(root, file, argv, env, inherit, verbatim, staging)
     : runGlobalChild(...args);
 }
 
@@ -179,6 +184,7 @@ async function runGlobalChild(
   const mutation = beginGlobalUpdateChild(root, operation, gated);
   let cache: string | undefined;
   let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   let published = false;
   let preservePending = false;
   const watchers: FSWatcher[] = [];
@@ -187,11 +193,11 @@ async function runGlobalChild(
   let stopping: Promise<void> | undefined;
   try {
     if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
-    const pipeConsole = process.platform === "win32" && inherit;
-    const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
-    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const reconcileCache = gated && operation === "reconcile";
     cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
+    npm = operation === "install" && file === "npm" ? npmInvocation(env, args, staging ?? cache) : undefined;
+    const pipeConsole = process.platform === "win32" && inherit && !npm?.config;
+    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     if (npm) lifecycle = npmLifecycleEnvironment(npm, cache);
     let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
@@ -222,14 +228,14 @@ async function runGlobalChild(
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      stdio: updateChildStdio(gated, inherit, pipeConsole),
+      stdio: updateChildStdio(gated, inherit && !npm?.config, pipeConsole),
     }));
     const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     let error = "";
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk.toString(); });
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk; });
     child.once("error", (e) => { error = e.message; });
     permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
@@ -288,6 +294,12 @@ async function runGlobalChild(
       idle = setTimeout(stop, 50_000);
     }
     const closed = await close;
+    if (npm?.config) {
+      stdout = npm.config.scrub(stdout);
+      stderr = npm.config.scrub(stderr);
+      error = npm.config.scrub(error);
+      if (inherit) { process.stdout.write(stdout); process.stderr.write(stderr); stdout = stderr = ""; }
+    }
     clearTimeout(elapsed);
     clearTimeout(idle);
     if (stopping) {
@@ -305,13 +317,14 @@ async function runGlobalChild(
     return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
     if (e instanceof StagingTimeout) throw e;
-    return { status: null, stdout: "", stderr: "", error: message(e) };
+    return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(e)) ?? message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();
     clearTimeout(elapsed);
     clearTimeout(idle);
     if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
+    npm?.config?.dispose();
     if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
@@ -321,11 +334,12 @@ function updateChildStdio(gated: boolean, inherit: boolean, pipeConsole: boolean
   return pipeConsole ? ["ignore", "pipe", "pipe"] : inherit ? "inherit" : undefined;
 }
 
-async function runWindowsInstall(root: string, file: string, args: string[], env: NodeJS.ProcessEnv, inherit: boolean, verbatim: boolean): Promise<CommandResult> {
-  const npm = file === "npm" ? npmInvocation(env, args) : undefined;
-  if (npm) ({ file, args, windowsVerbatimArguments: verbatim } = cmdSpawnSpec(npm.file, npm.args, npm.env));
+async function runWindowsInstall(root: string, file: string, args: string[], env: NodeJS.ProcessEnv, inherit: boolean, verbatim: boolean, staging?: string): Promise<CommandResult> {
   const cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
+    npm = file === "npm" ? npmInvocation(env, args, staging ?? cache) : undefined;
+    if (npm) ({ file, args, windowsVerbatimArguments: verbatim } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const mutation = beginGlobalUpdateChild(root, "install");
     let published = false;
     let error: string | undefined;
@@ -342,7 +356,7 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
         published = true;
         try {
           mutation.markLive(worker.pid);
-          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim });
+          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim, config: npm?.config?.file });
         } catch (cause) { error = message(cause); worker.disconnect?.(); }
       }
       const exit = await closed;
@@ -354,8 +368,8 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
       if (inherit && result.stdout) process.stdout.write(result.stdout);
       return inherit ? { ...result, stdout: "" } : result;
     } finally { if (!published) mutation.clear(); }
-  } catch (cause) { return { status: null, stdout: "", stderr: "", error: message(cause) }; }
-  finally { rmSync(cache, { recursive: true, force: true, maxRetries: 3 }); }
+  } catch (cause) { return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(cause)) ?? message(cause) }; }
+  finally { npm?.config?.dispose(); rmSync(cache, { recursive: true, force: true, maxRetries: 3 }); }
 }
 
 /** npm --json supplies the code, but its summary is the only field naming the missing spec. */

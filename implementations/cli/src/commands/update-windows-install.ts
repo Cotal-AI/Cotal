@@ -3,8 +3,9 @@ import { closeSync, fstatSync, openSync, readSync, writeFileSync } from "node:fs
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock } from "@cotal-ai/workspace";
+import { scrubProjectedNpmrc } from "../lib/npm-reachability.js";
 
-interface InstallJob { file: string; args: string[]; cwd: string; log: string; verbatim: boolean }
+interface InstallJob { file: string; args: string[]; cwd: string; log: string; verbatim: boolean; config?: string }
 const npmJob = "COTAL_WINDOWS_NPM_JOB";
 
 function recentOutput(path: string): string {
@@ -19,10 +20,18 @@ function recentOutput(path: string): string {
 
 function runNpm(job: InstallJob): void {
   delete process.env[npmJob];
+  const scrub = job.config ? scrubProjectedNpmrc(job.config, process.env) : undefined;
   const child = spawn(job.file, job.args, { windowsVerbatimArguments: job.verbatim, windowsHide: true });
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
-  child.once("error", error => { process.stderr.write(`${error.message}\n`); });
+  if (scrub) {
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+    child.once("close", () => { process.stdout.write(scrub(stdout)); process.stderr.write(scrub(stderr)); });
+  } else {
+    child.stdout.pipe(process.stdout);
+    child.stderr.pipe(process.stderr);
+  }
+  child.once("error", error => { process.stderr.write(`${scrub?.(error.message) ?? error.message}\n`); });
   child.once("close", status => { process.exitCode = status ?? 1; });
 }
 

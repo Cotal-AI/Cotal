@@ -13,6 +13,52 @@ import { emitSentinel } from './sentinel.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
 
+function watchGlobalNpmrc(root, env, failure, token) {
+  const lookup = spawnSync('sh', ['-c', 'command -v npm'], { env, encoding: 'utf8' });
+  assert.equal(lookup.status, 0);
+  const tools = join(root, 'npm-tools');
+  mkdirSync(tools);
+  const events = join(root, 'npm-events');
+  writeFileSync(join(tools, 'npm'), `#!${process.execPath}
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const token = ${JSON.stringify(token)};
+const config = process.env.npm_config_globalconfig;
+assert(!args.join('\\0').includes(token), 'token entered npm argv');
+if (config) {
+  const prefix = args[args.indexOf('--prefix') + 1];
+  assert(path.relative(prefix, config).startsWith('cotal-npmrc-'), 'npmrc must stay inside the stage');
+  assert.equal(fs.statSync(config).mode & 0o777, 0o600);
+  assert(fs.readFileSync(config, 'utf8').includes(token), 'npm receives fixture credential');
+  assert(args.includes('--logs-max=0') && args.includes('--timing=false'), 'npm must not write debug or timing logs');
+  fs.appendFileSync(${JSON.stringify(events)}, JSON.stringify({ config, stage: args.includes('-g') }) + '\\n');
+  if (${failure} && args.includes('-g')) {
+    process.stdout.write('fixture stdout ' + token + '\\n');
+    process.stderr.write('fixture stderr ' + token + '\\n');
+    process.exit(42);
+  }
+}
+const result = require('node:child_process').spawnSync(${JSON.stringify(lookup.stdout.trim())}, args, { stdio: 'inherit' });
+if (config) {
+  const index = args.indexOf('--cache');
+  const cache = index === -1 ? process.env.npm_config_cache : args[index + 1];
+  for (const name of fs.readdirSync(cache, { recursive: true })) {
+    if (/(?:\\.log|timing\\.json)$/.test(name)) assert(!fs.readFileSync(path.join(cache, name)).includes(token), 'token entered an npm log');
+  }
+}
+process.exit(result.status ?? 1);
+`, { mode: 0o700 });
+  env.PATH = `${tools}${delimiter}${env.PATH}`;
+  return () => {
+    const calls = readFileSync(events, 'utf8').trim().split('\n').map(JSON.parse);
+    assert(calls.some(call => call.stage), 'observed staged install');
+    assert(calls.some(call => !call.stage), 'observed dependency closure');
+    for (const call of calls) assert(!existsSync(call.config), 'private npmrc was removed');
+  };
+}
+
 function reconciliationScratch(parent, worker) {
   const old = new Date(Date.now() - 61 * 60_000);
   const fixture = shape => {
@@ -91,7 +137,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const stagingTimeout = scenario === 'staging-timeout';
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
   const stagingRefused = scenario === 'staging-refused';
-  const globalConfig = scenario === 'global-config';
+  const secretFailure = scenario === 'global-config-secret-failure';
+  const globalConfig = scenario === 'global-config' || secretFailure;
+  const fixtureToken = globalConfig ? randomBytes(20).toString('hex') : '';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
   assert(versionNamedNode || repairSelection || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || globalConfig || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
@@ -177,6 +225,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const backlog = [];
   const server = createServer((request, response) => {
     requests.push({ at: Date.now(), path: request.url, ...(globalConfig && readMarker()?.operation === 'global install' ? { staging: true } : {}) });
+    if (globalConfig && request.headers.authorization !== `Bearer ${fixtureToken}`) return response.writeHead(401).end();
     if (disconnected || armed && scenario === 'offline-archive' && request.url?.endsWith(`/${target}.tgz`)) {
       disconnected = true;
       return request.socket.destroy();
@@ -279,15 +328,20 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
+  let checkNpmrc;
   if (globalConfig) {
     const etc = join(prefix, 'etc');
     mkdirSync(etc);
-    writeFileSync(join(etc, 'npmrc'), `registry=${origin}/\n`);
+    const npmrc = join(etc, 'npmrc');
+    const originalNpmrc = `registry=${origin}/\n//${new URL(origin).host}/:_authToken=${fixtureToken}\n`;
+    writeFileSync(npmrc, originalNpmrc, { mode: 0o600 });
     for (const key of Object.keys(env)) {
       if (/^(?:npm_config_(?:cache|registry|prefix|userconfig|globalconfig|https?_proxy|proxy|noproxy)|(?:https?_proxy|all_proxy|no_proxy))$/i.test(key)) delete env[key];
     }
     writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
     Object.assign(env, { HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
+    const check = watchGlobalNpmrc(root, env, secretFailure, fixtureToken);
+    checkNpmrc = () => { check(); assert(readFileSync(npmrc, 'utf8') === originalNpmrc, 'original npmrc is unchanged'); };
   } else env.npm_config_registry = origin;
   let interrupted, orphan, abandoned, pausedArchive;
   let closureStart, closureEnd;
@@ -1003,9 +1057,17 @@ exec npm "$@"
       assert.match(update.output, /connector-hermes@99\.0\.0 is not yet available.*No global install was attempted.*run `cotal update --self` again in a few minutes/);
       assert.doesNotMatch(update.output, /Correct the reported failure/);
       assert.deepEqual(readInstallation(), originalInstallation);
+    } else if (secretFailure) {
+      assert(!update.output.includes(fixtureToken), 'fixture token leaked in CLI output');
+      assert.notEqual(update.code, 0);
+      assert.match(update.output, /fixture stderr \[redacted\]/);
+      assert.equal(selected, previous);
+      checkNpmrc();
     } else if (extensionPeers) {
+      if (globalConfig) assert(!update.output.includes(fixtureToken), 'fixture token leaked in CLI output');
       assert.equal(update.code, 0, update.output);
       if (globalConfig) {
+        checkNpmrc();
         assert.match(update.output, /cotal-ai@99\.0\.0 in use and reconciled/);
         const active = await run(process.execPath, [entry, '--version'], 60000);
         assert.equal(active.code, 0, active.output);
@@ -1268,22 +1330,15 @@ async function globalConfigExtensionCell(setting) {
     if (setting === 'default') env.npm_config_registry = registry;
     else writeFileSync(npmrc, contents);
     const added = await run('add', name);
-    if (setting === 'cache') {
-      assert.equal(added.code, 1, added.output);
-      assert.match(added.output, /EACCES|errno -13|Your cache folder contains root-owned files/);
-      assert(!existsSync(join(ext, 'extensions.json')));
-      assert(!existsSync(join(ext, 'node_modules', name)));
-      assert.deepEqual(readdirSync(cache), []);
-    } else {
-      assert.equal(added.code, 0, added.output);
-      assert(requests.includes(`/${name}.tgz`), 'extension install fetched through the fixture registry');
-      const dependency = file => JSON.parse(readFileSync(join(ext, file), 'utf8'));
-      assert(dependency('package.json').dependencies[name] && dependency('package-lock.json').packages[''].dependencies[name]);
-      const removed = await run('remove', name);
-      assert.equal(removed.code, 0, removed.output);
-      assert(!existsSync(join(ext, 'node_modules', name)), 'removal changes the project, not the global tree');
-      assert(!dependency('package.json').dependencies?.[name] && !dependency('package-lock.json').packages['']?.dependencies?.[name]);
-    }
+    assert.equal(added.code, 0, added.output);
+    assert(requests.includes(`/${name}.tgz`), 'extension install fetched through the fixture registry');
+    const dependency = file => JSON.parse(readFileSync(join(ext, file), 'utf8'));
+    assert(dependency('package.json').dependencies[name] && dependency('package-lock.json').packages[''].dependencies[name]);
+    const removed = await run('remove', name);
+    assert.equal(removed.code, 0, removed.output);
+    assert(!existsSync(join(ext, 'node_modules', name)), 'removal changes the project, not the global tree');
+    assert(!dependency('package.json').dependencies?.[name] && !dependency('package-lock.json').packages['']?.dependencies?.[name]);
+    if (setting === 'cache') assert.deepEqual(readdirSync(cache), []);
     if (setting !== 'default') assert.equal(readFileSync(npmrc, 'utf8'), contents);
     return { scenario: `global-config-ext-${setting}`, requests };
   } finally {
@@ -1302,7 +1357,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   } finally { rmSync(mountPoint, { recursive: true }); }
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   if (!process.argv[2] && ['linux', 'darwin'].includes(process.platform)) {
-    selected.push('global-config', 'global-config-ext-mirror', 'global-config-ext-default');
+    selected.push('global-config', 'global-config-secret-failure', 'global-config-ext-mirror', 'global-config-ext-default');
     if (process.getuid?.()) selected.push('global-config-ext-cache');
   }
   for (const scenario of selected) console.log(JSON.stringify(await (scenario.startsWith('global-config-ext-')

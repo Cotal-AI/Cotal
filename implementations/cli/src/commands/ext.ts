@@ -131,20 +131,20 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // its shared peers to the running binary's copies after npm changes the prefix.
   // The prefix verifier requires every host-compatible dependency, including native optional
   // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
-  // Keep a saved project and lockfile for verification and promotion, even with global npm settings.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--location=project", "--global=false", "--save=true", "--package-lock=true",
-    "--package-lock-only=false", "--dry-run=false", "--include=optional", "--legacy-peer-deps"]);
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
   let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
+  let config: ReturnType<typeof npmInvocation>["config"];
   try {
+    const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+    config = npm.config;
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     lifecycle = npmLifecycleEnvironment(npm, prefix);
     const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: lifecycle?.env ?? npm.env, windowsVerbatimArguments, detached: seedGroup, windowsHide: true }));
     if (seedGroup && child.pid !== undefined) {
@@ -159,8 +159,8 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
     let spawnError = "";
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", (e) => { spawnError = `spawn error: ${e.message}\n`; });
     if (child.pid !== undefined) {
       try {
@@ -188,14 +188,17 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
         ? `npm intermediary terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
-    const output = `${spawnError}${stdout}${stderr}`.trim();
+    const scrub = npm.config?.scrub ?? String;
+    const output = `${scrub(spawnError)}${scrub(stdout)}${scrub(stderr)}`.trim();
     return { status: spawnError ? null : closed.status, output: output || (closed.signal ? `npm terminated by ${closed.signal}` : "") };
   } catch (e) {
-    return { status: null, output: `spawn error: ${(e as Error).message}` };
+    const message = (e as Error).message;
+    return { status: null, output: `spawn error: ${config?.scrub(message) ?? message}` };
   } finally {
     stopForwarding();
     if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
+    config?.dispose();
   }
 }
 
@@ -338,7 +341,7 @@ export async function installExtensionSet(
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
-    const result = await npm(["install", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
+    const result = await npm(["install", "--no-audit", "--no-fund", "--save", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
@@ -541,7 +544,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = await npm(["install", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
+  const r = await npm(["install", "--no-audit", "--no-fund", "--save", "--install-links", resolved], dir, seeding);
   if (r.status !== 0) {
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }

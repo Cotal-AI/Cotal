@@ -149,7 +149,7 @@ function checkInstalledClosure(version: string, releasePackages: ReadonlySet<str
       overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
     }));
     const specs = names.map(name => `${name}@${version}`);
-    const result = rt.npm(["install", "--prefix", staging, "--location=project", "--global=false", "--package-lock-only=false", "--dry-run=false", "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
+    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
       const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;

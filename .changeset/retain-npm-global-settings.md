@@ -3,4 +3,4 @@
 "cotal-ai": patch
 ---
 
-Preserve your global npm settings when Cotal selects a prefix for updating, rolling back, or managing extensions.
+Preserve global npm registry access settings when Cotal supplies an install prefix for updates, rollbacks, or extensions.

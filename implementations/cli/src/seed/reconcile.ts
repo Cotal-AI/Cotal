@@ -31,7 +31,6 @@ import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
-import { npmInvocation } from "../lib/npm-invocation.js";
 import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
@@ -506,17 +505,10 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const verified: string[] = [];
   const removedKept: string[] = [];
   const staged: { name: string; pkg: string; spec: string; version: string; source: "seeded" }[] = [];
-  let npmConfig: string | undefined;
-  let npmConfigChecked = false;
   const install = async (name: string, force: boolean): Promise<void> => {
     if (mode !== "verify") {
       try {
-        if (!npmConfigChecked) {
-          npmConfigChecked = true;
-          try { npmConfig = npmInvocation(process.env, ["--prefix", seedStoreDir()]).env.npm_config_globalconfig; }
-          catch { /* The seed child owns npm resolution failures. */ }
-        }
-        seedOne(name, generation, nonce, force, npmConfig);
+        seedOne(name, generation, nonce, force);
         verifyInstalled(name, generation);
       } catch (error) {
         await checkInterrupted();
@@ -856,7 +848,7 @@ function resolveEverSeeded(mode: Mode, generation: string): Set<string> {
 /** Stage the payload and `ext add` it as a seed child, journaling the crash cursor around each step.
  *  The child is authenticated: it carries the live reconcile lock's nonce + this parent's PID so a
  *  forged `COTAL_EXT_SEEDING` can't skip the mutation lock for an arbitrary `ext add`. */
-function seedOne(name: string, generation: string, nonce: string, force: boolean, npmConfig: string | undefined): void {
+function seedOne(name: string, generation: string, nonce: string, force: boolean): void {
   // The re-exec entry is validated BEFORE anything is journaled (#1629). Asked after the cursor, the
   // staged payload and the pending child marker, a refusal left all three with no child to clear the
   // marker, and every later boot, `cotal ext seed --repair` included, refused as a seed that may be
@@ -877,7 +869,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
     encoding: "utf8", windowsHide: true,
-    env: { ...process.env, ...(npmConfig === undefined ? {} : { npm_config_globalconfig: npmConfig }), COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
+    env: { ...process.env, COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
   // The child's `✓ added …` line is seeding progress, not the invoking command's output: the boot gate

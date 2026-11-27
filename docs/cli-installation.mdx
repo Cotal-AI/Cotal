@@ -262,11 +262,10 @@ On Linux, it also removes that scratch if the reconciliation cache holds only re
 the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry, authentication, proxy and TLS settings.
-When Cotal supplies an npm prefix, it keeps the global configuration path that npm reports for
-your environment. This applies to dependency checks, staged and live installs, rollback installs,
-and queries for npm's global installation directory. If npm cannot report a path, the command runs
-with npm's ordinary prefix handling. The standalone installer is separate. An unavailable dependency
-stops the update before replacement.
+When an update supplies an npm prefix, it carries forward registry addresses, scoped credentials,
+proxy and TLS settings from the global npm configuration that the prefix would otherwise replace.
+Other settings and explicit npm config overrides follow npm's ordinary handling. The standalone
+installer is separate. An unavailable dependency stops the update before replacement.
 If npm runs out of space while checking installed extension dependencies, no global install is
 attempted. Free space on the temporary filesystem, then run `cotal update --self` again.
 If a signal terminates the npm dependency check, the command names the signal and leaves installed
@@ -932,10 +931,8 @@ status recommends `cotal update --self`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`.
-Extension installs, removals, and built-in seeding use your global npm configuration without changing it.
-Cotal keeps those operations local to its extension project and requires npm to save its dependencies
-and lockfile. Extension commands still use your npm cache. If npm cannot write to that cache, it can
-refuse an extension install. Use a cache your account can write to, then retry the command.
+Extension installs, removals, and built-in seeding keep your global registry access settings without
+changing the original configuration file or carrying forward the displaced file's install layout.
 The Extensions section of `cotal status` shows the recorded pins. `cotal ext root` prints only the
 path, for scripts. The listing's versions are the manifest pins recorded at add time.
 On POSIX, cotal creates a missing Cotal config directory with mode `0700`, even with a

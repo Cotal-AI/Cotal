@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { cmdSpawnSpec, logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
+import { privateNpmrc } from "./npm-reachability.js";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
@@ -269,6 +270,7 @@ interface NpmCommand {
   node?: string;
   npm?: string;
   lifecycleNode?: boolean;
+  config?: ReturnType<typeof privateNpmrc>;
 }
 
 function resolveNpmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
@@ -384,7 +386,7 @@ function effectiveGlobalConfig(npm: NpmCommand, launcher: string[]): string | un
   let cache: string | undefined;
   try {
     cache = mkdtempSync(join(tmpdir(), "cotal-npm-config-"));
-    const probe = cmdSpawnSpec(file, [...launcher, "config", "get", "globalconfig", "--cache", cache, "--json=false", "--logs-max=0", "--update-notifier=false"], env);
+    const probe = cmdSpawnSpec(file, [...launcher, "config", "get", "globalconfig", "--cache", cache, "--json=false", "--logs-max=0", "--timing=false", "--update-notifier=false"], env);
     const result = spawnSync(probe.file, probe.args, {
       cwd, env, windowsVerbatimArguments: probe.windowsVerbatimArguments, windowsHide: true,
       encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536,
@@ -397,12 +399,24 @@ function effectiveGlobalConfig(npm: NpmCommand, launcher: string[]): string | un
   return globalConfig;
 }
 
-export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
+export function npmInvocation(env: NodeJS.ProcessEnv, args: string[], scratch = tmpdir()): NpmCommand {
   const npm = resolveNpmInvocation(env, args);
-  if (!args.includes("--prefix") || Object.keys(npm.env).some(key => key.toLowerCase() === "npm_config_globalconfig")) return npm;
+  const at = args.indexOf("--prefix");
+  const prefix = args[at + 1];
+  if (at < 0 || !prefix || !["install", "remove"].includes(args[0] ?? "") ||
+      Object.keys(npm.env).some(key => key.toLowerCase() === "npm_config_globalconfig")) return npm;
   // npm derives globalconfig from the prefix. Resolve it without our prefix, using the same npm.
   const globalConfig = effectiveGlobalConfig(npm, npm.args.slice(0, npm.args.length - args.length));
-  return globalConfig === undefined ? npm : { ...npm, env: { ...npm.env, npm_config_globalconfig: globalConfig } };
+  if (globalConfig === undefined) return npm;
+  const defaultGlobal = resolve(npm.cwd, prefix, "etc", "npmrc");
+  if (windows ? defaultGlobal.toLowerCase() === resolve(globalConfig).toLowerCase() : defaultGlobal === resolve(globalConfig)) return npm;
+  let config: ReturnType<typeof privateNpmrc>;
+  try { config = privateNpmrc(globalConfig, scratch, npm.env); }
+  catch (error) {
+    throw Object.assign(new Error("could not prepare npm configuration"), { code: (error as NodeJS.ErrnoException).code });
+  }
+  return config ? { ...npm, config, args: [...npm.args, "--logs-max=0", "--timing=false"],
+    env: { ...npm.env, npm_config_globalconfig: config.file } } : npm;
 }
 
 /** Give lifecycle shells a `node` command when npm itself is launched by absolute Node path. */
