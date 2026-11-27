@@ -6,6 +6,7 @@ import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { ClosedConnectionError, type Msg, type NatsConnection } from "@nats-io/transport-node";
 import { withDeadline } from "./deadline.js";
@@ -29,7 +30,6 @@ export interface EndpointControlPlaneDeps {
   authed: () => boolean;
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
-  reportSubscriptionDenial: (error: unknown) => boolean;
   ref: () => EndpointRef;
   reconnect: () => Promise<void>;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -57,12 +57,11 @@ export class EndpointControlPlane {
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointControlPlaneDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointControlPlaneDeps, private readonly parts: Pick<EndpointParts, "connection">) {}
 
   private get authed() { return this.deps.authed(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
-  private reportSubscriptionDenial(error: unknown) { return this.deps.reportSubscriptionDenial(error); }
   private ref() { return this.deps.ref(); }
   private reconnect() { return this.deps.reconnect(); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
@@ -123,7 +122,7 @@ export class EndpointControlPlane {
         else inOrder = inOrder.then(answer).catch((e) => { this.emit("error", e as Error); });
       }
     })().catch((e) => {
-      if (!this.reportSubscriptionDenial(e)) this.emit("error", e as Error);
+      if (!this.parts.connection.reportSubscriptionDenial(e)) this.emit("error", e as Error);
     });
     return sub;
   }

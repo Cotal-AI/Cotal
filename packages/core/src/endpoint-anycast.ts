@@ -6,6 +6,7 @@
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { AnycastRequestAuthority, ANYCAST_RECORDS_CREDENTIAL_OUTDATED, type AnycastTakeReply, type AnycastTakeRequest, isAnycastSeq, type AnycastNotice, ANYCAST_NOTICE_KEY, ANYCAST_CANCEL_OP, type AnycastStatus, ANYCAST_TAKES_OP, ANYCAST_STATUS_OP } from "./anycast-requests.js";
 import { ANYCAST_SWEEP_MS, MAX_TAKES_IN_FLIGHT, ANYCAST_TAKE_TIMEOUT_MS } from "./endpoint-options.js";
 import { isPermissionDenied } from "./permission-denied.js";
@@ -14,20 +15,18 @@ import { anycastStoreDefinition } from "./streams.js";
 import { taskStream, takeServeFilter, TAKE_ROUTE, parseTakeSubject, isPrincipalOwnerToken, parsePrincipalKey, unicastSubject, MENTION_NOTICE_KEY, takeSubject } from "./subjects.js";
 import type { EndpointRef, ControlReply, CotalMessage, AnycastTakeOutcome } from "./types.js";
 import { type KV, Kvm } from "@nats-io/kv";
-import { type NatsConnection, type Msg, NoRespondersError, RequestError } from "@nats-io/transport-node";
+import { NoRespondersError, RequestError } from "@nats-io/transport-node";
 import { randomUUID } from "node:crypto";
 
 /** What the anycast component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
- *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
+ *  at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part is read
+ *  from the parts record at call time. */
 export interface EndpointAnycastDeps {
   authed: () => boolean;
   emitRecoverable: (err: Error) => void;
-  plane3MayAct: () => boolean;
   notLiveMsg: () => string;
   ref: () => EndpointRef;
-  requestBoundReply: (nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number) => Promise<Msg>;
-  readTaskEpoch: () => Promise<string>;
   requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
 }
 
@@ -40,15 +39,12 @@ export class EndpointAnycast {
   private anycastSweep?: ReturnType<typeof setInterval>;
   private takesInFlight = 0;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: DeliveryState, private readonly deps: EndpointAnycastDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: DeliveryState, private readonly deps: EndpointAnycastDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane" | "deliveryPlane">) {}
 
   private get authed() { return this.deps.authed(); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
-  private plane3MayAct(): boolean { return this.deps.plane3MayAct(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private ref(): EndpointRef { return this.deps.ref(); }
-  private requestBoundReply(nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number): Promise<Msg> { return this.deps.requestBoundReply(nc, subject, body, reply, timeoutMs); }
-  private readTaskEpoch(): Promise<string> { return this.deps.readTaskEpoch(); }
   private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ControlReply> { return this.deps.requestDelivery(op, args, timeoutMs); }
 
   /** (Re)bind the anycast take responder and the request records maintenance on the current
@@ -75,7 +71,7 @@ export class EndpointAnycast {
       kv,
       stream: taskStream(this.identity.space),
       send: (to, event) => this.sendAnycastNotice(to, event),
-      mayAct: () => this.plane3MayAct(),
+      mayAct: () => this.parts.deliveryPlane.plane3MayAct(),
       onError: (e) => this.emitRecoverable(e),
     });
     this.anycastAuthority = authority;
@@ -135,7 +131,7 @@ export class EndpointAnycast {
   /** Check one take's caller and arguments, then record it. The role and the caller come from the
    *  broker-policed subject; the payload's `from.id` must match, as on every control rail. */
   private async takeFor(authority: AnycastRequestAuthority, m: import("@nats-io/transport-node").Msg): Promise<AnycastTakeReply> {
-    if (!this.plane3MayAct()) return { ok: false, code: "busy", error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
+    if (!this.parts.deliveryPlane.plane3MayAct()) return { ok: false, code: "busy", error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     const parsed = parseTakeSubject(m.subject);
     let req: AnycastTakeRequest | undefined;
     try { req = m.json<AnycastTakeRequest>(); } catch { req = undefined; }
@@ -202,7 +198,7 @@ export class EndpointAnycast {
     const q = { seq: args.seq, ...(typeof args.id === "string" ? { id: args.id } : {}) };
     try {
       const status = op === ANYCAST_CANCEL_OP ? await authority.cancel(caller, q) : await authority.status(caller, q);
-      if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon stopped serving this shard while the request was in flight; retry" };
+      if (!this.parts.deliveryPlane.plane3MayAct()) return { ok: false, error: "delivery: this daemon stopped serving this shard while the request was in flight; retry" };
       return { ok: true, data: status satisfies AnycastStatus };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -228,7 +224,7 @@ export class EndpointAnycast {
     const body: AnycastTakeRequest = { from: { id: this.identity.card.id, name: this.identity.card.name }, seq, id, count, epoch };
     let reply: AnycastTakeReply;
     try {
-      const m = await this.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);
+      const m = await this.parts.controlPlane.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);
       reply = m.json<AnycastTakeReply>();
     } catch (e) {
       if (isPermissionDenied(e))
@@ -242,7 +238,7 @@ export class EndpointAnycast {
     // time moved, this copy is nakked, so the broker delivers it again at once with the new time. A
     // redelivery that still mismatches carries the time read here, so it is forgotten, not nakked.
     if (reply.code === "mismatch") {
-      const current = await this.readTaskEpoch().catch(() => undefined);
+      const current = await this.parts.consumers.readTaskEpoch().catch(() => undefined);
       if (current !== undefined && current !== epoch) nak();
     }
     if (reply.code === "cancelled" || reply.code === "taken" || reply.code === "gone" || reply.code === "mismatch")
