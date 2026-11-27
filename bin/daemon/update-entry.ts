@@ -607,7 +607,7 @@ const composed: Command = { ...command, async run(args) {
         if (await updateRuntime.reportRunningManager({ ...flags, space: entry.space }) === "legacy") return "legacy";
       }
     }
-    if (localVerdict === "legacy") return localVerdict;
+    if (localVerdict === "legacy" || (packageCheck === "offline" && blockedAgents.length > 0)) return "legacy";
     if (blockedAgents.length) {
       const summary = blockedAgents.map(row => `${row.space}: ${row.describe}`).join("; ");
       let consent = flags["stop-agents"] === true && process.env.COTAL_AUTO_UPDATE !== "1";

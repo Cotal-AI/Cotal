@@ -17,6 +17,7 @@ import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { assertRecordIdentity, localProcessOwnerStatus, projectRootDisplaced, projectRootProblem, projectRootProblemText, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd, displayRemedy } from "./self-exec.js";
+import { noteUpProjectCreated } from "../commands/up-project-trust.js";
 import { controlFileProblem } from "./paths.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -432,7 +433,7 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   const paths = maintenancePaths(root);
   const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
   let lock: MaintenanceLock;
-  try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
+  try { lock = { ...acquireMaintenanceLock(root, { operation, onControlDirectoryCreated: () => noteUpProjectCreated(root) }), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     const held = readMaintenanceLockHolder(root);

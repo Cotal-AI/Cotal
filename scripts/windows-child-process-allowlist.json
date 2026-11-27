@@ -92,7 +92,7 @@
     "spawnSync(path, [\"--version\"])": "Linux migration Node custody probe."
   },
   "implementations/cli/src/lib/persona-files.ts": {
-    "spawn(`${editor} ${quoted}`, { shell: true, stdio })": "User-requested editor through their configured shell.",
+    "spawn(`${prefix}${editor} ${quoted}`, { shell: true, stdio })": "User-requested editor through their configured shell.",
     "spawn(program, [draft])": "User-requested editor."
   },
   "implementations/cli/src/lib/service-scope.ts": {

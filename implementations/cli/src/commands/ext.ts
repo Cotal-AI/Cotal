@@ -284,7 +284,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string; checkCorePeer?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -334,7 +334,9 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
+    // npm's own update notifier can query the registry even in offline mode.
+    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
@@ -786,8 +788,12 @@ async function extensionProcesses(entry: InstalledExtension): Promise<ExtensionP
   if (!refs.length) return [];
   const providers = [...extensionLocalProcesses(entry)];
   const missing = refs.map((ref) => ref.name).filter((name) => !providers.some((provider) => provider.name === name));
-  if (missing.length)
-    throw new Error(`${entry.pkg} predates cached local-process metadata for ${missing.join(", ")} - re-add it before removal: \`cotal ext add ${entry.spec}\``);
+  if (missing.length) {
+    const reinstall = typeof entry.spec === "string" ? `\`cotal ext add ${entry.spec}\``
+      : entry.source === "seeded" || entry.pkg.startsWith("@cotal-ai/") ? extensionReinstallAdvice(entry)
+      : "use the original install spec";
+    throw new Error(`${entry.pkg} predates cached local-process metadata for ${missing.join(", ")} - re-add it before removal: ${reinstall}`);
+  }
   const currentRoot = cotalRoot();
   const contexts = new Map<string, LocalProcessContext>();
   contexts.set(currentRoot, { root: currentRoot, space: resolveSpace(currentRoot) });
@@ -831,8 +837,8 @@ export interface ExtensionRow {
   readonly pkg: string;
   /** The manifest pin recorded at add time. */
   readonly version: string;
-  /** What `ext add` was given. */
-  readonly spec: string;
+  /** What `ext add` was given, when recorded. */
+  readonly spec?: string;
   /** Whether the built-in seed installed the entry. */
   readonly seeded: boolean;
   /** The `kind:name` refs the package registers. */
@@ -895,7 +901,7 @@ function extensionRow(e: InstalledExtension): ExtensionRow {
   return {
     pkg: e.pkg,
     version: e.version,
-    spec: e.spec,
+    ...(typeof e.spec === "string" ? { spec: e.spec } : {}),
     seeded: e.source === "seeded",
     provides: extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`),
   };
