@@ -129,7 +129,7 @@ export class StatusAndModels {
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
-        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries, ...(envAllow ? { envAllow } : {}) });
+        const catalog = await this.parts.harnessResolution.readCatalog(connector, harness.binaries, envAllow, refresh);
         return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
