@@ -1140,8 +1140,10 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
       const reply = JSON.parse(await readLine(socket, 130_000)) as DaemonResponse;
       if (!reply.ok || reply.id !== id || custody.occupancy() !== "empty") throw uncertain("Windows PTY seats did not confirm stop before uninstall");
     }
-    try { await custody?.cleanup(); }
-    catch { throw uncertain("Windows PTY task retirement was not confirmed"); }
+    if (custody) {
+      try { await custody.cleanup(); }
+      catch { throw uncertain("Windows PTY task retirement was not confirmed"); }
+    }
     if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
       const id = randomUUID().replaceAll("-", "");
       socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "daemon-stop" }));
