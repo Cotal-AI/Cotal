@@ -99,12 +99,8 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
   if (scenario === 'reconcile-seed-worker') return reconcileSeedWorkerCell(entry, parent);
-  if (scenario === 'reconcile-orphan') {
-    for (const signal of ['SIGHUP', 'SIGKILL']) await registryArrivalCell({ scenario: `reconcile-orphan-${signal}`, entry, parent });
-    return { scenario, signals: ['SIGHUP', 'SIGKILL'] };
-  }
   const versionNamedNode = scenario === 'version-named-node';
-  const orphanSignal = scenario.startsWith('reconcile-orphan-') ? scenario.slice('reconcile-orphan-'.length) : undefined;
+  const orphanSignal = scenario === 'reconcile-orphan' ? 'SIGHUP' : scenario === 'reconcile-orphan-sigkill' ? 'SIGKILL' : undefined;
   const reconcileOrphan = orphanSignal !== undefined;
   const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
   const stagingFetchTimeout = scenario === 'staging-fetch-timeout';
@@ -1139,7 +1135,9 @@ exec npm "$@"
 }
 
 async function reconcileSeedWorkerCell(entry, parent) {
+  const started = Date.now();
   const root = mkdtempSync(join(parent, 'reconcile-seed-'));
+  const version = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   for (const name of ['home', 'cotal', 'config/cotal/seed', 'tmp', 'runtime', 'tools', 'other-prefix', 'other-cotal'])
     mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   const scratch = mkdtempSync(join(root, 'tmp/cotal-update-'));
@@ -1237,7 +1235,7 @@ process.exit(spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdi
     const afterExit = await runCli(['update', '--self'], collectEnv);
     assert.equal(afterExit.code, 0, afterExit.output);
     assert(!existsSync(scratch), `aged reconciliation scratch is reclaimed once seed npm exits: ${afterExit.output}`);
-    return { scenario: 'reconcile-seed-worker', code: afterExit.code };
+    return { scenario: 'reconcile-seed-worker', code: afterExit.code, elapsedMs: Date.now() - started, selected: version, missing: 0, requests: [], output: afterExit.output };
   } finally {
     writeFileSync(seedRelease, 'finish');
     if (seedPid) { try { process.kill(-seedPid, 'SIGCONT'); process.kill(-seedPid, 'SIGKILL'); } catch {} }
@@ -1341,7 +1339,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'reconcile-seed-worker', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'reconcile-orphan-sigkill', 'reconcile-seed-worker', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
