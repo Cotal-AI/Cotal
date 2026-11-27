@@ -149,6 +149,23 @@ static napi_value ProcessStartTime(napi_env env, napi_callback_info info) {
   return out;
 }
 
+static napi_value BootSession(napi_env env, napi_callback_info info) {
+  (void)info;
+  char boot[64];
+  size_t length = sizeof(boot);
+  if (sysctlbyname("kern.bootsessionuuid", boot, &length, NULL, 0) != 0) {
+    napi_throw_error(env, NULL, strerror(errno));
+    return NULL;
+  }
+  if (length != 37 || boot[length - 1] != '\0' || strlen(boot) != 36) {
+    napi_throw_error(env, NULL, "invalid kernel boot session UUID");
+    return NULL;
+  }
+  napi_value out;
+  if (napi_create_string_utf8(env, boot, 36, &out) != napi_ok) return NULL;
+  return out;
+}
+
 /* confstr(_CS_DARWIN_USER_CACHE_DIR): this user's cache directory, created 0700 if absent and never
  * cleaned automatically. It depends on no environment variable, so every process of the user,
  * a LaunchAgent included, gets the same path. */
@@ -281,6 +298,7 @@ static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "flockExclusiveNb", FlockExclusiveNb);
 #ifdef __APPLE__
   Export(env, exports, "processStartTime", ProcessStartTime);
+  Export(env, exports, "bootSession", BootSession);
   Export(env, exports, "userCacheDir", UserCacheDir);
   Export(env, exports, "launchdJob", LaunchdJob);
 #endif

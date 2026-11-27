@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fork, type ChildProcess } from "node:child_process";
+import { execFileSync, fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection, createServer, Socket } from "node:net";
@@ -10,12 +10,15 @@ import type { PeerCredentials } from "@cotal-ai/seat";
 
 const publicApi = await import("@cotal-ai/seat") as Record<string, unknown>;
 const readPeer = publicApi.peerCredentials as (socket: Socket) => PeerCredentials;
+const readLocalPeer = publicApi.localPeerCredentials as (socket: Socket) => PeerCredentials;
+const bootSession = publicApi.darwinBootSession as () => string;
+const observePeer = process.platform === "darwin" ? readLocalPeer : readPeer;
 
 if (process.argv[2] === "client") {
   const socket = createConnection(process.argv[3]!);
   const timeout = setTimeout(() => { socket.destroy(); process.exitCode = 1; process.disconnect?.(); }, 10_000);
   socket.on("error", () => { clearTimeout(timeout); process.exitCode = 1; process.disconnect?.(); });
-  socket.once("connect", () => process.send?.(readPeer(socket)));
+  socket.once("connect", () => process.send?.(observePeer(socket)));
   process.once("message", () => { clearTimeout(timeout); socket.end(); process.disconnect?.(); });
 } else {
   let passed = 0, failed = 0;
@@ -35,13 +38,19 @@ if (process.argv[2] === "client") {
   };
   try {
     check("public package root exports peerCredentials", () => assert.equal(typeof publicApi.peerCredentials, "function"));
+    check("native Darwin boot identity matches the kernel or refuses on other platforms", () => {
+      if (process.platform === "darwin") {
+        const kernel = execFileSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8", timeout: 2000 });
+        assert.equal(bootSession(), kernel.trim().toLowerCase());
+      } else assert.throws(bootSession, /bootSession is not available/);
+    });
     if (process.platform !== "linux") {
       check("public peer credentials refuse unsupported transport", () => assert.throws(() => readPeer(new Socket()), {
         message: `custody transport unsupported on ${process.platform}`,
       }));
-      console.log("Platform refusal only; no native Linux peer identity checks.");
-    } else {
-      check("public peer credentials refuse a socket without a descriptor", () => assert.throws(() => readPeer(new Socket()), /unix socket has no file descriptor/));
+    }
+    if (process.platform === "linux" || process.platform === "darwin") {
+      check("native peer credentials refuse a socket without a descriptor", () => assert.throws(() => observePeer(new Socket()), /unix socket has no file descriptor/));
       root = mkdtempSync(join(tmpdir(), "peer-public-"));
       const path = join(root, "p.sock");
       server.listen(path);
@@ -54,7 +63,7 @@ if (process.argv[2] === "client") {
       const message = once(child, "message");
       const exit = once(child, "exit");
       [socket] = await bounded(connection) as [Socket];
-      const remote = readPeer(socket);
+      const remote = observePeer(socket);
       check("server observes the actual child PID, not its own PID", () => {
         assert.equal(remote.pid, child!.pid);
         assert.notEqual(remote.pid, process.pid);

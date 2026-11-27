@@ -60,8 +60,8 @@ export function unsupportedNativeArch(platform: string, arch: string): Error {
 }
 
 function loadNative(): PeercredNative {
-  if (loaded) return loaded as PeercredNative;
   if (process.platform !== "linux") throw unsupportedTransport();
+  if (loaded) return loaded as PeercredNative;
   const platformArch = `${process.platform}-${process.arch}`;
   if (!isLinuxNativeArch(process.arch)) throw unsupportedNativeArch(process.platform, process.arch);
   const path = nativeHelperPath(process.arch);

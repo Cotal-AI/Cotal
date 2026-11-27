@@ -68,6 +68,7 @@ type HostNative = {
   flockExclusiveNb?: (fd: number) => boolean;
   lockExclusiveNb?: (fd: number) => boolean;
   processStartTime?: (pid: number) => string | undefined;
+  bootSession?: () => string;
   userCacheDir?: () => string;
   currentUserSid?: () => string;
   inspectDir?: (path: string) => WindowsDirSecurity;
@@ -104,6 +105,14 @@ export function lockExclusiveNb(fd: number): boolean {
  *  exist. A reused pid has a different value. Linux reads `/proc/<pid>/stat` instead. */
 export function processStartTime(pid: number): string | undefined {
   return native("processStartTime")(pid);
+}
+
+/** The macOS kernel's boot identity. Persist it with process birth tokens, not as a clock. */
+export function darwinBootSession(): string {
+  const boot = native("bootSession")().toLowerCase();
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(boot) || /^0+(?:-0+)+$/.test(boot))
+    throw new Error("invalid kernel boot session UUID");
+  return boot;
 }
 
 /** macOS: `confstr(_CS_DARWIN_USER_CACHE_DIR)`, this user's 0700 cache directory, which no

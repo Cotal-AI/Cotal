@@ -49,6 +49,7 @@ import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { planDarwinSeatHost } from "../daemon/seat-host-darwin.js";
 import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
@@ -176,6 +177,21 @@ try {
   }
 
   console.log("N2 LaunchAgent lifecycle");
+  if (process.platform !== "win32") {
+    const input = { root: join(root, "seats"), installation: join(root, "installation"), lineage: "1".repeat(64),
+      generation: "2".repeat(64), argv: [node, join(root, "entry.js"), "root & name"] as const };
+    const plan = planDarwinSeatHost(input);
+    check("PTY host job is on demand without an automatic restart or inherited environment", plan.bytes.includes("<key>RunAtLoad</key><true/>") &&
+      !/KeepAlive|AbandonProcessGroup|EnvironmentVariables/.test(plan.bytes));
+    check("PTY host job escapes arguments, uses a private path and scopes its label to lineage and generation",
+      plan.bytes.includes("root &amp; name") && plan.plist === join(input.root, `${plan.label}.plist`) &&
+      plan.label === planDarwinSeatHost(input).label &&
+      [planDarwinSeatHost({ ...input, lineage: "3".repeat(64) }), planDarwinSeatHost({ ...input, generation: "3".repeat(64) }),
+        planDarwinSeatHost({ ...input, installation: join(root, "second") })].every(other => other.label !== plan.label));
+    check("PTY host source refuses the automatic login-items directory and relative executables",
+      code(() => planDarwinSeatHost({ ...input, root: join(root, "Library/LaunchAgents") })) !== "none" &&
+      code(() => planDarwinSeatHost({ ...input, argv: ["node", input.argv[1]] })) !== "none");
+  }
   // Windows has no user id for a launchd GUI domain, so the adapter refuses there before it reads
   // anything, and the lifecycle cells, which drive it with injected launchctl answers, do not run.
   if (uid === undefined) {
