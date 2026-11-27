@@ -25,6 +25,7 @@ import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
 import { applyInstall, installedDaemonIdentity, installedServicePath, planUninstall, planInstalledPathRefresh, preflightInstalledDaemon, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { consumeDaemonStartupRecovered } from "./startup-recovery.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -77,12 +78,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Wait for the daemon to answer its endpoint after a start, so the steps below reach a live one. */
 async function waitForDaemon(opts: InstallOptions, seconds: number): Promise<void> {
+  const startupRecovered = consumeDaemonStartupRecovered(opts.paths.socket);
   const deadline = Date.now() + seconds * 1000;
   let notAnswering = false;
   for (;;) {
     try {
       const reply = await queryDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid });
-      if (reply.ok && (!opts.version || reply.result.version === opts.version) && reply.result.protocol === DAEMON_PROTOCOL_VERSION) return;
+      if (reply.ok && (startupRecovered || !opts.version || reply.result.version === opts.version) && reply.result.protocol === DAEMON_PROTOCOL_VERSION) return;
       notAnswering = false;
     } catch (e) {
       // NOT_RUNNING and PEER_NOT_LOCK_OWNER are both "not up yet" while a unit is starting.

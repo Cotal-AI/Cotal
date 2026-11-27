@@ -101,6 +101,32 @@ export function claimUpdateClosureAccess(recover = false): () => void {
   };
 }
 
+/** Temporarily release this process's outer closure lock while a native service start runs startup
+ *  update recovery, then reacquire it before returning to the caller. */
+export async function withSuspendedUpdateClosureAccess<T>(run: () => Promise<T>): Promise<T> {
+  if (!held || process.env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") return run();
+  held.release();
+  held = undefined;
+  delete process.env[OWNER]; delete process.env[NONCE]; delete process.env[START];
+  let failed = false;
+  try {
+    return await run();
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    try {
+      const start = ownerStart(process.pid) ?? "";
+      held = acquireLock(lockPath(), { label: "a closure writer", waitMs: 300_000 });
+      process.env[OWNER] = String(process.pid);
+      process.env[NONCE] = held.nonce;
+      process.env[START] = start;
+    } catch (reacquireError) {
+      if (!failed) throw reacquireError;
+    }
+  }
+}
+
 /** Identity persisted in the existing recovery record before replacement. */
 export function updateClosureOwner(): { pid: number; start: string; nonce: string } {
   if (!held) throw new Error("this process does not own the update closure transaction");
