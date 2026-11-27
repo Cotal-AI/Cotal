@@ -1,5 +1,13 @@
 # @cotal-ai/workspace
 
+## 0.183.2
+
+### Patch Changes
+
+- 88e6f2c: Reclaim abandoned extension staging copies from the top-level connector configuration after migrating to version sets, without removing its installed connectors.
+- Updated dependencies [e693bb2]
+  - @cotal-ai/core@0.183.2
+
 ## 0.183.1
 
 ### Patch Changes

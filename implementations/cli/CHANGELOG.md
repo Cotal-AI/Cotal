@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.183.2
+
+### Patch Changes
+
+- 10c0bbe: Self-update resolves an asdf `npm` shim from the current project before running npm outside the project, including during connector reconciliation, using the project's selection even when asdf also sets a home default.
+- Updated dependencies [88e6f2c]
+- Updated dependencies [e693bb2]
+  - @cotal-ai/workspace@0.183.2
+  - @cotal-ai/core@0.183.2
+  - @cotal-ai/seat@0.183.2
+
 ## 0.183.1
 
 ### Patch Changes
