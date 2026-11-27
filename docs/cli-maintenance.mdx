@@ -39,10 +39,10 @@ identity, which is not a saved service instance. Stop through that host, run `co
 then restart with the original start command. Stopping ends the listed seats.
 
 For empty Managers hosted by the machine daemon, `cotal update --self` acquires a caller-owned
-admission fence before replacing packages. A seat started after the custody report refuses
-replacement. The fence stays held through reconciliation and the installed-generation handoff.
-A failed update releases its claim so the unchanged Manager can accept work again. Hosted legacy
-Managers with running seats still require stopping those seats before replacement.
+admission fence for the restart. If a seat starts after the custody report, the staged updater can
+publish the new software but defers daemon activation and leaves the seat running. An in-place
+replacement still requires an empty Manager. After a successful rollback, the updater releases its
+fence and the unchanged Manager can accept work again.
 
 ## Updating the installation
 
