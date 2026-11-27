@@ -1365,9 +1365,13 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  schemas are closed, so a revision-55 contract rejects either.
  *
  *  57 = `status` adds the optional `machine`, the answering Manager's machine id. The status output
- *  schema is closed, so a revision-56 contract rejects it. */
+ *  schema is closed, so a revision-56 contract rejects it.
+ *
+ *  58 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
+ *  against the connector's model catalog. The input schema is closed, so a revision-57 contract
+ *  rejects the field. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 57, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 58, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

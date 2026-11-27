@@ -80,6 +80,16 @@ Every connector except Hermes lists a catalog.
 For OpenCode, select one with `--model provider/model --variant high`.
 For Claude, the variant is the effort level, as in `--model opus --variant high`.
 For pi, the variant is the thinking level, as in `--model anthropic/claude-opus-4-6 --variant high`.
+A model can also list modes, such as a fast tier, which `--mode id=value` chooses: `true` or `false` for a toggle, or an option id for a choice.
+The catalog marks each model's default variant and each mode's default.
+A mode the logged-in account cannot use, such as a fast tier its organization turned off, is listed as unavailable with the reason.
+
+A launch runs only a variant or mode the connector's catalog lists for its model.
+A launch that turns an unavailable mode on is refused with its reason.
+Setting it off, `false` for a toggle or the default option for a choice, launches, so a template that keeps a mode off still runs.
+The application would otherwise run a choice it does not support at some other setting, without saying so.
+Without `--model`, the check uses the model the catalog marks as the default.
+A launch that names no variant and no mode needs no catalog.
 
 A spawned Claude Code agent loads Cotal's tools, Claude's native MCP sources, and declared sharing overrides.
 Use `--share-tools none` for Cotal alone or `--share-tools a,b` for named declared servers.
