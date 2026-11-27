@@ -444,14 +444,14 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const offered = (o: Opts) => {
     const model = o?.find((x) => x.id === "model") as { currentValue?: string; options?: { group: string; options: { value: string }[] }[] } | undefined;
     const agent = o?.find((x) => x.id === "agent") as { options?: { value: string }[] } | undefined;
-    const variant = o?.find((x) => x.id === "variant") as { currentValue?: string } | undefined;
+    const variant = o?.find((x) => x.id === "reasoning") as { currentValue?: string } | undefined;
     return { model: model?.currentValue, variant: variant?.currentValue, groups: (model?.options ?? []).map((g) => g.group), harnesses: (agent?.options ?? []).map((x) => x.value) };
   };
   const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
   const set = (configId: string, value: string) => c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId, value });
   check("on a machine that runs OpenCode, the selects offer it", offered(s.configOptions).groups.includes("opencode") && offered(s.configOptions).harnesses.includes("opencode"), offered(s.configOptions));
   await set("model", "opencode/gpt");
-  await set("variant", "high");
+  await set("reasoning", "high");
   const moved = await set("machine", "m2");
   check("choosing a machine whose manager says OpenCode is unavailable offers it in neither select", !offered(moved.configOptions).groups.includes("opencode") && !offered(moved.configOptions).harnesses.includes("opencode"), offered(moved.configOptions));
   check("and the selection moves to that machine's default", offered(moved.configOptions).model === "claude/default" && offered(moved.configOptions).variant === "default", offered(moved.configOptions));
@@ -676,7 +676,7 @@ check("deleting a session that never spawned hides nothing", hidden.ids.size ===
   check("a model without variants, an application's default included, says it takes no reasoning effort",
     ["claude/haiku", "claude/default", "pi/default"].every((id) => meta(id)?.supportsReasoningEffort === false && meta(id)?.reasoningEfforts === undefined),
     ["claude/haiku", "claude/default", "pi/default"].map((id) => meta(id)));
-  const reasoning = wire.configOptions?.find((o) => o.id === "variant");
+  const reasoning = wire.configOptions?.find((o) => o.id === "reasoning");
   check("a fresh session at an application's default offers the reasoning select, holding the model default",
     reasoning?.category === "thought_level" && reasoning.currentValue === "default" && JSON.stringify(reasoning.options.map((c) => ("value" in c ? c.value : ""))) === '["default"]', reasoning);
   await writer.close();
@@ -697,13 +697,13 @@ check("choosing the harness the model already runs keeps the model", modelOf(hop
 const noPlane = await errorOf(set("agent", "hermes"));
 check("a harness without an event plane is refused as invalid params", noPlane?.code === -32602 && noPlane.message?.includes("event plane") === true, noPlane);
 let opts = (await set("model", "claude/opus")).configOptions;
-check("a model with variants offers the variant option", opts.some((o) => o.id === "variant"), opts.map((o) => o.id));
-await set("variant", "high");
+check("a model with variants offers the reasoning option", opts.some((o) => o.id === "reasoning"), opts.map((o) => o.id));
+await set("reasoning", "high");
 opts = (await set("model", "claude/sonnet")).configOptions;
-const variant = opts.find((o) => o.id === "variant") as { currentValue?: string } | undefined;
+const variant = opts.find((o) => o.id === "reasoning") as { currentValue?: string } | undefined;
 check("a variant does not carry to a model that lacks it", variant?.currentValue === "default", variant);
 opts = (await set("model", "claude/haiku")).configOptions;
-const onlyDefault = opts.find((o) => o.id === "variant") as { options?: { value: string }[] } | undefined;
+const onlyDefault = opts.find((o) => o.id === "reasoning") as { options?: { value: string }[] } | undefined;
 check("a model without variants offers the reasoning select with only the model default",
   JSON.stringify(onlyDefault?.options?.map((c) => c.value)) === '["default"]', onlyDefault);
 const bad = await errorOf(set("model", "hermes/default"));
@@ -722,7 +722,7 @@ check("a persona the chosen machine lacks returns to the default", carried?.curr
 await set("machine", "m1");
 await set("model", "claude/opus");
 await set("persona", "reviewer");
-await set("variant", "high");
+await set("reasoning", "high");
 const noChannel = await errorOf(set("channel", "nowhere"));
 check("a channel the space does not hold is refused", noChannel?.code === -32602, noChannel);
 await set("channel", "ops");
@@ -899,7 +899,7 @@ mesh.rows = [heldRow, ...rowsBefore];
 const heldLoad = await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
 check("a loaded agent's manager stays its current Machine choice beside the launch list", JSON.stringify(machineOf(heldLoad)) === JSON.stringify({ current: "m3", choices: ["m1", "m2", "m3"] }), machineOf(heldLoad));
 const labels = (r: { configOptions?: unknown[] | null } | undefined) => ((r?.configOptions?.find((x) => (x as { id: string }).id === "machine") as { options?: { name: string }[] } | undefined)?.options ?? []).map((c) => c.name);
-check("and it is described from its presence like the others", JSON.stringify(labels(heldLoad)) === JSON.stringify(["here (this machine)", "there", "host-m3"]), labels(heldLoad));
+check("and it is described from its presence like the others", JSON.stringify(labels(heldLoad)) === JSON.stringify(["This machine", "there", "host-m3"]), labels(heldLoad));
 // While no manager may start a new agent, the agent still loads, read from the manager that holds it,
 // and a new thread still says why it cannot start.
 mesh.noLaunch = "none of your managers is live";
@@ -950,7 +950,7 @@ mesh.gone.add("m3");
 const askedGone = mesh.catalogsAsked.length;
 let goneFailed: unknown;
 const awayFromGone = await agent.request(methods.agent.session.setConfigOption, { sessionId: "held", configId: "machine", value: "m1" }).catch((e: unknown) => { goneFailed = e; return undefined; });
-check("after the held manager stops, choosing the other machine reads its lists and keeps the held one as described at the load", goneFailed === undefined && machineOf(awayFromGone).current === "m1" && JSON.stringify(labels(awayFromGone)) === JSON.stringify(["here (this machine)", "elsewhere"]) && mesh.catalogsAsked.slice(askedGone).every((m) => m === "m1"), goneFailed ?? { machine: machineOf(awayFromGone), labels: labels(awayFromGone) });
+check("after the held manager stops, choosing the other machine reads its lists and keeps the held one as described at the load", goneFailed === undefined && machineOf(awayFromGone).current === "m1" && JSON.stringify(labels(awayFromGone)) === JSON.stringify(["This machine", "elsewhere"]) && mesh.catalogsAsked.slice(askedGone).every((m) => m === "m1"), goneFailed ?? { machine: machineOf(awayFromGone), labels: labels(awayFromGone) });
 mesh.gone.clear();
 mesh.managerList = [{ instanceId: "m1", host: "there", local: false, live: true }, { instanceId: "m2", host: "here", local: true, live: true }];
 const preferLocal = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
@@ -1154,7 +1154,7 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const start = async (model: string, variant?: string): Promise<SpawnRequest | undefined> => {
     const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
     await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: model });
-    if (variant) await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "variant", value: variant });
+    if (variant) await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "reasoning", value: variant });
     const before = space.spawned.length;
     await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
     return space.spawned.length > before ? space.spawned.at(-1) : undefined;
@@ -1453,9 +1453,9 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("choosing another model of the seat's application on a running thread switches the seat through set-model, and the options show it",
     JSON.stringify(calls()) === '[{"model":"sonnet"}]' && current(switched, "model") === "claude/sonnet", failed ?? { calls: calls(), options: switched?.configOptions });
   failed = undefined;
-  const effort = await set("variant", "low").catch((e: unknown) => { failed = e; return undefined; });
+  const effort = await set("reasoning", "low").catch((e: unknown) => { failed = e; return undefined; });
   check("choosing a reasoning variant there switches it with the model it runs, and the options show it",
-    JSON.stringify(calls().at(-1)) === '{"model":"sonnet","variant":"low"}' && current(effort, "variant") === "low", failed ?? { calls: calls(), options: effort?.configOptions });
+    JSON.stringify(calls().at(-1)) === '{"model":"sonnet","variant":"low"}' && current(effort, "reasoning") === "low", failed ?? { calls: calls(), options: effort?.configOptions });
   const before = calls().length;
   const harness = await errorOf(set("model", "pi/default"));
   check("a model of another application is refused there, naming /despawn, and switches nothing", harness?.code === -32602 && String(harness.message).includes("/despawn") && calls().length === before, harness);
@@ -1464,9 +1464,9 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("the seat's refusal fails the choice with its reason and keeps the model it runs",
     refusedSwitch?.code === -32602 && String(refusedSwitch.message).includes("has no model gpt-x"), refusedSwitch);
   refusal = undefined;
-  const kept = await set("variant", "default").catch(() => undefined);
+  const kept = await set("reasoning", "default").catch(() => undefined);
   check("...and keeps the model it runs: the model default variant switches that model",
-    JSON.stringify(calls().at(-1)) === '{"model":"sonnet"}' && current(kept, "model") === "claude/sonnet" && current(kept, "variant") === "default", { calls: calls(), options: kept?.configOptions });
+    JSON.stringify(calls().at(-1)) === '{"model":"sonnet"}' && current(kept, "model") === "claude/sonnet" && current(kept, "reasoning") === "default", { calls: calls(), options: kept?.configOptions });
   const persona = await errorOf(set("persona", "reviewer"));
   check("an option that applies only at spawn is still refused on a running thread", persona?.code === -32602 && String(persona.message).includes("/despawn"), persona);
   space.serving = { ...shown, setModel: false };
