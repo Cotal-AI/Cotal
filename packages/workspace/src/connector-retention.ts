@@ -450,7 +450,7 @@ export function prepareConnectorConfigForUpdate(onChange?: () => void, onModeCha
       try { chmodSync(path, mode); }
       catch { refuse(path, "cannot be accessed for updates by this account"); }
       noteChange();
-      onModeChange?.();
+      if ((stat.mode & 0o700) !== 0o700) onModeChange?.();
     }
     writable(path, constants.R_OK | constants.W_OK | constants.X_OK);
     return true;
