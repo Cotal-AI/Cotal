@@ -20,7 +20,8 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from .control_exchange import bridge_token, control_key, socket_dir_problem
+from .control_exchange import ClientExchange, ExchangeRefused, bridge_token, control_key, socket_dir_problem
+from .transport import PipeStream, dial
 
 _BACKOFF_S = 2.0
 
@@ -42,7 +43,7 @@ class BridgeClient:
                 "carries one) — the bridge socket cannot be authenticated"
             )
         self._token = bridge_token(key)
-        self._sock: Optional[socket.socket] = None
+        self._sock: Optional[socket.socket | PipeStream] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
         self._on_incoming: Optional[Callable[[dict], None]] = None
@@ -125,8 +126,11 @@ class BridgeClient:
                     return  # the socket's directory is not private: refusal() has reported it
                 if self._sock is None:
                     continue
-                self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
+                if os.name != "nt":
+                    self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
                 self._send({"t": "busy", "count": self._busy})
+                if os.name == "nt":
+                    buf = b""
             # Read through a local handle. Re-reading `self._sock` here would race a concurrent
             # reassignment between the guard above and the recv below.
             sock = self._sock
@@ -151,6 +155,8 @@ class BridgeClient:
                     # delivered 0 of 8 with the live socket erased on every rep.
                     if self._sock is sock:
                         self._sock = None
+                if isinstance(sock, PipeStream):
+                    sock.close()
                 continue
             buf += data
             while b"\n" in buf:
@@ -185,8 +191,7 @@ class BridgeClient:
                 time.sleep(_BACKOFF_S)  # the directory is not there yet: the sidecar is not up
                 continue
             try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.connect(self._path)
+                s = self._dial()
                 with self._lock:
                     if gen is not None and gen != self._gen:
                         # Retired between the dial and the assignment. Close rather than install:
@@ -198,8 +203,22 @@ class BridgeClient:
                         return
                     self._sock = s
                 return
-            except OSError:
+            except (OSError, ExchangeRefused):
                 time.sleep(_BACKOFF_S)
+
+    def _dial(self) -> socket.socket | PipeStream:
+        sock = dial(self._path, 1.0 if os.name == "nt" else None)
+        if isinstance(sock, PipeStream):
+            try:
+                exchange = ClientExchange(sock, self._token)
+                exchange.open({"t": "subscribe"})
+                exchange.reply(1.0)
+                exchange.continue_on_pipe()
+                sock.settimeout(None)
+            except (OSError, ExchangeRefused):
+                sock.close()
+                raise
+        return sock
 
     def refusal(self) -> Optional[str]:
         """Why this bridge will not dial, or ``None``. Checks the socket's directory now: a directory
@@ -231,7 +250,7 @@ class BridgeClient:
             cb = self._on_turn
             if cb:
                 cb(frame)
-        elif t in ("interrupt", "usage", "commands"):
+        elif t in ("interrupt", "usage", "commands") or (os.name == "nt" and t == "shutdown"):
             cb = self._on_request
             if cb:
                 cb(frame)
@@ -257,6 +276,8 @@ class BridgeClient:
             try:
                 self._sock.sendall(data)
             except OSError:
+                if isinstance(self._sock, PipeStream):
+                    self._sock.close()
                 self._sock = None
                 return False
         return True

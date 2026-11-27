@@ -48,7 +48,7 @@ const SPACE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
  *  `space`, when the host knows which mesh this approval would join, is named in the pending result. */
 export class ApprovalRequired extends Error {
   readonly space?: string;
-  constructor(readonly pending: ConversationPending, space?: string) {
+  constructor(readonly pending: ConversationPending, space?: string, readonly reason?: string) {
     super("the person must approve this connection's permissions");
     this.name = "ApprovalRequired";
     this.space = space !== undefined && SPACE_NAME.test(space) ? space : undefined;
@@ -599,6 +599,7 @@ export function registerCotalGatewayTools(
                 ? `This call waited and the person has not decided. Call cotal_connect again with name ${JSON.stringify(candidate)}${resume} and the same requested permissions to keep waiting. That call does not start another request.`
                 : `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
               const message = `Permission approval required. This conversation is not connected.\n` +
+                (e.reason ? `${e.reason}\n` : "") +
                 (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
                 `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
                 `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +

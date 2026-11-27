@@ -115,7 +115,7 @@ check("npx display keeps its durable invocation when only the ephemeral shim is 
 
 process.env.PATH = [npxBin, realBin].join(delimiter); // ephemeral shim + a durable install
 check("a durable `cotal` alongside the npx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
-check("a durable PATH executable keeps concise command suggestions", displayCmd() === "cotal");
+check("a durable PATH executable keeps concise command suggestions", displayCmd() === cotalExe());
 
 const recoveryHome = mkdtempSync(join(tmpdir(), "cotal-install-recovery-home-"));
 const ephemeralRecovery = verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: npxBin });
@@ -146,7 +146,7 @@ try {
 check("pnpm dlx install path: failed install handled gracefully (no throw)", !threw);
 process.env.PATH = [dlxBin, realBin].join(delimiter);
 check("a durable `cotal` alongside the pnpm dlx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
-check("a durable PATH executable alongside pnpm dlx keeps concise command suggestions", displayCmd() === "cotal");
+check("a durable PATH executable alongside pnpm dlx keeps concise command suggestions", displayCmd() === cotalExe());
 check("recovery probe: ignores an ephemeral pnpm dlx executable", verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: dlxBin }).length === 0);
 
 process.env.PATH = prefix; // restore the deterministic no-cotal PATH

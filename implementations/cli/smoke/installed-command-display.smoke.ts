@@ -1,19 +1,50 @@
-/** Installed command suggestions remain runnable when the installer's launcher is off PATH. */
+/** Installed command suggestions remain runnable when copied into the user's shell. */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
-import { assertSmokeSandboxDown, createSuite, emitSentinel, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 
-if (process.platform === "win32") {
-  console.log("Installed command display: POSIX installer fixture excluded on Windows");
-  emitSentinel({ passed: 0, failed: 0 });
-  process.exit(0);
-}
 const suite = createSuite();
 const repo = resolve(import.meta.dirname, "../../..");
+if (process.platform === "win32") {
+  windowsLauncherSmoke();
+  suite.finish();
+  process.exit(process.exitCode ?? 0);
+}
+
+function windowsLauncherSmoke(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-windows-launcher-"));
+  const bin = join(root, "bin"), entry = join(repo, "bin", "dist", "cotal.js");
+  const host = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_.*|path|force_color)$/i.test(key)));
+  const env = { ...host, PATH: [bin, process.env.PATH].join(delimiter), COTAL_HOME: join(root, "home"),
+    XDG_CONFIG_HOME: join(root, "config"), NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
+  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 60_000 };
+  const powershell = (command: string) => spawnSync("powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-Command", `${command}; exit $LASTEXITCODE`], options);
+  try {
+    mkdirSync(bin);
+    writeFileSync(join(bin, "cotal.cmd"), `@"${process.execPath}" "${entry}" %*\r\n`);
+    writeFileSync(join(bin, "cotal.ps1"), "throw 'Expected the batch launcher.'\r\n");
+    const status = powershell("cotal.cmd status");
+    const command = /^  (.+? setup --help) +See setup flags for scripts/m.exec(status.stdout ?? "")?.[1];
+    suite.check("Windows status names the .cmd launcher when it is on PATH", status.status === 0 && command === "cotal.cmd setup --help", status);
+    if (command === "cotal.cmd setup --help" || command === "cotal setup --help") {
+      const ps = powershell(command);
+      suite.check("the printed setup help command runs in Restricted PowerShell", ps.status === 0 && ps.stdout.includes("--configure-only"), ps);
+      const cmd = spawnSync("cmd.exe", ["/d", "/c", command], options);
+      suite.check("the printed setup help command runs in Command Prompt", cmd.status === 0 && cmd.stdout.includes("--configure-only"), cmd);
+    }
+    const card = powershell("cotal.cmd");
+    suite.check("the Windows entry card uses the .cmd launcher in Start here and Everyday", card.status === 0 &&
+      /^  cotal\.cmd setup +Choose your application/m.test(card.stdout) && /^  cotal\.cmd status +See this machine/m.test(card.stdout), card);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 const sandbox = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}command-display-`));
 const home = join(sandbox, "home's space"), root = join(sandbox, "project"), outside = join(sandbox, "outside"), tools = join(sandbox, "tools"), xdg = join(sandbox, "config");
 for (const dir of [home, root, outside, tools, xdg]) mkdirSync(dir, { mode: 0o700 });

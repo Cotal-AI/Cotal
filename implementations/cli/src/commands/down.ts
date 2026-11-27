@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
 import { homedir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -97,6 +97,16 @@ export function downComplete(argv: string[]): CompletionResult {
   return serviceComplete(["stop", ...(argv.length ? argv : [""])]);
 }
 
+/** The stop to run in the project a `.cotal` link names. A relative store path is pinned to this
+ *  invocation, because the retry runs in another folder. */
+function linkedDownRetry(values: ParsedArgs["values"]): string {
+  const requested = values as { file?: string; run?: string; space?: string; instance?: string; "store-dir"?: string; "session-store"?: string[]; "abandon-stop"?: string; "abandon-launch"?: string; "dry-run"?: boolean; yes?: boolean; "with-agents"?: boolean; "preserve-state"?: boolean; json?: boolean; plain?: boolean };
+  const word = (flag: string, value: string | undefined): string => value === undefined ? "" : ` --${flag}${value.startsWith("-") ? "=" : " "}${shellWord(flag === "store-dir" || flag === "session-store" || flag === "file" ? resolve(value) : value)}`;
+  const stores = (requested["session-store"] ?? []).map((path) => word("session-store", path)).join("");
+  const flags = ["dry-run", "yes", "with-agents", "preserve-state", "json", "plain"].filter((flag) => requested[flag as keyof typeof requested] === true).map((flag) => ` --${flag}`).join("");
+  return `cotal down${word("file", requested.file)}${word("run", requested.run)}${word("space", requested.space)}${word("instance", requested.instance)}${word("store-dir", requested["store-dir"])}${stores}${word("abandon-stop", requested["abandon-stop"])}${word("abandon-launch", requested["abandon-launch"])}${flags}`;
+}
+
 function namedStopArguments(args: ParsedArgs): ParsedArgs {
   return { ...args, positionals: ["stop", args.positionals[0]!] };
 }
@@ -144,7 +154,7 @@ export function validateDownArguments(args: ParsedArgs): void {
     return;
   }
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
-  const linked = linkedCotalRefusal("down");
+  const linked = linkedCotalRefusal("down", undefined, () => linkedDownRetry(args.values));
   if (linked) throw linked;
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
   if (goneRootDown(args.values)) return validateGoneRootDownArguments(args.values);

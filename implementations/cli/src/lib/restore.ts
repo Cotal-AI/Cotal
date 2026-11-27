@@ -68,8 +68,11 @@ import {
   type RestoreManagerCommittedRecord,
   type RestoreReadyRecord,
   readStoreIdentity,
+  preparedSpaceAt,
+  retainedLegacyBroker,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
+import { controllerStackApplies } from "../commands/stack-up.js";
 import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
@@ -634,10 +637,16 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
   // `down --preserve-state` only cuts a running stack, so a stack a plain `cotal down` stopped is
   // started first (#7330).
-  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal)
+  if (!journal) {
+    const prepared = preparedSpaceAt(root);
+    const remedy = prepared && !retainedLegacyBroker(root) && controllerStackApplies(root, prepared.space, {})
+      ? "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or restore in this release"
+      : "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again";
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "restore requires stable ready maintenance state, found none", { target: { root }, remedy });
+  }
+  const remedy = "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal)
     : "this root's maintenance attempt must finish first; check it with `cotal status`";
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal.state}`, { target: { root, state: journal.state }, remedy });
 }
 
 type RestoreLaunch = Pick<PreparedRestore, "root" | "targetPath" | "space" | "mode" | "server" | "host" | "runtime" | "maxFileStore">;

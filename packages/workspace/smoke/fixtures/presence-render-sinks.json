@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1152,
+    "total": 1154,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 930
+    "non-render/control": 932
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6578,6 +6578,20 @@
       "anchor": "`its discovery document answered HTTP ${response.status}`",
       "class": "non-render/control",
       "rationale": "Conversation identity discovery failure: the discovery document's HTTP status; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-resume.ts",
+      "kind": "derived-output",
+      "anchor": "`the conversation resume exchange did not confirm its approval (HTTP ${response.status}); the saved identity was retained.${hint}`",
+      "class": "non-render/control",
+      "rationale": "The HTTP response status is the outcome of an authority check, not an agent's presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-resume.ts",
+      "kind": "derived-output",
+      "anchor": "` Wait at least ${seconds} seconds before trying again.`",
+      "class": "non-render/control",
+      "rationale": "The authority's retry delay advises when to repeat the probe and says nothing about an agent's work or presence."
     },
     {
       "path": "implementations/cli/src/commands/use.ts",

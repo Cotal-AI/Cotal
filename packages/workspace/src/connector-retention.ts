@@ -15,6 +15,7 @@ import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
 import { protectedResolvedDirectory } from "./protected-records.js";
 import { CommandFailure } from "./output.js";
+import { restoreManifestAccess } from "./manifest-access.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -389,8 +390,31 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
 
 /** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */
 export function connectorConfigDir(): string {
+  return selectedConnectorConfig();
+}
+
+function selectedConnectorConfig(prepare?: (path: string) => void): string {
   const id = identity();
-  return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+  if (id) prepare?.(id.path);
+  return id ? currentConfig(id, prepare) ?? updateSnapshot(id) ?? previousConfig(id, prepare) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+}
+
+/** Restore access only to the selected manifest, either before traversal or after a denied read. */
+export function restoreConnectorManifestAccessForUpdate(search: boolean): boolean {
+  return restoreManifestAccess(resolve(globalConfigDir()), selectedConnectorConfig, search);
+}
+
+/** The selected update's rollback source, only within this installation's protected version sets. */
+export function previousUpdateConnectorConfig(): string | undefined {
+  const id = identity();
+  if (!id || readUpdateRecovery()) return;
+  const selected = readLineage(dirname(id.path));
+  if (selected?.entry !== id.entry || selected.version !== id.version || typeof selected.snapshot !== "string") return;
+  const current = currentConfig(id);
+  if (!current || current !== selectedRoot(selected.root, id.path, selectionDiffers)) return;
+  const previous = snapshotConfig(selected.snapshot, undefined, id.path);
+  if (!previous || !sameConfigPath(dirname(dirname(previous)), dirname(id.path)) || sameConfigPath(previous, current)) return;
+  return previous;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import { principalKey } from "@cotal-ai/core";
+import { hardenPrivate, principalKey } from "@cotal-ai/core";
 import {
   AguiEmitter,
   AguiEmitterHolder,
@@ -69,8 +69,10 @@ export function startHermesEvents(agent: MeshAgent, config: AgentConfig, journal
       const location = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
       lock = location.lock;
       if (!merged) {
+        if (process.platform === "win32") hardenPrivate(location.threadDir, "dir");
         deltas = DeltaJournal.open({
           path: location.deltaJournalPath,
+          createPrivateOnWindows: true,
           anchor: () => harness.endSync(),
           onWrite: () => holder.flush(journal),
           onError: (e) => log(`streamed text could not be journaled, so it arrives with the saved response: ${e.message}`),

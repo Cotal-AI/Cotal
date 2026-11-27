@@ -44,7 +44,8 @@ import {
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
-import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
+import { assertConfigAncestorProtected, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
+import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
 import { repairOfflineExtensions } from "./update-offline.js";
@@ -206,7 +207,6 @@ export interface UpdateRuntime {
 }
 
 export { installedCliVersion, repairInstallModes };
-
 export const updateRuntime: UpdateRuntime = {
   env: process.env,
   pid: process.pid,
@@ -349,6 +349,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   let permissionsRestored = false;
   let promotionRecovered = false;
   if (args.values.self === true) {
+    const reportManifestAccess = manifestAccessReporter(line => { preflightChanged = true; rt.out(line); });
     try { preflightChanged = rt.preflightExecution?.() === true; }
     catch (error) {
       if (isCommandFailure(error)) throw error;
@@ -359,7 +360,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; }, () => { permissionsRestored = true; });
+      promotionRecovered = prepareUpdateConnectorConfig(Boolean(rt.prepareExecution), () => { preflightChanged = true; }, () => { permissionsRestored = true; }, reportManifestAccess);
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -370,8 +371,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
         throw failure;
       }
     }
-    // Built-in self-update skips the extension overlay. Validate its inventory after recovery.
-    if (!connectorSelection) try { loadExtensionsManifest(); }
+    if (!connectorSelection) try { restoreUpdateManifestAccess(Boolean(rt.prepareExecution), reportManifestAccess); }
     catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -405,6 +405,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
     }
   }
+  if (childBinding(rt).kind === "none") reclaimPreviousExtensionStages();
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
@@ -576,7 +577,6 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     ...(manifestUnreadable ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: rt.checkout() ? "Install the verified latest CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] }]),
   ] }));
 }
-
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
 export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false, permissionsRestored = false): Promise<number> {
   const current = rt.version();
