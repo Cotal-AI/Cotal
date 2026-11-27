@@ -1,5 +1,5 @@
-/** Controller-owned whole-stack startup: broker first, then native stream setup, the auth service
- *  for a user stack, the delivery credential and delivery, then the manager. An open stack has no
+/** Controller-owned whole-stack startup: broker first, then native stream setup, the delivery
+ *  credential and delivery, the auth service for a user stack, then the manager. An open stack has no
  *  delivery member and mints no credential: its broker serves the prepared open configuration and
  *  its manager reports through the child's own local receipt. A user stack's manager needs the
  *  invoking user's existing login and grant; without it the manager is not attempted and the result
@@ -1201,27 +1201,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, readSeed });
       failedRole = undefined;
     }
-    // Auth service, user stacks only. Its native preparation came from this broker preparation, so
-    // a stopped auth service under an already-running broker is not started from guessed material.
-    if (mode === "user") {
+    // A stopped user-auth service under an already-running broker is refused before delivery
+    // mints a credential or starts; its native preparation runs only with a broker start.
+    if (mode === "user" && !prepared?.user) {
       const authRows = serviceInstances(space, STACK_DEFINITION.auth);
-      const authRunning = authRows.length === 1 && observeServiceProcess(authRows[0]!.record.value) === "running";
-      if (!prepared?.user && !authRunning) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare `cotal down`, then run bare `cotal up`" });
-      // The callout's deadline is the timeout this broker configuration rendered, never a second setting.
-      const authOptions = { root, server, ...(prepared?.authTimeout !== undefined ? { "auth-timeout": String(prepared.authTimeout) } : {}) };
-      const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, authOptions, 60000), root, replace("auth"));
-      const instance = await start("auth", authService);
-      if (prepared?.user) {
-        failedRole = "auth";
-        const confirmed = await confirmUserAuthEndpoints(prepared.user, space, instance);
-        native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, userAuth: confirmed, ...(maxSessions !== undefined ? { maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
-        failedRole = undefined;
-      }
+      if (authRows.length !== 1 || observeServiceProcess(authRows[0]!.record.value) !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare `cotal down`, then run bare `cotal up`" });
     }
-    // Delivery. Its scoped native credential is minted into the root's own store key, the same
-    // material the native daemon reads; the adapter is handed only that protected path. A user
-    // stack uses the same hosting-root space signer as native `ensureDelivery` does on a user root.
-    // An open stack has no delivery member, so no trust is read and no credential is minted.
+    // Delivery, before a user stack's auth service so its liveness oracle answers a plane-claim
+    // reclaim. Its native credential is minted into the root's own store key; the adapter gets only
+    // that protected path. An open stack has no delivery member and mints no credential.
     if (mode !== "open") {
       const store = workspaceSecretStore(root), auth = await getSpaceAuth(store, space);
       if (!auth) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the static space trust is missing; no delivery credential was minted from another signer", { target: { root, space } });
@@ -1229,7 +1217,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const credsPath = join(root, ".cotal", credsKey);
       const deliveryRows = serviceInstances(space, STACK_DEFINITION.delivery);
       const runningDelivery = deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running" ? deliveryRows[0] : undefined;
-      const stoppedDelivery = mode === "auth" && prepared && runningDelivery && await stopDeliveryForBrokerRepair(root, recordedMembers, runningDelivery);
+      const stoppedDelivery = prepared && runningDelivery && await stopDeliveryForBrokerRepair(root, recordedMembers, runningDelivery);
       if (!runningDelivery || stoppedDelivery) {
         const creds = await mintCreds(auth, newIdentity(), "delivery");
         // A daemon that was killed, or that exited when its broker went away, cannot release shard 0,
@@ -1250,6 +1238,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       }
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
+    }
+    if (mode === "user") {
+      // The callout's deadline is the timeout this broker configuration rendered, never a second setting.
+      const authOptions = { root, server, ...(prepared?.authTimeout !== undefined ? { "auth-timeout": String(prepared.authTimeout) } : {}) };
+      const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, authOptions, 60000), root, replace("auth"));
+      const instance = await start("auth", authService);
+      if (prepared?.user) {
+        failedRole = "auth";
+        const confirmed = await confirmUserAuthEndpoints(prepared.user, space, instance);
+        native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, userAuth: confirmed, ...(maxSessions !== undefined ? { maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
+        failedRole = undefined;
+      }
     }
     // A user stack's manager is read as the invoking user's existing login, confirmed with its IdP
     // as `manager start` confirms it. Without a signed-in, granted login, or with one the IdP

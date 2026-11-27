@@ -25,7 +25,7 @@ import {
   normalizeIdpUrl,
 } from "./login.js";
 import { refreshServiceSessions } from "./service-sessions.js";
-import { conversationLogoutWarnings, signOutIdpSession } from "./logout.js";
+import { conversationLogoutWarnings, previousAccountConversationsNotice, signOutIdpSession } from "./logout.js";
 import { inspectHandleFile } from "./handle-inspect.js";
 import { checkedEviction } from "./barrier-evict.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -274,6 +274,8 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       credentialsKept = switched.credentialsKept;
       if (switched.removed.length)
         console.log(`Removed the previous account's discovered spaces: ${switched.removed.join(", ")}. No replacement was selected automatically.`);
+      const remainingConversations = previousAccountConversationsNotice(homeCotalDir(), idp, previousSub);
+      if (remainingConversations) console.log(remainingConversations);
     }
     let discovered: MeshEntry[] = [];
     if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {

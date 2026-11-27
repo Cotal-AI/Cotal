@@ -76,8 +76,9 @@ import {
 } from "./update-process.js";
 import {
   latestVersion,
+  latestVersionCheckRemedy,
+  latestVersionCheckWarning,
   handleLatestVersionFailure,
-  MISSING_NPM_REMEDY,
   checkReleaseArchives,
   ReleaseNotAvailable,
   ReleaseDateExcluded,
@@ -542,10 +543,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     warnings.push({ code: "EXTENSION_INVENTORY_UNREADABLE", target: null, message: "The extension inventory could not be read. It was not repaired or treated as empty." });
   }
   const latest = latestVersion(rt);
-  const missingNpm = !latest.ok && latest.missingNpm;
-  if (!latest.ok) warnings.push(missingNpm
-    ? { code: "NPM_UNAVAILABLE", target: null, message: "npm is not on PATH. Update availability is unknown." }
-    : { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
+  if (!latest.ok) warnings.push(latestVersionCheckWarning(latest));
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
   let reconciliation: ReturnType<typeof readUpdatePending>
     | { kind: "seed"; instruction: string }
@@ -566,7 +564,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     command: "update", target: null, result, warnings,
     ...(warnings.length ? { completeness: "partial" as const, partial: {
       message: reconciliation.kind === "seed" ? "Connector seeding needs reconciliation." : "Some update information could not be established.",
-      remedy: reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : missingNpm ? MISSING_NPM_REMEDY : "Check registry access or the unreadable inventory and repeat update --check.",
+      remedy: reconciliation.kind === "seed" || reconciliation.kind === "unreadable" && reconciliation.source !== "receipt" ? reconciliation.instruction : latestVersionCheckRemedy(latest, extensions !== null && reconciliation.kind !== "unreadable"),
     } } : {}),
   }, (r) => ({ sections: [
     ...(r.reconciliation.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [r.reconciliation.instruction] }] }]),

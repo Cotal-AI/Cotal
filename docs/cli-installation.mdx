@@ -702,6 +702,9 @@ It performs no install, reconcile or process restart and takes no mesh selection
 afterwards, no log files and no npm update notifier, so it leaves nothing in npm's cache, log
 directory or notifier stamp. Missing registry data or an unreadable extension inventory remains
 unknown or partial, never an empty successful check.
+If npm is in offline mode, the temporary-cache lookup cannot contact the registry, so `cotal update --check`
+reports unknown availability, warns that npm is in offline mode and exits 4. Disable npm offline
+mode for that invocation if you want a live registry check.
 If the extension manifest is corrupt, the check still reports the running and registry versions,
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
 and the `EXTENSION_INVENTORY_UNREADABLE` warning. The check directs you to `cotal ext seed --repair`
