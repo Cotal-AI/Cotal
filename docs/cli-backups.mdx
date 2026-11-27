@@ -306,7 +306,9 @@ create it. Restore needs the stopped preserved cut from `down --preserve-state`.
 maintenance journal refuses before the restore takes its
 maintenance lock. Both `backup restore`
 and `up --restore` leave the project folder and the connector installation unchanged in that case.
-The refusal says to start a stack a plain `cotal down` stopped with `cotal up` first, since that stop
+If the root is prepared for its first controller start, the refusal points to `cotal space show`
+and explains that starting it does not make preservation or restore available. On a legacy root,
+the refusal says to start a stack a plain `cotal down` stopped with `cotal up` first, since that stop
 records no cut. An artifact path that names nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same
 point. It names the path, and its JSON
 target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
