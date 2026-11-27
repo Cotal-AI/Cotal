@@ -403,6 +403,31 @@ describe('interrupt', () => {
     expect(record.aborts).toEqual(['t3'])
     expect(record.stops).toEqual(['b1', 'b2'])
   })
+  test('a timed-out interrupt clears the mark before a later interrupt', async ($, on) => {
+    const clock = mock.clock(on)
+    const history: SessionMessage[] = []
+    const { ask, record } = seat(on, {
+      messages: () => history,
+      abort: (turnId) => {
+        if (turnId === 't1') return void clock.advance(2000)
+        return completes($)(turnId)
+      },
+    })
+    await start($)
+    history.push(userPrompt('first'))
+    await $.turn.start({ text: 'first', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({
+      id: 'r1', op: 'interrupt', outcome: 'interrupted',
+      reason: 'the aborted turn did not complete within 2 s, so tools it moved to the background may still run',
+    })
+    history.push(bashUse('u1'), bashAborted('u1', 'b1'))
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 2500, isAborted: true, reason: 'aborted' })
+    history.push(userPrompt('second'))
+    await $.turn.start({ text: 'second', turnId: 't2' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r2', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t1', 't2'])
+    expect(record.stops).toEqual([])
+  })
 })
 
 describe('prompt', () => {

@@ -140,12 +140,15 @@ async function run($, { command: name, args }) {
   return { op: 'run', outcome: 'started' };
 }
 
-// Stops each tool an abort moved to the background from `from` onwards. Says why when a stop was
-// refused.
+const isPrompt = (message) => message.role === 'user' && message.text && !message.toolResults?.length;
+
+// Stops each tool an abort moved to the background from `from` onwards, or since the last prompt
+// when no mark is held. Says why when a stop was refused.
 async function stopBackgrounded($, from) {
   const messages = await $.session.messages();
+  const start = from ?? messages.findLastIndex(isPrompt) + 1;
   const tasks = new Set();
-  for (const message of messages.slice(from)) {
+  for (const message of messages.slice(start)) {
     for (const { result } of message.toolResults ?? []) {
       if (result?.backgroundedByTurnAbort === true && typeof result.backgroundTaskId === 'string') tasks.add(result.backgroundTaskId);
     }
@@ -176,7 +179,7 @@ function completion($, id) {
 async function interrupt($) {
   if (turnId === undefined) return { op: 'interrupt', outcome: 'idle' };
   const stopping = turnId;
-  const from = since ?? 0;
+  const from = since;
   // Claude records the tool results an abort moved to the background after the abort resolves, so
   // they are read once the aborted turn completed.
   const completed = completion($, stopping);
@@ -187,6 +190,7 @@ async function interrupt($) {
     return rejected('interrupt', messageOf(error));
   }
   if (!(await completed)) {
+    since = undefined;
     const reason = `the aborted turn did not complete within ${COMPLETE_MS / 1000} s, so tools it moved to the background may still run`;
     return { op: 'interrupt', outcome: 'interrupted', reason };
   }
@@ -274,10 +278,9 @@ export function register(on) {
   });
   on('turn.start', { turnId: /./ }, async ($, e, next) => {
     if (e.agentId === undefined) {
-      const mark = since ?? (await $.session.messages()).length;
       turnId = e.turnId;
       running = wanted;
-      since = mark;
+      since ??= await $.session.messages().then((m) => m.length, () => undefined);
     }
     return next(e);
   });
