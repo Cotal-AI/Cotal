@@ -14,7 +14,9 @@ import { CotalEndpoint, DEFAULT_SERVER, deliveryOf, partsToText, type CotalMessa
 // kind and records the `[unrenderable part kind …]` marker instead. Named rather than left implicit
 // because "the transcript went quiet" and "the transcript recorded a marker" send a reader to two
 // completely different places.
-import "@cotal-ai/connector-core/agui-render";
+import { registerAguiFramePartRenderer } from "@cotal-ai/connector-core/agui-render";
+
+registerAguiFramePartRenderer();
 
 const space = process.env.COTAL_SPACE || "console";
 const server = process.env.COTAL_SERVERS || DEFAULT_SERVER;

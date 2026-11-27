@@ -295,5 +295,3 @@ export function registerAguiFramePartRenderer(): void {
   if (registry.has("part-renderer", AGUI_FRAME_KIND)) return;
   registry.register(aguiFramePartRenderer);
 }
-
-registerAguiFramePartRenderer();

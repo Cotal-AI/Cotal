@@ -9,8 +9,8 @@
  * to `partsToText`, so that is what these cells hand it. The direct-call cells that remain are
  * labelled, and they exist only for inputs the dispatcher cannot produce.
  *
- * THE PRECONDITION IS ASSERTED, NOT ASSUMED. Importing this renderer is what registers it. A suite
- * that imported it and then measured "a frame draws" would pass just as well against a core that
+ * THE PRECONDITION IS ASSERTED, NOT ASSUMED. The composition root registers the renderer explicitly.
+ * A suite that registered it and only measured "a frame draws" would pass against a core that
  * ignored the registry and special-cased the kind itself, so the no-renderer marker is measured
  * FIRST, on a kind nobody registered, to show the dispatcher really is resolving.
  *
@@ -42,22 +42,18 @@ c("CONTROL: an unregistered kind still renders the named marker",
   unknownKind);
 
 // ── REGISTRATION ──────────────────────────────────────────────────────────────────────────────
+c("importing the renderer does not modify the registry", !registry.has("part-renderer", AGUI_FRAME_KIND));
+registerAguiFramePartRenderer();
 c("the renderer is registered under kind `part-renderer`", registry.has("part-renderer", AGUI_FRAME_KIND));
 c("the registered NAME is the wire kind, spelled out",
   aguiFramePartRenderer.name === "ag-ui.frame", aguiFramePartRenderer.name);
 c("registering under the wire kind is what the dispatcher resolves on",
   registry.has("part-renderer", "ag-ui.frame"));
 
-// ── LOADING THIS MODULE TWICE MUST NOT BE FATAL, and that is not hypothetical ──────────────────
-// `cotal ext add <connector>` failed with `extension already registered: part-renderer:ag-ui.frame`
-// before the registration was made idempotent. The CLI loads this module from its own copy of the
-// package; materializing an installed connector loads it again from the extension prefix's
-// `node_modules`, a different physical file and so a second top-level evaluation, while
-// `@cotal-ai/core` is linked to ONE copy and therefore one registry. Calling the exported
-// registration a second time is the same event those two module instances produce.
+// ── COMPOSITION ROOTS MAY ASK FOR REGISTRATION MORE THAN ONCE ───────────────────────────────────
 let secondCallThrew: string | undefined;
 try { registerAguiFramePartRenderer(); } catch (e) { secondCallThrew = (e as Error).message; }
-c("a second registration does not throw (the ext-add crash, executed)", secondCallThrew === undefined, secondCallThrew);
+c("a second root registration does not throw", secondCallThrew === undefined, secondCallThrew);
 c("and it did not displace the first: exactly one provider is resolvable",
   registry.resolve("part-renderer", AGUI_FRAME_KIND) === aguiFramePartRenderer);
 c("a frame still draws after the second registration", draw(ev("RUN_STARTED", { runId: "r1" })) === "▸ run r1 started");

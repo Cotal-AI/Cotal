@@ -38,7 +38,7 @@ const surfaces = {
   //
   // The narrow subpath rather than the package root, deliberately: the root pulls the MCP server
   // runtime and its zod copy into CLI startup, and a renderer needs none of it.
-  aguiRender: () => import("@cotal-ai/connector-core/agui-render"),
+  aguiRender: () => import("@cotal-ai/connector-core/agui-render").then(({ registerAguiFramePartRenderer }) => registerAguiFramePartRenderer()),
 };
 type Surface = keyof typeof surfaces;
 const importing = (...names: Surface[]) => async () => { for (const name of names) await surfaces[name](); };
