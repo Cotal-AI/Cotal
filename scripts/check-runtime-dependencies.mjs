@@ -17,13 +17,25 @@ export function runtimeImports(text, file = 'output.js') {
       imports.push({ expression: node.getText(source), line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
     }
   };
+  const requireAliases = new Set(['require']);
+  const isOwnCreateRequire = node => ts.isCallExpression(node) && (
+    ts.isIdentifier(node.expression) && node.expression.text === 'createRequire' ||
+    ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'createRequire'
+  ) && node.arguments.length === 1 && ['import.meta.url', '__filename'].includes(node.arguments[0].getText(source));
   const visit = node => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isOwnCreateRequire(node.initializer))
+      requireAliases.add(node.name.text);
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) add(node.moduleSpecifier);
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
-      if (callee.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(callee) && callee.text === 'require' ||
-          ts.isPropertyAccessExpression(callee) && callee.name.text === 'resolve' &&
-          (ts.isIdentifier(callee.expression) && callee.expression.text === 'require' || callee.expression.getText(source) === 'import.meta')) add(node.arguments[0]);
+      if (callee.kind === ts.SyntaxKind.ImportKeyword ||
+          ts.isIdentifier(callee) && requireAliases.has(callee.text) ||
+          isOwnCreateRequire(callee) ||
+          ts.isPropertyAccessExpression(callee) && callee.name.text === 'resolve' && (
+            ts.isIdentifier(callee.expression) && requireAliases.has(callee.expression.text) ||
+            isOwnCreateRequire(callee.expression) ||
+            callee.expression.getText(source) === 'import.meta'
+          )) add(node.arguments[0]);
     }
     ts.forEachChild(node, visit);
   };
@@ -79,6 +91,9 @@ export function auditPackage(directory) {
       // The bundled broker selects one of the manifest's platform-specific optional dependencies.
       if (key === '@cotal-ai/cli/dist/lib/nats-bin.js/pkg' &&
           Object.keys(manifest.optionalDependencies ?? {}).some(name => name.startsWith('@eplightning/nats-server-'))) continue;
+      // Bundled @1jehuang/jcode-sdk probes its own optional platform binary package via createRequire.
+      if (key === '@cotal-ai/connector-jcode/dist/host.js/`${packageName}/package.json`' &&
+          declared.has('@1jehuang/jcode-sdk')) continue;
       violations.push({ package: manifest.name, file: builtFile, ...item, specifier: item.expression, dependency: '<computed load requires classification>' });
       continue;
     }

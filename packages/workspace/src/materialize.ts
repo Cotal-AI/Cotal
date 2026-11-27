@@ -10,10 +10,12 @@ import {
   extensionReinstallAdvice,
   hostPackageDir,
   installedExtensionPackage,
+  isReleaseExtension,
   loadExtensionsManifest,
   type InstalledExtension,
   type InstalledExtensionPackage,
 } from "./extensions.js";
+import { extensionCorePeerProblem } from "./extension-core-peer.js";
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 import { SEEDED_EXTENSIONS } from "./official-connectors.js";
@@ -208,6 +210,10 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
       `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale). ${extensionReinstallAdvice(ext)}`,
     );
   }
+  if (pkg.startsWith("@cotal-ai/") && !isReleaseExtension(ext)) {
+    const coreProblem = extensionCorePeerProblem(pkg, onDisk.peerDependencies?.["@cotal-ai/core"]);
+    if (coreProblem) throw new Error(`${coreProblem} ${extensionReinstallAdvice(ext)}`);
+  }
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.
   // Rebind before the first import in this process so registration lands in this host's core registry.
   bindExtensionPeers([pkg], pkg, { operationMetadata: onDisk });
@@ -261,7 +267,7 @@ export async function materializeFromManifest<T extends Extension = Extension>(
           opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
         );
       }
-      if (opts.expectedGeneration !== undefined && ext.pkg.startsWith("@cotal-ai/") && ext.version !== opts.expectedGeneration) {
+      if (opts.expectedGeneration !== undefined && isReleaseExtension(ext) && ext.version !== opts.expectedGeneration) {
         const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
         throw new Error(
           seeded
@@ -270,6 +276,13 @@ export async function materializeFromManifest<T extends Extension = Extension>(
               ? `this Cotal app runs ${opts.expectedGeneration}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`
               : `extension ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; run \`cotal update --self\` to reconcile this installation, then stop its seats and restart the Manager from the installed CLI`,
         );
+      }
+      if (opts.expectedGeneration !== undefined && ext.pkg.startsWith("@cotal-ai/") && !isReleaseExtension(ext)) {
+        const onDisk = installedExtensionPackage(ext.pkg);
+        if (onDisk) {
+          const coreProblem = extensionCorePeerProblem(ext.pkg, onDisk.peerDependencies?.["@cotal-ai/core"]);
+          if (coreProblem) throw new Error(`${coreProblem} ${extensionReinstallAdvice(ext)}`);
+        }
       }
       await loadOne(ext, ref);
     }),
