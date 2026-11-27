@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- 88e6f2c: Reclaim abandoned extension staging copies from the top-level connector configuration after migrating to version sets, without removing its installed connectors.
+- Updated dependencies [c049810]
+- Updated dependencies [10c0bbe]
+- Updated dependencies [ce4a8db]
+- Updated dependencies [88e6f2c]
+- Updated dependencies [5196732]
+- Updated dependencies [8740d71]
+- Updated dependencies [98aed81]
+  - @cotal-ai/auth@0.183.1
+  - @cotal-ai/cli@0.183.1
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/connector-core@0.183.1
+  - @cotal-ai/manager@0.183.1
+  - @cotal-ai/delivery@0.183.1
+  - @cotal-ai/runtime@0.183.1
+  - @cotal-ai/registry@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/seat@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes
