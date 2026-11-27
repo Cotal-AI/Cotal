@@ -267,9 +267,10 @@ for (const [verb, ...args] of [["stop", "target"], ["attach", "target"], ["statu
       refused.status === 1 && refused.stderr.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !refused.stderr.includes("`cotal ps`"), shown(refused));
   }
 }
-const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
+const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--server", "nats://127.0.0.1:39200", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
+  (createPin.envelope.error.remedy ?? "").includes("`cotal ps --space opsp --server nats://127.0.0.1:39200 --json`") &&
   (createPin.envelope.error.remedy ?? "").includes("replace only the --on value in the original command") &&
   !createPin.stdout.includes("cotal persona create h1 --on") && !createPin.stdout.includes("keep this definition private"), shown(createPin));
 // #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the

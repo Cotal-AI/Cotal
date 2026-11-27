@@ -8,8 +8,9 @@ import { MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js"
  *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
  *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. An asking
  *  approval_policy is answered on the agent's prompt desk, which a seat serves on every mesh mode.
- *  `askPermissions` launches the thread with {@link ASKING_THREAD} in place of the autonomy defaults. */
-export function configOverrides(model: string | undefined, variant: string | undefined, askPermissions: boolean): [string, string][] {
+ *  `askPermissions` launches the thread with {@link ASKING_THREAD} in place of the autonomy defaults.
+ *  A service tier beside an operator `service_tier` is refused, as buildLaunch refuses it. */
+export function configOverrides(model: string | undefined, variant: string | undefined, askPermissions: boolean, serviceTier: string | undefined): [string, string][] {
   const overrides: [string, string][] = [];
   const raw = process.env.COTAL_CODEX_CONFIG?.trim();
   if (raw) {
@@ -26,6 +27,10 @@ export function configOverrides(model: string | undefined, variant: string | und
   const has = (key: string): boolean => overrides.some(([k]) => k === key);
   if (model && !has("model")) overrides.push(["model", `"${model}"`]);
   if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
+  if (serviceTier) {
+    if (has("service_tier")) throw new Error('codex host: mode "fast" and launch option "service_tier" both set the service tier; set one, not both');
+    overrides.push(["service_tier", `"${serviceTier}"`]);
+  }
   if (askPermissions) refuseAskingConflicts(overrides);
   else pushAutonomy(overrides);
   // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh

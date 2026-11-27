@@ -1001,6 +1001,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
+      // An older attempt journal has no listenerSpawn. This one stays not-started until the spawn syncs started.
+      listenerSpawn: "not-started",
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later
       // why a seat resumed from a checkpoint past its horizon reads it from the journal.
       ...(staleConsent.length
