@@ -216,19 +216,30 @@ fi
   assert.equal(readlinkSync(npmLauncher), npmLink);
   assert.equal(readFileSync(npmLauncher, "utf8"), launcherText, "refresh writes the same launcher as a fresh install");
   const wrapper = realpathSync(npmLauncher);
-  for (const [contents, mode] of [
-    [oldLauncher, 0o775],
-    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755],
-    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755],
+  for (const [contents, mode, kept] of [
+    [oldLauncher, 0o775, true],
+    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755, true],
+    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755, false],
   ] as const) {
     writeFileSync(wrapper, contents);
     chmodSync(wrapper, mode);
     const skipped = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
     assert.equal(skipped.status, 0, output(skipped));
-    assert.equal(readFileSync(wrapper, "utf8"), contents);
+    if (kept) assert.equal(readFileSync(wrapper, "utf8"), contents);
+    else {
+      const repinned = readFileSync(wrapper, "utf8");
+      assert.notEqual(repinned, contents, "a missing recorded Node is replaced by the Node running the refresh");
+      assert.match(repinned, new RegExp(`^  node='${realpathSync(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'$`, "m"));
+      assert.equal(readlinkSync(npmLauncher), npmLink, "replacing a missing Node keeps the npm bin link");
+    }
     const version = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(process.execPath) }, encoding: "utf8", timeout: 10_000 });
     assert.equal(version.status, 0, output(version));
     assert.equal(version.stdout.trim(), "cotal-ai 0.0.0");
+    if (!kept) {
+      const offPath = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+      assert.equal(offPath.status, 0, output(offPath));
+      assert.equal(offPath.stdout.trim(), "cotal-ai 0.0.0");
+    }
   }
   writeFileSync(wrapper, launcherText);
   const npmTools = mkdirSync(join(npmHome, "npm-tools"), { recursive: true })!;
