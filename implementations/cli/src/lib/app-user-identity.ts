@@ -33,8 +33,6 @@ interface SavedIdentity {
   proof?: ConversationResumeProof;
   /** Opaque key for the approving IdP account. An unbound saved proof cannot resume. */
   accountKey?: string;
-  /** Recorded on a non-resumable set-aside identity once sign-out reports its unconfirmed retirement. */
-  signOutReported?: true;
   state: "creating" | "ready" | "retiring";
   consumer: { pid: number; start?: string };
   /** What the identity was requested with beyond its own event channel. Fixed at creation. */
@@ -90,8 +88,6 @@ function read(dir: string): SavedIdentity {
   if (record.proof && !record.remote) throw new Error("conversation resume proof does not name a signed-in identity");
   if (record.accountKey !== undefined && (typeof record.accountKey !== "string" || !/^[a-f0-9]{64}$/.test(record.accountKey)))
     throw new Error("conversation approval account is invalid; the saved record was retained");
-  if (record.signOutReported !== undefined && record.signOutReported !== true)
-    throw new Error("conversation sign-out state is invalid; the saved record was retained");
   if (record.selection !== undefined) checkConversationSelection(record.selection);
   const pending = record.remote?.approval?.pending;
   if (pending !== undefined) checkConversationApprovalPending(pending, new URL(record.remote!.url).origin);
@@ -482,17 +478,6 @@ function idpKey(url: string): string | undefined {
   return checked.ok ? checked.url.origin + checked.url.pathname.replace(/\/+$/, "") : undefined;
 }
 
-function markSignOutReported(dir: string): void {
-  const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
-  try {
-    if (!existsSync(join(dir, RECORD))) return;
-    const current = read(dir);
-    if (current.proof || current.signOutReported) return;
-    current.signOutReported = true;
-    save(dir, current);
-  } finally { lock.release(); }
-}
-
 export const conversationSignOut: ConversationSignOut = {
   kind: "conversation-sign-out", name: "native",
   async retire({ dir: home, idp, accountKey }) {
@@ -505,21 +490,15 @@ export const conversationSignOut: ConversationSignOut = {
       const setAside = isUnconfirmedDirectory(entry);
       if ((!/^[a-f0-9]{64}$/.test(entry) && !setAside) || !existsSync(join(dir, RECORD))) continue;
       let failure: UnconfirmedConversation = {};
-      let unreportedSetAside = false;
       try {
         const matches = (r: SavedIdentity) => !!r.remote && idpKey(r.remote.idpUrl) === idp &&
-          (!r.accountKey || !accountKey || r.accountKey === accountKey) &&
-          (setAside ? matchesUnconfirmed(entry, r) && (!!r.proof || !r.signOutReported) : !!r.proof) &&
+          (!r.accountKey || !accountKey || r.accountKey === accountKey) && (setAside ? matchesUnconfirmed(entry, r) : !!r.proof) &&
           (!r.proof || matchesResumeBinding(r, r.proof));
         const record = read(dir);
         if (!matches(record)) continue;
-        unreportedSetAside = setAside && !record.proof;
         failure = { label: oneLine(record.label), space: oneLine(record.space) };
         await retire(dir, matches, home, true);
       } catch {
-        if (unreportedSetAside) {
-          try { markSignOutReported(dir); } catch { /* retain unconfirmed report */ }
-        }
         failures.push(failure);
       }
     }

@@ -71,6 +71,7 @@ try {
   await approval;
   clearTimeout(timer);
   assert.equal(code, 0, output);
+  assert.equal(output.includes('previous account still has'), false, output);
   assert.doesNotMatch(output, /wrote operator-global seed store payload|added @cotal-ai\//);
   assert.equal(existsSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'seed')), false);
   assert.equal(existsSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'extensions.json')), false);
@@ -159,7 +160,7 @@ try {
   for (const [attempt, expectNotice] of [['switch', true], ['same-account', false]] as const) {
     let switchedText = '';
     let switchedApproved: Promise<void> | undefined;
-    const switchedLogin = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', 'login', '--idp', base, '--plain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const switchedLogin = spawn(process.execPath, ['bin/dist/cotal.js', 'login', '--idp', base, '--plain'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const collectSwitch = (chunk: Buffer) => {
       switchedText += chunk.toString();
       const match = switchedText.match(/Approval code:\s+(\S+)/);

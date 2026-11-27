@@ -718,8 +718,7 @@ machine identity, those files can derive the actor credential for the ordinary e
 is revoked. Protect the backup as a credential. Disconnect conversations you no longer use. An
 approval can last until disconnect, sign-out or revocation, with no idle expiry on the client.
 `cotal logout` attempts to retire the account's resumable conversations before clearing its login
-and registrations. It names any retirement it cannot confirm, and reports an older set-aside record
-without a resume proof at most once. Resume requires an unexpired local
+and registrations. It names any retirement it cannot confirm. Resume requires an unexpired local
 sign-in for the account that requested the approval. `cotal meshes rm` and `cotal space forget`
 leave the resumable identities live at their authorities.
 
