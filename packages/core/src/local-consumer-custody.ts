@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import { userInfo } from "node:os";
@@ -5,7 +6,9 @@ import { join } from "node:path";
 import { acquireLock, type HeldLock } from "./advisory-lock.js";
 
 /** A terminal same-host refusal. This is cooperative custody, not broker authorization. */
-export class LocalConsumerHeldError extends Error {}
+export class LocalConsumerHeldError extends Error {
+  static { brandCoreError(this, "LocalConsumerHeldError"); }
+}
 
 /** Canonical local custody independent of cwd, HOME, XDG and launch material paths.
  * Broker aliases, other hosts and clients predating this guard are outside its guarantee. */

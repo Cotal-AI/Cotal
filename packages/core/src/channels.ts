@@ -7,6 +7,7 @@
  * endpoint). Because description/instructions reach the model, both text fields are bounded
  * here and oversize is **rejected at the write path** — never silently truncated.
  */
+import { brandCoreError } from "./error-brand.js";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { drainAndClose } from "./connection-cleanup.js";
 import { type NatsConnection } from "@nats-io/transport-node";
@@ -20,6 +21,8 @@ import { isStreamNotFound } from "./jetstream-missing.js";
 
 /** A registry key holds bytes that do not decode, so a write did not replace them. */
 export class UndecodableRegistryEntry extends Error {
+  static { brandCoreError(this, "UndecodableRegistryEntry"); }
+
   readonly key: string;
   constructor(key: string, cause: string) {
     super(`channel registry entry ${JSON.stringify(key)} does not decode (${cause}); the key was left as it is`);
@@ -178,7 +181,9 @@ export async function writeChannelDefaults(kv: KV, patch: ChannelDefaults): Prom
 }
 
 /** A registry write that other writers kept changing the entry under, so nothing was written. */
-export class ChannelRegistryConflict extends Error {}
+export class ChannelRegistryConflict extends Error {
+  static { brandCoreError(this, "ChannelRegistryConflict"); }
+}
 
 const MERGE_ATTEMPTS = 10;
 

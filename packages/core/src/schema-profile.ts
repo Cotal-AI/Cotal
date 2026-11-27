@@ -8,6 +8,7 @@
  * `contract-invalid` (distinct from invocation-time `bad-request`), and all bounds are enforced
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
+import { brandCoreError } from "./error-brand.js";
 import { Ajv2020, type AnySchema } from "ajv/dist/2020.js";
 import { prepareContractValidator, type ContractValidator } from "./contract-validator.js";
 export type { ContractValidator, ContractValidationError } from "./contract-validator.js";
@@ -81,6 +82,8 @@ const STORE_REF = /^cotal:(sha256:[0-9a-f]{64})(#.*)?$/;
 /** Thrown for every profile violation at registration/ingest time; maps to the wire error
  *  code `contract-invalid` (never `bad-request`, which is for invocation-time args). */
 export class ContractInvalidError extends Error {
+  static { brandCoreError(this, "ContractInvalidError"); }
+
   readonly code = "contract-invalid" as const;
   constructor(message: string) {
     super(message);

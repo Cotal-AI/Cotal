@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
@@ -62,6 +63,8 @@ export function sameManagedGrantCustody(a: ManagedGrantCustody, b: ManagedGrantC
 
 /** A fresh agent grant refused an occupied actor without replacing its authority. */
 export class AgentGrantConflictError extends Error {
+  static { brandCoreError(this, "AgentGrantConflictError"); }
+
   constructor(actor: string) {
     super(`actor "${actor}" already has a grant; no grant was replaced`);
     this.name = "AgentGrantConflictError";

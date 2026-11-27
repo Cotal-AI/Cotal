@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { drainAndClose } from "./connection-cleanup.js";
 import { eventPayloadStream } from "./event-payloads.js";
 import {
@@ -292,6 +293,8 @@ export interface HistoryLimitChange {
 /** The STREAM.UPDATE was submitted and neither its reply nor the read back confirmed the requested
  *  limit, so it may or may not have changed. Not retried. */
 export class HistoryLimitUpdateUnknown extends Error {
+  static { brandCoreError(this, "HistoryLimitUpdateUnknown"); }
+
   constructor(readonly stream: string, readonly requested: HistoryLimit, cause: unknown) {
     super(`the history limit update of ${stream} was submitted without a confirmed outcome, so it may or may not have taken effect`, { cause });
   }
@@ -299,6 +302,8 @@ export class HistoryLimitUpdateUnknown extends Error {
 
 /** The stream's limit moved between the caller's read and this write. */
 export class HistoryLimitChanged extends Error {
+  static { brandCoreError(this, "HistoryLimitChanged"); }
+
   constructor(readonly stream: string, readonly kind: HistoryLimitStream, readonly expected: HistoryLimit, readonly found: HistoryLimit) {
     super(`the history limit of ${stream} changed since it was read: expected ${describeHistoryLimit(kind, expected)}, found ${describeHistoryLimit(kind, found)}`);
   }
@@ -506,6 +511,8 @@ const TTL_RECONCILE_GRACE_MS = 2_000;
 
 /** The server accepted and reported a TTL update, but its backing store did not enforce it. */
 export class TtlPersistenceError extends Error {
+  static { brandCoreError(this, "TtlPersistenceError"); }
+
   constructor(readonly stream: string, readonly ttlMs: number, readonly canarySubject: string) {
     super(
       `TTL reconcile persistence failed for ${stream}: the server accepted max_age=${ttlMs}ms, ` +
@@ -1025,6 +1032,8 @@ export async function clearSpaceHistory(opts: {
  *  registry read or delete was refused or failed, so the channel may still be listed. `purged` is
  *  the count the purge already removed, and `cause` is the registry step's error. */
 export class ChannelRegistryRemovalFailed extends Error {
+  static { brandCoreError(this, "ChannelRegistryRemovalFailed"); }
+
   readonly channel: string;
   readonly purged: number;
   constructor(channel: string, purged: number, cause: unknown) {

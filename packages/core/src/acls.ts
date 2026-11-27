@@ -13,6 +13,7 @@
  * `allowSubscribe: []` is a known "reads nothing" policy (the reader DROPS), distinct from an ABSENT
  * record (a genuinely-unknown owner — the reader DEFERS, never drops).
  */
+import { brandCoreError } from "./error-brand.js";
 import { Kvm, type KV } from "@nats-io/kv";
 import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey, patternInAllow } from "./subjects.js";
 import type { AclRecord } from "./types.js";
@@ -67,6 +68,8 @@ export async function aclRetired(kv: KV, owner: string, lifecycleUid: string): P
  *  lifecycle per alias, so two rows are split-brain evidence (a reservation breach or an unfinished
  *  teardown), and an alias-level authorizer MUST refuse loudly rather than pick one. */
 export class AmbiguousAclAlias extends Error {
+  static { brandCoreError(this, "AmbiguousAclAlias"); }
+
   constructor(
     readonly principal: string,
     readonly lifecycleUids: string[],

@@ -32,6 +32,7 @@
  * total monotonic time budget — the ceilings are non-raiseable (a caller may narrow, never
  * widen) and a truncated closure never verifies as complete.
  */
+import { brandCoreError } from "./error-brand.js";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { createHash } from "node:crypto";
@@ -249,6 +250,8 @@ export async function fetchContractArtifact(
 /** The store holds messages at a digest's subject and none of them verifies: a corrupt artifact,
  *  told apart from a failed read. Its code stays `internal`. */
 export class ContractStoreCorruptError extends EpEnvelopeError {
+  static { brandCoreError(this, "ContractStoreCorruptError"); }
+
   constructor(message: string) {
     super("internal", message);
   }

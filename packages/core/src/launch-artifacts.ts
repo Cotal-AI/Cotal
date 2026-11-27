@@ -29,6 +29,7 @@
  * any process running as the same user can read the file while it exists, as it can the agent file
  * it came from.
  */
+import { brandCoreError } from "./error-brand.js";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +48,8 @@ const DIR_PREFIX = "cotal-";
  * launcher removes them on it. Throw it only from code that runs before that handoff.
  */
 export class SpawnRefused extends Error {
+  static { brandCoreError(this, "SpawnRefused"); }
+
   constructor(message: string) {
     super(message);
     this.name = "SpawnRefused";

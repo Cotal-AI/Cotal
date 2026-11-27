@@ -21,6 +21,7 @@
  * acted on is covered, including one appended since the last takeover. The cost is one record
  * write per append. Interior loss is the journal's own ordinal chain's.
  */
+import { brandCoreError } from "./error-brand.js";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import {
@@ -170,6 +171,8 @@ export function runFailureOf(error: unknown): RunFailure {
 
 /** A run's journal is missing records from its END — which nothing inside the journal can see. */
 export class RunJournalTailTruncated extends Error {
+  static { brandCoreError(this, "RunJournalTailTruncated"); }
+
   constructor(
     readonly run: string,
     readonly recordedHigh: number,

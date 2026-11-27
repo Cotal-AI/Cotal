@@ -11,6 +11,7 @@
  * in a class gets the same verdict. The subjects are built by the same builders a client publishes
  * with, so the projection and the wire cannot disagree on where a parameter sits.
  */
+import { brandCoreError } from "./error-brand.js";
 import { randomBytes } from "node:crypto";
 import type { EpClass } from "./endpoint-envelope.js";
 import {
@@ -53,6 +54,8 @@ export const COVERAGE_COMBINATION_LIMIT = 4096;
 /** A form needed more than the limit. `covered` says whether the ceiling admits at least one
  *  subject of any of the command's forms, found by testing one subject per relevant allow pattern. */
 export class CoverageLimitError extends Error {
+  static { brandCoreError(this, "CoverageLimitError"); }
+
   constructor(message: string, readonly covered: boolean) {
     super(message);
   }

@@ -1,6 +1,7 @@
 // The endpoint's options, the validation that resolves them into its identity, its public types and
 // errors, and the history page fitter, moved verbatim from endpoint.ts. endpoint.ts re-exports the names
 // it exported before, so the package's export set is unchanged.
+import { brandCoreError } from "./error-brand.js";
 import { randomUUID } from "node:crypto";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { AgentCard, ChannelMode, CotalMessage, Delivery, MessageMeta } from "./types.js";
@@ -389,6 +390,8 @@ export interface DmOnlyOptions {
 /** This endpoint's own `dm_` durable does not exist. A DM-only endpoint, and any endpoint on an
  *  authenticated mesh, binds the durable its provisioner created and never creates one. */
 export class DmDurableMissingError extends Error {
+  static { brandCoreError(this, "DmDurableMissingError"); }
+
   readonly code = "dm-durable-missing" as const;
   constructor(readonly stream: string, readonly durable: string) {
     super(`dm-durable-missing: durable "${durable}" on stream "${stream}" does not exist; this endpoint binds an existing durable and never creates one`);
@@ -399,6 +402,8 @@ export class DmDurableMissingError extends Error {
 /** The broker refused a DM-only endpoint's bind of its own `dm_` durable. No other credential or
  *  read path is tried. */
 export class DmBindRefusedError extends Error {
+  static { brandCoreError(this, "DmBindRefusedError"); }
+
   readonly code = "dm-bind-refused" as const;
   constructor(readonly stream: string, readonly durable: string, cause: unknown) {
     super(`dm-bind-refused: binding durable "${durable}" on stream "${stream}" was refused (${cause instanceof Error ? cause.message : String(cause)})`, { cause });

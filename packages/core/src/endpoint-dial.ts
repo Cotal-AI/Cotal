@@ -1,5 +1,6 @@
 // Dialing, auth options, bearer lifetimes and the reachability probes, moved verbatim from endpoint.ts.
 // endpoint.ts re-exports the names it exported before, so the package's export set is unchanged.
+import { brandCoreError } from "./error-brand.js";
 import { createConnection, isIP } from "node:net";
 import {
   connect,
@@ -101,7 +102,9 @@ export function bearerRenewalDeadlineMs(bearer: string, adoptedAtMs: number): nu
 
 /** A refusal already surfaced once for this outage. The rebuild loop retries it without a notice,
  *  so an endpoint that cannot renew shows one status line rather than one per attempt. */
-export class RepeatedRefusal extends Error {}
+export class RepeatedRefusal extends Error {
+  static { brandCoreError(this, "RepeatedRefusal"); }
+}
 
 /** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
  *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the

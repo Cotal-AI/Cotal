@@ -7,6 +7,8 @@
  * import path changes; the browser-safe modules (rail + codec) import EpEnvelopeError from HERE.
  */
 
+import { brandCoreError } from "./error-brand.js";
+
 /** The §13.3 error catalog. Extensions add codes only under reverse-DNS; any code (catalog or
  *  extension) is one token of at most 64 bytes. */
 export const EP_ERROR_CODES = Object.freeze([
@@ -397,6 +399,8 @@ export interface EpError {
  *  to an `EndpointReply` error via {@link EpEnvelopeError.toEpError} (or, on reply-less planes,
  *  to the §13.4 decision/quarantine fact carrying the same code). */
 export class EpEnvelopeError extends Error {
+  static { brandCoreError(this, "EpEnvelopeError"); }
+
   constructor(readonly code: EpErrorCode, message: string, readonly details?: EpErrorDetail[],
               readonly outcome?: EpEffectOutcome) {
     super(message);

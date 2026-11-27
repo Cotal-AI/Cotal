@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
@@ -19,6 +20,8 @@ export const EVENT_SUBJECT_RECORD_VERSION = 1;
 
 /** A local acknowledged record cannot be safely interpreted. */
 export class SubjectFrontierCorruptError extends Error {
+  static { brandCoreError(this, "SubjectFrontierCorruptError"); }
+
   constructor(readonly path: string, readonly invariant: string, detail: string) {
     super(`subject frontier ${path}: expected ${invariant} — ${detail}`);
     this.name = "SubjectFrontierCorruptError";
@@ -27,6 +30,8 @@ export class SubjectFrontierCorruptError extends Error {
 
 /** The selected state cannot safely start a transcript under this principal. */
 export class EventStateConflictError extends Error {
+  static { brandCoreError(this, "EventStateConflictError"); }
+
   constructor(message: string) {
     super(message);
     this.name = "EventStateConflictError";

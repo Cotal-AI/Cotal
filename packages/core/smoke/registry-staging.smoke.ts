@@ -12,6 +12,10 @@
  * (ALS crosses module evaluation), invisible until commit, then resolvable.
  */
 import nodeAssert from "node:assert/strict";
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { commitPlugin, Registry, registry, stagePlugin, type PluginHost } from "../src/registry.js";
 const counted = countedAssert(nodeAssert);
@@ -169,6 +173,58 @@ const cells = counted.cells;
   assert.equal(r.has("command", "discarded"), false);
   assert.equal(r.has("command", "late"), false);
 }
+
+async function checkCoreErrorCopies(): Promise<void> {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const clone = mkdtempSync(join(tmpdir(), "cotal-core-copy-"));
+  try {
+    cpSync(join(root, "dist"), join(clone, "dist"), { recursive: true });
+    writeFileSync(join(clone, "package.json"), '{"type":"module"}');
+    symlinkSync(join(root, "node_modules"), join(clone, "node_modules"), "junction");
+    type Surface = Record<string, unknown>;
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { exports: Record<string, { import?: string } | string> };
+    const left = pathToFileURL(root);
+    const right = pathToFileURL(`${clone}/`);
+    const seen = new Set<Function>();
+    const entries = Object.values(pkg.exports).flatMap((entry) => {
+      const filename = typeof entry === "string" ? entry : entry.import;
+      return filename?.endsWith(".js") ? [filename] : [];
+    });
+    // The dial module also exports a typed error to other core modules.
+    entries.push("./dist/endpoint-dial.js");
+    for (const entry of entries) {
+      const a: Surface = await import(new URL(entry, left).href);
+      const b: Surface = await import(new URL(entry, right).href);
+      for (const [name, ctor] of Object.entries(a)) {
+        if (typeof ctor !== "function" || !ctor.prototype || !(ctor.prototype instanceof Error) || seen.has(ctor)) continue;
+        seen.add(ctor);
+        const other = b[name];
+        assert.ok(typeof other === "function" && other !== ctor, `${name}: copies must load distinct constructors`);
+        assert.equal(Object.create(other.prototype) instanceof ctor, true, `${name}: host must recognize the plugin error`);
+        assert.equal(Object.create(ctor.prototype) instanceof other, true, `${name}: plugin must recognize the host error`);
+        assert.equal(new Error() instanceof ctor, false, `${name}: plain errors must remain distinct`);
+      }
+    }
+    assert.ok(seen.size >= 45, `expected at least 45 exported core errors, found ${seen.size}`);
+
+    type Core = typeof import("../src/index.js");
+    const a: Core = await import(new URL("./dist/index.js", left).href);
+    const b: Core = await import(new URL("./dist/index.js", right).href);
+    class HostOnlySubclass extends a.EpEnvelopeError {}
+    const remoteChild = new b.ContractStoreCorruptError("corrupt");
+    assert.ok(remoteChild instanceof a.ContractStoreCorruptError);
+    assert.ok(remoteChild instanceof a.EpEnvelopeError);
+    assert.ok(remoteChild instanceof Error);
+    assert.equal(remoteChild instanceof a.RunAdmissionDenied, false);
+    assert.equal(remoteChild instanceof HostOnlySubclass, false);
+    assert.ok(new HostOnlySubclass("internal", "host-only") instanceof HostOnlySubclass);
+    assert.equal(new b.EpEnvelopeError("internal", "plain envelope") instanceof a.ContractStoreCorruptError, false);
+  } finally {
+    rmSync(clone, { recursive: true, force: true });
+  }
+}
+
+await checkCoreErrorCopies();
 
 console.log("registry-staging.smoke: all assertions passed");
 emitSentinel({ passed: cells(), failed: 0 });

@@ -8,6 +8,7 @@
  * that state is unrepresentable, and the compiler asks the question at every render site. The
  * protection is in the type, not in a test that someone has to remember to run.
  */
+import { brandCoreError } from "./error-brand.js";
 import { readFileSync, statSync } from "node:fs";
 import { X509Certificate, createPrivateKey } from "node:crypto";
 import net from "node:net";
@@ -35,6 +36,8 @@ export interface TlsMaterial {
  *  CERTIFICATE cause to the operator rather than a generic "broker unreachable" — a TLS failure
  *  reported as unreachability invites exactly the wrong remedy. */
 export class TlsMaterialError extends Error {
+  static { brandCoreError(this, "TlsMaterialError"); }
+
   constructor(message: string) {
     super(message);
     this.name = "TlsMaterialError";

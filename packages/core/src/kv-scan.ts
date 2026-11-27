@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
 import { DeliverPolicy, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
@@ -90,6 +91,8 @@ import { isConsumerNotFound } from "./jetstream-missing.js";
 /** Thrown when a pass ends without reaching its terminal message. The caller decides whether to
  *  retry or surface it; what it may NOT do is treat the partial set as the answer. */
 export class IncompleteKvScan extends Error {
+  static { brandCoreError(this, "IncompleteKvScan"); }
+
   constructor(
     readonly bucket: string,
     readonly received: number,

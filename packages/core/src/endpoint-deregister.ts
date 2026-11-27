@@ -40,6 +40,7 @@
  * it its rows until it restarts; leaving a dead one costs every operator in the space a full deadline
  * on every command, permanently.
  */
+import { brandCoreError } from "./error-brand.js";
 import { deregisterServiceInstance, type ServiceDeregistration } from "./endpoint-service.js";
 import { describeEndpoint } from "./endpoint-invoke.js";
 import { epProbeInstanceInterest, type EpInstanceLiveness } from "./endpoint-call.js";
@@ -70,6 +71,8 @@ export type InstanceDeregisterCondition =
 
 /** A refusal carrying its condition as DATA, not only as prose. */
 export class InstanceDeregisterRefused extends Error {
+  static { brandCoreError(this, "InstanceDeregisterRefused"); }
+
   constructor(
     readonly condition: InstanceDeregisterCondition,
     message: string,

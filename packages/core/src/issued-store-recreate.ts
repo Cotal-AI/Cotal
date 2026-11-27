@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { JetStreamApiCodes, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
@@ -18,6 +19,8 @@ export interface RemovedIssuedStore {
 /** A refusal of {@link removeIssuedStoresBeforeRetention} before it wrote or deleted anything:
  *  neither store predates bounded retention, or the backup directory cannot be created. */
 export class IssuedStoreRecreateRefusal extends Error {
+  static { brandCoreError(this, "IssuedStoreRecreateRefusal"); }
+
   constructor(readonly reason: "nothing-to-recreate" | "backup-directory", message: string) {
     super(message);
     this.name = "IssuedStoreRecreateRefusal";

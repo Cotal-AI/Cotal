@@ -26,6 +26,7 @@
  * profile pairs a write with a raw stream read on one stream), guarded by the auth census, and
  * mediated reads stay the remedy.
  */
+import { brandCoreError } from "./error-brand.js";
 import { createHash, randomBytes } from "node:crypto";
 import { DiscardPolicy, type JetStreamManager, type MsgRequest, type StreamConfig } from "@nats-io/jetstream";
 import type { KV, Kvm } from "@nats-io/kv";
@@ -655,6 +656,8 @@ function issuedStoreUpgradeRemedy(space: string): string {
  *  class tells it apart from every other store fault, so a caller can refuse with its remedy instead
  *  of reporting an unknown outcome. */
 export class IssuedStoreBeforeRetentionError extends Error {
+  static { brandCoreError(this, "IssuedStoreBeforeRetentionError"); }
+
   constructor(readonly space: string, readonly bucket: string, message: string) {
     super(message);
     this.name = "IssuedStoreBeforeRetentionError";

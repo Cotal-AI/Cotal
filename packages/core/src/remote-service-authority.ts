@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { createHash } from "node:crypto";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { CONTRACT_CLOSURE_MAX_ARTIFACTS } from "./contract-manifest.js";
@@ -37,6 +38,8 @@ export interface ServiceAuthorityInfo {
 
 /** A transport failure never permits a new mutation identity or an unqualified replay. */
 export class ServiceAuthorityTransportError extends Error {
+  static { brandCoreError(this, "ServiceAuthorityTransportError"); }
+
   constructor(message: string, readonly outcome: "not-executed" | "unknown", readonly httpStatus?: number) {
     super(message);
     this.name = "ServiceAuthorityTransportError";

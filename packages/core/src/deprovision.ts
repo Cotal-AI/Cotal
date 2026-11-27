@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import { drainAndClose } from "./connection-cleanup.js";
 import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -74,6 +75,8 @@ export function addDeprovisionAccounting(total: DeprovisionResourceAccounting, p
 
 /** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
 export class DeprovisionError extends Error {
+  static { brandCoreError(this, "DeprovisionError"); }
+
   public readonly accounting: DeprovisionResourceAccounting;
   constructor(message: string, accounting: DeprovisionResourceAccounting, cause?: unknown) {
     super(message, cause !== undefined ? { cause } : undefined);

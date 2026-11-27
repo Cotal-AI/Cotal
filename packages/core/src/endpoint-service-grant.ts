@@ -5,6 +5,7 @@
  * Split verbatim out of endpoint-service.ts, which re-exports it, so the package's exports are
  * unchanged.
  */
+import { brandCoreError } from "./error-brand.js";
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { parseServiceConnectionBinding, serviceGateApprovalLive, type ServiceConnectionBinding, type ServiceGateAuthority } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
@@ -385,6 +386,8 @@ const SERVICE_ACCESS_CLOCK_TOLERANCE_SEC = 5;
 /** A signed service access bearer whose issue time exceeds this process's clock tolerance.
  *  Carries no bearer material; the refusal remains permission-denied. */
 export class ServiceAccessNotYetValidError extends EpEnvelopeError {
+  static { brandCoreError(this, "ServiceAccessNotYetValidError"); }
+
   constructor() {
     super("permission-denied", "the access bearer is issued in the future; an unverified bearer binds no serve grant (SPEC 13.9)");
     this.name = "ServiceAccessNotYetValidError";

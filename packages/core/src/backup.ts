@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import {
   AckPolicy,
   DeliverPolicy,
@@ -44,6 +45,8 @@ interface ApiErrorResponse {
 }
 
 export class JetStreamBackupError extends Error {
+  static { brandCoreError(this, "JetStreamBackupError"); }
+
   constructor(message: string, readonly code?: number, readonly errCode?: number) {
     super(message);
     this.name = "JetStreamBackupError";

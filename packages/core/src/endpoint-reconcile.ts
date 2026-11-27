@@ -25,6 +25,7 @@
  * pass. There is deliberately NO force flag and no path that discards gate state — a recovery path
  * whose failure mode is killing a live manager does not get an override.
  */
+import { brandCoreError } from "./error-brand.js";
 import {
   endpointRegistrationBarrier,
   loadEndpointRepairCursor, saveEndpointRepairCursor, deleteEndpointRepairCursor, repairCursorMatches,
@@ -58,6 +59,8 @@ export type GateReconcileCondition =
 
 /** A refusal, carrying the condition as DATA rather than only as prose. */
 export class GateReconcileRefused extends Error {
+  static { brandCoreError(this, "GateReconcileRefused"); }
+
   constructor(
     readonly condition: GateReconcileCondition,
     message: string,

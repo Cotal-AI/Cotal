@@ -17,6 +17,7 @@
  * run/program/journal records and the registration-policy records are the wrong place for a
  * record whose whole point is that the driver cannot influence it.
  */
+import { brandCoreError } from "./error-brand.js";
 import type { JetStreamManager, StreamConfig } from "@nats-io/jetstream";
 import type { KV, Kvm } from "@nats-io/kv";
 import { canonicalJson } from "./canonical.js";
@@ -312,6 +313,8 @@ export async function readRunRevocation(jsm: JetStreamManager, space: string, en
  *  wildcard is not a channel a run can post to or await, and a generated name is checked after
  *  it is derived, by the same rule. */
 export class RunAdmissionDenied extends EpEnvelopeError {
+  static { brandCoreError(this, "RunAdmissionDenied"); }
+
   constructor(runId: string, what: string, channel: string) {
     super("permission-denied", `run ${runId} is not admitted to ${what} channel "${channel}" (SPEC 14.8)`);
     this.name = "RunAdmissionDenied";

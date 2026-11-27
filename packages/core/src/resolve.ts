@@ -10,6 +10,7 @@
  * `/` is reserved in a name ({@link assertValidName}) so they slot in without a migration.
  * See .internal/plans/peer-addressing.md.
  */
+import { brandCoreError } from "./error-brand.js";
 import type { Presence, PresenceStatus } from "./types.js";
 import { LINE_BREAK } from "./peer-label.js";
 import { peerLabel, shownPeerName } from "./peer-label.js";
@@ -31,6 +32,8 @@ export interface PeerCandidate {
 /** Thrown when a name resolves to two or more peers that could each be the target. Carries the
  *  candidates structurally so a caller can show them and re-address by the exact `id`. */
 export class AmbiguousPeerError extends Error {
+  static { brandCoreError(this, "AmbiguousPeerError"); }
+
   constructor(
     readonly target: string,
     readonly candidates: PeerCandidate[],

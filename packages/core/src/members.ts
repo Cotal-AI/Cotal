@@ -12,6 +12,7 @@
  * same-generation write is retried against the fresh revision). Eligibility is always by CHAT stream
  * **sequence** (`joinCursor`/`leaveCursor`), never wall-clock.
  */
+import { brandCoreError } from "./error-brand.js";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { membersBucket, memberKey, parseMemberKey, familiesCovering, isConcreteChannel, isChannelFamily, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
@@ -21,6 +22,8 @@ import { KvReadView } from "./kv-read-view.js";
 /** Thrown when a write would regress membership generation — a stale/late control reply. Callers
  *  treat this as "a newer membership change already won", not an error to retry. */
 export class StaleMembershipWrite extends Error {
+  static { brandCoreError(this, "StaleMembershipWrite"); }
+
   constructor(channel: string, owner: string, attempted: number, current: number) {
     super(
       `stale membership write for ${channel}/${owner}: generation ${attempted} < current ${current}`,

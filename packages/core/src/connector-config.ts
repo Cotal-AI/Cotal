@@ -21,6 +21,7 @@
  * The caller (both spawn paths) resolves this once and hands the chosen servers to the connector,
  * which renders them into its own host format.
  */
+import { brandCoreError } from "./error-brand.js";
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -227,6 +228,8 @@ export function projectTrustProblem(declared: readonly string[], root: string): 
 }
 
 export class ProjectConfigTrustError extends Error {
+  static { brandCoreError(this, "ProjectConfigTrustError"); }
+
   constructor(message: string, readonly remedy?: string) { super(message); }
 }
 

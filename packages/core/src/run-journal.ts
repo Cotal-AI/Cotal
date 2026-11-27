@@ -61,6 +61,7 @@
  * comparison — which on a fresh entry subject is `0`, i.e. always a create, i.e. no fence at all. A
  * fence that fails open when misconfigured is worse than one coordinate less addressable.
  */
+import { brandCoreError } from "./error-brand.js";
 import { randomBytes } from "node:crypto";
 import { jetstream, jetstreamManager, type ConsumerInfo, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
@@ -137,6 +138,8 @@ export interface StoredRunJournalRecord {
  * described — whatever it did, it did — only that this process may no longer speak for the run.
  */
 export class RunSuperseded extends Error {
+  static { brandCoreError(this, "RunSuperseded"); }
+
   constructor(
     readonly run: string,
     readonly subject: string,
@@ -161,6 +164,8 @@ export class RunSuperseded extends Error {
  * it by replaying and activating again, which is what re-reads the true head.
  */
 export class RunJournalStalled extends Error {
+  static { brandCoreError(this, "RunJournalStalled"); }
+
   constructor(
     readonly run: string,
     readonly subject: string,
@@ -187,6 +192,8 @@ function messageOfCause(cause: unknown): string {
  * the lease. Only an append AFTER a won activation means superseded.
  */
 export class ActivationRaced extends Error {
+  static { brandCoreError(this, "ActivationRaced"); }
+
   constructor(
     readonly run: string,
     readonly subject: string,
@@ -210,6 +217,8 @@ export class ActivationRaced extends Error {
  * the wire and have to be distinguished by counting.
  */
 export class RunJournalReplayIncomplete extends Error {
+  static { brandCoreError(this, "RunJournalReplayIncomplete"); }
+
   constructor(
     readonly run: string,
     readonly expected: number,
@@ -228,6 +237,8 @@ export class RunJournalReplayIncomplete extends Error {
  * contended, which is what a takeover is.
  */
 export class RunJournalReplayRaced extends Error {
+  static { brandCoreError(this, "RunJournalReplayRaced"); }
+
   constructor(
     readonly run: string,
     readonly durable: string,
@@ -247,6 +258,8 @@ export class RunJournalReplayRaced extends Error {
  * activated, which the replay has just read.
  */
 export class StaleLeaseToken extends Error {
+  static { brandCoreError(this, "StaleLeaseToken"); }
+
   constructor(
     readonly run: string,
     readonly offered: number,
@@ -265,6 +278,8 @@ export class StaleLeaseToken extends Error {
  * unrecoverable from the stream alone — which is why the caller states which it expected.
  */
 export class RunNotResumable extends Error {
+  static { brandCoreError(this, "RunNotResumable"); }
+
   constructor(readonly run: string, readonly subject: string) {
     super(`run ${run} was to be resumed, but ${subject} holds no records. Its journal has been retired or lost; there is nothing to resume, and starting it again here would re-perform whatever it already did.`);
     this.name = "RunNotResumable";
@@ -274,6 +289,8 @@ export class RunNotResumable extends Error {
 /** A takeover said the run is new and its journal already has records. Terminal: a run id is used
  *  once, and re-running one under its own id is a fork, which takes a new id. */
 export class RunAlreadyStarted extends Error {
+  static { brandCoreError(this, "RunAlreadyStarted"); }
+
   constructor(readonly run: string, readonly records: number) {
     super(`run ${run} was to be started, but its journal already holds ${records} records. A run is never started twice under one id — a re-run is a fork, and a fork takes a new id.`);
     this.name = "RunAlreadyStarted";
@@ -282,6 +299,8 @@ export class RunAlreadyStarted extends Error {
 
 /** A takeover carried a current fencing token but not the identity that holds it. Terminal. */
 export class ActivationNotAuthorized extends Error {
+  static { brandCoreError(this, "ActivationNotAuthorized"); }
+
   constructor(readonly run: string, readonly why: string) {
     super(`run ${run}: ${why}. This driver may not activate.`);
     this.name = "ActivationNotAuthorized";
@@ -295,6 +314,8 @@ export class ActivationNotAuthorized extends Error {
  * exactly why this check exists separately from {@link RunJournalReplayIncomplete}.
  */
 export class RunJournalPrefixTruncated extends Error {
+  static { brandCoreError(this, "RunJournalPrefixTruncated"); }
+
   constructor(
     readonly run: string,
     readonly seq: number,

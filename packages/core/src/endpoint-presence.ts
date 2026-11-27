@@ -1,3 +1,4 @@
+import { brandCoreError } from "./error-brand.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
@@ -38,6 +39,8 @@ export type PresenceView =
  * The condition is non-transient: ordinary heartbeat retry has already failed for the whole
  * liveness window, so callers should report the roster as last-known until a write succeeds. */
 export class PresenceWriteStuckError extends Error {
+  static { brandCoreError(this, "PresenceWriteStuckError"); }
+
   readonly code = "presence-write-stuck" as const;
   readonly transient = false as const;
 
