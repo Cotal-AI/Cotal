@@ -59,14 +59,14 @@ export class HarnessResolution {
 
   /** Resolve a connector by agent type. Library composition (installedExtensions off) → a registry
    *  hit, exactly as before (the composition root imported what it wants). The published binary gates
-   *  on MANIFEST membership FIRST — so a live `cotal ext remove` is honored even though the registry
-   *  still holds a connector imported earlier this session — then returns the registry hit or lazily
+   *  on reconciled manifest membership, then returns the registry hit or lazily
    *  imports the providing package (transactional + single-flight, via the workspace primitive).
    *  The captured Manager generation is checked for first-party providers under that lock,
    *  including providers already present in the registry.
    *  Fail-loud with an install hint; no fallback. */
   async resolveConnector(name: string): Promise<Connector> {
     if (!this.installedExtensions) return registry.resolve<Connector>("connector", name);
+    this.parts.connectorInventory.reconcileManifest();
     if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
     return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.config.expectedConnectorGeneration });
   }

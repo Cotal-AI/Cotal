@@ -136,6 +136,7 @@ export class ServePlane {
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
    *  in user mode, and before registration completes. */
   serviceServe?: ServiceServe;
+  private readonly classRails = new WeakMap<NatsConnection, boolean>();
   sessionLedgerCreds?: string;
 
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
@@ -197,16 +198,20 @@ export class ServePlane {
   }
 
   private serveOnConnection(nc: NatsConnection, grant: EpServeGrant): EpServeHandle {
-    return serveEndpoint(nc, this.config.space, grant, this.deps.managerServiceDefs(), { public: true }, {
+    const omitClassCommands = this.deps.omitClassCommands();
+    const handle = serveEndpoint(nc, this.config.space, grant, this.deps.managerServiceDefs(), { public: true }, {
       resolveTarget: (t) => this.deps.resolveTarget(t),
-      omitClassCommands: this.deps.omitClassCommands(),
+      omitClassCommands,
     });
+    this.classRails.set(nc, omitClassCommands === undefined);
+    return handle;
   }
 
-  /** Add the class spawn rails when the first application becomes available, without redialing. */
-  enableClassSpawn(): void {
+  /** Match the class spawn and launch rails to availability, without redialing. */
+  syncClassSpawn(): void {
     const serving = this.serviceServe;
-    if (!serving || this.leaseStopping) return;
+    if (!serving || this.leaseStopping || serving.nc.isClosed()) return;
+    if (this.classRails.get(serving.nc) === (this.deps.omitClassCommands() === undefined)) return;
     const replacement = this.serveOnConnection(serving.nc, serving.grant);
     // Reusing the incarnation queues keeps overlap single-delivery. Do not await the old
     // handlers here: the status or launch that discovered the application can be one of them.
@@ -266,6 +271,7 @@ export class ServePlane {
       }
       s.nc = nc;
       s.handle = handle;
+      this.syncClassSpawn();
       console.error(`manager service endpoint re-dialed: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${s.grant.epoch})`);
       return true;
     });
@@ -310,6 +316,7 @@ export class ServePlane {
       state.handle = handle;
       state.nc = nc;
       this.serviceServe = state;
+      this.syncClassSpawn();
       console.error(`remote manager service endpoint activated: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${state.grant.epoch})`);
       return;
     }
@@ -479,6 +486,7 @@ export class ServePlane {
     state.nc = nc;
     state.handle = handle;
     this.serviceServe = state;
+    this.syncClassSpawn();
     console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
     // #2073: arm the serve credential's own renewal now, from ITS window, instead of leaving it to
     // `credRenewTimer`'s boot-phased TTL/4 tick. Open mesh mints no credential (`creds` is

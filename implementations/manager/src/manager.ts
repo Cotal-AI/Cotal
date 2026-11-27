@@ -3,9 +3,9 @@ import { TurnRelay, goalKey, TURN_ANSWER_RETENTION_MS, type PendingTurn, type On
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
+import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, registry, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
-import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
+import { agentSecretKeyForFile, BUILT_IN_PACKAGES, DEFAULT_SEAT_CAP, extensionProvides, extensionRestartReason, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type InstalledExtension, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
 import type { PersonaEndpoint, RunAdmission, Connector, LaunchModes, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -569,6 +569,7 @@ export class Manager {
   /** One backend per kind a seat has asked for, beside {@link runtime}. The manager's own runtime
    *  stays the default and is never replaced by a later seat's choice. */
   private readonly runtimes = new Map<string, Runtime>();
+  private readonly runtimeProviders = new Map<string, RuntimeProvider>();
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   protected staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   protected readonly agents = new Map<string, ManagedAgent>();
@@ -847,6 +848,8 @@ export class Manager {
       }
     }
     if (this.config.execution === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.config.space}`);
+    if (this.installedExtensions && this.config.execution === "runtime" && this.runtime.kind !== "pty")
+      this.runtimeProviders.set(this.runtime.kind, registry.resolve<RuntimeProvider>("runtime", opts.runtime ?? this.runtime.kind));
     if (opts.pooled && this.config.execution === "runtime" && isCustodialRuntime(this.requiredRuntime))
       throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
     config.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
@@ -881,6 +884,7 @@ export class Manager {
       { execution: this.execution, installedExtensions: this.installedExtensions, machineSetupCommand: this.config.machineSetupCommand, expectedConnectorGeneration: this.config.expectedConnectorGeneration },
       this.parts,
       (resumeOperation) => this.beginLifecycle(resumeOperation),
+      (entries) => this.pruneSeatRuntimes(entries),
     );
     Object.assign(this.parts, {
       brokerTransport: this.brokerTransportComponent,
@@ -924,18 +928,41 @@ export class Manager {
     return this.runtime;
   }
 
-  /** Import the installed extension that provides a seat's runtime before {@link runtimeFor}
-   *  resolves it, as {@link resolveConnector} does for a connector. On the published binary the
-   *  manager process imports only its own runtime, so a seat that names another installed runtime
-   *  found nothing in the registry and was refused as unknown. The manifest is consulted first, so a
-   *  live `cotal ext remove` refuses the next launch even while an earlier import keeps the provider
-   *  registered; seats already on that runtime keep their cached backend. A library composition
-   *  resolves only what its root imported. The refusal names an official runtime's package. */
+  /** Validate the published Manager's seat runtime against the manifest before {@link runtimeFor}.
+   *  Seats already running retain their backend for custody and stop. A library composition
+   *  resolves only what its root imported. */
   protected async loadSeatRuntime(kind: string | undefined): Promise<void> {
-    const asked = kind?.trim();
-    if (!this.installedExtensions || this.config.execution === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
+    if (!this.installedExtensions || this.config.execution === "none") return;
+    this.connectorInventory.reconcileManifest();
+    const asked = kind?.trim() || this.runtime.kind;
+    if (asked === "auto" || asked === "pty") return;
     if (!manifestExtensionNames("runtime").includes(asked)) throw new Error(runtimeInstallHint(asked));
-    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name), expectedGeneration: this.config.expectedConnectorGeneration });
+    const provider = await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name), expectedGeneration: this.config.expectedConnectorGeneration });
+    const cached = this.runtimeProviders.get(asked);
+    if (!cached || cached === provider) return;
+    if (asked === this.runtime.kind || this.hasRuntimeSeats(asked) || this.lifecycleInFlight > 1)
+      throw new Error(`runtime "${asked}" has a different installed provider; stop its seats and restart the Manager`);
+    this.forgetSeatRuntime(asked);
+  }
+
+  private hasRuntimeSeats(kind: string): boolean {
+    return [...this.agents.values()].some((seat) => seat.handle.kind === kind || seat.launch.runtime === kind)
+      || this.unverifiedStops.some(({ handle }) => handle.kind === kind);
+  }
+
+  private forgetSeatRuntime(kind: string): void {
+    this.runtimes.delete(kind);
+    this.runtimeProviders.delete(kind);
+  }
+
+  private pruneSeatRuntimes(entries: readonly InstalledExtension[]): void {
+    // A launch can hold a runtime before it publishes the seat in agents.
+    if (!this.runtimes.size || this.lifecycleInFlight) return;
+    const current = new Set(entries.flatMap((entry) =>
+      Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) || extensionRestartReason(entry) ? [] :
+        extensionProvides(entry).filter((ref) => ref.kind === "runtime").map((ref) => ref.name),
+    ));
+    for (const kind of this.runtimes.keys()) if (!current.has(kind) && !this.hasRuntimeSeats(kind)) this.forgetSeatRuntime(kind);
   }
 
   /** The backend one seat launches, restarts, and is reaped through. An omitted or blank choice is
@@ -956,6 +983,7 @@ export class Manager {
     if (this.config.pooled && isCustodialRuntime(runtime))
       throw new Error(`pooled control refuses custodial runtime "${runtime.kind}" before starting agents`);
     this.runtimes.set(runtime.kind, runtime);
+    if (this.installedExtensions && asked !== "pty") this.runtimeProviders.set(runtime.kind, registry.resolve<RuntimeProvider>("runtime", asked));
     return runtime;
   }
 
@@ -1081,7 +1109,11 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    const task = this.bootComponent.runStart().then(() => this.idleExit?.arm());
+    const task = this.bootComponent.runStart().then(() => {
+      if (this.leaseStopping) return;
+      this.connectorInventory.startManifestWatch();
+      this.idleExit?.arm();
+    });
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
       if (this.startTask === wrapped) this.startTask = undefined;
@@ -1232,6 +1264,7 @@ export class Manager {
 
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
+    this.connectorInventory.stopManifestWatch();
     this.idleExit?.disarm();
     this.config.shutdownReadiness.abort();
     this.credentialRenewal.stopRetries();

@@ -1,6 +1,6 @@
 /** Ordinary CLI managers must reject changed first-party generations, including cached providers. */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,6 +15,21 @@ const core = pathToFileURL(join(repo, "packages/core/dist/index.js")).href;
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 interface Envelope {
   result?: { readiness?: string; managers?: { instanceId: string; state: string }[]; instances?: { instanceId: string; definition: string; observedProcess: string }[] } | null;
+}
+
+function installFixture(prefix: string, reports: string, pkg: string, name: string, generation: string, seeded: boolean) {
+  const dir = join(prefix, "node_modules", pkg);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const declaration = {
+    contract: 1, ...(seeded ? { core: version } : {}), provides: [{ kind: "connector", name, aliases: [] }],
+    commands: [] as never[], connectors: [{ name, requires: ["node"], eventPlane: false, prompts: false, askPermissions: false, reasoningEvents: false, setup: null }],
+  };
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: generation, type: "module", main: "index.js", cotal: declaration }));
+  writeFileSync(join(dir, "seat.mjs"), `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync,writeFileSync} from 'node:fs';
+const o=JSON.parse(process.env.GENERATION_OPTIONS);const meta=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8'));
+const ep=new CotalEndpoint({space:o.space,servers:o.servers,creds:o.creds?readFileSync(o.creds,'utf8'):undefined,lifecycleUid:o.lifecycleUid,acceptedToken:o.acceptedToken,channels:[],consume:false,card:{id:o.id,name:o.name,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});ep.on('error',()=>{});await ep.start();writeFileSync(process.env.GENERATION_REPORT,JSON.stringify({version:meta.version,name:o.name,pid:process.pid,uid:o.lifecycleUid}));process.on('SIGTERM',()=>{void ep.close().finally(()=>process.exit(0))});`);
+  writeFileSync(join(dir, "index.js"), `export default host=>host.register({kind:'connector',name:${JSON.stringify(name)},requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(join(dir, "seat.mjs"))}],env:{PATH:process.env.PATH,HOME:process.env.HOME,GENERATION_OPTIONS:JSON.stringify({space:o.space,servers:o.servers,creds:o.creds,id:o.id,name:o.name,lifecycleUid:o.lifecycleUid,acceptedToken:o.acceptedToken}),GENERATION_REPORT:${JSON.stringify(reports)}+'/'+o.name+'.json'}})});`);
+  return { pkg, version: generation, installId: randomUUID(), spec: `${pkg}@${generation}`, ...(seeded ? { source: "seeded" } : {}), provides: declaration.provides, commands: declaration.commands, connectors: declaration.connectors };
 }
 
 for (const surface of ["up", "manager-start"] as const) {
@@ -37,20 +52,14 @@ for (const surface of ["up", "manager-start"] as const) {
     return result;
   };
   const prefix = join(xdg, "cotal/extensions");
-  const entries: { pkg: string; version: string; spec: string; source?: string; provides: { kind: string; name: string }[]; commands: never[]; connectors: { name: string; requires: string[]; eventPlane: boolean }[] }[] = [];
-  // These are local fixture packages, not claimed to be released connector artifacts.
+  const entries: ReturnType<typeof installFixture>[] = [];
   const install = (pkg: string, name: string, generation: string, seeded: boolean) => {
-    const dir = join(prefix, "node_modules", pkg);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: generation, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
-    writeFileSync(join(dir, "seat.mjs"), `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync,writeFileSync} from 'node:fs';
-const o=JSON.parse(process.env.GENERATION_OPTIONS);const meta=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8'));
-const ep=new CotalEndpoint({space:o.space,servers:o.servers,creds:o.creds?readFileSync(o.creds,'utf8'):undefined,lifecycleUid:o.lifecycleUid,acceptedToken:o.acceptedToken,channels:[],consume:false,card:{id:o.id,name:o.name,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});ep.on('error',()=>{});await ep.start();writeFileSync(process.env.GENERATION_REPORT,JSON.stringify({version:meta.version,name:o.name}));process.on('SIGTERM',()=>{void ep.close().finally(()=>process.exit(0))});`);
-    writeFileSync(join(dir, "index.js"), `import {registry} from ${JSON.stringify(core)};registry.register({kind:'connector',name:${JSON.stringify(name)},requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(join(dir, "seat.mjs"))}],env:{PATH:process.env.PATH,HOME:process.env.HOME,GENERATION_OPTIONS:JSON.stringify({space:o.space,servers:o.servers,creds:o.creds,id:o.id,name:o.name,lifecycleUid:o.lifecycleUid,acceptedToken:o.acceptedToken}),GENERATION_REPORT:${JSON.stringify(reports)}+'/'+o.name+'.json'}})});`);
-    const entry = { pkg, version: generation, spec: `${pkg}@${generation}`, ...(seeded ? { source: "seeded" } : {}), provides: [{ kind: "connector", name }], commands: [] as never[], connectors: [{ name, requires: ["node"], eventPlane: false }] };
+    const entry = installFixture(prefix, reports, pkg, name, generation, seeded);
     const at = entries.findIndex((value) => value.pkg === pkg);
     if (at < 0) entries.push(entry); else entries[at] = entry;
-    writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: entries }));
+    const staged = join(prefix, "extensions.json.tmp");
+    writeFileSync(staged, JSON.stringify({ extensions: entries }));
+    renameSync(staged, join(prefix, "extensions.json"));
   };
   install("@cotal-ai/connector-claude-code", "generation-warm", version, true);
   install("generation-third-party", "generation-third-party", "1.0.0", false);
@@ -98,8 +107,19 @@ const ep=new CotalEndpoint({space:o.space,servers:o.servers,creds:o.creds?readFi
     }
     const thirdParty = launch("generation-third-party", "generation_third_party");
     suite.check(`${surface}: unrelated third-party version still joins`, thirdParty.code === 0 && thirdParty.doc.result?.readiness === "joined", thirdParty);
+    if (thirdParty.code !== 0) throw new Error("third-party connector control failed before reinstall comparison");
+    const reportPath = join(reports, "generation_third_party.json");
+    for (let i = 0; i < 50 && !existsSync(reportPath); i++) await sleep(20);
+    const before = readFileSync(reportPath, "utf8");
+    const pid = (JSON.parse(before) as { pid: number }).pid;
+    install("generation-third-party", "generation-third-party", "1.0.0", false);
+    const stale = launch("generation-third-party", "generation_reinstalled");
+    suite.check(`${surface}: same-version reinstall refuses a new seat`, stale.code === 2 && /restart/.test(stale.output), stale);
     const same = run("ps", "--space", space, "--json");
     suite.check(`${surface}: the same manager remains answering`, same.code === 0 && same.doc.result?.managers?.some((row) => row.instanceId === instance && row.state === "answered") === true, same);
+    let originalAlive = false;
+    try { process.kill(pid, 0); originalAlive = true; } catch { /* A stopped seat fails the check below. */ }
+    suite.check(`${surface}: reconciliation leaves the running seat in place`, originalAlive && readFileSync(reportPath, "utf8") === before);
   } finally {
     for (const name of seats) {
       const stopped = run("stop", name, "--space", space, "--on", instance!, "--json");

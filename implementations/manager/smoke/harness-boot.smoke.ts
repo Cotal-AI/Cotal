@@ -7,13 +7,14 @@
  * model lookup and status. The first available application also enables class spawn subscriptions.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { MANAGER_CONTRACTS, type ManagerStatus } from "../src/manager-service-contract.js";
-import { connectorMetadataStale, extensionsDir, saveExtensionsManifest, trustProject } from "@cotal-ai/workspace";
+import { connectorMetadataStale, extensionsDir, saveExtensionsManifest, trustProject, type InstalledExtension, type PluginDeclaration } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -86,6 +87,111 @@ console.error = (...args: unknown[]) => {
   oldError(...args);
 };
 
+function writeReconcilePlugin(name: string, source: string, providesRuntime = false): InstalledExtension {
+  const dir = join(extensionsDir(), "node_modules", name);
+  mkdirSync(dir, { recursive: true });
+  const cotal: PluginDeclaration = {
+    contract: 1,
+    provides: [{ kind: "connector", name, aliases: [] }, ...(providesRuntime ? [{ kind: "runtime", name, aliases: [] }] : [])],
+    commands: [],
+    connectors: [{ name, requires: [], eventPlane: false, prompts: false, askPermissions: false, reasoningEvents: false, setup: null }],
+  };
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", cotal }));
+  writeFileSync(join(dir, "index.js"), source);
+  return { pkg: name, version: "1.0.0", installId: randomUUID(), provides: cotal.provides, commands: cotal.commands, connectors: cotal.connectors };
+}
+
+async function checkManifestReconcile(): Promise<void> {
+  const target = writeReconcilePlugin("reconcile-target", `export default host=>{
+    host.register({kind:'connector',name:'reconcile-target',buildLaunch:()=>{throw Error('stale buildLaunch was reached')}});
+    host.register({kind:'runtime',name:'reconcile-target',available:()=>true,create:()=>({kind:'reconcile-target',streamsTerminal:false,spawn:()=>{throw Error('stale runtime was reached')}})});
+  };`, true);
+  const coreUrl = new URL("../../../packages/core/dist/index.js", import.meta.url).href;
+  const observer = writeReconcilePlugin("reconcile-observer", `import {registry} from ${JSON.stringify(coreUrl)};
+    export default host=>host.register({kind:'connector',name:'reconcile-observer',
+      buildLaunch:()=>{throw Error('observer launch was reached')},
+      listModels:()=>({models:[{id:registry.has('connector','reconcile-target')?'target-present':'target-absent'}]})});`);
+  const publish = (...extensions: InstalledExtension[]) => saveExtensionsManifest({ extensions });
+  publish(target, observer);
+  const space = "harness-scope";
+  const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+  const internal = manager as unknown as {
+    connectorInventory: { connectorStatuses: ManagerStatus["connectors"]; startManifestWatch(): void; stopManifestWatch(): void };
+    resolveConnector(name: string): Promise<Connector>;
+    loadSeatRuntime(kind: string): Promise<void>;
+    runtimeFor(kind: string): unknown;
+    runtimes: ReadonlyMap<string, unknown>;
+    managerStatusData(): ManagerStatus;
+  };
+  const nc = await connect({ servers });
+  const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+  const call = (command: "models" | "harness-commands" | "spawn", args: Record<string, unknown>) => epCall(nc, space, { mode: "one" },
+    { endpoint: "manager", command, contract: MANAGER_CONTRACTS[command], caller, args }, { deadlineMs: 5000, currentEpoch: async () => 0 });
+  const models = (agent: string) => call("models", { agent });
+  try {
+    await manager.start();
+    internal.connectorInventory.stopManifestWatch();
+    await internal.resolveConnector(target.pkg);
+    await internal.loadSeatRuntime(target.pkg);
+    check("Manager caches the named runtime", internal.runtimeFor(target.pkg) === internal.runtimes.get(target.pkg));
+    const before = await models(observer.pkg);
+    check("observer can see the loaded target scope", before.reply.ok && JSON.stringify(before.reply).includes("target-present"), before.reply);
+
+    const dir = extensionsDir(), hold = `${dir}.hold`;
+    const journal = join(dirname(dir), ".extensions-promotion.json");
+    writeFileSync(journal, "{}");
+    renameSync(dir, hold);
+    try {
+      check("status during the promotion gap keeps the ready connector and loaded scope",
+        internal.managerStatusData().connectors.some((row) => row.agent === target.pkg && row.state === "available") && registry.has("connector", target.pkg));
+    } finally {
+      renameSync(hold, dir);
+      rmSync(journal);
+    }
+
+    publish(observer);
+    const after = await models(observer.pkg);
+    check("the first observer request after removal cannot resolve the stale target", after.reply.ok && JSON.stringify(after.reply).includes("target-absent"), after.reply);
+    check("removal drops both target provider kinds and its inventory row",
+      !registry.has("connector", target.pkg) && !registry.has("runtime", target.pkg) && !internal.managerStatusData().connectors.some((row) => row.agent === target.pkg));
+    check("removal discards an unused target runtime instance", !internal.runtimes.has(target.pkg));
+
+    publish({ ...target, installId: randomUUID() }, observer);
+    const spawn = await manager.startAgent({ name: "stale-target", agent: target.pkg, events: false });
+    const catalog = await models(target.pkg);
+    const commands = await call("harness-commands", { agent: target.pkg, cwd: workspaceRoot });
+    const runtime = await manager.startAgent({ name: "stale-backend", agent: observer.pkg, runtime: target.pkg, events: false });
+    for (const [surface, reply] of [["spawn", spawn], ["models", catalog.reply], ["harness commands", commands.reply], ["runtime", runtime]] as const)
+      check(`${surface} refuses a same-version reinstall rather than calling the stale provider`, !reply.ok && /restart.*process|restart.*Manager/i.test(JSON.stringify(reply)), reply);
+    for (let i = 0; i < 2; i++) {
+      const row = internal.managerStatusData().connectors.find((entry) => entry.agent === target.pkg);
+      check("PATH retry does not clear the restart-required connector", row?.state === "unavailable" && /restart/i.test(row.reason ?? ""), row);
+    }
+    publish({ ...target, installId: randomUUID() });
+    check("removing the last available connector disables class spawn", !internal.managerStatusData().classSpawn);
+    const spawnProbe = () => call("spawn", { name: "rail-probe", agent: "reconcile-new", events: false });
+    let omitted = false;
+    for (let i = 0; i < 10 && !omitted; i++) {
+      omitted = await spawnProbe().then(() => false, (error: unknown) => /no responder/.test(String(error)));
+      if (!omitted) await wait(25);
+    }
+    check("the disabled class spawn rail has no subscriber", omitted);
+    const add = writeReconcilePlugin("reconcile-new", `export default host=>host.register({kind:'connector',name:'reconcile-new',buildLaunch:()=>{throw Error('restored rail reached buildLaunch')}});`);
+    publish(add);
+    check("adding an available connector re-enables class spawn", internal.managerStatusData().classSpawn);
+    const restored = await spawnProbe();
+    check("the restored class spawn rail reaches the newly added connector", !restored.reply.ok && JSON.stringify(restored.reply).includes("restored rail reached buildLaunch"), restored.reply);
+    internal.connectorInventory.startManifestWatch();
+    await wait(150);
+    publish();
+    for (let i = 0; i < 100 && internal.connectorInventory.connectorStatuses.length; i++) await wait(50);
+    check("the manifest watcher removes connector rows without a reader", internal.connectorInventory.connectorStatuses.length === 0);
+  } finally {
+    await nc.close();
+    await manager.stop({ withAgents: true });
+  }
+}
+
 try {
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50);
   if (!(await isReachable(servers))) throw new Error("owned broker did not start");
@@ -130,7 +236,7 @@ try {
   const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
   let launchExec: ReturnType<typeof spawnSync> | undefined;
   (manager as unknown as { runtime: unknown }).runtime = {
-    kind: "fake", streamsTerminal: false,
+    kind: "pty", streamsTerminal: false,
     spawn: (name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) => {
       launchExec = spawnSync(spec.command, spec.args, { cwd, env: spec.env, encoding: "utf8" });
       let state = spec.command === present ? "exited" : "running";
@@ -231,6 +337,7 @@ try {
       await late.stop({ withAgents: true });
     }
   }
+  await checkManifestReconcile();
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
