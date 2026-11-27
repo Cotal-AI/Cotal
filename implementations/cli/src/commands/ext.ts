@@ -883,7 +883,7 @@ function list(presentation: Presentation): void {
   writeResult(presentation, {
     command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },
     warnings,
-    ...(warnings.length > missing.length ? { completeness: "partial", partial: { message: "Some recorded extension packages could not be verified." } } : {}),
+    ...(missing.length ? { completeness: "partial" as const, partial: { message: "the installed extensions could not be listed", remedy: pending.kind === "unreadable" ? pending.instruction : undefined } } : warnings.length ? { completeness: "partial" as const, partial: { message: "Some recorded extension packages could not be verified." } } : {}),
   }, extensionsView);
 }
 

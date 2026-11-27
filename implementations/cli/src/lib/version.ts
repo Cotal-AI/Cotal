@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { c, cachedUpdateSummary, CorruptExtensionsManifestError, exitCode, isCommandFailure, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, stderrLine, UnreadableConnectorSelection } from "@cotal-ai/workspace";
-import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
+import { cliPackageRoot, cliVersion, extensionsInventoryMissing, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
-import { readUpdatePending } from "./update-pending.js";
+import { readUpdatePending, manifestRepair } from "./update-pending.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
@@ -59,6 +59,7 @@ export function extensionVersions(): ExtensionVersion[] {
  *  report can say its list is incomplete rather than empty. */
 export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; remedy?: string } {
   try {
+    if (extensionsInventoryMissing()) return { versions: [], unreadable: "the extensions inventory is missing", remedy: manifestRepair };
     const versions = loadExtensionsManifest().extensions.map((entry, index) => {
       if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
         throw new Error(`invalid extension inventory entry at index ${index}`);

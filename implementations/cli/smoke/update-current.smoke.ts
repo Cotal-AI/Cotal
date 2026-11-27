@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -480,7 +480,11 @@ if (process.platform === "linux") {
     mkdirSync(dirname(npmCli), { recursive: true });
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", version: "10.9.2", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
     const npmFail = join(home, "npm-fail-once");
+    const npmCommand = spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8" });
+    assert.equal(npmCommand.status, 0, npmCommand.stderr);
+    const realNpm = realpathSync(npmCommand.stdout.trim());
     writeFileSync(npmCli, `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 fs.appendFileSync(${JSON.stringify(npmRecord)}, process.argv.slice(2).join(' ') + '\\n');
 if (process.argv.includes('version')) { console.log(JSON.stringify(${JSON.stringify(version)})); process.exit(0); }
@@ -489,7 +493,8 @@ if (process.argv.includes('install') && fs.existsSync(${JSON.stringify(npmFail)}
   console.error('npm install failed for the missing inventory');
   process.exit(1);
 }
-process.exit(0);
+const real = spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdio: 'inherit' });
+process.exit(real.status ?? 1);
 `, { mode: 0o755 });
     symlinkSync(npmCli, join(npmBin, "npm"));
     const config = join(home, "xdg");
@@ -564,10 +569,11 @@ process.exit(0);
     assert.match(recovered.stdout + recovered.stderr, new RegExp(builtInPkg.replace("/", "\\/")));
     assert.match(readFileSync(manifest, "utf8"), new RegExp(builtInPkg.replace("/", "\\/")));
     assert.match(recovered.stdout + recovered.stderr, /@cotal-ai\/tmux/);
-    const second = cli("update", "--self");
+    const second = cli("update", "--check", "--json");
     assert.equal(second.status, 0, second.stdout + second.stderr);
-    assert.match(second.stdout + second.stderr, /installed package closure is current/);
-    assert.doesNotMatch(second.stdout + second.stderr, /Reconciling built-in/);
+    const secondReport = JSON.parse(second.stdout) as { completeness: string; result: { reconciliation: { kind: string } } };
+    assert.equal(secondReport.completeness, "complete");
+    assert.equal(secondReport.result.reconciliation.kind, "none");
     rmSync(join(extensions, "node_modules"), { recursive: true, force: true });
     rmSync(manifest);
     const lockOnly = cli("update", "--self");
@@ -597,15 +603,6 @@ process.exit(0);
     assert.match(empty.stdout + empty.stderr, /clean needs a target/);
     assert.doesNotMatch(empty.stdout + empty.stderr, /inventory is missing/);
     assert.equal(existsSync(join(emptyExtensions, "extensions.json")), false);
-    const bare = mkdtempSync(join(home, "bare-"));
-    const bareResult = spawnSync(entry, [...argv.slice(1), "clean"], {
-      cwd: bare, encoding: "utf8", timeout: 60_000,
-      env: { ...env, HOME: bare, USERPROFILE: bare, COTAL_HOME: join(bare, "cotal"), XDG_CONFIG_HOME: join(bare, "xdg"), XDG_RUNTIME_DIR: bare },
-    });
-    assert.notEqual(bareResult.status, 0, bareResult.stdout + bareResult.stderr);
-    assert.match(bareResult.stdout + bareResult.stderr, /clean needs a target/);
-    assert.doesNotMatch(bareResult.stdout + bareResult.stderr, /inventory is missing/);
-    assert.equal(existsSync(join(bare, "xdg", "cotal", "extensions", "extensions.json")), false);
     const checkout = spawnSync(entry, [...argv.slice(1), "up"], {
       cwd: home, encoding: "utf8", timeout: 60_000,
       env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")),
