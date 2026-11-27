@@ -39,6 +39,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
+import { Shell } from "../client/src/Shell.tsx";
 import { readJson, refreshAll, staleLabel, type Source, type StaleMark } from "../client/src/lib/snapshot.js";
 import { documentTitle, staleView } from "../client/src/lib/shellText.js";
 import type { CotalMessage } from "../client/src/api/types.js";
@@ -48,7 +51,8 @@ import { startDashboard } from "../client/src/state/boot.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState } from "../client/src/state/types.js";
 import { bootReads, gate, harness, page } from "./controller-harness.js";
-import { renderShell, staleMarker } from "./render-shell.js";
+import { parseHtml, renderShell, staleMarker } from "./render-shell.js";
+import { sharedChannels } from "../src/shared-channels.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -63,6 +67,22 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
 
 const SNAP = { readJson, refreshAll, staleLabel };
 ok("0.2 the module exports its three entry points", typeof readJson === "function" && typeof refreshAll === "function" && typeof staleLabel === "function");
+
+{
+  const shell = Buffer.from('<div id="root"></div>');
+  const store = createStore({ ...initialState, loading: { ...initialState.loading, roster: false, channels: false } });
+  const draw = (mode: "legacy" | "isolated") => {
+    const html = String(sharedChannels(() => mode).page(shell));
+    const sharedPluginNotice = /data-shared-plugin-notice="([^"]*)"/.exec(html)?.[1];
+    return renderToString(createElement(Shell, {
+      store, controller: null, paneOpen: false, route: { view: "activity" }, msgPerSecond: () => 0, sharedPluginNotice,
+    }));
+  };
+  const notice = "Plugin channels are not shown in this shared view.";
+  const places = parseHtml(draw("isolated")).querySelector('[role="navigation"][aria-label="Places"]');
+  ok("the Channels group renders the shared-view notice for confirmed isolated mode only",
+    [...(places?.querySelectorAll("p") ?? [])].some((line) => line.textContent === notice && line.previousElementSibling?.textContent === "Channels") && !draw("legacy").includes(notice));
+}
 
 /** A response carrying only the three members `readJson` reads, typed as the `Response` it accepts. */
 const res = (status: number, body: unknown): Response => ({

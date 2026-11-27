@@ -5,6 +5,7 @@ import {
   eventChannelPrincipal,
   parsePrincipalKey,
   parseSubject,
+  PLUGIN_CHANNEL_ROOT,
   principalKey,
   type DeliveryMode,
   assertValidChannel,
@@ -266,6 +267,7 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
   | { event: "agent-frame"; agent: string; data: { id: string; msg: CotalMessage } }
   | null {
   const parsed = parseSubject(subject);
+  if (parsed?.kind === PLUGIN_CHANNEL_ROOT) return null;
   if (parsed?.kind === "evp") {
     if (!msg || parsed.sender !== msg.from?.id) return null;
     return { event: "agent-frame", agent: parsed.sender, data: { id: parsed.sender, msg } };

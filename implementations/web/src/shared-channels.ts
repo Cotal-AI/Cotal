@@ -1,0 +1,41 @@
+import { PLUGIN_CHANNEL_ROOT, type MembershipSnapshot, type Presence } from "@cotal-ai/core";
+
+type RoutingMode = "legacy" | "isolated" | undefined;
+
+const SHARED_VIEW_NOTICE = "Plugin channels are not shown in this shared view.";
+
+function sharedChannelVisible(mode: RoutingMode, channel: string): boolean {
+  return mode === "legacy" || (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
+}
+
+export function sharedChannels(mode: () => RoutingMode) {
+  const visible = (channel: string) => sharedChannelVisible(mode(), channel);
+  return {
+    visible,
+    membership(snapshot: MembershipSnapshot): MembershipSnapshot {
+      const current = mode();
+      if (current === "legacy") return snapshot;
+      return {
+        ...snapshot,
+        members: snapshot.members.map((member) => ({
+          ...member,
+          live: member.live.filter((name) => sharedChannelVisible(current, name)),
+          durable: member.durable.filter((name) => sharedChannelVisible(current, name)),
+        })),
+      };
+    },
+    presence(presence: Presence): Presence {
+      const current = mode();
+      if (current === "legacy" || presence.channelModes === undefined) return presence;
+      return {
+        ...presence,
+        channelModes: Object.fromEntries(Object.entries(presence.channelModes).filter(([name]) => sharedChannelVisible(current, name))),
+      };
+    },
+    page(html: Buffer): Buffer | string {
+      return mode() === "isolated"
+        ? html.toString("utf8").replace('<div id="root">', `<div id="root" data-shared-plugin-notice="${SHARED_VIEW_NOTICE}">`)
+        : html;
+    },
+  };
+}

@@ -52,7 +52,7 @@ const startLive: Start = (s, onArrival) => {
  *  `host` (the address), `start` and `clock` default to the page's `window`, the live dashboard and
  *  `Date.now`. A suite passes a fake of each to mount the app with no server, drive its hash and set
  *  the time the rate reads. */
-export function App({ host = window, start = startLive, clock = Date.now }: { host?: RouteHost; start?: Start; clock?: () => number }) {
+export function App({ host = window, start = startLive, clock = Date.now, sharedPluginNotice }: { host?: RouteHost; start?: Start; clock?: () => number; sharedPluginNotice?: string }) {
   // Started in a layout effect, not in render: the feed is a connection, and StrictMode runs an effect,
   // its cleanup and the effect again, so each run opens its own feed and the cleanup closes it.
   const [controller, setController] = useState<Controller | null>(null);
@@ -89,6 +89,7 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
       msgPerSecond={() => rate.perSecond(clock())}
       phone={phone}
       panelSheet={panelSheet}
+      sharedPluginNotice={sharedPluginNotice}
     />
     </Navigate.Provider>
     </ThemeProvider>
