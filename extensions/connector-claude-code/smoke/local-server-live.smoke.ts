@@ -63,14 +63,16 @@ const plugin = (name: string, recorded: boolean) => {
   const dist = join(dir, name, "dist");
   mkdirSync(dist, { recursive: true });
   copyFileSync(MCP, join(dist, "mcp.cjs"));
+  // An installed plugin carries its monitor beside the server, which names it as the hold.
+  copyFileSync(MONITOR, join(dist, "monitor.cjs"));
   if (recorded) writeFileSync(join(dist, "cli.json"), JSON.stringify({ argv: [process.execPath, CLI] }));
   return join(dist, "mcp.cjs");
 };
 interface Served { p: ChildProcess; exited: Promise<number | null>; instructions: string; tools: string[]; call(name: string, args: object): Promise<string> }
 const children: ChildProcess[] = [];
 const servers: Served[] = [];
-async function serve(script: string, flags: string[] = [], cwd = dir): Promise<Served> {
-  const p = spawn(process.execPath, [script, ...flags], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+async function serve(script: string, flags: string[] = [], cwd = dir, extra: NodeJS.ProcessEnv = {}): Promise<Served> {
+  const p = spawn(process.execPath, [script, ...flags], { cwd, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
   children.push(p);
   const exited = new Promise<number | null>((r) => p.once("exit", r));
   let buf = "", id = 0;
@@ -251,6 +253,44 @@ try {
     check("both servers close cleanly", await within(codeA.exited) === 0 && await within(codeB.exited) === 0);
     check("a server that ends retires the identity it still held", identities(space).length === 0);
     for (const r of [readA, readB]) r.p.kill("SIGTERM");
+
+    // An Agent SDK host such as T3 Code stops an idle session's process, so there connect asks
+    // the conversation to keep a silent hold running as a background task.
+    check("a Code session's connect asks for no hold", !connectedB.includes("--hold"), connectedB);
+    const codeC = await serve(installed, [], root, { CLAUDE_CODE_ENTRYPOINT: "sdk-ts" });
+    const sessionC = bindSession(root), readC = reader(sessionC);
+    const connectedC = await codeC.call("cotal_connect", { name: "claude_sdk", space, context: sessionC });
+    const hold = /timeout set to 7200000: (.+ --hold [A-Za-z0-9_-]+)\n/.exec(connectedC)?.[1];
+    check("an Agent SDK host's connect asks for a hold of this conversation", connectedC.includes("Connected as claude_sdk") && hold?.endsWith(` --hold ${sessionC}`) === true, connectedC);
+    const idC = /connection_id: ([0-9a-f-]{36})/.exec(connectedC)![1]!;
+    // The plugin's Stop hook, as Claude Code runs it when this conversation's turn would end.
+    const stop = (fields: object = {}, entrypoint = "sdk-ts") => {
+      const r = spawnSync(process.execPath, [HOOK], { cwd: dir, env: { ...hostEnv, CLAUDE_CODE_ENTRYPOINT: entrypoint },
+        input: JSON.stringify({ hook_event_name: "Stop", session_id: sessionC, ...fields }), encoding: "utf8", timeout: 10_000 });
+      return r.stdout.trim();
+    };
+    const blocked = stop();
+    check("a turn that would end with a connection and no hold continues to start one",
+      /"decision":"block"/.test(blocked) && blocked.includes(`--hold ${sessionC}`), blocked);
+    check("  but not once a block already continued it", stop({ stop_hook_active: true }) === "");
+    check("  and not outside an Agent SDK host", stop({}, "cli") === "");
+    // Its own process group, which Claude Code stops whole, as it does a background command.
+    const holding = spawn("sh", ["-c", hold!], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    children.push(holding);
+    let holdOut = "", holdErr = "";
+    holding.stderr!.on("data", (d: Buffer) => { holdErr += d.toString(); });
+    holding.stdout!.on("data", (d: Buffer) => { holdOut += d.toString(); });
+    await sleep(2_000);
+    check("  and that hold runs silently", holding.exitCode === null && holdOut === "", `${hold}\n${holdOut}${holdErr}`);
+    check("a turn ends freely while its hold runs", stop() === "");
+    process.kill(-holding.pid!, "SIGTERM");
+    await new Promise((r) => holding.exitCode === null ? holding.once("exit", r) : r(undefined));
+    await sleep(500);
+    check("once the hold is gone, the next turn asks for another", /"decision":"block"/.test(stop()));
+    check("a conversation that disconnected is not asked", (await codeC.call("cotal_disconnect", { connection_id: idC })).includes("Disconnected") && stop() === "");
+    codeC.p.stdin!.end();
+    check("  and the server closes cleanly", await within(codeC.exited) === 0 && identities(space).length === 0);
+    readC.p.kill("SIGTERM");
 
     // Desktop chat supplies no native session, so even with this one mesh running it opens nothing.
     const desktop = await serve(installed, ["--desktop"]);

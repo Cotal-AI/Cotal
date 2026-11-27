@@ -1,5 +1,6 @@
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
@@ -16,7 +17,6 @@ export interface EndpointHistoryDeps {
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
   requestDelivery: (op: string, args: Record<string, unknown>) => Promise<ControlReply>;
-  deleteConsumerIfPresent: (stream: string, name: string) => Promise<void>;
   joinPolicyFresh: (channel: string) => Promise<{ replay: boolean; windowMs?: number }>;
   chatMayHaveLost: (subject: string, sinceSeq: number) => Promise<boolean>;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -130,7 +130,7 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "consumers">) {}
 
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
@@ -921,7 +921,7 @@ export class EndpointHistory {
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
-    await this.deps.deleteConsumerIfPresent(stream, name);
+    await this.parts.consumers.deleteConsumerIfPresent(stream, name);
     await this.conn.jsm.consumers.add(stream, {
       name,
       filter_subject: subject,
@@ -952,7 +952,7 @@ export class EndpointHistory {
         pending -= got;
       }
     } finally {
-      await this.deps.deleteConsumerIfPresent(stream, name);
+      await this.parts.consumers.deleteConsumerIfPresent(stream, name);
     }
     return out;
   }
