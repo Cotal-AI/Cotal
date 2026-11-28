@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { PeerCredentials } from "@cotal-ai/seat";
 import { darwinSharedIdentity, type DarwinSharedIdentity } from "../src/shared-identity-darwin.js";
 import { darwinHostTransport } from "../src/shared-control-darwin.js";
+import { sampleDarwinLineage } from "../src/shared-inventory-darwin.js";
 import { SHARED_CONTROL_PROTOCOL } from "../src/shared-control-protocol.js";
 
 const publicApi = await import("@cotal-ai/seat") as Record<string, unknown>;
@@ -103,6 +104,55 @@ async function checkDarwinPreparedExec(root: string): Promise<void> {
   } finally { gate.abort(); }
 }
 
+function checkDarwinInventory(root: string, child: DarwinSharedIdentity): void {
+  const host = darwinSharedIdentity.current();
+  assert(host);
+  const lineage = join(realpathSync.native(root), "a".repeat(32));
+  const first = "1".repeat(64), next = "2".repeat(64), seat = "3".repeat(32), pending = "4".repeat(32);
+  const address = (generation: string) => ({ scope: `ai.cotal.pty.${generation.slice(0, 32)}`, socket: `/private/var/tmp/p-${generation.slice(0, 32)}.sock` });
+  const firstRoot = join(lineage, first), nextRoot = join(lineage, next);
+  mkdirSync(lineage, { mode: 0o700 });
+  mkdirSync(firstRoot, { mode: 0o700 });
+  mkdirSync(nextRoot, { mode: 0o700 });
+  mkdirSync(join(firstRoot, seat), { mode: 0o700 });
+  mkdirSync(join(firstRoot, pending), { mode: 0o700 });
+  const hostPath = join(firstRoot, "host.json"), seatPath = join(firstRoot, seat, "shared.json");
+  const write = (path: string, row: object) => writeFileSync(path, JSON.stringify(row), { mode: 0o600 });
+  const hostRow = { version: 2, protocol: 2, pid: host.pid, start: host.start, bootId: host.bootId, scope: address(first).scope, token: "e".repeat(64) };
+  write(hostPath, hostRow);
+  const seatRow = { version: 1, protocol: 2, id: seat, name: "fixture", ...address(first), token: "f".repeat(64),
+    custodianPid: host.pid, custodianStart: host.start, childPid: child.pid, childStart: child.start, bootId: host.bootId };
+  write(seatPath, seatRow);
+  const scan = () => {
+    const result = sampleDarwinLineage(lineage, address);
+    assert.equal(result.state, "sampled");
+    return result.generations;
+  };
+  const [a, b] = scan();
+  assert(a.state === "recorded" && a.lifetime === "live");
+  assert.equal(b.state, "unknown");
+  assert.deepEqual(a.seats.get(pending), { state: "unknown" });
+  const live = a.seats.get(seat);
+  assert(live?.state === "recorded" && live.lifetime === "live" && darwinSharedIdentity.same(live.child, child));
+  write(seatPath, { ...seatRow, childStart: "1.000000" });
+  const replaced = scan()[0];
+  assert(replaced.state === "recorded");
+  const stale = replaced.seats.get(seat);
+  assert(stale?.state === "recorded" && stale.lifetime === "gone");
+  write(seatPath, { ...seatRow, socket: address(next).socket });
+  const foreign = scan()[0];
+  assert(foreign.state === "recorded");
+  assert.deepEqual(foreign.seats.get(seat), { state: "unknown" });
+  chmodSync(hostPath, 0o644);
+  assert.equal(scan()[0].state, "unknown");
+  chmodSync(hostPath, 0o600);
+  const alias = join(realpathSync.native(root), "b".repeat(32));
+  symlinkSync(lineage, alias);
+  assert.equal(sampleDarwinLineage(alias, address).state, "unknown");
+  assert.equal(sampleDarwinLineage(lineage, () => address(first)).state, "unknown");
+  assert.equal(sampleDarwinLineage(join(root, "c".repeat(32)), address).state, "unknown");
+}
+
 if (process.argv[2] === "client") {
   const socket = createConnection(process.argv[3]!);
   const timeout = setTimeout(() => { socket.destroy(); process.exitCode = 1; process.disconnect?.(); }, 10_000);
@@ -176,6 +226,7 @@ if (process.argv[2] === "client") {
           assert(darwinSharedIdentity.matchesPeer(socket!, identity));
           assert(!darwinSharedIdentity.matchesPeer(socket!, current));
         });
+        check("Darwin generation inventory preserves unknown reservations and rejects unbound records", () => checkDarwinInventory(root!, identity));
         check("Darwin writer proof refuses stale births and malformed or foreign identities", () => {
           const stale = { ...identity, start: start === "1.000000" ? "2.000000" : "1.000000" };
           assert.equal(darwinSharedIdentity.observe(stale), "gone");
