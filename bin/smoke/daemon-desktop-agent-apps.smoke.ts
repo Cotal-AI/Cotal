@@ -134,10 +134,10 @@ esac
   return { state, setState, actions };
 }
 
-function recordService(target: Isolated) {
+function recordService(target: Isolated, entry = cli) {
   const paths = daemonPaths(target.env, target.env.COTAL_HOME);
   const unitPath = join(target.env.XDG_CONFIG_HOME!, "systemd", "user", "cotal-daemon.service");
-  const unit = `[Service]\nEnvironment=PATH="${target.env.PATH}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${node}" "${cli}" daemon serve\nRestart=always\n`;
+  const unit = `[Service]\nEnvironment=PATH="${target.env.PATH}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${node}" "${entry}" daemon serve\nRestart=always\n`;
   mkdirSync(paths.state, { recursive: true, mode: 0o700 });
   const receiptFile = join(paths.state, "service-unit.json");
   const receipt = `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString() })}\n`;
@@ -339,6 +339,28 @@ async function refusedApps(target: Isolated, management: string, reason: string)
   check(!mutation.ok && mutation.error?.code === "LIFECYCLE_BLOCKED" && mutation.error.native?.code === reason, `${reason} safe installation refusal: ${JSON.stringify(mutation)}`);
 }
 
+async function foreignOwnerCells() {
+  const target = isolated("other-copy");
+  const root = join(target.dir, "other");
+  const entry = join(root, "dist", "cotal.js");
+  mkdirSync(join(root, "dist"), { recursive: true });
+  writeFileSync(entry, "");
+  const native = fakeSystemd(target);
+  const service = recordService(target, entry);
+  for (const kind of ["cli", "app"]) {
+    if (kind === "app") writeFileSync(join(root, "desktop-runtime.json"), "{}");
+    const listed = resultOf(await request(target, { op: "agent-apps", refresh: true }));
+    check(listed.ok && listed.result?.management === "other-copy" && !listed.result.serviceRefresh, `foreign ${kind} inventory remains read-only: ${JSON.stringify(listed)}`);
+    assert.deepEqual(listed.result?.serviceOwner, { kind }); checks++;
+    const refused = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    check(!refused.ok && refused.error?.native?.code === "APP_OTHER_COPY", `foreign ${kind} refuses before install: ${JSON.stringify(refused)}`);
+    assert.deepEqual(refused.error?.native?.detail, { owner: { kind } }); checks++;
+    check(!JSON.stringify({ listed, refused }).includes(root), "foreign installation path is not public");
+  }
+  check(!existsSync(target.env.CURL_CALLS!) && native.actions().length === 0, "no maker or native mutation for a foreign owner");
+  check(readFileSync(service.unitPath, "utf8") === service.unit && readFileSync(service.receiptFile, "utf8") === service.receipt, "foreign unit and receipt remain unchanged");
+}
+
 const focused = new Map([
   ["--owned-install", ownedInstall], ["--deferred-pickup", checkAgainAfterSeat],
   ["--startup-during-install", startupDuringInstall], ["--bridge-crash", bridgeDeathDuringInstall],
@@ -457,6 +479,7 @@ async function standardCells() {
   }
   if (process.platform === "linux") {
     await routingCells(target);
+    await foreignOwnerCells();
     await ownedInstall();
     await checkAgainAfterSeat();
     await startupDuringInstall();

@@ -68,6 +68,19 @@ export const appManagementMessages = {
 } as const;
 
 export type AppManagement = "service" | "local" | keyof typeof appManagementMessages;
+export type ServiceOwner = { kind: "app" | "cli" };
+export function serviceOwnerOf(value: unknown): ServiceOwner | undefined {
+  const kind = (value as Partial<ServiceOwner> | null | undefined)?.kind;
+  return kind === "app" || kind === "cli" ? { kind } : undefined;
+}
+
+export function otherCopyMessage(owner: ServiceOwner, installed?: string): string {
+  const where = owner.kind === "app" ? "the Cotal app" : "a command-line install of Cotal";
+  const step = owner.kind === "app" ? "Open that copy and choose Check again in its Agent apps." : "Run setup again from that install.";
+  const blocked = installed ? `, so ${installed} can't be used yet.` : ". This copy can show your agent apps but can't change them.";
+  return `${installed ? `${installed} is installed. ` : ""}Another copy of Cotal runs the background service (${where})${blocked} ${step}`;
+}
+
 export const unknownAppChange = "Cotal couldn’t confirm whether the app changed. Choose Check again to see its current status.";
 export const appManagementRefusals: Partial<Record<string, AppManagement>> = {
   APP_OTHER_COPY: "other-copy", APP_VERSION_CONFLICT: "version-conflict", APP_OLDER_SERVICE: "older-service",

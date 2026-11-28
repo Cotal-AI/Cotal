@@ -372,7 +372,7 @@ export type AgentAppRequest =
 export type AppManagement = "service" | "local" | "other-copy" | "checking" | "foreground" | "unrecorded-service" | "no-user-services" | "version-conflict" | "older-service";
 type ServiceRefresh = { readonly state: "refreshed" } | { readonly state: "pending"; readonly reason: "agents-running" | "unconfirmed" };
 export type AgentAppResult = ({ readonly apps: readonly AgentApp[]; readonly management: AppManagement }
-  | { readonly app: AgentApp; readonly pathAdded?: string }) & { readonly serviceRefresh?: ServiceRefresh };
+  | { readonly app: AgentApp; readonly pathAdded?: string }) & { readonly serviceRefresh?: ServiceRefresh; readonly serviceOwner?: { readonly kind: "app" | "cli" } };
 
 /** Only the authenticated service tells the bridge what its running PATH does not yet find. */
 export type ServiceAppResult = AgentAppResult & { readonly serviceAppPickup?: true; readonly serviceRefreshNeeded?: true; readonly serviceAppDirs?: readonly string[] };

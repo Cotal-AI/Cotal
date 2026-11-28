@@ -286,8 +286,8 @@ space and repeat the add with the same options. A registration for another broke
 does not prevent a prepared local space from starting there. A prepared space records its folder by path, and moving the folder
 leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
-space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
-folder with `cotal space create <name>`, then repeat your original startup command so it keeps your broker address and Manager options. Until then, `space create` of that name
+space named after the folder there. Restore the original folder to its recorded path and repeat the startup command there.
+If you deliberately moved the project, forget the space with `cotal space forget <name>`, prepare it again in its new folder with `cotal space create <name>`, then repeat your original startup command so it keeps your broker address and Manager options. Until then, `space create` of that name
 says its recorded folder no longer exists. Startup also refuses if a file occupies the selected project path or the account cannot enter it. Restore the folder or its access and retry there. To start a different space in the current folder, name it with `--space`.
 
 

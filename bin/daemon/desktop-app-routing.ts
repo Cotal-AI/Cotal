@@ -4,7 +4,7 @@ import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
 import { agentApps, agentAppRequest, type AgentAppRequest, type AgentAppResult, type AppManagement, type ServiceAppResult } from "./desktop-agent-apps.js";
 import { ClosedPeerRefusal, EmptyLifetimeRefusal, openVerified, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, EndpointRefusal, ensureStateDir, MAX_LINE_BYTES } from "./endpoint.js";
-import { installedDaemonIdentity, installedDaemonActivity, nativeDaemonPresence, preflightInstalledDaemon } from "./install.js";
+import { installationOwner, installedDaemonIdentity, installedDaemonActivity, nativeDaemonPresence, preflightInstalledDaemon } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { withAppMutation } from "./agent-app-admission.js";
@@ -14,7 +14,8 @@ type Target = Pick<QueryOptions, "paths" | "peerUid" | "peerPid"> & { readonly h
 type BlockedManagement = Exclude<AppManagement, "service" | "local">;
 type Generation = { readonly pid: number; readonly start: string; readonly receiptKey: string };
 type ServiceRoute = { management: "service"; socket: Socket; generation: Generation };
-type Route = ServiceRoute | { management: "local" | BlockedManagement };
+type ServiceOwner = NonNullable<AgentAppResult["serviceOwner"]>;
+type Route = ServiceRoute | { management: "local" | BlockedManagement; serviceOwner?: ServiceOwner };
 
 const refusals = {
   "version-conflict": ["APP_VERSION_CONFLICT", "The app and the background service are different versions."],
@@ -27,9 +28,9 @@ const refusals = {
 } as const satisfies Record<BlockedManagement, readonly [string, string]>;
 
 class AppOwnerRefusal extends CommandFailure {
-  constructor(readonly management: BlockedManagement) {
+  constructor(readonly management: BlockedManagement, readonly serviceOwner?: ServiceOwner) {
     const [code, message] = refusals[management];
-    super("refused", "LIFECYCLE_BLOCKED", message, { native: { code } });
+    super("refused", "LIFECYCLE_BLOCKED", message, { native: { code, ...(serviceOwner ? { detail: { owner: serviceOwner } } : {}) } });
   }
 }
 
@@ -45,7 +46,7 @@ async function route(target: Target): Promise<Route> {
   try {
     if (preflightInstalledDaemon(paths, home)) {
       const identity = installedDaemonIdentity(paths, home);
-      if (!identity.same) return { management: "other-copy" };
+      if (!identity.same) return { management: "other-copy", serviceOwner: installationOwner(identity.installedEntry) };
       receiptKey = identity.receiptKey;
     }
   } catch (error) { return { management: nativeRefusal(error) }; }
@@ -74,9 +75,9 @@ async function route(target: Target): Promise<Route> {
       if (!preflightInstalledDaemon(paths, home)) {
         const presence = nativeDaemonPresence(paths, home);
         if (presence !== "absent") return { management: presence === "unavailable" ? "no-user-services" : "unrecorded-service" };
-      } else if (!installedDaemonIdentity(paths, home).same) {
-        return { management: "other-copy" };
       } else {
+        const identity = installedDaemonIdentity(paths, home);
+        if (!identity.same) return { management: "other-copy", serviceOwner: installationOwner(identity.installedEntry) };
         const activity = installedDaemonActivity(paths, home);
         if (activity !== "stopped") return { management: activity === "transition" ? "checking"
           : activity === "unavailable" ? "no-user-services" : "unrecorded-service" };
@@ -151,7 +152,8 @@ function publicResult(result: ServiceAppResult): AgentAppResult {
 
 function assertGeneration(target: Target, generation: Generation): void {
   const identity = installedDaemonIdentity(target.paths, target.home);
-  if (!identity.same || identity.receiptKey !== generation.receiptKey) throw new AppOwnerRefusal("unrecorded-service");
+  if (!identity.same) throw new AppOwnerRefusal("other-copy", installationOwner(identity.installedEntry));
+  if (identity.receiptKey !== generation.receiptKey) throw new AppOwnerRefusal("unrecorded-service");
   const owner = readLifetimeRecord(target.paths.lock);
   if (owner?.pid !== generation.pid || owner.start !== generation.start || processBirth(owner.pid) !== owner.start)
     throw new AppOwnerRefusal("checking");
@@ -159,7 +161,7 @@ function assertGeneration(target: Target, generation: Generation): void {
 
 async function serviceInventory(target: Target, refresh: boolean, expected?: Generation): Promise<{ result: ServiceAppResult; generation: Generation }> {
   const current = await route(target);
-  if (current.management !== "service") throw new AppOwnerRefusal(current.management === "local" ? "checking" : current.management);
+  if (current.management !== "service") throw new AppOwnerRefusal(current.management === "local" ? "checking" : current.management, current.serviceOwner);
   try {
     if (expected && (current.generation.pid !== expected.pid || current.generation.start !== expected.start || current.generation.receiptKey !== expected.receiptKey))
       throw new AppOwnerRefusal("checking");
@@ -183,13 +185,14 @@ async function pickup(target: Target, inventory: Awaited<ReturnType<typeof servi
     if (refreshed && (await serviceInventory(target, true)).result.serviceRefreshNeeded !== true) return { state: "refreshed" };
   } catch (error) {
     if (isCommandFailure(error) && error.native?.code === "SEATS_ACTIVE") return { state: "pending", reason: "agents-running" };
+    if (error instanceof AppOwnerRefusal && error.serviceOwner) throw error;
   }
   return { state: "pending", reason: "unconfirmed" };
 }
 
 async function listApps(target: Target, req: Extract<AgentAppRequest, { op: "agent-apps" }>, progress: Progress): Promise<AgentAppResult> {
   const current = await route(target);
-  if (current.management !== "service") return { apps: await agentApps(), management: current.management };
+  if (current.management !== "service") return { apps: await agentApps(), management: current.management, ...(current.serviceOwner ? { serviceOwner: current.serviceOwner } : {}) };
   const result = await exchange(current.socket, req, target.version, progress);
   if (!req.refresh) return publicResult(result);
   if (result.serviceRefreshNeeded !== true) return { ...publicResult(result), serviceRefresh: { state: "refreshed" } };
@@ -198,7 +201,10 @@ async function listApps(target: Target, req: Extract<AgentAppRequest, { op: "age
   try {
     serviceRefresh = await withAppMutation(target.paths, async () =>
       (await pickup(target, await serviceInventory(target, true, current.generation), progress)) ?? { state: "refreshed" });
-  } catch { serviceRefresh = { state: "pending", reason: "unconfirmed" }; }
+  } catch (error) {
+    if (error instanceof AppOwnerRefusal && error.serviceOwner) throw error;
+    serviceRefresh = { state: "pending", reason: "unconfirmed" };
+  }
   return { ...publicResult(result), ...(serviceRefresh ? { serviceRefresh } : {}) };
 }
 
@@ -209,19 +215,23 @@ async function installApp(target: Target, req: Extract<AgentAppRequest, { op: "a
     if (selected.management === "service") {
       await exchange(selected.socket, { op: "agent-apps" }, target.version, () => {});
       assertGeneration(target, selected.generation);
-    } else if (selected.management !== "local") throw new AppOwnerRefusal(selected.management);
+    } else if (selected.management !== "local") throw new AppOwnerRefusal(selected.management, selected.serviceOwner);
     const result = publicResult(await agentAppRequest(req, selected.management, progress));
-    const current = selected.management === "service" ? selected.generation : await startedService(target);
-    if (!current) return result;
-    let serviceRefresh: AgentAppResult["serviceRefresh"];
-    try { serviceRefresh = await pickup(target, await serviceInventory(target, true, current), progress); }
-    catch { serviceRefresh = { state: "pending", reason: "unconfirmed" }; }
-    return { ...result, ...(serviceRefresh ? { serviceRefresh } : {}) };
+    try {
+      const current = selected.management === "service" ? selected.generation : await startedService(target);
+      if (!current) return result;
+      const serviceRefresh = await pickup(target, await serviceInventory(target, true, current), progress);
+      return { ...result, ...(serviceRefresh ? { serviceRefresh } : {}) };
+    } catch (error) {
+      return { ...result, serviceRefresh: { state: "pending", reason: "unconfirmed" },
+        ...(error instanceof AppOwnerRefusal && error.serviceOwner ? { serviceOwner: error.serviceOwner } : {}) };
+    }
   });
 }
 
 async function startedService(target: Target): Promise<Generation | undefined> {
   const current = await route(target);
+  if (current.management === "other-copy") throw new AppOwnerRefusal(current.management, current.serviceOwner);
   if (current.management !== "service") return undefined;
   current.socket.destroy();
   return current.generation;
@@ -231,7 +241,7 @@ export async function desktopAppRequest(target: Target, req: AgentAppRequest, pr
   if (req.op === "agent-apps") {
     try { return await listApps(target, req, progress); }
     catch (error) {
-      if (error instanceof AppOwnerRefusal) return { apps: await agentApps(), management: error.management };
+      if (error instanceof AppOwnerRefusal) return { apps: await agentApps(), management: error.management, ...(error.serviceOwner ? { serviceOwner: error.serviceOwner } : {}) };
       throw error;
     }
   }
@@ -244,7 +254,7 @@ export async function desktopAppRequest(target: Target, req: AgentAppRequest, pr
       return publicResult(await exchange(selected.socket, req, target.version, progress));
     } finally { selected.socket.destroy(); }
   }
-  if (selected.management !== "local") throw new AppOwnerRefusal(selected.management);
+  if (selected.management !== "local") throw new AppOwnerRefusal(selected.management, selected.serviceOwner);
   return withAppMutation(target.paths, async () => {
     // Revalidate after admission. The app gate, not the lifetime lock, covers the maker process.
     const admitted = await route(target);
@@ -252,7 +262,7 @@ export async function desktopAppRequest(target: Target, req: AgentAppRequest, pr
       admitted.socket.destroy();
       throw new AppOwnerRefusal("checking");
     }
-    if (admitted.management !== "local") throw new AppOwnerRefusal(admitted.management);
+    if (admitted.management !== "local") throw new AppOwnerRefusal(admitted.management, admitted.serviceOwner);
     return publicResult(await agentAppRequest(req, "local", progress));
   });
 }
