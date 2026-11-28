@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { MIN_PLUGIN_CORE } from "@cotal-ai/core";
 import { extensionsDir, hostPackageDir, type InstalledExtensionPackage } from "./extensions.js";
 import { comparePeerVersions } from "./import-diagnosis.js";
@@ -16,7 +16,7 @@ function packageVersion(file: string): string {
 function resolvePluginCore(entry: string): string {
   const file = realpathSync(createRequire(entry).resolve("@cotal-ai/core/package.json"));
   const inside = relative(realpathSync(extensionsDir()), file);
-  if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
+  if (!inside || inside.startsWith("..") || isAbsolute(inside))
     throw new Error("the resolved core is outside the extensions prefix");
   return packageVersion(file);
 }

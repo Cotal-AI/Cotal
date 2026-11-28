@@ -1,13 +1,14 @@
 /** Installed factory verification and import remedies. Run: pnpm smoke:import-remedy */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension } from "@cotal-ai/core";
 import {
   CorruptExtensionPackageError, extensionPackageDir, extensionsManifestPath, installedExtensionPackage,
-  installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension,
+  extensionsDir, hostPackageDir, installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { pluginManifest } from "../src/plugin-manifest.js";
 import { readPluginDeclaration, samePluginDeclaration } from "../src/plugin-declaration.js";
@@ -153,26 +154,62 @@ async function declarationPolicy() {
 
 async function physicalCoreBoundary() {
   const original = process.env.XDG_CONFIG_HOME;
-  const real = join(tmp, "physical"), linked = join(tmp, "linked");
-  mkdirSync(real);
+  const npm = process.platform === "win32" ? process.execPath : "npm";
+  const npmPrefix = process.platform === "win32" ? [join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")] : [];
+  const pack = (dir: string): string => {
+    const packed = spawnSync(npm, [...npmPrefix, "pack", "--ignore-scripts", "--silent", "--pack-destination", tmp, dir], { encoding: "utf8" });
+    assert.equal(packed.status, 0, packed.stderr || packed.error?.message);
+    return join(tmp, packed.stdout.trim());
+  };
+  const unpack = (archive: string, target: string) => {
+    mkdirSync(target, { recursive: true });
+    const result = spawnSync("tar", ["-xzf", archive, "-C", target, "--strip-components=1"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+  };
+  const coreDir = hostPackageDir("@cotal-ai/core");
+  const { version: coreVersion } = JSON.parse(readFileSync(join(coreDir, "package.json"), "utf8"));
+  const coreArchive = pack(coreDir);
+  const refusal = /no readable core version inside the extensions prefix.*cotal ext add/;
+  const outer = join(tmp, "outer"), home = join(outer, "home"), real = join(home, "config"), linked = join(home, "linked");
+  mkdirSync(real, { recursive: true });
   symlinkSync(real, linked, "junction");
-  process.env.XDG_CONFIG_HOME = linked;
+  const outerDecoy = join(outer, "node_modules", "@cotal-ai", "core");
+  unpack(coreArchive, outerDecoy);
+  const decoy = join(real, "cotal", "node_modules", "@cotal-ai", "core");
+  unpack(coreArchive, decoy);
   try {
-    const metadata = { version: "1.0.0", main: undefined, dependencies: { "@cotal-ai/core": "^0.184.0" } };
-    const good = await fixture("physical-core");
-    const nested = join(good.dir, "node_modules", "@cotal-ai", "core");
-    mkdirSync(nested, { recursive: true });
-    writeFileSync(join(nested, "package.json"), JSON.stringify({ name: "@cotal-ai/core", version: "0.184.1", exports: { "./package.json": "./package.json" } }));
-    checkPluginCore(good.item.pkg, metadata, good.declaration, join(good.dir, "index.mjs"), "0.185.0");
-
-    const outside = join(tmp, "outside-core");
-    renameSync(nested, outside);
-    const escaped = await fixture("escaped-core");
-    const external = join(escaped.dir, "node_modules", "@cotal-ai", "core");
-    mkdirSync(join(external, ".."), { recursive: true });
-    symlinkSync(outside, external, "junction");
-    assert.throws(() => checkPluginCore(escaped.item.pkg, metadata, escaped.declaration, join(escaped.dir, "index.mjs"), "0.185.0"), (error: Error) =>
-      error.message.includes("inside the extensions prefix") && error.cause instanceof Error && error.cause.message.includes("outside the extensions prefix"));
+    for (const [label, config] of [["direct", real], ["linked", linked]]) {
+      process.env.XDG_CONFIG_HOME = config;
+      const corePath = join(extensionsDir(), "node_modules", "@cotal-ai", "core");
+      const install = (suffix: string, expectedCore: string) => {
+        const name = `core-location-${label}-${suffix}`, pkg = `@third/${name}`;
+        const ref = { kind: "runtime", name };
+        const source = join(tmp, name);
+        writePluginFixture(source, { name: pkg, version: "1.0.0", provides: [ref],
+          packageFields: { dependencies: { "@cotal-ai/core": coreVersion } },
+          factorySource: `import core from '@cotal-ai/core/package.json' with {type:'json'};\nexport default host => { if (core.version !== ${JSON.stringify(coreVersion)}) throw Error('unexpected core'); host.register(${JSON.stringify(ref)}); };` });
+        const destination = extensionPackageDir(pkg);
+        unpack(pack(source), destination);
+        const resolved = createRequire(join(destination, "index.js")).resolve("@cotal-ai/core/package.json");
+        assert.equal(realpathSync(resolved), realpathSync(join(expectedCore, "package.json")));
+        writeFileSync(extensionsManifestPath(), JSON.stringify({ extensions: [{ pkg, provides: [ref], version: "1.0.0", installId: name, commands: [] }] }));
+        return ref;
+      };
+      await assert.rejects(materializeFromManifest(install("missing", decoy)), refusal);
+      renameSync(decoy, `${decoy}-hold`);
+      try { await assert.rejects(materializeFromManifest(install("outer", outerDecoy)), refusal); }
+      finally { renameSync(`${decoy}-hold`, decoy); }
+      unpack(coreArchive, corePath);
+      assert.equal((await materializeFromManifest(install("hoisted", corePath))).kind, "runtime");
+      rmSync(corePath, { recursive: true });
+      if (label === "direct") {
+        const sibling = join(dirname(extensionsDir()), "extensions-old", "node_modules", "@cotal-ai", "core");
+        unpack(coreArchive, sibling);
+        symlinkSync(sibling, corePath, "junction");
+        try { await assert.rejects(materializeFromManifest(install("sibling", sibling)), refusal); }
+        finally { rmSync(corePath, { recursive: true }); }
+      }
+    }
   } finally {
     if (original === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = original;
