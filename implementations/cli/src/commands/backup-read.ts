@@ -17,13 +17,9 @@ export function backupRead(args: ParsedArgs): void {
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const path = artifact ?? named;
-    if (artifact !== undefined && error instanceof ArtifactFileFault) throw artifactReadRefusal(error, artifact) ?? new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: artifact, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
-    const { code, syscall, path: denied } = error as NodeJS.ErrnoException;
-    if (artifact !== undefined && (code === "EACCES" || code === "EPERM") &&
-        ((syscall === "scandir" && denied === artifact) || (syscall === "lstat" && denied !== undefined && dirname(denied) === artifact)))
-      throw new CommandFailure("refused", "PERMISSION_DENIED", "this account cannot read or search the backup artifact folder", {
-        target: { directory: artifact }, native: { code }, remedy: "restore read and search access to this folder for your account, or use an accessible copy of the backup",
-      });
+    const denied = artifact !== undefined ? artifactReadRefusal(error, artifact) : undefined;
+    if (denied) throw denied;
+    if (artifact !== undefined && error instanceof ArtifactFileFault) throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: artifact, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
     const missing = missingBackupPath(path);
     if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(path, missing)}; nothing was checked`, { target: { directory: path, folder: dirname(path), missing }, remedy: "name an existing backup artifact folder" });
     if (artifact !== undefined) {
