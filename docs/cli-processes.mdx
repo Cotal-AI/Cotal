@@ -1243,8 +1243,11 @@ An unmarked foreground process or older unit remains running until an explicit g
 Its log lines, such as a recovered socket, go to stderr. That
 success line is plain text; `--json` shapes its refusals. `status` prints the
 state, version, protocol, process ID, start time and uptime. It also lists each hosted Manager's state,
-instance, PID, restart count, last refusal and Next. `--space <s>` selects one space. JSON carries the
-same facts. `service-status` reports the machine connection and Manager separately.
+instance, PID, restart count, last refusal and Next. `--space <s>` selects one hosted space, including a
+hosted Manager that is stopped or refused. If the daemon does not host a Manager for `<s>`, `status`
+refuses `TARGET_NOT_FOUND` (exit 2), lists any spaces hosted on this computer, and uses `NOT_REQUESTED`
+for a registered space or `NOT_REGISTERED` (with `target.requested`) for an unregistered name. JSON
+carries the same facts. `service-status` reports the machine connection and Manager separately.
 `state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 

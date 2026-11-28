@@ -1869,8 +1869,12 @@ try {
 
           await killAndAwaitExit(child, "SIGTERM");
           child = await start();
+          const restartedAll = await cli("status");
           const restarted = await cli("status", "--space", localSpace);
-          check("H2 restarting the daemon does not reveal a static setup refusal", restarted.code === 0 && !existsSync(localState), restarted.doc);
+          check("H2 restarting the daemon does not reveal a static setup refusal", restartedAll.code === 0
+            && restartedAll.doc.result?.managers?.length === 0 && restarted.code === 2
+            && restarted.doc.error?.code === "TARGET_NOT_FOUND" && restarted.doc.error?.cause?.code === "NOT_REQUESTED"
+            && localGuidance(restarted.doc.error?.remedy) && !existsSync(localState), { all: restartedAll.doc, space: restarted.doc });
 
           // Earlier versions persisted this refusal. Disconnect still has to clear it.
           const seedRefusal = () => {

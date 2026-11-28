@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath, windowsShellWord } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, findPreparedSpace, hasUserAuthState, homeCotalDir, isMeshRegistryError, meshFile, readMeshRegistry, resolveOnPath, shellPath, windowsShellWord } from "@cotal-ai/workspace";
 
 /** An unavailable systemd installation is different from an unreachable systemd user manager. */
 export function daemonServiceRequirement(home?: string): CommandFailure | undefined {
@@ -38,4 +38,53 @@ export function daemonCommandCopy(op: string, home?: string, args: readonly (str
   if (home !== undefined && home !== homeCotalDir()) words.push(["--daemon-home", home]);
   return words.map(word => typeof word === "string" ? quote(word)
     : `${word[0]}${word[1].startsWith("-") ? "=" : " "}${quote(word[1])}`).join(" ");
+}
+
+/** Refuse `daemon status --space` when the daemon does not host a Manager for `space`. */
+export function unhostedManagerStatusRefusal(space: string, hostedSpaces: readonly string[], home?: string): CommandFailure {
+  const hosted = [...new Set(hostedSpaces)].sort();
+  const setupCommand = codeSpan(daemonCommandCopy("setup", home, [["--space", space]]));
+  let entry;
+  let localPrepared = false;
+  try {
+    const { entries, unusable } = readMeshRegistry();
+    if (unusable.some(error => error.file === meshFile(space))) {
+      return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "The mesh registry could not be read for this space.", {
+        remedy: `Run ${codeSpan(daemonCommandCopy("spaces", home))} to identify unreadable records, then restore the mesh registry.`,
+        native: { code: "UNAVAILABLE" },
+      });
+    }
+    entry = entries.find(item => item.space === space);
+    if (!entry) {
+      const prepared = findPreparedSpace(space);
+      localPrepared = Boolean(prepared && !hasUserAuthState(prepared.root, space, { readOnly: true }));
+    }
+  } catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "The mesh registry could not be read for this space.", {
+      remedy: `Run ${codeSpan(daemonCommandCopy("spaces", home))} to identify unreadable records, then restore the mesh registry.`,
+      native: { code: "UNAVAILABLE" },
+    });
+  }
+  if (!entry && !localPrepared) {
+    const summary = hosted.length
+      ? `Hosted spaces on this computer: ${hosted.join(", ")}.`
+      : "This computer is not hosting any spaces.";
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `Space ${space} is not registered on this computer. ${summary}`, {
+      target: { requested: space },
+      remedy: `Check the name with \`cotal space\`, or run ${setupCommand} to add this space and host it here.`,
+      native: { code: "NOT_REGISTERED" },
+    });
+  }
+  const summary = hosted.length
+    ? `Hosted spaces on this computer: ${hosted.join(", ")}.`
+    : "It is not hosting any spaces.";
+  const remedy = entry?.mode === "user"
+    ? `Run ${setupCommand} to host its Manager here.`
+    : "Run `cotal up` in the folder that hosts the local space. Its stack runs the Manager.";
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `This computer is not hosting a Manager for ${space}. ${summary}`, {
+    target: { space },
+    remedy,
+    native: { code: "NOT_REQUESTED" },
+  });
 }

@@ -74,8 +74,9 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { managerCleanupFile, writeManagerCleanup } from "../daemon/manager-cleanup.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
 // Read the scratch-parent override before the COTAL_* environment is cleared below.
@@ -150,7 +151,7 @@ function track(child: ChildProcess): ChildProcess {
   return child;
 }
 
-type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
+type Doc = { command?: string; target?: { space?: string; requested?: string; idp?: string } | null; outcome?: string; result?: Record<string, any> | null; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
 async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(typeof args === "string"
@@ -536,7 +537,40 @@ try {
       check(`G1 status refuses ${flags[0]} from another mode`, result.status === 1 && result.doc.error?.code === "USAGE_INVALID" && result.doc.error.message?.includes(flags[0]!) === true, { status: result.status, doc: result.doc });
     }
     const filtered = await cli(["status", "--daemon-home", managed, "--space", "nonexistent", "--json"]);
-    check("G1 status accepts the hosted Manager space filter", filtered.status === 0 && filtered.doc.result?.pid === managedServe?.child.pid && filtered.doc.result?.managers?.[0]?.space === "nonexistent" && filtered.doc.result?.managers?.[0]?.state === "stopped", filtered);
+    check("G1 status refuses an unhosted unknown space with TARGET_NOT_FOUND", filtered.status === 2 && filtered.doc.outcome === "refused" && filtered.doc.result === null && filtered.doc.target?.requested === "nonexistent" && filtered.doc.target?.space === undefined && filtered.doc.error?.code === "TARGET_NOT_FOUND" && filtered.doc.error.cause?.code === "NOT_REGISTERED", filtered);
+    const quotedHome = `'${managed.replace(/'/g, `'\\''`)}'`;
+    const hostedSpace = "hosted-stopped", knownUser = "-known-user", knownOpen = "known-open", unknownSpace = "no-such-space";
+    recordMesh(userMesh(hostedSpace));
+    recordMesh(userMesh(knownUser));
+    recordMesh({ space: knownOpen, mode: "open", root: meshRoot, server: "nats://127.0.0.1:1", ts: new Date().toISOString() });
+    try {
+      const emptyAll = await cli(["status", "--daemon-home", managed, "--json"]);
+      check("G1 empty daemon reports 0 hosted Managers before records exist", emptyAll.status === 0 && emptyAll.doc.result?.managers?.length === 0, emptyAll);
+      const emptyUnknownPlain = await cli(["status", "--daemon-home", managed, "--space", unknownSpace, "--plain"]);
+      check("G1 unknown space with 0 hosted Managers refuses without Mesh header or Manager section", emptyUnknownPlain.status === 2 && emptyUnknownPlain.out === "" && emptyUnknownPlain.err.startsWith("Request refused\n") && !emptyUnknownPlain.err.includes(`Mesh: ${unknownSpace}`) && !emptyUnknownPlain.err.includes("Manager:") && emptyUnknownPlain.err.includes(`Space ${unknownSpace} is not registered on this computer. This computer is not hosting any spaces.`) && emptyUnknownPlain.err.includes(`cotal daemon setup --space ${unknownSpace} --daemon-home ${quotedHome}`), emptyUnknownPlain);
+      const emptyKnownPlain = await cli(["status", "--daemon-home", managed, `--space=${knownUser}`, "--plain"]);
+      check("G1 known unhosted user space with 0 hosted Managers refuses NOT_REQUESTED and names setup", emptyKnownPlain.status === 2 && emptyKnownPlain.out === "" && emptyKnownPlain.err.startsWith(`Mesh: ${knownUser}\n`) && !emptyKnownPlain.err.includes("Manager:") && emptyKnownPlain.err.includes(`This computer is not hosting a Manager for ${knownUser}. It is not hosting any spaces.`) && emptyKnownPlain.err.includes(`Run \`cotal daemon setup --space=${knownUser} --daemon-home ${quotedHome}\` to host its Manager here.`), emptyKnownPlain);
+      const storeIdentity = workspaceSecretStore(meshRoot).identity;
+      if (storeIdentity.kind !== "fs") throw new Error("expected fs store identity");
+      writeManagerCleanup(managed, { version: 1, space: hostedSpace, root: meshRoot, provider: "cotal", storeIdentity, instanceId: "a".repeat(31), phase: "pending" });
+      const withHostedAll = await cli(["status", "--daemon-home", managed, "--json"]);
+      check("G1 daemon reports 1 hosted stopped Manager when cleanup record exists", withHostedAll.status === 0 && withHostedAll.doc.result?.managers?.length === 1 && withHostedAll.doc.result.managers[0]?.space === hostedSpace && withHostedAll.doc.result.managers[0]?.state === "stopped", withHostedAll);
+      const hostedJson = await cli(["status", "--daemon-home", managed, "--space", hostedSpace, "--json"]);
+      const hostedPlain = await cli(["status", "--daemon-home", managed, "--space", hostedSpace, "--plain"]);
+      check("G1 hosted stopped space still exits 0 with 1 Manager row in JSON and plain", hostedJson.status === 0 && hostedJson.doc.outcome === "ok" && hostedJson.doc.target?.space === hostedSpace && hostedJson.doc.result?.managers?.length === 1 && hostedJson.doc.result.managers[0]?.space === hostedSpace && hostedJson.doc.result.managers[0]?.state === "stopped" && hostedPlain.status === 0 && hostedPlain.err === "" && hostedPlain.out.startsWith(`Mesh: ${hostedSpace}\n`) && hostedPlain.out.includes(`Manager: ${hostedSpace}\n  Last observed state:  stopped`), { hostedJson, hostedPlain });
+      const knownUserJson = await cli(["status", "--daemon-home", managed, `--space=${knownUser}`, "--json"]);
+      check("G1 known unhosted user space lists the 1 hosted space and refuses NOT_REQUESTED", knownUserJson.status === 2 && knownUserJson.doc.outcome === "refused" && knownUserJson.doc.result === null && knownUserJson.doc.target?.space === knownUser && knownUserJson.doc.error?.code === "TARGET_NOT_FOUND" && knownUserJson.doc.error.cause?.code === "NOT_REQUESTED" && knownUserJson.doc.error.message === `This computer is not hosting a Manager for ${knownUser}. Hosted spaces on this computer: ${hostedSpace}.` && knownUserJson.doc.error.remedy === `Run \`cotal daemon setup --space=${knownUser} --daemon-home ${quotedHome}\` to host its Manager here.`, knownUserJson);
+      const knownOpenJson = await cli(["status", "--daemon-home", managed, "--space", knownOpen, "--json"]);
+      check("G1 known unhosted local space lists the 1 hosted space and points to cotal up", knownOpenJson.status === 2 && knownOpenJson.doc.outcome === "refused" && knownOpenJson.doc.result === null && knownOpenJson.doc.target?.space === knownOpen && knownOpenJson.doc.error?.code === "TARGET_NOT_FOUND" && knownOpenJson.doc.error.cause?.code === "NOT_REQUESTED" && knownOpenJson.doc.error.message === `This computer is not hosting a Manager for ${knownOpen}. Hosted spaces on this computer: ${hostedSpace}.` && knownOpenJson.doc.error.remedy === "Run `cotal up` in the folder that hosts the local space. Its stack runs the Manager.", knownOpenJson);
+      const unknownWithHostedJson = await cli(["status", "--daemon-home", managed, "--space", unknownSpace, "--json"]);
+      check("G1 unknown space lists the 1 hosted space and refuses NOT_REGISTERED", unknownWithHostedJson.status === 2 && unknownWithHostedJson.doc.outcome === "refused" && unknownWithHostedJson.doc.result === null && unknownWithHostedJson.doc.target?.requested === unknownSpace && unknownWithHostedJson.doc.target?.space === undefined && unknownWithHostedJson.doc.error?.code === "TARGET_NOT_FOUND" && unknownWithHostedJson.doc.error.cause?.code === "NOT_REGISTERED" && unknownWithHostedJson.doc.error.message === `Space ${unknownSpace} is not registered on this computer. Hosted spaces on this computer: ${hostedSpace}.` && unknownWithHostedJson.doc.error.remedy === `Check the name with \`cotal space\`, or run \`cotal daemon setup --space ${unknownSpace} --daemon-home ${quotedHome}\` to add this space and host it here.`, unknownWithHostedJson);
+      const afterChecks = await cli(["status", "--daemon-home", managed, "--json"]);
+      check("G1 unhosted status refusals leave hosted Manager count at 1", afterChecks.status === 0 && afterChecks.doc.result?.managers?.length === 1 && !existsSync(join(managed, "daemon", spaceSegment(unknownSpace))), afterChecks);
+    } finally {
+      rmSync(managerCleanupFile(managed, hostedSpace), { force: true });
+      rmSync(join(managed, "daemon", spaceSegment(hostedSpace)), { recursive: true, force: true });
+      for (const space of [hostedSpace, knownUser, knownOpen]) rmSync(meshFile(space), { force: true });
+    }
     const unused = join(root, "unused"); mkdirSync(unused, { mode: 0o700 });
     const before = runtimeEntries();
     const dry = await cli(["serve", "--daemon-home", unused, "--dry-run", "--json"]);
