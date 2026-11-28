@@ -744,12 +744,12 @@ export const scenarios = [
   } },
   { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
-    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+    assert.equal(await page.locator("#tray-label").textContent(), "Connected");
   } },
   { name: "account-ready", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
     assert.equal(await page.locator("#another-space").textContent(), "Add a space");
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
-    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+    assert.equal(await page.locator("#tray-label").textContent(), "Connected");
     assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");
     assert.equal(await page.locator("#dashboard").isVisible(), true);
     assert.equal(await page.locator("#dashboard-spaces-note").isVisible(), false);
@@ -761,12 +761,12 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
-      const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : observed === "refusal" ? "Needs attention" : "Starting";
+      const pill = observed === "connected" || observed === "removed on this computer" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "refusal" ? "Repair needed" : "Starting";
       assert.equal(await page.locator("#tray-label").textContent(), pill);
       const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
       assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
       if (observed === "refusal") {
-        assert.equal(await page.locator("#connection-title").textContent(), "Connection needs attention");
+        assert.equal(await page.locator("#connection-title").textContent(), "This computer needs a repair");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
       }

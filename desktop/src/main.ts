@@ -590,7 +590,7 @@ function showStage(next: Stage, focus = false): void {
     if (isTauri()) void invoke("set_connection_state", { connected: state.word === "Connected", label: state.word }).catch(() => undefined);
     el("tray-indicator").classList.toggle("connected", state.dot === "ok");
     el("tray-indicator").classList.toggle("error", state.dot === "problem");
-    if (!anyConnected) {
+    if (!anyConnected || state.dot === "problem") {
       const empty = computerSpaces(computerAccount).length === 0;
       el("connection-icon").dataset.tone = state.dot === "problem" ? "error" : state.dot === "waiting" ? "waiting" : empty ? "success" : "neutral";
       setIcon(el("connection-icon"), state.word === "Sign in required" ? "browser" : state.word === "Offline" ? "offline" : state.dot === "problem" ? "warning" : state.dot === "waiting" ? "clock" : empty ? "check" : "computer");

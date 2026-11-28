@@ -73,6 +73,7 @@ test("one state feeds the window, the pill, the dot and the tray", () => {
   const words: SurfaceWord[] = ["Connected", "Starting", "Offline", "Can't connect", "Sign in required", "Service stopped", "Updating", "Not set up", "Disk full", "Repair needed"];
   const cases: { name: string; input: Parameters<typeof surfaceState>[0]; word: SurfaceWord; dot: "ok" | "waiting" | "problem" }[] = [
     { name: "a space answers", input: { rows: [row], anyConnected: true }, word: "Connected", dot: "ok" },
+    { name: "a working space stays connected while another remembers a refusal", input: { rows: [row, { space: "other", desired: true, observed: "refusal", lastRefusal: "The connector could not start." }], anyConnected: true }, word: "Connected", dot: "ok" },
     { name: "a space is starting", input: { rows: [{ ...row, observed: "starting" }], anyConnected: false }, word: "Starting", dot: "waiting" },
     { name: "the network is off", input: { rows: [{ ...row, observed: "offline" }], anyConnected: false }, word: "Offline", dot: "problem" },
     { name: "a space is not answering", input: { rows: [{ ...row, observed: "unreachable" }], anyConnected: false }, word: "Can't connect", dot: "problem" },
@@ -82,6 +83,7 @@ test("one state feeds the window, the pill, the dot and the tray", () => {
     { name: "nothing is set up", input: { rows: [], anyConnected: false, service: "not-set-up" }, word: "Not set up", dot: "waiting" },
     { name: "the disk is full", input: { rows: [row], anyConnected: true, diskFull: true }, word: "Disk full", dot: "problem" },
     { name: "a repair is needed", input: { rows: [], anyConnected: false, repairNeeded: true }, word: "Repair needed", dot: "problem" },
+    { name: "a saved refusal needs a repair", input: { rows: [{ space: "mine", desired: true, observed: "refusal", lastRefusal: "The connector could not start." }], anyConnected: false }, word: "Repair needed", dot: "problem" },
     { name: "no space can run", input: { rows: [{ ...row, desired: false, observed: "removed on this computer" }], anyConnected: false }, word: "Connected", dot: "ok" },
   ];
   for (const item of cases) {
@@ -91,5 +93,5 @@ test("one state feeds the window, the pill, the dot and the tray", () => {
     assert.equal(words.includes(state.word), true, `${item.name} uses one of the ten words`);
     assert.equal(/daemon|generation|Needs attention/.test(`${state.word} ${state.title}`), false, `${item.name} uses no internal word`);
   }
-  assert.equal(cases.length, words.length + 1, "every word has a row, plus the case where nothing can run");
+  assert.equal(cases.length, words.length + 3, "every word has a row, plus a working space beside a refusal, a saved refusal, and the case where nothing can run");
 });
