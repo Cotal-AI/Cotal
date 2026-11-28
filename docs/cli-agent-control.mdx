@@ -39,6 +39,10 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 When a single manager returns an empty list, Next checks the local default harness before offering
 `cotal spawn`. If a required executable is missing, Next names it and links to its installation guide.
 
+On a fresh install, if you are not signed in and have not prepared or registered a space,
+`cotal ps` refuses with `TARGET_NOT_FOUND` and exits 2. The Next section gives `cotal login`
+on its own line.
+
 ### Control credentials
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
