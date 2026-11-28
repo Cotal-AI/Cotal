@@ -134,6 +134,9 @@ export class EndpointSubscriptions {
       await this.confirmJoin(channel);
       confirmed = true;
       this.confirmedJoins.add(channel);
+      // The registry handle belongs to the connection. Read policy after the replacement binds.
+      const rebuild = this.lifecycle.rebuildPromise;
+      if (rebuild && pending()) await rebuild;
       if (retry && pending()) replay.through = (await this.armJoin([channel])).get(channel)!;
       if (pending()) backfilled = await this.parts.history.backfillRuntimeJoin(channel, replay, pending);
       if (pending() && (this.lifecycle.rebuildPromise || this.conn.nc !== nc || nc?.isClosed())) {

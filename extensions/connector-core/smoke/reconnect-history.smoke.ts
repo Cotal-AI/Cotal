@@ -1,6 +1,7 @@
 /** Durable catch-up must not turn an offline channel conversation into new work. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -249,6 +250,64 @@ async function checkPendingJoin(
   await agent.stop();
 }
 
+async function checkJoinDuringRebuild(manager: CotalEndpoint, publisher: CotalEndpoint) {
+  const channel = "replay.control.inflight";
+  const agent = await wideReader(manager, "join-inflight", []);
+  await agent.start();
+  assert.equal(agent.channelInfo(channel).replay, false);
+  const consumers = agent.ep["consumers"];
+  const credentials = agent.ep["credentials"];
+  const confirm = consumers.confirmChatSub.bind(consumers);
+  const close = credentials.closeWithoutLibraryReconnect.bind(credentials);
+  let enterNullWindow!: () => void;
+  let resumeRebuild!: () => void;
+  const nullWindow = new Promise<void>(resolve => { enterNullWindow = resolve; });
+  const releaseRebuild = new Promise<void>(resolve => { resumeRebuild = resolve; });
+  credentials.closeWithoutLibraryReconnect = async (nc: Parameters<typeof close>[0]) => {
+    enterNullWindow();
+    await releaseRebuild;
+    await close(nc);
+  };
+  let rebuild: Promise<void> | undefined;
+  consumers.confirmChatSub = async () => {
+    await confirm();
+    consumers.confirmChatSub = confirm;
+    rebuild = agent.ep.reconnect();
+    await nullWindow;
+  };
+  const deliveries: { id: string; historical: boolean }[] = [];
+  agent.ep.on("message", (message, _delivery, meta) => {
+    if (message.channel === channel) deliveries.push({ id: message.id, historical: meta.historical });
+  });
+  const tool = cotalToolSpecs(agent.config).find(spec => spec.name === "cotal_join")!;
+  let settled = false;
+  const joining = Promise.resolve(tool.run(agent, agent.config, { channel })).finally(() => { settled = true; });
+  let settledWhileHeld: boolean;
+  try {
+    await Promise.race([nullWindow, joining.then(result => { throw new Error(result.text); })]);
+    // Let the confirmed join take its next step while dialing is still held by the gate.
+    await nextTurn();
+    assert.equal(agent.ep["conn"].channelKv, undefined, "the rebuild must still be between connections");
+    assert(!agent.joinedChannels().includes(channel));
+    settledWhileHeld = settled;
+  } finally {
+    resumeRebuild();
+    credentials.closeWithoutLibraryReconnect = close;
+  }
+  await rebuild;
+  const result = await joining;
+  console.log(`join during held rebuild: ${JSON.stringify({ settledWhileHeld, result, joined: agent.joinedChannels() })}`);
+  assert(!result.isError && result.text.startsWith(`Joined #${channel} (live).`), result.text);
+  assert(!settledWhileHeld, "the join must wait for the replacement connection");
+  assert(!result.text.includes("Backfilled") && agent.joinedChannels().includes(channel));
+  const post = await publisher.multicast("live after held rebuild", { channel });
+  const marker = await publisher.multicast("live delivery marker", { channel });
+  await until(() => deliveries.some(item => item.id === marker.id), "the restored subscription must receive live traffic");
+  assert.deepEqual(deliveries, [{ id: post.id, historical: false }, { id: marker.id, historical: false }]);
+  console.log("held rebuild live deliveries: 2, no duplicates");
+  await agent.stop();
+}
+
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
@@ -378,10 +437,12 @@ try {
   await replayOffSeat.stop();
   await seedChannelRegistry({ servers, space, creds, file: { defaults: { replay: true }, channels: {
     "replay.control.rebuild": { deliveryClass: "live" },
+    "replay.control.inflight": { deliveryClass: "live", replay: false },
     "replay.control.stop": { deliveryClass: "live", replay: false },
     "replay.control.leave": { deliveryClass: "live", replay: false },
   } } });
   for (const action of ["rebuild", "stop", "leave"] as const) await checkPendingJoin(manager, publisher, action);
+  await checkJoinDuringRebuild(manager, publisher);
   await checkWideReplay(manager, publisher);
   await checkInterruptedReplay(manager, publisher);
   await checkOverlappingWindows(manager, publisher, creds);
@@ -391,4 +452,4 @@ try {
   await killAndAwaitExit(broker);
   release();
 }
-emitSentinel({ passed: 12, failed: 0 });
+emitSentinel({ passed: 13, failed: 0 });
