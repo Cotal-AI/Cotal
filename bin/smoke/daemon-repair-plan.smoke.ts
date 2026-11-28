@@ -1,7 +1,7 @@
 /** Repair's plan asks before anything that stops or starts what the person may be using, never
  *  downgrades the service, acts only on what the plan named, and reports a step that fails partway. */
 import assert from "node:assert/strict";
-import { dirname } from "node:path";
+import { dirname, sep } from "node:path";
 import { failedCopy, pickupOutcome, planFrom, probeFailure, runSteps, startSpaces, type RepairProbe, type RepairStep } from "../daemon/repair.js";
 import type { DaemonStatus, HostedManager } from "../daemon/protocol.js";
 
@@ -166,13 +166,16 @@ await cell("W8: a rolled-back move and a failed restore each get their own next 
 });
 
 await cell("a recorded service that can't run (gone, or in a disk image, App Translocation or Downloads) is moved whatever its version; a real copy keeps the version guard", () => {
-  const home = "/Users/ada";
+  // The recorded paths use this computer's separator, as a real record does. A disk image mounts under
+  // /Volumes on macOS only, so that location is checked where paths are POSIX.
+  const native = (posix: string) => posix.split("/").join(sep);
+  const home = native("/Users/ada");
   const at = (entry: string, version?: string): RepairProbe => ({ status: undefined, statusUnknown: false, service: { kind: "other", installed: dirname(dirname(entry)), entry, ...(version ? { version } : {}) } });
   const owner = (probe: RepairProbe) => planFrom(probe, VERSION, home).steps.find(item => item.step === "service-owner")!;
   for (const entry of [
-    "/Volumes/Cotal/Cotal.app/Contents/Resources/runtime/dist/cotal.js",
-    "/private/var/folders/xy/abc/T/AppTranslocation/1234-5678/d/Cotal.app/Contents/Resources/runtime/dist/cotal.js",
-    "/Users/ada/Downloads/Cotal.app/Contents/Resources/runtime/dist/cotal.js",
+    ...(sep === "/" ? ["/Volumes/Cotal/Cotal.app/Contents/Resources/runtime/dist/cotal.js"] : []),
+    native("/private/var/folders/xy/abc/T/AppTranslocation/1234-5678/d/Cotal.app/Contents/Resources/runtime/dist/cotal.js"),
+    native("/Users/ada/Downloads/Cotal.app/Contents/Resources/runtime/dist/cotal.js"),
   ]) {
     const step = owner(at(entry));
     assert.equal(step.outcome, "fix", entry);
@@ -184,7 +187,7 @@ await cell("a recorded service that can't run (gone, or in a disk image, App Tra
   assert.equal(gone.consent, "takeover", "a recorded program that no longer exists moves too");
   const real = owner(at("/opt/cotal/dist/cotal.js"));
   assert.equal(real.outcome, "cannot", "a real installed copy whose version can't be read keeps the W5 guard");
-  assert.equal(owner(at("/Users/ada/Downloads-old/Cotal.app/Contents/Resources/runtime/dist/cotal.js")).outcome, "cannot", "a folder that only starts with Downloads is not Downloads");
+  assert.equal(owner(at(native("/Users/ada/Downloads-old/Cotal.app/Contents/Resources/runtime/dist/cotal.js"))).outcome, "cannot", "a folder that only starts with Downloads is not Downloads");
 });
 
 const CELLS = 15;
