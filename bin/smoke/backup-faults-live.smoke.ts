@@ -118,6 +118,14 @@ function assertAttemptsDestinationRefusal(root: string, run: (...args: string[])
   assert.equal(envelope.error.message, message);
   assert.equal(envelope.error.remedy, remedy);
   assert.deepEqual(envelope.target, { directory: destination, attemptId: null, priorClaimAttemptId: null });
+  const nested = join(attempts, "missing-parent", "backup");
+  const missing = run("backup", "create", nested, "--json");
+  const refusal = JSON.parse(missing.stdout);
+  assert.equal(missing.status, 1);
+  assert.equal(refusal.error.code, "USAGE_INVALID");
+  assert.equal(refusal.error.remedy, remedy);
+  assert.deepEqual(refusal.target, { directory: nested, attemptId: null, priorClaimAttemptId: null });
+  assert.equal(existsSync(join(attempts, "missing-parent")), false);
   assert.deepEqual(readFileSync(journal), journalBefore);
   assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
   assert.equal(existsSync(destination), false);
