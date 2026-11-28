@@ -36,7 +36,7 @@
   "scripts": {
     "test": "tsx smoke/dep-pins.smoke.ts && tsx smoke/capability-census.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/write-seeded-installers.mjs",
     "seeded-connectors": "node scripts/copy-seeded-connectors.mjs",
     "postinstall": "node scripts/pin-npm-node.cjs",
     "prepack": "node scripts/copy-seeded-connectors.mjs",

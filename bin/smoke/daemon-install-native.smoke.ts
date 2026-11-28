@@ -47,6 +47,7 @@ import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, reconcileInstalledSystemdOomPolicy, repairMissingInstalledProgram, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { serviceApplicationPath } from "../daemon/desktop-path.js";
 import { upgradedSystemdOomPolicy } from "../daemon/install-linux-repair.js";
 import { readServiceRepair, servicePolicyRepairFile, serviceRepairFile } from "../daemon/service-repair.js";
 import { nativeRun } from "../daemon/install-native-run.js";
@@ -132,7 +133,15 @@ try {
     const entry = process.argv[1];
     const execArgv = process.execArgv;
     const path = process.env.PATH;
-    process.env.PATH = "/usr/bin:/bin";
+    const homeBefore = process.env.HOME;
+    const xdgBefore = process.env.XDG_CONFIG_HOME;
+    const unitHome = join(root, "unit-home");
+    const unitConfig = join(root, "unit-config");
+    mkdirSync(unitHome, { mode: 0o700 });
+    mkdirSync(unitConfig, { mode: 0o700 });
+    process.env.HOME = unitHome;
+    process.env.XDG_CONFIG_HOME = unitConfig;
+    process.env.PATH = `${join(unitHome, ".opencode/bin")}:/usr/bin:/bin`;
     process.execArgv = [];
     process.argv[1] = join(process.cwd(), "bin", "dist", "cotal.js");
     try {
@@ -144,7 +153,16 @@ try {
       check("stock pre-fix unit upgrades to exact OOMPolicy=continue bytes", upgradedSystemdOomPolicy(legacy) === unit.bytes);
       check("older Restart=always stock unit upgrades OOMPolicy=continue", upgradedSystemdOomPolicy("[Service]\nExecStart=\"/bin/node\" \"/cotal.js\" daemon serve\nRestart=always\n")?.includes("Restart=always\nOOMPolicy=continue\n") === true);
       check("unit with explicit OOMPolicy is left unchanged", upgradedSystemdOomPolicy(unit.bytes) === undefined && upgradedSystemdOomPolicy(legacy + "OOMPolicy=stop\n") === undefined);
-    } finally { process.argv[1] = entry!; process.execArgv = execArgv; process.env.PATH = path; }
+      const expected = [join(unitHome, ".opencode/bin"), "/usr/bin", "/bin", join(unitHome, ".local/bin"), join(unitHome, ".pi/agent/bin")].join(":");
+      check("systemd unit appends missing connector installer folders after caller PATH without duplicating existing ones", unit.bytes.includes(`Environment=PATH="${expected}"\n`), unit.bytes);
+      check("macOS serviceApplicationPath appends missing connector installer folders after caller PATH", serviceApplicationPath(`${join(unitHome, ".local/bin")}:/usr/bin:/bin`, "darwin", unitHome) === [join(unitHome, ".local/bin"), "/usr/bin", "/bin", join(unitHome, ".opencode/bin"), join(unitHome, ".pi/agent/bin")].join(":"));
+    } finally {
+      process.argv[1] = entry!;
+      process.execArgv = execArgv;
+      process.env.PATH = path;
+      if (homeBefore === undefined) delete process.env.HOME; else process.env.HOME = homeBefore;
+      if (xdgBefore === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = xdgBefore;
+    }
   }
   {
     check("default label", launchAgentLabel(undefined) === "ai.cotal.daemon");
@@ -208,11 +226,12 @@ try {
     const loadedArgv = [node, "--max-semi-space-size=1", bootstrap, home, ...argv.slice(3)];
     let observedJob: import("@cotal-ai/seat").DarwinLaunchdLookup = { state: "loaded", job: { label, program: node, programArguments: loadedArgv } };
     const service = launchAgentService(r.run, () => observedJob);
-    const plan = service.plan(paths, undefined, argv, () => "/usr/bin:/bin");
+    const plan = service.plan(paths, undefined, argv, () => serviceApplicationPath("/usr/bin:/bin", "darwin", home));
     check("plan reads the label in the user's GUI domain", r.calls.length === 1 && r.calls[0]!.file === "/bin/launchctl" && r.calls[0]!.args.join(" ") === `print ${target}`, r.calls);
     check("plan names the plist under ~/Library/LaunchAgents", plan.unitPath === plist && plan.unit === label && plan.mechanism === "launchd-agent");
     check("plan states restart and start from the bytes", plan.restart === "KeepAlive=true" && plan.wantedBy === `login to gui/${uid} (RunAtLoad=true)`, plan);
     check("plan logs into the daemon's state", plan.bytes.toString().includes(`<key>StandardErrorPath</key><string>${join(state, "daemon.log")}</string>`));
+    check("LaunchAgent plist appends per-user connector installer folders after caller PATH", plan.bytes.toString().includes(`<key>PATH</key><string>/usr/bin:/bin:${join(home, ".local/bin")}:${join(home, ".opencode/bin")}:${join(home, ".pi/agent/bin")}</string>`), plan.bytes.toString());
     printStatus = 0;
     check("a loaded label refuses CONFLICT", code(() => service.plan(paths, undefined, argv, () => "/bin")) === "CONFLICT");
     printStatus = 125;

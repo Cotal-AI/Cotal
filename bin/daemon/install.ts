@@ -54,6 +54,7 @@ import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy, windowsDaemonFirstStart } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
+import { serviceApplicationPath } from "./desktop-path.js";
 import { removeAllServiceRecords } from "./service-records.js";
 import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, servicePolicyRepairFile, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
@@ -130,7 +131,7 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     "Type=notify",
     "NotifyAccess=all",
     "TimeoutStartSec=60",
-    `Environment=PATH=${unitValue(pinnedPath())}`,
+    `Environment=PATH=${unitValue(serviceApplicationPath())}`,
     "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
     `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
     "Restart=always",
@@ -286,7 +287,7 @@ function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">): void {
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
   refuseInstalled(paths, daemonHome);
-  return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), pinnedPath);
+  return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), () => serviceApplicationPath());
 }
 
 /** Everything `install` would do, with no effect: the unit it would write and, on Linux, the linger it needs. */
@@ -492,7 +493,12 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   const { receipt, plan } = recordedUnit(paths, daemonHome);
   if (plan.mechanism === "scheduled-task") return undefined;
   const source = readFileSync(receipt.unitPath, "utf8");
-  const next = refreshedDaemonPath(plan.mechanism, source)!;
+  const os = plan.mechanism === "launchd-agent" ? "darwin" : "linux";
+  const merged = [...new Set([
+    ...pinnedPath(process.env.PATH ?? "", posix).split(posix.delimiter),
+    ...pinnedPath(pinnedPathMatch(plan.mechanism, source).old, posix).split(posix.delimiter),
+  ])].join(posix.delimiter);
+  const next = refreshedDaemonPath(plan.mechanism, source, serviceApplicationPath(merged, os))!;
   const sha256 = createHash("sha256").update(next).digest("hex");
   return () => {
     const lock = process.platform === "darwin" || process.platform === "linux" ? acquireLock(join(paths.state, "service-repair.lock")) : undefined;
@@ -699,7 +705,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     const renderedUnit = linux && !intent ? renderDaemonUnit(dirname(receipt.unitPath), daemonHome) : undefined;
     const next = intent ? { text: intent.nextSource, sha256: sourceDigest(intent.nextSource) }
       : renderedUnit ? { text: renderedUnit.bytes, sha256: renderedUnit.sha256 }
-      : renderLaunchAgent({ label: receipt.unit, argv, searchPath: pinnedPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
+      : renderLaunchAgent({ label: receipt.unit, argv, searchPath: serviceApplicationPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
     const published = !!intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource;
     const enabled = intent?.enabled ?? (linux ? systemd(receipt).enabled : service!.isEnabled!(receipt));
     owner = readLifetimeRecord(paths.lock);

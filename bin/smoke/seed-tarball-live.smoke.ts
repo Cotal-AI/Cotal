@@ -173,6 +173,7 @@ try {
     docsEntries,
   );
   check("cotal-ai tarball ships the shared-file placements", listing.includes("package/seeded-connectors/_shared/placements.json"));
+  check("cotal-ai tarball ships the connector installer folders", listing.includes("package/dist/daemon/seeded-installers.json"));
   const packedPkg = execFileSync("tar", ["xzf", cotalTgz, "-O", "package/package.json"], { env: cleanEnv, encoding: "utf8" });
   check("cotal-ai tarball has concrete dep versions (workspace: replaced)", !packedPkg.includes("workspace:"));
 

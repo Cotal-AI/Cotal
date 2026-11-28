@@ -230,7 +230,7 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
         `service: restarted ${unit} with the updated PATH`,
       ], `${opts.name}: exact line order when refresh and restart both succeed`);
       assert.deepEqual(nativeCalls, ["/daemon-reload", "/stop", "/start"], `${opts.name}: reload, stop, start ran in order`);
-      assert.ok(diskUnit.includes(`Environment=PATH="${extraBin}:${basePath}"`), `${opts.name}: unit file pins new PATH directory`);
+      assert.ok(diskUnit.includes(`Environment=PATH="${[extraBin, basePath, join(home, ".local/bin"), join(home, ".opencode/bin"), join(home, ".pi/agent/bin")].join(":")}"`), `${opts.name}: unit file pins new PATH directory`);
       assert.equal(receipt.unitSha256, createHash("sha256").update(diskUnit).digest("hex"), `${opts.name}: receipt matches updated unit`);
       const doc = JSON.parse(stdout) as { result: { steps: { step: string; outcome: string; detail: string }[] } };
       assert.deepEqual(
@@ -254,7 +254,7 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
     assert.ok(!stderr.includes(`restarted ${unit} with the updated PATH`), `${opts.name}: must not claim unit restarted when start failed`);
     assert.deepEqual(nativeCalls, ["/daemon-reload", "/stop", "/start"], `${opts.name}: reload, stop, start attempted`);
     assert.ok(ops.includes("managers-abort-restart"), `${opts.name}: aborts restart fence after native failure`);
-    assert.ok(diskUnit.includes(`Environment=PATH="${extraBin}:${basePath}"`), `${opts.name}: unit rewrite already occurred after 'updating' line`);
+    assert.ok(diskUnit.includes(`Environment=PATH="${[extraBin, basePath, join(home, ".local/bin"), join(home, ".opencode/bin"), join(home, ".pi/agent/bin")].join(":")}"`), `${opts.name}: unit rewrite already occurred after 'updating' line`);
     assert.equal(receipt.unitSha256, createHash("sha256").update(diskUnit).digest("hex"), `${opts.name}: receipt matches rewritten unit`);
     const doc = JSON.parse(stdout) as { outcome: string; error?: { code: string; message: string } };
     assert.equal(doc.outcome, "unknown");
