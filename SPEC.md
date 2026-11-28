@@ -618,10 +618,16 @@ token.
 Space-wide defaults (`ChannelDefaults`: `replay?`, `replayWindow?`, `deliveryClass?`) live under
 the reserved key `=defaults`. Effective replay is `channel.replay ?? defaults.replay ?? true`.
 Effective delivery class is `channel.deliveryClass ?? defaults.deliveryClass ?? "durable"`.
-`defaults.deliveryClass` MUST be written at space creation from the deployment profile
-(local/self-hosted ⇒ `durable`, persistence on by default; public/web-scale ⇒ `live`, durability
-opt-in per channel), so the effective default is always discoverable on the wire, never inferred
-from out-of-band context. The same effective config MUST be the single source of truth for live
+`defaults.deliveryClass` MUST be written at space creation from the deployment profile so the
+effective default is always discoverable on the wire, never inferred from out-of-band context.
+
+| Deployment profile | Default delivery class | Notes |
+| --- | --- | --- |
+| Authenticated local/self-hosted | `durable` | Durable delivery is on by default. |
+| Local open | `live` | No delivery daemon or durable backstop. |
+| Public/web-scale | `live` | Durability is opt-in per channel. |
+
+The same effective config MUST be the single source of truth for live
 join, durable fan-out, history read, and membership surfacing; an implementation MUST NOT resolve
 the class differently in different paths.
 
