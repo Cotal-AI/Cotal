@@ -72,6 +72,8 @@ Open **Settings** in the window or **Settings…** from the tray or menu bar at 
 
 **Disconnect this computer** shows the spaces it will stop before confirmation. It stops their hosted Managers and machine-service connections and removes their resume intent. Account hosts also update the desired space list. The background service stays installed. This action does not remove the computer from the dashboard or revoke remote authority. Disconnect erases local service credentials and identity. Connecting again requires registration and approval. A refused or unknown result is shown rather than reported as a completed disconnect.
 
+Choose **Stop background service** in Settings or from the tray. If agents are running, Cotal lists them before asking for confirmation. **Cancel** leaves the service and agents running. Without running agents, the service stops immediately. Cotal keeps the installation, your sign-in and your spaces. The service stays stopped when you reopen the app or restart the computer. Choose **Start** to run it again and turn automatic start back on.
+
 ## Updates
 
 A newer desktop version appears in a gold notice and in the tray menu after setup. **Later** hides that version until another version is available. In a configured updater build, **Install updates automatically** is on by default and uses the same saved preference as `cotal update --auto on|off`, independent of whether the background service can update itself. Turning it off reports availability without downloading or installing an update.

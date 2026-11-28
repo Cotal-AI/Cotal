@@ -49,6 +49,15 @@ pub enum DesktopRequest {
     Log {},
     #[serde(rename = "install")]
     Install {},
+    #[serde(rename = "start")]
+    Start {},
+    #[serde(rename = "stop")]
+    Stop {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agents: Option<Vec<String>>,
+    },
     #[serde(rename = "name")]
     Name {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +106,11 @@ pub enum DesktopRequest {
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Stop { confirm, agents } => match (confirm, agents) {
+                (None, None) => {},
+                (Some(true), Some(names)) if !names.is_empty() && names.iter().all(|name| !name.is_empty() && name.encode_utf16().count() <= 256) => {},
+                _ => return Err("Invalid background service stop confirmation.".into()),
+            },
             Self::SpaceRecover { space, candidate, holder } => {
                 Self::ConnectCheck { space: space.clone() }.validate()?;
                 if candidate.len() != 64 || !candidate.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) || holder.len() > 2048 {
@@ -307,6 +321,17 @@ mod tests {
         assert!(DesktopRequest::UpdateRelease { version: "0.160.5".into() }.validate().is_ok());
         assert!(DesktopRequest::UpdateRelease { version: "../latest".into() }.validate().is_err());
         // Names are stdin JSON values, never concatenated into argv or interpreted by a shell.
+    }
+    #[test]
+    fn background_service_requests_do_not_admit_arbitrary_arguments() {
+        for input in [r#"{"op":"start"}"#, r#"{"op":"stop"}"#, r#"{"op":"stop","confirm":true,"agents":["alpha","beta"]}"#] {
+            let request = serde_json::from_str::<DesktopRequest>(input).unwrap();
+            assert!(request.validate().is_ok());
+            assert_eq!(serde_json::to_value(request).unwrap(), serde_json::from_str::<serde_json::Value>(input).unwrap());
+        }
+        for input in [r#"{"op":"start","path":"/foreign"}"#, r#"{"op":"stop","force":true}"#, r#"{"op":"stop","confirm":false}"#, r#"{"op":"stop","confirm":true}"#, r#"{"op":"stop","agents":["alpha"]}"#, r#"{"op":"stop","confirm":true,"agents":[""]}"#] {
+            assert!(serde_json::from_str::<DesktopRequest>(input).map_or(true, |request| request.validate().is_err()), "{input}");
+        }
     }
     #[test]
     fn browser_refuses_non_web_and_credential_urls() {

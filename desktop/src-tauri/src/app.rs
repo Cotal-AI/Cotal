@@ -16,6 +16,7 @@ use tokio::sync::Semaphore;
 const MAX_FRAME: usize = 64 * 1024;
 pub(crate) struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
+struct TrayStop(MenuItem<tauri::Wry>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
 struct ActiveWatch(std::sync::Mutex<Option<(u32, tauri_plugin_shell::process::CommandChild)>>);
@@ -133,6 +134,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                         Some("status") if is_watch => {
                             if agent_terminal.is_none() { agent_terminal = Some(terminal_available().await); }
                             frame["result"]["agentTerminal"] = Value::Bool(agent_terminal.unwrap_or(false));
+                            update_tray_stop(app, &frame)?;
                             let status = crate::presence::tray_status(&frame);
                             app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
                             if let Err(message) = native_presence::observe(app, "status", &frame) {
@@ -205,6 +207,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     if (!is_watch && matches!(operation, "status" | "setup"))
         || (is_watch && frame.get("ok").and_then(Value::as_bool) == Some(false))
     {
+        update_tray_stop(app, &frame)?;
         let status = crate::presence::tray_status(&frame);
         app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
     }
@@ -215,6 +218,11 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         }
     }
     Ok(frame)
+}
+
+fn update_tray_stop(app: &AppHandle, frame: &Value) -> Result<(), String> {
+    app.state::<TrayStop>().0.set_enabled(frame["ok"] == true && frame["result"]["state"] == "ready")
+        .map_err(|error| error.to_string())
 }
 
 async fn terminal_available() -> bool {
@@ -363,6 +371,7 @@ pub fn run() {
             app.manage(native_presence::load(app.handle())?);
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let stop = MenuItem::with_id(app, "stop-service", "Stop background service", false, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
@@ -372,7 +381,8 @@ pub fn run() {
                 None::<&str>,
             )?;
             let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
+            let menu = Menu::with_items(app, &[&status, &update, &settings, &stop, &dashboard, &quit])?;
+            app.manage(TrayStop(stop));
             app.manage(TrayUpdate(update));
             app.manage(TrayStatus(status));
             let icon = app
@@ -396,6 +406,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
+                    "stop-service" => { show(app); let _ = app.emit("desktop-stop-service", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { stop_watch(app); app.exit(0); } },
                     _ => {}

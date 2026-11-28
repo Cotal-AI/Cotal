@@ -164,6 +164,20 @@ let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
 let trayUpdate: string | undefined;
 const preferencesHome = el("preferences").parentElement!;
 preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
+let stopNames: string[] | undefined;
+let servicePowerUnknown: "stop" | "start" | undefined;
+function renderServiceControls(): void {
+  const canStop = serviceStatus?.state === "ready";
+  const disabled = busy || loginActive || setupActive || appApplyRunning;
+  el("service-controls").hidden = servicePowerUnknown === "stop" || !canStop && !stopNames;
+  el("stop-service").parentElement!.hidden = !!stopNames;
+  el("service-confirmation").hidden = !stopNames;
+  el<HTMLButtonElement>("stop-service").disabled = disabled || !canStop;
+  el<HTMLButtonElement>("service-confirm").disabled = disabled;
+  el<HTMLButtonElement>("service-cancel").disabled = disabled;
+  el("service-stop-result").hidden = servicePowerUnknown !== "stop";
+  el<HTMLButtonElement>("service-stop-check").disabled = disabled;
+}
 function renderSettings(): void {
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
@@ -175,6 +189,7 @@ function renderSettings(): void {
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
   document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
   renderApps();
+  renderServiceControls();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
@@ -537,6 +552,9 @@ function showStage(next: Stage, focus = false): void {
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
+  if (servicePowerUnknown === "start") el("recovery-panel").hidden = true;
+  el("service-start-result").hidden = servicePowerUnknown !== "start";
+  el<HTMLButtonElement>("service-start-check").disabled = busy;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
   if (recovery) {
@@ -786,6 +804,7 @@ async function removeSpace(space: string, current: () => boolean = () => true): 
 }
 function buttons(): void {
   renderAccountActions();
+  renderServiceControls();
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();
   el<HTMLButtonElement>("other-host").disabled = busy;
   el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected() || selectionPending || addingSpace && connections.has(selectedSpace());
@@ -930,6 +949,7 @@ function waitForAgents(names: readonly string[], count = names.length): void {
 }
 async function showStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
   if (!current()) return;
+  if (status.state === "ready" && servicePowerUnknown === "start") servicePowerUnknown = undefined;
   selectionPending = false;
   serviceStatus = status;
   ready = status.state === "ready";
@@ -1149,6 +1169,7 @@ el("recover").addEventListener("click", () => {
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "start-service") void startBackgroundService();
   else if (recovery === "install") void action(async () => {
     clearDetails();
     await startService();
@@ -1158,6 +1179,18 @@ el("recover").addEventListener("click", () => {
   });
   else void action(async () => { if (!keepNotAnswering) clearDetails(); await refresh(); });
 });
+async function startBackgroundService(): Promise<void> {
+  await action(async () => {
+    servicePowerUnknown = undefined;
+    await request({ op: "start" }).catch(() => undefined);
+    await refresh();
+    if (!ready) servicePowerUnknown = "start";
+  });
+}
+el("service-start-check").addEventListener("click", () => void action(async () => {
+  servicePowerUnknown = undefined;
+  await refresh();
+}));
 /** The install request's progress lines all say "running"; only its result ends them, so the list resets. */
 async function startService(): Promise<void> {
   notice("Preparing the background service…");
@@ -1302,6 +1335,41 @@ function openSettings(): void {
   if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
   void refresh();
 }
+async function stopBackgroundService(names?: readonly string[]): Promise<void> {
+  if (busy || loginActive || setupActive || appApplyRunning || servicePowerUnknown === "stop" || !names && serviceStatus?.state !== "ready") return;
+  await action(async () => {
+    settingsOpen = true; appsOpen = false;
+    servicePowerUnknown = undefined;
+    const requestBody: Request = names ? { op: "stop", confirm: true, agents: names } : { op: "stop" };
+    const result = await request(requestBody).catch(() => undefined);
+    if (result?.state === "needs-confirm" && Array.isArray(result.agents) && result.agents.length > 0 && result.agents.every((name): name is string => typeof name === "string" && name.length > 0 && name.length <= 256)) {
+      stopNames = [...result.agents];
+      const rows = stopNames.map(name => Object.assign(document.createElement("li"), { textContent: name }));
+      el("service-confirm-agents").replaceChildren(...rows);
+      el<HTMLDetailsElement>("service-log").open = false;
+      renderSettings(); el("service-confirm-title").focus();
+      return;
+    }
+    if (result?.state !== "stopped") {
+      stopNames = undefined;
+      await refresh();
+      servicePowerUnknown = "stop";
+      return;
+    }
+    stopNames = undefined; settingsOpen = false; appsOpen = false;
+    clearDetails(); notice("");
+    await refresh();
+  });
+}
+el("stop-service").addEventListener("click", () => void stopBackgroundService());
+el("service-confirm").addEventListener("click", () => { if (stopNames) void stopBackgroundService(stopNames); });
+el("service-cancel").addEventListener("click", () => {
+  stopNames = undefined; renderServiceControls(); el("stop-service").focus();
+});
+el("service-stop-check").addEventListener("click", () => void action(async () => {
+  servicePowerUnknown = undefined;
+  await refresh();
+}));
 async function settingsAction(body: Request): Promise<void> {
   if (busy) return;
   busy = true; refreshGeneration++;
@@ -1341,8 +1409,8 @@ el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
 el("recover-apps").addEventListener("click", () => openApps());
 el("apps-chip").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && agentApps.apps && !agentApps.busy && Date.now() - appsLoadedAt > 30_000) void agentApps.load(); });
-el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
-el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
+el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; stopNames = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; stopNames = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
@@ -1398,6 +1466,7 @@ async function start(): Promise<void> {
   };
   try {
     await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
+    await listen("desktop-stop-service", () => { if (!stopNames) void stopBackgroundService(); });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     appPlatform = String(info.platform); appArch = String(info.arch);

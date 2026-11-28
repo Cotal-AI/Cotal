@@ -76,6 +76,20 @@ export function nativeStub(scenario) {
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
+      if (request.op === "stop") {
+        (state.powerRequests ??= []).push(request);
+        if (state.stopFails) return fail("OPERATION_UNKNOWN", "Stop was not confirmed.");
+        const names = state.confirmNames ?? [];
+        if (names.length && (request.confirm !== true || JSON.stringify(request.agents) !== JSON.stringify(names))) return ok({ state: "needs-confirm", agents: [...names] });
+        state.stoppedByYou = true;
+        return ok({ state: "stopped", unit: "test-service", agents: names });
+      }
+      if (request.op === "start") {
+        (state.powerRequests ??= []).push(request);
+        state.stoppedByYou = false;
+        return ok({ state: "start-requested", unit: "test-service" });
+      }
+      if (state.stoppedByYou && ["status", "status-watch"].includes(request.op)) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "You stopped the background service. Start it to run agents on this computer again.", detail: { installed: true, stopped: "by-you" } } };
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
@@ -852,6 +866,45 @@ export const scenarios = [
   { name: "add-space", state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); await page.selectOption('#space', 'research'); } },
   { name: "connecting", state: { connecting: true }, act: connect },
   { name: "ready", state: {}, act: connect },
+  { name: "service-stop-confirmation", state: { installed: true, connected: true, signedIn: true, confirmNames: ["alpha", "beta"] }, act: async page => {
+    await page.click("#open-settings");
+    await page.click("#stop-service");
+    await page.locator("#service-confirmation").waitFor();
+  }, expect: async page => {
+    assert.deepEqual(await page.locator("#service-confirm-agents li").allTextContents(), ["alpha", "beta"]);
+    await page.click("#service-cancel");
+    await page.locator("#service-confirmation").waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
+    await page.click("#stop-service");
+    await page.evaluate(() => { window.__renderState.confirmNames.push("gamma"); });
+    await page.click("#service-confirm");
+    await page.locator("#service-confirm-agents li", { hasText: "gamma" }).waitFor();
+    assert.deepEqual(await page.locator("#service-confirm-agents li").allTextContents(), ["alpha", "beta", "gamma"]);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }, { op: "stop" }, { op: "stop", confirm: true, agents: ["alpha", "beta"] }]);
+  } },
+  { name: "service-stop-refused", state: { installed: true, connected: true, signedIn: true, stopFails: true }, act: async page => {
+    await page.evaluate(() => window.__emitTauri("desktop-stop-service"));
+    await page.locator("#service-stop-result").waitFor();
+  }, expect: async page => {
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
+    assert.equal(await page.locator("#service-confirmation").isVisible(), false);
+    assert.equal(await page.locator("#stop-service").isVisible(), false);
+    assert.equal(await page.locator("#service-stop-result p").textContent(), "Cotal couldn't confirm that the background service stopped.");
+    const before = await page.evaluate(() => window.__renderState.statusRequests);
+    await page.click("#service-stop-check");
+    await page.locator("#stop-service").waitFor();
+    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), before + 1);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
+  } },
+  { name: "service-stop-no-agents", state: { installed: true, connected: true, signedIn: true }, act: async page => {
+    await page.click("#open-settings");
+    assert.equal(await page.getByRole("button", { name: "Stop background service", exact: true }).count(), 1);
+    await page.click("#stop-service");
+    await page.locator("#settings-panel").waitFor({ state: "hidden" });
+  }, expect: async page => {
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
+    assert.equal(await page.locator("#service-confirmation").isVisible(), false);
+  } },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
   { name: "sessions-active", state: { setupError: "SEATS_ACTIVE" }, act: connect },

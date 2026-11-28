@@ -114,19 +114,22 @@ if (process.platform === "linux") {
     return { status: result.status, frame: frames.at(-1), stderr: result.stderr };
   };
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
+  const recordedBefore = readFileSync(join(home, "service-unit.json"));
   const asked = operations().length;
   const plainStop = desktop({ op: "stop" });
   const plainOps = operations().slice(asked);
   check("the app stop request disables and then stops when no agent is running", plainStop.status === 0 && plainStop.frame?.ok === true && plainStop.frame.result?.state === "stopped"
     && plainOps.indexOf("disable") >= 0 && plainOps.indexOf("disable") < plainOps.lastIndexOf("stop") && existsSync(unitPath), plainStop.frame);
+  const afterStop = desktop({ op: "status" });
+  check("status after an intentional stop says stopped by you", afterStop.frame?.ok === false && afterStop.frame?.error?.code === "NOT_RUNNING" && afterStop.frame.error.detail?.installed === true && afterStop.frame.error.detail.stopped === "by-you", afterStop.frame);
+  const beforeStart = operations().length;
   const appStart = desktop({ op: "start" });
-  const appStartOps = operations().slice(asked + plainOps.length);
+  const appStartOps = operations().slice(beforeStart);
   check("the app start request enables and then starts", appStart.status === 0 && appStart.frame?.ok === true && appStart.frame.result?.state === "start-requested"
     && appStartOps.indexOf("enable") >= 0 && appStartOps.indexOf("enable") < appStartOps.lastIndexOf("start"), appStart.frame);
   const extra = desktop({ op: "stop", confirm: true, extra: true });
   check("the app stop request rejects a field it does not take", extra.frame?.ok === false && extra.frame?.error?.code === "BAD_REQUEST", extra.frame);
-  const afterStop = desktop({ op: "status" });
-  check("status after an intentional stop says stopped by you", afterStop.frame?.ok === false && afterStop.frame?.error?.code === "NOT_RUNNING" && afterStop.frame.error.detail?.installed === true && afterStop.frame.error.detail.stopped === "by-you", afterStop.frame);
+  check("the app stop and start keep the same unit and receipt bytes", readFileSync(unitPath, "utf8") === unitBytes && readFileSync(join(home, "service-unit.json")).equals(recordedBefore));
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
   const unexpected = desktop({ op: "status" });
   check("status of an unexpected stop has no by-you marker", unexpected.frame?.ok === false && unexpected.frame?.error?.code === "NOT_RUNNING" && unexpected.frame.error.detail?.installed === true && unexpected.frame.error.detail.stopped === undefined, unexpected.frame);
