@@ -163,6 +163,7 @@ for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-so
         assert.ok(reply.ok && reply.result.pid === pid, `${mode}: same daemon remains answering`);
         assert.ok(!existsSync(effects), `${mode}: refusal before native effects`);
       } else {
+        assert.ok(existsSync(effects), output);
         assert.match(readFileSync(effects, "utf8"), /stop cotal-daemon.service/);
         const reply = await queryDaemon({ paths });
         assert.ok(reply.ok && reply.result.pid === pid, "failed native removal does not commit daemon shutdown");
