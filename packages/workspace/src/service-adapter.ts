@@ -343,8 +343,9 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
     const linked = (link: string): never => {
       let physical: string | undefined;
       try { physical = realpathSync(path); } catch { physical = undefined; }
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${label(name)} crosses a symlink, which could be repointed after this check: ${pathFacts(link)}`, {
-        target: { option: name, path, refused: link }, remedy: physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`,
+      const next = physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${label(name)} crosses a symlink, which could be repointed after this check`, {
+        target: { option: name, path, refused: link }, remedy: `${pathFacts(link)}; ${next}`,
       });
     };
     try {
