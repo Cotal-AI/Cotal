@@ -69,8 +69,9 @@ optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cot
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
-(`status` reports `classSpawn: false`). A launch, model catalog or status read checks unavailable
-applications again. Finding the first available application enables the class rail without a restart.
+(`status` reports `classSpawn: false`). A launch, model catalog or status read checks available and
+unavailable applications again. Finding the first available application enables the class rail
+without a restart, and losing the last available application drops it.
 `describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
 on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
