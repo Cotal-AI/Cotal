@@ -13,12 +13,16 @@
  * Run: pnpm smoke:daemon-stop
  */
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { ptySpawn } from "../../implementations/cli/smoke/_console-pty.js";
+import { daemonPathsFor } from "../daemon/endpoint.js";
+import { processBirth } from "../daemon/lifetime.js";
 
 const { check, finish } = createSuite();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +43,7 @@ check("daemon stop usage names the command", stop?.[1]?.startsWith("cotal daemon
 check("the parent usage lists stop beside start", parentUsage.includes("<name|") && parentUsage.includes("|stop|") && parentUsage.includes("|start|"), parentUsage);
 
 if (process.platform === "linux") {
+  await (async () => {
   const root = mkdtempSync(join(tmpdir(), "daemon-stop-"));
   const daemon = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
   const fixture = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
@@ -148,7 +153,8 @@ if (process.platform === "linux") {
   check("the fixture recorded one service", context.units.length === 1 && context.units[0] === unitName && units.every((unit) => unit === unitName), context.units);
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
   const marked = run("stop", ["--yes"]);
-  check("a stop writes the marker the status reads", marked.status === 0 && existsSync(marker));
+  const markedStatus = run("status");
+  check("a stop writes a private marker and status reads it", marked.status === 0 && existsSync(marker) && (lstatSync(marker).mode & 0o777) === 0o600 && (markedStatus.doc?.error?.message ?? "").includes("You stopped the background service"), markedStatus.doc?.error);
   const removed = run("uninstall", ["--yes"]);
   check("uninstall removes the person-stop marker", removed.status === 0 && !existsSync(marker), removed.doc);
   writeFileSync(marker, "\n", { mode: 0o600 });
@@ -160,6 +166,91 @@ if (process.platform === "linux") {
   check("a start that fails after turning automatic start back on says so and clears the marker",
     startFailed.status !== 0 && (startFailed.doc?.error?.message ?? "").includes("Automatic start is on again") && !existsSync(marker), startFailed.doc?.error);
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), failStart: false })}\n`);
+
+  const runtime = mkdtempSync(join("/tmp", "cotal-rt-"));
+  chmodSync(runtime, 0o700);
+  const liveEnv = { ...env, XDG_RUNTIME_DIR: runtime };
+  const livePaths = daemonPathsFor(resolvedHome, liveEnv);
+  mkdirSync(livePaths.dir!, { recursive: true, mode: 0o700 });
+  chmodSync(livePaths.parent!, 0o700);
+  chmodSync(livePaths.dir!, 0o700);
+  const birth = processBirth(process.pid);
+  writeFileSync(livePaths.lock, `${JSON.stringify({ v: 1, pid: process.pid, start: birth, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+  let answers = 0;
+  const statusFor = (which: number) => {
+    const managers = which < 3 ? [{ space: "acme", state: "starting", restarts: 0 }] : [];
+    const agents = which < 3 ? [] : which === 3 ? [{ space: "s", state: "read", observedAt: "t", agents: [{ name: "ada", application: "app", cwd: "/", startedAt: "t", state: "running" }] }]
+      : [{ space: "s", state: "read", observedAt: "t", agents: [{ name: "ada", application: "app", cwd: "/", startedAt: "t", state: "running" }, { name: "bev", application: "app", cwd: "/", startedAt: "t", state: "running" }] }];
+    return { state: "ready", protocol: 1, version: "test", pid: process.pid, startedAt: "t", uptimeMs: 1, managers, agents };
+  };
+  const server = createServer((socket: Socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const end = buffer.indexOf("\n");
+      if (end < 0) return;
+      const request = JSON.parse(buffer.slice(0, end)) as { id?: string; op?: string };
+      buffer = buffer.slice(end + 1);
+      const result = request.op === "daemon-stop" ? { version: "test" } : statusFor(answers++);
+      socket.write(`${JSON.stringify({ v: 1, id: request.id ?? null, ok: true, result })}\n`);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(livePaths.socket, resolve));
+  chmodSync(livePaths.socket, 0o600);
+  const live = (verb: string, extra: string[] = []) => new Promise<{ status: number | null; doc?: { result?: { state?: string; agents?: string[] }; error?: { message?: string; native?: { code?: string; detail?: { agents?: string[] } } } }; stderr: string }>((resolve) => {
+    const child = spawn(process.execPath, [daemon, "daemon", verb, "--daemon-home", home, "--json", ...extra], { cwd: root, env: liveEnv });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.on("close", (status) => resolve({ status, doc: stdout ? JSON.parse(stdout) : undefined, stderr }));
+  });
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
+  const disables = () => operations().filter((op) => op === "disable").length;
+  const beforeDisables = disables();
+  const named = await live("stop", ["--yes"]);
+  check("a starting Manager is named and the stop includes it", named.status === 0 && named.doc?.result?.agents?.includes("acme") === true && disables() === beforeDisables + 1, named);
+  const conflicted = await live("stop", ["--yes"]);
+  check("a changed agent list refuses and disables nothing", conflicted.status !== 0 && conflicted.doc?.error?.message === "the running agents changed to: ada, bev. Nothing was stopped" && disables() === beforeDisables + 1, conflicted.doc?.error);
+  const confirmed = await new Promise<{ frame?: { result?: { state?: string } } }>((resolve) => {
+    const child = spawn(process.execPath, [daemon, "daemon", "desktop", "--daemon-home", home], { cwd: root, env: liveEnv });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stdin.end(`${JSON.stringify({ op: "stop", confirm: true, agents: ["ada", "bev"] })}\n`);
+    child.on("close", () => { const frames = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { result?: { state?: string } }); resolve({ frame: frames.at(-1) }); });
+  });
+  check("the app stop with the matching list stops", confirmed.frame?.result?.state === "stopped" && disables() === beforeDisables + 2, confirmed.frame);
+  answers = 0;
+  const confirmedYes = await new Promise<{ code: number; text: string }>((resolve) => {
+    let text = "";
+    const pty = ptySpawn(process.execPath, [daemon, "daemon", "stop", "--daemon-home", home, "--yes", "--json"], { name: "xterm-256color", cols: 100, rows: 30, cwd: root, env: liveEnv as Record<string, string> });
+    pty.onData((data) => { text += data; });
+    pty.onExit((event) => resolve({ code: event.exitCode, text }));
+  });
+  const yesLine = confirmedYes.text.indexOf("Stopping these agents: acme.");
+  const yesJson = confirmedYes.text.indexOf('"state":"stopped"');
+  check("--yes on a terminal names the agents before the stop", confirmedYes.code === 0 && yesLine >= 0 && yesJson > yesLine, { code: confirmedYes.code, text: confirmedYes.text });
+  answers = 0;
+  const declined = await new Promise<{ code: number; text: string }>((resolve) => {
+    let text = "";
+    const pty = ptySpawn(process.execPath, [daemon, "daemon", "stop", "--daemon-home", home], { name: "xterm-256color", cols: 100, rows: 30, cwd: root, env: liveEnv as Record<string, string> });
+    let open = true;
+    pty.onData((data) => { text += data; if (open && text.includes("[y/N]")) { open = false; pty.write("n\n"); } });
+    pty.onExit((event) => resolve({ code: event.exitCode, text }));
+  });
+  check("a declined prompt names the agents, says nothing was stopped, and exits 0", declined.code === 0 && declined.text.includes("acme") && declined.text.includes("Nothing was stopped."), { code: declined.code, text: declined.text });
+  server.close();
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
+  const lockPath = join(resolvedHome, "service-repair.lock");
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const { processStartToken } = await import("@cotal-ai/core");
+  writeFileSync(lockPath, `${JSON.stringify({ pid: holder.pid, start: processStartToken(holder.pid!), nonce: "held", ts: Date.now() })}\n`, { mode: 0o600 });
+  const held = live("stop", ["--yes"]);
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const waiting = existsSync(lockPath);
+  holder.kill();
+  const released = await held;
+  check("a stop waits for the service-repair lock and then stops", waiting && released.status === 0 && !existsSync(lockPath), { waiting, status: released.status, error: released.doc?.error });
+  })();
 } else {
   console.log(`  ○ Linux stop/start fixture not run on ${process.platform}`);
 }

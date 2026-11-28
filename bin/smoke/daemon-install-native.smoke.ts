@@ -606,6 +606,19 @@ try {
     check("the person's start enables the disabled idle task and runs it", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}` && task.enabled === true && task.instances === 1);
     refreshRunner.calls.length = 0;
     task = { ...runningTask, enabled: true, instances: 1 };
+    refreshService.prepareStop(receipt);
+    const prepared = refreshRunner.calls;
+    const disableAt = prepared.findIndex((call) => call.file.endsWith("schtasks.exe") && call.args[0] === "/Change" && call.args.includes("/DISABLE"));
+    const confirmed = prepared.slice(disableAt + 1).some((call) => call.file.endsWith("powershell.exe") && call.env?.COTAL_DAEMON_TASK_INSTANCES === "1");
+    check("the person's stop disables and confirms before it ends", disableAt >= 0 && confirmed && !prepared.some((call) => call.args[0] === "/End") && task.enabled === false && task.instances === 1, prepared);
+    refreshRunner.calls.length = 0;
+    await refreshService.finishStop(receipt);
+    const finished = refreshRunner.calls;
+    const endAt = finished.findIndex((call) => call.file.endsWith("schtasks.exe") && call.args[0] === "/End");
+    const disabledBeforeEnd = finished.slice(0, endAt).some((call) => call.file.endsWith("powershell.exe") && call.env?.COTAL_DAEMON_TASK_INSTANCES === "1");
+    check("the person's stop ends the task only after it is disabled", endAt > 0 && disabledBeforeEnd && !finished.some((call) => call.args.includes("/DISABLE")) && task.enabled === false && task.instances === 0, finished);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, enabled: true, instances: 1 };
     await refreshService.stop(receipt);
     check("Windows stop disables the task and then ends it", schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE | /End /TN ${name}` && task.enabled === false && task.instances === 0, refreshRunner.calls);
     refreshRunner.calls.length = 0;
@@ -625,6 +638,12 @@ try {
     check("refresh refuses missing instance evidence", await asyncCode(() => refreshService.pause(receipt)) === "TARGET_UNAVAILABLE" && schtasks(refreshRunner.calls) === "");
     task = { ...runningTask };
     keepRunning = true;
+    task = { ...runningTask, enabled: false, instances: 1 };
+    refreshRunner.calls.length = 0;
+    let endMessage = "";
+    try { await refreshService.finishStop(receipt); } catch (error) { endMessage = error instanceof CommandFailure ? error.message : String(error); }
+    check("an end that leaves an instance says automatic start is already off", endMessage.includes("automatic start is already off") && endMessage.includes("cotal daemon start") && task.enabled === false, endMessage);
+    task = { ...runningTask };
     check("Disabled state alone cannot prove End completed", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN");
     refreshRunner.calls.length = 0;
     check("resume refuses a still-running disabled task", code(() => refreshService.resume(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");
