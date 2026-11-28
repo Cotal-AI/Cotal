@@ -1,9 +1,10 @@
 /** Space discovery stays in the daemon, next to the sign-in that authorizes it. */
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { AuthSpaceCatalogAccount, AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { forgetLocalSpaceRegistration, prepareCatalogTargets, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
+import { forgetLocalSpaceRegistration, importAccountComputerSpace, prepareCatalogTargets, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import { CommandFailure, homeCotalDir, isCommandFailure, readMeshRegistry, resolveNativeMigration, withProjectTrustMigration, type MeshEntry } from "@cotal-ai/workspace";
-import { listIdpAccounts, normalizeIdpUrl, signedInMachineAccounts } from "@cotal-ai/auth";
+import { fetchSignedInIdpSpaceCatalog, listIdpAccounts, normalizeIdpUrl, signedInMachineAccounts } from "@cotal-ai/auth";
 import { isDaemonSpaceName, type DaemonSpaces, type EndorsedMigration, type SpaceCollision } from "./protocol.js";
 
 function originOf(entry: MeshEntry): "manual" | "catalog" | "up" {
@@ -115,13 +116,28 @@ async function detectSignedInMigration(sessionDir: string, signedInProviders: re
   return undefined;
 }
 
-export async function desktopSpaces(sessionDir: string, refresh: boolean): Promise<DaemonSpaces> {
+/** After a replacement, use the already checked target snapshot for the remaining conflicts. */
+async function refreshOtherCatalogs(sessionDir: string, replacement: AuthSpaceCatalogResult) {
+  const otherAccounts = signedInMachineAccounts(sessionDir).filter(account => account.ownerKey !== replacement.account.ownerKey);
+  const results = [replacement];
+  const diffs = [{ collisions: [] as string[] }];
+  for (const account of otherAccounts) {
+    const other = await prepareCatalogTargets({ sessionDir, idpUrl: account.idpUrl, force: true });
+    results.push(...other.results);
+    diffs.push(...other.diffs);
+  }
+  diffs[0]!.collisions = collectCollisions(sessionDir, [replacement], readMeshRegistry().entries).map(row => row.space);
+  return { results, diffs };
+}
+
+export async function desktopSpaces(sessionDir: string, refresh: boolean, replacement?: AuthSpaceCatalogResult): Promise<DaemonSpaces> {
   let outcome: DaemonSpaces["refresh"] = "not-requested";
   let collisions = 0;
   let failedProviders: string[] = [];
   let refreshResults: readonly AuthSpaceCatalogResult[] = [];
   if (refresh) {
-    const raw = await withProjectTrustMigration(true, false, () => prepareCatalogTargets({ sessionDir, force: true }));
+    const raw = await withProjectTrustMigration(true, false, () => replacement
+      ? refreshOtherCatalogs(sessionDir, replacement) : prepareCatalogTargets({ sessionDir, force: true }));
     const afterRefresh = readMeshRegistry();
     const { results, diffs } = await filterSupersededAccounts(raw.results, raw.diffs, afterRefresh.entries);
     refreshResults = results;
@@ -162,8 +178,8 @@ export async function resolveSpaceConflict(sessionDir: string, space: string, id
   if (resolve(sessionDir) !== resolve(homeCotalDir()))
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Space registrations can only be changed in the default Cotal home.");
   const targetIdp = normalizeIdpUrl(idp);
-  const signedIn = signedInMachineAccounts(sessionDir);
-  if (!signedIn.some((account) => account.idpUrl === targetIdp))
+  const signedIn = () => listIdpAccounts(sessionDir).find(account => account.idp === targetIdp && account.sub && account.expiresAt > Math.floor(Date.now() / 1000));
+  if (!signedIn())
     throw new CommandFailure("refused", "AUTH_REQUIRED", `Sign in to ${new URL(targetIdp).host} before replacing "${space}".`);
   const { entries } = readMeshRegistry();
   const existing = entries.find((entry) => entry.space === space);
@@ -172,15 +188,28 @@ export async function resolveSpaceConflict(sessionDir: string, space: string, id
     const source = existing.userAuth?.idp.url ?? "another signed-in account";
     throw new CommandFailure("refused", "CONFLICT", `"${space}" belongs to ${source}. Move or sign out of that account instead of replacing one space.`);
   }
+  const notListed = new CommandFailure("refused", "TARGET_NOT_FOUND", `Could not confirm that ${new URL(targetIdp).host} lists "${space}" with a usable registration. Nothing was replaced.`);
+  const catalog = await fetchSignedInIdpSpaceCatalog(sessionDir, targetIdp).catch(() => undefined);
+  if (!catalog) throw notListed;
+  const { account, snapshot } = catalog;
+  try { validateCatalogSnapshot(snapshot, account); } catch { throw notListed; }
+  const row = snapshot.spaces.find(entry => entry.slug === space);
+  if (!row || "unavailable" in row) throw notListed;
+  const checkBeforeRemove = async () => {
+    if (signedIn()?.sub !== account.sub) throw notListed;
+    if (!isDeepStrictEqual(readMeshRegistry().entries.find(entry => entry.space === space), existing))
+      throw new CommandFailure("refused", "CONFLICT", `The local registration for "${space}" changed while checking ${new URL(targetIdp).host}. Nothing was replaced.`);
+    await disconnect?.();
+  };
   await withProjectTrustMigration(true, false, async () => {
     try {
-      await forgetLocalSpaceRegistration(space, { beforeRemove: disconnect });
+      await forgetLocalSpaceRegistration(space, { beforeRemove: checkBeforeRemove });
     } catch (e) {
       if (isCommandFailure(e) && e.code === "LIFECYCLE_BLOCKED")
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${space}" is currently running on this computer. Stop that local space first, or keep the local registration.`);
       throw e;
     }
-    await prepareCatalogTargets({ sessionDir, idpUrl: targetIdp, force: true });
+    importAccountComputerSpace(account, row);
   });
-  return desktopSpaces(sessionDir, true);
+  return desktopSpaces(sessionDir, true, catalog);
 }

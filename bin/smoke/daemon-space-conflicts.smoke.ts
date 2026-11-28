@@ -8,7 +8,7 @@ import { PassThrough, Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
-import { homeCotalDir, meshFile, readMesh, recordMesh, spaceSegment } from "@cotal-ai/workspace";
+import { homeCotalDir, meshFile, preferencesPath, readMesh, readPreferences, recordMesh, spaceSegment, writePreference } from "@cotal-ai/workspace";
 import { importAccountComputerSpace } from "@cotal-ai/cli";
 import { deleteIdpSession, loadIdpSession, saveIdpSession } from "@cotal-ai/auth";
 import { daemonPaths } from "../daemon/endpoint.js";
@@ -66,7 +66,8 @@ const catalogRow = (slug: string, label: string, kind: string, idpUrl: string) =
   registration: bundle(slug, idpUrl),
 });
 
-let newSpaces = [
+type CatalogFixtureRow = ReturnType<typeof catalogRow>;
+let newSpaces: (CatalogFixtureRow | (Omit<CatalogFixtureRow, "registration"> & { unavailable: string }))[] = [
   catalogRow("personal-home", "Personal", "personal", newIdp),
   catalogRow("cotal-team", "Cotal team", "team", newIdp),
   catalogRow("new-only", "New only", "team", newIdp),
@@ -78,6 +79,8 @@ let recoveringAs = sub;
 let abandonRecovery = false;
 let machinePolls = new Map<string, number>();
 let machineEnabled = false;
+let newCatalogStatus = 200;
+let newCatalogReads = 0;
 globalThis.fetch = async (input, init) => {
   const url = String(input);
   const json = (value: unknown, headers?: Record<string, string>) =>
@@ -145,6 +148,8 @@ globalThis.fetch = async (input, init) => {
     });
   }
   if (url === `${newOrigin}/catalog`) {
+    newCatalogReads++;
+    if (newCatalogStatus !== 200) return new Response(null, { status: newCatalogStatus });
     return json({
       v: 1,
       account: { idpUrl: newIdp, issuer: oldOrigin, sub },
@@ -174,13 +179,42 @@ function existingHosting(space: string): () => void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const files = ["register-request.json", "manager-host.json"].map(name => join(dir, name));
   for (const file of files) writeFileSync(file, JSON.stringify({ v: 1, space }), { mode: 0o600 });
-  const bytes = files.map(file => readFileSync(file, "utf8"));
-  const registration = readMesh(space);
+  const watched = [...files, meshFile(space)];
+  const bytes = watched.map(file => readFileSync(file));
   return () => {
-    assert.deepEqual(files.map(file => readFileSync(file, "utf8")), bytes, "service and Manager records survive refusal");
-    assert.deepEqual(readMesh(space), registration, "registration survives refusal");
+    assert.deepEqual(watched.map(file => readFileSync(file)), bytes, "service, Manager and registration bytes survive refusal");
     for (const file of files) rmSync(file);
   };
+}
+
+async function checkCatalogReplacementRefusals(): Promise<void> {
+  const space = "new-only";
+  assert.equal(writePreference({ space }, "persona", "local-persona", readPreferences().revision).changed, true);
+  const localFiles = [preferencesPath(), ...["idp-sessions.json", "space-catalogs.json"].map(name => join(homeCotalDir(), name))];
+  const original = localFiles.map(file => readFileSync(file));
+  const listed = newSpaces;
+  const { registration: _, ...row } = catalogRow(space, "New only", "team", newIdp);
+  assert.ok(loadIdpSession(homeCotalDir(), newIdp));
+  for (const [label, rows, status] of [
+    ["absent", listed.filter(entry => entry.slug !== space), 200],
+    ["unavailable", [...listed.filter(entry => entry.slug !== space), { ...row, unavailable: "fixture unavailable" }], 200],
+    ["unreadable with a cached match", listed, 503],
+  ] as const) {
+    newSpaces = [...rows];
+    newCatalogStatus = status;
+    const checkHosting = existingHosting(space);
+    const reads = newCatalogReads;
+    const reply = (await bridge({ op: "space-conflict-resolve", space, idp: newIdp })).at(-1)!;
+    assert.equal(newCatalogReads, reads + 1, label);
+    assert.equal(reply.ok, false, label);
+    assert.equal(reply.error.code, "TARGET_NOT_FOUND", label);
+    assert.equal(reply.error.message, 'Could not confirm that new-cloud.example lists "new-only" with a usable registration. Nothing was replaced.');
+    checkHosting();
+    assert.deepEqual(localFiles.map(file => readFileSync(file)), original, `${label}: preferences, sign-in and catalog cache are unchanged`);
+    console.log(`PASS: ${label} catalog replacement preserves local bytes`);
+  }
+  newSpaces = listed;
+  newCatalogStatus = 200;
 }
 
 async function checkAccountRecovery(): Promise<void> {
@@ -277,10 +311,13 @@ try {
   assert.equal(absent.at(-1)!.result.reason, "local-state-error");
   assert.match(absent.at(-1)!.result.message, /not signed in/);
   await checkAccountRecovery();
+  await checkCatalogReplacementRefusals();
 
   // 3. Per-space replacement of a manual registration succeeds and switches it to newIdp's catalog.
+  const readsBeforeReplacement = newCatalogReads;
   const manualResolved = (await bridge({ op: "space-conflict-resolve", space: "new-only", idp: newIdp })).at(-1)!;
   assert.equal(manualResolved.ok, true);
+  assert.equal(newCatalogReads, readsBeforeReplacement + 1, "replacement reuses the verified row instead of fetching the target again");
   assert.equal(readMesh("new-only")?.origin, "catalog");
   assert.equal(readMesh("new-only")?.userAuth?.idp.url, newIdp);
   assert.equal(manualResolved.result.collisions, 2);

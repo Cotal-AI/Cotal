@@ -71,6 +71,7 @@ export {
   stageIdpSession,
   catalogAccountOwnerKey,
   commitStagedIdpSession,
+  fetchSignedInIdpSpaceCatalog,
   fetchStagedIdpSpaceCatalog,
   fetchIdpJwt,
   revokeIdpSession,

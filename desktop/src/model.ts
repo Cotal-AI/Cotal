@@ -24,7 +24,7 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }
-export interface SpaceRowRefusal { text: string; action: "recover" | "move" | "sign-in" | "apps" | "check" | "remove"; label: string }
+export interface SpaceRowRefusal { text: string; action: "recover" | "move" | "sign-in" | "apps" | "remove"; label: string }
 const HELD_BY_RE = /^The local space connection is held by (.+)\.$/;
 export function spaceRowRefusal(row: ComputerSpace, migration?: EndorsedMigration): SpaceRowRefusal {
   const held = row.lastRefusal ? HELD_BY_RE.exec(row.lastRefusal) : null;

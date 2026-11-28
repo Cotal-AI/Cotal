@@ -681,10 +681,6 @@ function renderConnections(): void {
         void runEndorsedMove(migration);
         return;
       }
-      if (rowRefusal?.action === "check") {
-        void rowAction(space, false, undefined, true);
-        return;
-      }
       if (rowRefusal?.action === "recover" && recovery) {
         if (!window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
         void rowAction(space, false, recovery);
@@ -699,19 +695,15 @@ function renderConnections(): void {
     row.append(copy, detail, button); return row;
   }));
 }
-async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }, checkOnly = false): Promise<void> {
+async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }): Promise<void> {
   if (busy || rowOperation) return;
-  const operation = { space, label: `${checkOnly ? "Checking" : recovery ? "Moving" : restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
+  const operation = { space, label: `${recovery ? "Moving" : restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
   rowOperation = operation; refreshGeneration++; renderConnections();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       (async () => {
-        if (checkOnly) {
-          await spaces(true);
-          if (rowOperation !== operation) return;
-          await refresh();
-        } else if (recovery || restore) {
+        if (recovery || restore) {
           await request(recovery ? { op: "space-recover", space, ...recovery } : { op: "space-intent", space, enabled: true });
           if (rowOperation !== operation) return;
           await refresh();

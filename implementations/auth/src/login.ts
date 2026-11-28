@@ -620,12 +620,30 @@ export async function fetchStagedIdpSpaceCatalog(candidate: StagedIdpSession, va
   if (!catalogUrl) throw new Error("idp login: the approved provider did not advertise a same-origin catalog");
   if (typeof claims.iss !== "string" || !claims.iss) throw new Error("idp login: the approved provider did not supply an issuer");
   const account = { idpUrl, issuer: claims.iss, sub: candidate.sub, ownerKey: ownerKey(idpUrl, candidate.sub), catalogUrl };
-  const response = await idpFetch(catalogUrl, { headers: { authorization: `Bearer ${session.token}` }, redirect: "manual" }, opts.signal);
-  if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
-  const snapshot = await idpJson<unknown>(catalogUrl, response, opts.signal);
+  const snapshot = await fetchCatalogSnapshot(catalogUrl, session.token, opts.signal);
   validate(snapshot, account);
   throwIfCancelled(opts.signal);
   return { snapshot, account };
+}
+
+async function fetchCatalogSnapshot(url: string, token: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await idpFetch(url, { headers: { authorization: `Bearer ${token}` }, redirect: "manual" }, signal);
+  if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
+  return idpJson<unknown>(url, response, signal);
+}
+
+/** Read the signed-in account's live catalog without applying or writing a cached snapshot. */
+export async function fetchSignedInIdpSpaceCatalog(dir: string, idpUrl: string): Promise<AuthSpaceCatalogResult | undefined> {
+  idpUrl = normalizeIdpUrl(idpUrl);
+  const session = loadIdpSession(dir, idpUrl);
+  if (!session?.sub || session.expiresAt <= Math.floor(Date.now() / 1000)) return undefined;
+  const { jwt, response } = await fetchIdpJwtResponse(idpUrl, session.token);
+  const claims = decodeJwt(jwt);
+  const catalogUrl = catalogUrlFromLink(idpUrl, response.headers.get("link"));
+  if (!catalogUrl || claims.sub !== session.sub || typeof claims.iss !== "string" || !claims.iss) return undefined;
+  const account = { idpUrl, issuer: claims.iss, sub: session.sub, ownerKey: ownerKey(idpUrl, session.sub), catalogUrl };
+  const snapshot = await fetchCatalogSnapshot(catalogUrl, session.token);
+  return { state: "updated", account, snapshot, fetchedAt: new Date().toISOString() };
 }
 
 /** Persist a staged proof after the caller has checked its pins. Not a multi-file transaction. */
