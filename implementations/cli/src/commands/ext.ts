@@ -135,6 +135,10 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  if (npm.missingOnPath && args[0] === "install" && !seeding)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "npm is not on PATH; the extension install did not start", {
+      remedy: "make npm available on PATH, check that `npm --version` works, then retry the original extension install",
+    });
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);

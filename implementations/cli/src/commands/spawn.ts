@@ -24,7 +24,6 @@ import {
   copyPersonaEndpoints,
   registry,
   resolveAuthProvider,
-  resolveReadAcl,
   peerLabel,
   type AgentDef,
   type CompletionResult,
@@ -66,7 +65,6 @@ import {
   spaceKey,
   workspaceSecretStore,
   refreshRegistrationPolicy,
-  oneLine,
   codeSpan,
   activateTerminalSeat,
   issueTerminalSeat,
@@ -74,7 +72,7 @@ import {
   seatExpiryAt,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
-import { parseChannelFlag } from "../lib/channel-flags.js";
+import { parseChannelFlag, spawnReadAcl } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { checkLaunch, launchModes } from "../lib/launch-modes.js";
 import { displayCmd, displayProjectTrustFailure } from "../lib/self-exec.js";
@@ -259,14 +257,8 @@ export function validateSpawnArguments(args: ParsedArgs) {
     "allow-subscribe": parseChannelFlag("--allow-subscribe", values["allow-subscribe"], true),
     "allow-publish": parseChannelFlag("--allow-publish", values["allow-publish"], true),
   };
-  if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined) {
-    try { resolveReadAcl(channels.subscribe, channels["allow-subscribe"]); }
-    catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message), {
-        remedy: "include every --subscribe channel in --allow-subscribe", selfContained: true,
-      });
-    }
-  }
+  if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined)
+    spawnReadAcl(channels.subscribe, channels["allow-subscribe"], "include every --subscribe channel in --allow-subscribe");
   if (!internal && args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "spawn takes one persona; pass the kickoff request with --prompt/-p");
   if (!internal && values.config !== undefined && args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "choose one persona input, not both a positional name and --config");
   return channels;
@@ -712,13 +704,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
   let subscribe = channels.subscribe ?? def.subscribe;
-  let allowSubscribe: string[];
-  try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
-  } catch (e) {
-    stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    process.exit(1);
-  }
+  let allowSubscribe = spawnReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
   let allowPublish = channels["allow-publish"] ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
