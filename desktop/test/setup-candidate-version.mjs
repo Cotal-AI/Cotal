@@ -17,6 +17,7 @@ for (const row of rows) {
   const pkg = JSON.parse(readText(file));
   if (pkg.name === 'cotal-ai' || pkg.name?.startsWith('@cotal-ai/') && !pkg.private) {
     pkg.version = version;
+    if (pkg.cotal) pkg.cotal.core = version;
     writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
   }
 }

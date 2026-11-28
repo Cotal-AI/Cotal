@@ -6,7 +6,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
+import { create as createTar } from "tar";
 import { coldVersionWrites } from "./apply-cold-versions.mjs";
+import { packColdCandidate } from "./pack-cold-candidate.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 let passed = 0;
@@ -111,13 +113,18 @@ check("main publication consumes the matching tree's immutable pack without rebu
 const source = "a".repeat(40);
 const candidateBytes = JSON.stringify({ source, syntheticVerifierFixture: true });
 const candidateSha256 = createHash("sha256").update(candidateBytes).digest("hex");
-const current = { name: "one", version: "1.0.0", scripts: { build: "real-build" }, dependencies: { two: "workspace:*", external: "^1" } };
-const prepared = { ...current, version: "1.0.1-next-20261015000000", dependencies: { two: "1.0.1-next-20261015000000", external: "^1" } };
+const snapshot = "1.0.1-next-20261015000000";
+const current = { name: "one", version: "1.0.0", cotal: { contract: 1, core: "1.0.0" }, scripts: { build: "real-build" }, dependencies: { two: "workspace:*", external: "^1" } };
+const prepared = { ...current, version: snapshot, cotal: { ...current.cotal, core: snapshot }, dependencies: { two: snapshot, external: "^1" } };
 const row = { name: "one", path: "/fixture/one", manifest: current };
 const packages = [row, { name: "two", path: "/fixture/two", manifest: { name: "two", version: "1.0.0" } }];
 const expected = ["one", "two"];
 const manifest = { source, packages: [{ name: "one", version: prepared.version, sourceManifest: JSON.stringify(prepared) }, { name: "two", version: prepared.version, sourceManifest: JSON.stringify({ name: "two", version: prepared.version }) }] };
-check("snapshot versions replay without changing policy", () => assert.equal(coldVersionWrites(manifest, packages, expected, source).length, 2));
+check("snapshot versions replay without changing policy", () => {
+  const writes = coldVersionWrites(manifest, packages, expected, source);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(JSON.parse(writes[0][1]), prepared);
+});
 for (const [name, mutate] of [
   ["wrong source", (m) => { m.source = "b".repeat(40); }],
   ["missing package", (m) => { m.packages = []; }],
@@ -125,9 +132,39 @@ for (const [name, mutate] of [
   ["wrong version metadata", (m) => { m.packages[0].version = "other"; }],
   ["replaced package policy", (m) => { const p = JSON.parse(m.packages[0].sourceManifest); p.scripts.build = "different"; m.packages[0].sourceManifest = JSON.stringify(p); }],
   ["changed external dependency", (m) => { const p = JSON.parse(m.packages[0].sourceManifest); p.dependencies.external = "^2"; m.packages[0].sourceManifest = JSON.stringify(p); }],
+  ["changed plugin contract", (m) => { const p = JSON.parse(m.packages[0].sourceManifest); p.cotal.contract = 2; m.packages[0].sourceManifest = JSON.stringify(p); }],
+  ["stale bundled core stamp", (m) => { const p = JSON.parse(m.packages[0].sourceManifest); p.cotal.core = current.cotal.core; m.packages[0].sourceManifest = JSON.stringify(p); }],
 ]) {
   check(`snapshot refuses ${name}`, () => { const copy = structuredClone(manifest); mutate(copy); assert.throws(() => coldVersionWrites(copy, packages, expected, source)); });
 }
+
+check("cold packing requires a matching core declaration for first-party plugins", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "cold-plugin-contract-"));
+  try {
+    const row = { name: "@cotal-ai/tmux", version: snapshot, path: join(fixture, "extensions/tmux") };
+    mkdirSync(join(row.path, "dist"), { recursive: true });
+    writeFileSync(join(row.path, "dist/index.js"), "export default () => {};\n");
+    mkdirSync(join(fixture, ".changeset"));
+    writeFileSync(join(fixture, ".changeset/config.json"), JSON.stringify({ fixed: [[row.name]] }));
+    const pack = (label, cotal) => {
+      const output = join(fixture, label);
+      writeFileSync(join(row.path, "package.json"), JSON.stringify({ name: row.name, version: row.version, cotal }));
+      return packColdCandidate({ root: fixture, output, exec: (file, args) => {
+        if (file === "git") return source;
+        assert.equal(file, "pnpm");
+        if (args[0] === "list") return JSON.stringify([row]);
+        assert.deepEqual(args, ["--dir", row.path, "pack", "--pack-destination", output]);
+        createTar({ file: join(output, "tmux.tgz"), cwd: row.path, prefix: "package", gzip: true, sync: true }, ["package.json", "dist/index.js"]);
+      } });
+    };
+    assert.equal(pack("matching", { contract: 1, core: snapshot }).packages.length, 1);
+    const mismatch = /@cotal-ai\/tmux does not declare its bundled core/;
+    assert.throws(() => pack("missing"), mismatch);
+    assert.throws(() => pack("stale", { contract: 1, core: current.cotal.core }), mismatch);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
 const fixture = mkdtempSync(join(tmpdir(), "cold-gate-contract-"));
 try {
   const platforms = [["linux", "x64"], ["linux", "arm64"], ["darwin", "x64"], ["darwin", "arm64"], ["win32", "x64"], ["win32", "arm64"]];

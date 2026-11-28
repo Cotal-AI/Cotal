@@ -138,10 +138,14 @@ function copyPackage(src, dst, version, isRoot = false, nested = []) {
       if (!entry.isDirectory() || !stat(manifest)) continue;
       const connector = json(manifest);
       connector.version = version;
+      if (connector.cotal) connector.cotal.core = version;
       writeFileSync(manifest, `${JSON.stringify(connector, null, 2)}\n`);
     }
   }
-  if (isRoot || local) meta.version = version;
+  if (isRoot || local) {
+    meta.version = version;
+    if (meta.cotal) meta.cotal.core = version;
+  }
   for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
     for (const name of Object.keys(meta[key] ?? {})) meta[key][name] = name.startsWith('@cotal-ai/') ? version : '*';
   }

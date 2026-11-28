@@ -15,9 +15,13 @@ export function coldVersionWrites(manifest, packages, expected, source) {
     assert(row, "cold candidate package is not in this workspace");
     const prepared = JSON.parse(pkg.sourceManifest);
     assert(prepared.name === pkg.name && prepared.version === pkg.version, "cold candidate version metadata differs");
-    // Versioning may update internal ranges, but cannot replace scripts or other package policy.
+    if (Object.hasOwn(prepared, "cotal")) {
+      assert.equal(prepared.cotal?.core, prepared.version, `cold candidate ${pkg.name} has a mismatched bundled core stamp`);
+    }
+    // Versioning may update internal ranges and the bundled core stamp, but cannot replace package policy.
     const stripVersions = (value) => {
       const copy = structuredClone(value); delete copy.version;
+      delete copy.cotal?.core;
       for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
         for (const name of Object.keys(copy[field] ?? {})) if (expected.includes(name)) copy[field][name] = "<fixed-group>";
       }
