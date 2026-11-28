@@ -224,6 +224,12 @@ for (const level of ["regular", "minimal"]) {
       && event?.command === "help" && event.outcome === "refused" && event.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null
       && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
   }
+  const channels = ["fixture-news", "fixture-sales", "fixture-finance"];
+  const outside = await s.run(["spawn", "--dry-run", "--json", "--subscribe", channels[0]!, "--allow-subscribe", channels.slice(1).join(",")]);
+  const reported = outside.sent[0];
+  check("a rejected subscription shows the channels locally but sends only the reason",
+    outside.status === 1 && channels.every(name => outside.stdout.includes(name) && !JSON.stringify(outside.sent).includes(name)) &&
+    outside.sent.length === 1 && reported?.errorCode === "USAGE_INVALID" && reported.errorMessage === "subscription is not within allowSubscribe", shown(outside));
   const prompt = "private `prompt` text";
   const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
   await settled();
