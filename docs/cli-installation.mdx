@@ -256,9 +256,11 @@ disposable prefix. The dependency check, package installation and reconciliation
 npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
 removes earlier archive caches in its temporary location when it can verify that their owner and
 npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
-after their recorded owner and npm process group have exited. A terminal hangup during package
-staging, replacement or reconciliation waits for the step in progress to finish without starting
-the next step, removes its temporary scratch at once, and exits 129. A
+after their recorded owner and npm process group have exited. While `cotal update --self`
+installs a newer release, a terminal hangup during package staging, replacement or
+reconciliation waits for the step in progress to finish without starting the next step, removes
+its temporary scratch at once, and exits 129. Plain `cotal update`, and `cotal update --self`
+when no newer release is available, do not catch a terminal hangup. A
 successful retry also reclaims private update scratch idle for more than an hour when it contains
 only the Node compile cache. On Linux, it also removes that scratch after an hour if the
 reconciliation cache holds only records that prove the updater and child process group have exited,
