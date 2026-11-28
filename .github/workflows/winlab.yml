@@ -1,0 +1,64 @@
+name: Windows lab
+
+on:
+  push:
+    branches: ['test/winlab-1125c']
+
+permissions: {}
+
+jobs:
+  lab:
+    name: lab ${{ matrix.port }}
+    runs-on: windows-2025
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [2225]
+    concurrency:
+      group: winlab-${{ matrix.port }}
+      cancel-in-progress: true
+    steps:
+      - name: Start the SSH server
+        shell: pwsh
+        env:
+          LANE_KEYS: ${{ secrets.WINLAB_LANE_KEYS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+          }
+          Start-Service sshd
+          $file = 'C:\ProgramData\ssh\administrators_authorized_keys'
+          Set-Content -Path $file -Value $env:LANE_KEYS -Encoding ascii
+          icacls $file /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -PropertyType String -Force | Out-Null
+          Restart-Service sshd
+          New-Item -ItemType Directory -Force 'C:\lanes' | Out-Null
+          wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
+          $os = Get-CimInstance Win32_OperatingSystem
+          "sshd $((Get-Service sshd).Status), $($os.Caption) build $($os.BuildNumber), node $(node --version)"
+      - name: Hold the tunnel
+        shell: pwsh
+        env:
+          TUN_KEY: ${{ secrets.WINLAB_TUNNEL_KEY }}
+          TUN_HOST: ${{ secrets.WINLAB_TUNNEL_HOST }}
+          TUN_KNOWN: ${{ secrets.WINLAB_TUNNEL_KNOWN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'tun'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $key = Join-Path $dir 'key'
+          $known = Join-Path $dir 'known'
+          [IO.File]::WriteAllText($key, ($env:TUN_KEY -replace "`r", '').TrimEnd() + "`n")
+          [IO.File]::WriteAllText($known, $env:TUN_KNOWN.Trim() + "`n")
+          icacls $key /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+          $forward = "127.0.0.1:${{ matrix.port }}:127.0.0.1:22"
+          $end = (Get-Date).AddMinutes(340)
+          while ((Get-Date) -lt $end) {
+            $tunnel = Start-Process ssh -NoNewWindow -PassThru -ArgumentList @('-N', '-i', $key, '-o', "UserKnownHostsFile=$known", '-o', 'StrictHostKeyChecking=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=4', '-R', $forward, $env:TUN_HOST)
+            "tunnel started $(Get-Date -Format o)"
+            while (-not $tunnel.HasExited -and (Get-Date) -lt $end) { Start-Sleep -Seconds 20 }
+            if (-not $tunnel.HasExited) { Stop-Process -Id $tunnel.Id -Force }
+            Start-Sleep -Seconds 10
+          }
