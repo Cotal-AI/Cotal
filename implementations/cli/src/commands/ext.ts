@@ -13,6 +13,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
 import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
+import { readUpdatePending } from "../lib/update-pending.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
 import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
@@ -715,11 +716,29 @@ async function remove(pkg: string): Promise<void> {
   }
 }
 
+/** A package the extensions prefix lists as its own dependency, still present on disk. A dependency
+ *  inside one of those packages is not. */
+function prefixInstalledPackage(pkg: string): boolean {
+  let declared = false;
+  try {
+    const meta = JSON.parse(readFileSync(join(extensionsDir(), "package.json"), "utf8")) as { dependencies?: Record<string, unknown> };
+    declared = typeof meta.dependencies?.[pkg] === "string";
+  } catch {
+    declared = false;
+  }
+  if (!declared) return false;
+  return lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })?.isDirectory() === true
+    && installedExtensionPackage(pkg) !== undefined;
+}
+
 async function removeUnlocked(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
   if (!entry) {
-    console.log(`${pkg} is already absent. Nothing was removed.`);
+    const installed = prefixInstalledPackage(pkg);
+    console.log(installed
+      ? `${pkg} is not registered, and its files remain in ${extensionPackageDir(pkg)}. Nothing was removed. Run \`${displayCmd()} ext add\` with its original spec to register it.`
+      : `${pkg} is already absent. Nothing was removed.`);
     return;
   }
   assertExtensionServiceInstancesStopped(pkg);
@@ -858,7 +877,11 @@ function list(presentation: Presentation): void {
     if (presentation !== "json" || !(error instanceof CorruptExtensionsManifestError)) throw error;
     throw new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
   }
-  const warnings = entries.flatMap((entry): OutputWarning[] => {
+  const pending = readUpdatePending(cliVersion());
+  const missing = pending.kind === "unreadable" && pending.source === "manifest" && pending.error === "the extensions inventory is missing"
+    ? [{ code: "EXTENSION_INVENTORY_UNREADABLE" as const, target: null, message: pending.error }]
+    : [];
+  const warnings = [...missing, ...entries.flatMap((entry): OutputWarning[] => {
     const dir = extensionPackageDir(entry.pkg);
     const path = join(dir, "package.json");
     let problem: string;
@@ -875,18 +898,18 @@ function list(presentation: Presentation): void {
         : `could not be checked: ${path} is unreadable`;
     }
     return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${extensionReinstallAdvice(entry)}` }];
-  });
+  })];
   writeResult(presentation, {
     command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },
     warnings,
-    ...(warnings.length ? { completeness: "partial", partial: { message: "Some recorded extension packages could not be verified." } } : {}),
-  }, extensionsView);
+    ...(missing.length ? { completeness: "partial" as const, partial: { message: "the installed extensions could not be listed", remedy: pending.kind === "unreadable" ? pending.instruction : undefined } } : warnings.length ? { completeness: "partial" as const, partial: { message: "Some recorded extension packages could not be verified." } } : {}),
+  }, (result) => extensionsView(result, missing.length > 0));
 }
 
-function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }): Report {
+function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }, inventoryMissing = false): Report {
   return {
     sections: [
-      { title: "Extensions", blocks: r.items.length ? [{
+      { title: "Extensions", blocks: inventoryMissing ? [{ kind: "lines", lines: ["The extensions inventory is missing."] }] : r.items.length ? [{
         kind: "table",
         columns: [{ key: "pkg", label: "Package" }, { key: "version", label: "Version" }, { key: "source", label: "Source" }, { key: "provides", label: "Provides" }],
         rows: r.items.map((row) => ({ pkg: row.pkg, version: row.version, source: row.seeded ? "included" : "added", provides: { text: row.provides.join(", "), tone: "hint" } })),

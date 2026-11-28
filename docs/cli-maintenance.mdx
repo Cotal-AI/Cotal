@@ -49,6 +49,23 @@ Managers with running seats still require stopping those seats before replacemen
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
 current, it skips package replacement, full connector reconciliation, and the running Manager continuity
 check. It does not restart a running daemon.
+A prefix that was seeded and still has packages installed is not current when `extensions.json` is
+missing. The same is true when the packages are gone but `package-lock.json` remains.
+`cotal version`, `cotal update --check`, `cotal ext list`, and an ordinary command that
+still reconciles say the inventory is missing and name `cotal ext seed --repair`.
+`cotal up` and `cotal backup restore` print that hint and continue.
+Plain `cotal update` and `cotal update --self` rebuild the inventory.
+Self-update registers the built-in packages that are still on disk, or writes an empty
+inventory when none remain, and names a real `@cotal-ai` directory left on disk without a
+registration. Register one again with `cotal ext add` and its original spec.
+`cotal ext remove` says an unregistered extension package is not registered and leaves its
+files only when the extensions prefix lists that package as its own dependency.
+A dependency of one of those packages, such as `zod`, keeps the answer it has when the
+package is absent.
+An ordinary command that still reconciles, such as `cotal space forget`, names
+`cotal ext seed --repair` and does not rebuild the inventory. A command that only reads, such as
+`cotal ext list`, says the inventory is missing and does not rebuild it. A prefix that was never seeded,
+and an empty prefix, are unchanged.
 A manual `cotal update --self` also repairs a complete Codex marketplace moved into the current
 Cotal home when Codex still points to the missing old path. Run `cotal update` to refresh other
 harness integrations. If the package closure needs repair, the usual continuity guards still apply.

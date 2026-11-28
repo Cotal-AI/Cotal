@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -12,6 +12,7 @@ import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/command
 import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
 import { npmInvocation, npmProjectDirectory, npmUpdateChildEnvironment } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
+import { SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -842,5 +843,271 @@ if (process.platform !== "win32") {
     assert.equal(during.status, 0, during.output);
     assert.doesNotMatch(during.output, /getcwd\(\) failed|this folder no longer exists|update preflight failed|registry cannot be reached/i);
   } finally { rmSync(home, { recursive: true, force: true }); }
+}
+
+function stopRecordedStack(root: string): void {
+  const dir = join(root, ".cotal");
+  if (!existsSync(dir)) return;
+  const pids: number[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".pid")) continue;
+    let raw = "";
+    try { raw = readFileSync(join(dir, name), "utf8"); } catch { continue; }
+    const pid = Number(raw.trim());
+    if (Number.isInteger(pid) && pid > 1 && pid !== process.pid) pids.push(pid);
+  }
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+  }
+  const deadline = Date.now() + 3_000;
+  for (const pid of pids) {
+    while (Date.now() < deadline) {
+      try { process.kill(pid, 0); } catch { break; }
+      spawnSync("sleep", ["0.05"]);
+    }
+    try { process.kill(pid, "SIGKILL"); } catch { /* already exited */ }
+  }
+}
+
+if (process.platform === "linux") {
+  const home = mkdtempSync(join(tmpdir(), "cotal-missing-inventory-"));
+  try {
+    const repoBin = join(import.meta.dirname, "../../../bin");
+    const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version as string;
+    const prefix = join(home, "prefix");
+    const installed = join(prefix, "lib/node_modules/cotal-ai");
+    const launcher = join(prefix, "bin/cotal");
+    for (const directory of [join(prefix, "bin"), join(installed, "dist"), join(installed, "scripts")]) mkdirSync(directory, { recursive: true });
+    copyFileSync(join(repoBin, "package.json"), join(installed, "package.json"));
+    copyFileSync(join(repoBin, "scripts/pin-npm-node.cjs"), join(installed, "scripts/pin-npm-node.cjs"));
+    symlinkSync(join(repoBin, "dist/cotal.js"), join(installed, "dist/cotal.js"));
+    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", launcher);
+    const pin = spawnSync(process.execPath, [join(installed, "scripts/pin-npm-node.cjs")], {
+      cwd: home, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^cotal_/i.test(key))), encoding: "utf8",
+    });
+    assert.equal(pin.status, 0, pin.stdout + pin.stderr);
+    const entry = readFileSync(launcher, "utf8").startsWith("#!/usr/bin/env -S ") ? launcher : process.execPath;
+    const argv = entry === launcher ? [launcher] : [process.execPath, join(repoBin, "dist/cotal.js")];
+    const npmBin = join(home, "npm-bin");
+    const npmRoot = join(npmBin, "node_modules", "npm");
+    const npmCli = join(npmRoot, "bin", "npm-cli.js");
+    const npmRecord = join(home, "npm-calls");
+    mkdirSync(dirname(npmCli), { recursive: true });
+    writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", version: "10.9.2", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+    const npmFail = join(home, "npm-fail-once");
+    const npmCommand = spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8" });
+    assert.equal(npmCommand.status, 0, npmCommand.stderr);
+    const realNpm = realpathSync(npmCommand.stdout.trim());
+    writeFileSync(npmCli, `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(npmRecord)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv.includes('version')) { console.log(JSON.stringify(${JSON.stringify(version)})); process.exit(0); }
+if (process.argv.includes('install') && fs.existsSync(${JSON.stringify(npmFail)})) {
+  fs.rmSync(${JSON.stringify(npmFail)});
+  console.error('npm install failed for the missing inventory');
+  process.exit(1);
+}
+const real = spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { stdio: 'inherit' });
+process.exit(real.status ?? 1);
+`, { mode: 0o755 });
+    symlinkSync(npmCli, join(npmBin, "npm"));
+    const config = join(home, "xdg");
+    const extensions = join(config, "cotal", "extensions");
+    const seed = join(config, "cotal", "seed");
+    const builtIn = SEED_BUILTINS[0]!;
+    const builtInPkg = SEEDED_EXTENSIONS[builtIn]!.pkg;
+    const builtInDir = join(extensions, "node_modules", builtInPkg);
+    mkdirSync(builtInDir, { recursive: true });
+    writeFileSync(join(builtInDir, "package.json"), JSON.stringify({ name: builtInPkg, version, main: "index.js" }));
+    writeFileSync(join(builtInDir, "index.js"), "");
+    mkdirSync(join(extensions, "node_modules", "@cotal-ai", "tmux"), { recursive: true });
+    mkdirSync(seed, { recursive: true });
+    writeFileSync(join(extensions, "node_modules", "@cotal-ai", "tmux", "package.json"), JSON.stringify({ name: "@cotal-ai/tmux", version, main: "index.js" }));
+    writeFileSync(join(extensions, "node_modules", "@cotal-ai", "tmux", "index.js"), "");
+    writeFileSync(join(extensions, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true }));
+    writeFileSync(join(extensions, "package-lock.json"), JSON.stringify({ name: "cotal-extensions", lockfileVersion: 3, packages: { "": {} } }));
+    writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@cotal-ai/tmux", version, source: "operator", commands: [] }] }));
+    writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }));
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
+    Object.assign(env, {
+      HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: home,
+      COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", PATH: `${npmBin}:${env.PATH ?? ""}`,
+    });
+    const cli = (...args: string[]) => spawnSync(entry, [...argv.slice(1), ...args], { cwd: home, encoding: "utf8", timeout: 60_000, env });
+    const manifest = join(extensions, "extensions.json");
+    const calls = (): string => existsSync(npmRecord) ? readFileSync(npmRecord, "utf8") : "";
+    const before = calls();
+    const ordinary = cli("space", "forget", "ghost");
+    assert.notEqual(ordinary.status, 0, ordinary.stdout + ordinary.stderr);
+    assert.match(ordinary.stdout + ordinary.stderr, /no space named/);
+    assert.doesNotMatch(ordinary.stdout + ordinary.stderr, /inventory is missing|Reconciling built-in/);
+    const presentDep = join(extensions, "node_modules", "zod");
+    mkdirSync(presentDep, { recursive: true });
+    writeFileSync(join(presentDep, "package.json"), JSON.stringify({ name: "zod", version: "1.0.0" }));
+    const presentRemove = cli("ext", "remove", "zod");
+    assert.equal(presentRemove.status, 0, presentRemove.stdout + presentRemove.stderr);
+    assert.match(presentRemove.stdout, /already absent/);
+    assert.doesNotMatch(presentRemove.stdout, /files remain/);
+    rmSync(presentDep, { recursive: true, force: true });
+    rmSync(manifest);
+    const hinted = cli("space", "forget", "ghost");
+    assert.notEqual(hinted.status, 0, hinted.stdout + hinted.stderr);
+    assert.match(hinted.stdout + hinted.stderr, /no space named/);
+    assert.match(hinted.stdout + hinted.stderr, /extensions inventory is missing/);
+    assert.match(hinted.stdout + hinted.stderr, /ext seed --repair/);
+    assert.doesNotMatch(hinted.stdout + hinted.stderr, /Reconciling built-in/);
+    assert.equal(calls(), before, "an ordinary command does not call npm");
+    assert.equal(existsSync(manifest), false);
+    const humanList = cli("ext", "list");
+    assert.equal(humanList.status, 4, humanList.stdout + humanList.stderr);
+    assert.match(humanList.stdout, /extensions inventory is missing/i);
+    assert.doesNotMatch(humanList.stdout, /No extensions installed/);
+    const zodDir = join(extensions, "node_modules", "zod");
+    mkdirSync(zodDir, { recursive: true });
+    writeFileSync(join(zodDir, "index.js"), "");
+    const dependency = cli("ext", "remove", "zod");
+    assert.equal(dependency.status, 0, dependency.stdout + dependency.stderr);
+    assert.match(dependency.stdout, /already absent/);
+    assert.doesNotMatch(dependency.stdout, /files remain/);
+    writeFileSync(join(zodDir, "package.json"), JSON.stringify({ name: "zod", version: "1.0.0" }));
+    const packageDir = cli("ext", "remove", "zod");
+    assert.equal(packageDir.status, 0, packageDir.stdout + packageDir.stderr);
+    assert.match(packageDir.stdout, /already absent/);
+    assert.doesNotMatch(packageDir.stdout, /files remain/);
+    rmSync(zodDir, { recursive: true, force: true });
+    const listed = cli("ext", "list", "--json");
+    assert.equal(listed.status, 4, listed.stdout + listed.stderr);
+    assert.match(listed.stdout + listed.stderr, /cotal ext seed --repair/);
+    const versioned = cli("version");
+    assert.equal(versioned.status, 4, versioned.stdout + versioned.stderr);
+    assert.match(versioned.stdout + versioned.stderr, /cotal ext seed --repair/);
+    const checked = cli("update", "--check", "--json");
+    assert.equal(checked.status, 4, checked.stdout + checked.stderr);
+    const checkedReport = JSON.parse(checked.stdout) as { completeness: string; result: { reconciliation: { kind: string; source?: string }; extensions: unknown }; warnings: { code: string }[] };
+    assert.equal(checkedReport.completeness, "partial");
+    assert.equal(checkedReport.result.reconciliation.kind, "unreadable");
+    assert.equal(checkedReport.result.reconciliation.source, "manifest");
+    assert.equal(checkedReport.result.extensions, null);
+    assert.ok(checkedReport.warnings.some((warning) => warning.code === "EXTENSION_INVENTORY_UNREADABLE"));
+    const prefixPath = join(extensions, "package.json");
+    const prefixBefore = readFileSync(prefixPath, "utf8");
+    const prefixMeta = JSON.parse(prefixBefore) as { dependencies?: Record<string, string> };
+    prefixMeta.dependencies = { "@cotal-ai/tmux": "file:./node_modules/@cotal-ai/tmux" };
+    writeFileSync(prefixPath, JSON.stringify(prefixMeta));
+    const removed = cli("ext", "remove", "@cotal-ai/tmux");
+    writeFileSync(prefixPath, prefixBefore);
+    assert.equal(removed.status, 0, removed.stdout + removed.stderr);
+    assert.match(removed.stdout, /not registered, and its files remain/);
+    assert.equal(existsSync(join(extensions, "node_modules", "@cotal-ai", "tmux")), true);
+    writeFileSync(npmFail, "");
+    const failed = cli("update", "--self");
+    assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+    assert.match(failed.stdout + failed.stderr, /npm install failed for the missing inventory/);
+    assert.equal(existsSync(manifest), false);
+    const afterFailure = cli("update", "--check");
+    assert.notEqual(afterFailure.status, 0, afterFailure.stdout + afterFailure.stderr);
+    assert.match(afterFailure.stdout + afterFailure.stderr, /extensions inventory is missing/);
+    assert.doesNotMatch(afterFailure.stdout + afterFailure.stderr, /installed package closure is current/);
+    const recovered = cli("update", "--self");
+    assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+    assert.match(recovered.stdout + recovered.stderr, /extensions inventory was missing/);
+    assert.match(recovered.stdout + recovered.stderr, new RegExp(builtInPkg.replace("/", "\\/")));
+    assert.match(readFileSync(manifest, "utf8"), new RegExp(builtInPkg.replace("/", "\\/")));
+    assert.match(recovered.stdout + recovered.stderr, /@cotal-ai\/tmux/);
+    const second = cli("update", "--check", "--json");
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    const secondReport = JSON.parse(second.stdout) as { completeness: string; result: { reconciliation: { kind: string } } };
+    assert.equal(secondReport.completeness, "complete");
+    assert.equal(secondReport.result.reconciliation.kind, "none");
+    rmSync(join(extensions, "node_modules"), { recursive: true, force: true });
+    rmSync(manifest);
+    const lockOnly = cli("update", "--self");
+    assert.equal(lockOnly.status, 0, lockOnly.stdout + lockOnly.stderr);
+    assert.match(lockOnly.stdout + lockOnly.stderr, /extensions inventory was missing/);
+    assert.equal(existsSync(manifest), true);
+    assert.doesNotMatch(readFileSync(manifest, "utf8"), /tmux/);
+    mkdirSync(builtInDir, { recursive: true });
+    writeFileSync(join(builtInDir, "package.json"), JSON.stringify({ name: builtInPkg, version, main: "index.js" }));
+    writeFileSync(join(builtInDir, "index.js"), "");
+    rmSync(manifest);
+    const repaired = cli("ext", "seed", "--repair");
+    assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+    assert.match(repaired.stdout + repaired.stderr, /extensions inventory was missing/);
+    assert.match(readFileSync(manifest, "utf8"), new RegExp(builtInPkg.replace("/", "\\/")));
+    const emptyHome = mkdtempSync(join(home, "empty-"));
+    const emptyConfig = join(emptyHome, "xdg");
+    const emptyExtensions = join(emptyConfig, "cotal", "extensions");
+    const emptySeed = join(emptyConfig, "cotal", "seed");
+    mkdirSync(emptyExtensions, { recursive: true });
+    mkdirSync(emptySeed, { recursive: true });
+    writeFileSync(join(emptySeed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }));
+    writeFileSync(join(emptySeed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(emptySeed, "stamp.json"), JSON.stringify({ generation: version }));
+    const empty = spawnSync(entry, [...argv.slice(1), "space", "forget", "ghost"], {
+      cwd: emptyHome, encoding: "utf8", timeout: 60_000,
+      env: { ...env, HOME: emptyHome, USERPROFILE: emptyHome, COTAL_HOME: join(emptyHome, "cotal"), XDG_CONFIG_HOME: emptyConfig, XDG_RUNTIME_DIR: emptyHome },
+    });
+    assert.notEqual(empty.status, 0, empty.stdout + empty.stderr);
+    assert.match(empty.stdout + empty.stderr, /no space named/);
+    assert.doesNotMatch(empty.stdout + empty.stderr, /inventory is missing|Reconciling built-in/);
+    assert.equal(existsSync(join(emptyExtensions, "extensions.json")), false);
+    const neverHome = mkdtempSync(join(home, "never-"));
+    const neverConfig = join(neverHome, "xdg");
+    const neverExtensions = join(neverConfig, "cotal", "extensions");
+    const neverModules = join(neverExtensions, "node_modules", "@cotal-ai", "tmux");
+    mkdirSync(neverModules, { recursive: true });
+    writeFileSync(join(neverModules, "package.json"), JSON.stringify({ name: "@cotal-ai/tmux", version, main: "index.js" }));
+    writeFileSync(join(neverModules, "index.js"), "");
+    writeFileSync(join(neverExtensions, "package-lock.json"), JSON.stringify({ name: "cotal-extensions", lockfileVersion: 3, packages: { "": {} } }));
+    const nevered = spawnSync(entry, [...argv.slice(1), "space", "forget", "ghost"], {
+      cwd: neverHome, encoding: "utf8", timeout: 60_000,
+      env: { ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")), HOME: neverHome, USERPROFILE: neverHome, COTAL_HOME: join(neverHome, "cotal"), XDG_CONFIG_HOME: neverConfig, XDG_RUNTIME_DIR: neverHome },
+    });
+    assert.notEqual(nevered.status, 0, nevered.stdout + nevered.stderr);
+    assert.match(nevered.stdout + nevered.stderr, /refusing to reconcile the operator-global seed store/);
+    assert.doesNotMatch(nevered.stdout + nevered.stderr, /inventory is missing/);
+    assert.equal(existsSync(join(neverExtensions, "extensions.json")), false);
+    rmSync(manifest);
+    const project = join(home, "project");
+    mkdirSync(project);
+    const checkout = spawnSync(entry, [...argv.slice(1), "up"], {
+      cwd: project, encoding: "utf8", timeout: 60_000,
+      env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")),
+    });
+    assert.equal(checkout.status, 0, checkout.stdout + checkout.stderr);
+    assert.match(checkout.stdout + checkout.stderr, /extensions inventory is missing/);
+    assert.match(checkout.stdout + checkout.stderr, /running in the background/);
+    assert.doesNotMatch(checkout.stdout + checkout.stderr, /DEPENDENCY_UNAVAILABLE|Reconciling built-in/);
+    assert.equal(existsSync(manifest), false);
+    const restored = spawnSync(entry, [...argv.slice(1), "backup", "restore", join(home, "no-such-backup")], {
+      cwd: home, encoding: "utf8", timeout: 60_000, env,
+    });
+    assert.notEqual(restored.status, 0, restored.stdout + restored.stderr);
+    assert.match(restored.stdout + restored.stderr, /extensions inventory is missing/);
+    assert.doesNotMatch(restored.stdout + restored.stderr, /DEPENDENCY_UNAVAILABLE/);
+    assert.equal(existsSync(manifest), false);
+    chmodSync(extensions, 0);
+    try {
+      const blocked = cli("version");
+      assert.notEqual(blocked.status, 0, blocked.stdout + blocked.stderr);
+      assert.match(blocked.stderr, /cannot read the extensions manifest/);
+      assert.doesNotMatch(blocked.stdout + blocked.stderr, /ext seed --repair|extensions inventory is missing/);
+      const blockedCheck = cli("update", "--check");
+      const blockedStatus = cli("status", "--json");
+      const blockedVersion = cli("version", "--json");
+      for (const result of [blockedCheck, blockedStatus, blockedVersion]) {
+        assert.notEqual(result.status, 0, result.stdout + result.stderr);
+        assert.match(result.stdout + result.stderr, /cannot read the extensions manifest/);
+        assert.match(result.stdout + result.stderr, /restore this account's read access/);
+        assert.doesNotMatch(result.stdout + result.stderr, /ext seed --repair|extensions inventory is missing/);
+      }
+    } finally { chmodSync(extensions, 0o700); }
+  } finally {
+    stopRecordedStack(join(home, "project"));
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });
