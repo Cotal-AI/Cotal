@@ -1197,6 +1197,7 @@
     "smoke:artifacts-endpoint": "tsx implementations/delivery/smoke/artifacts-endpoint.smoke.ts",
     "smoke:artifacts-bind-proof": "tsx implementations/delivery/smoke/artifacts-bind-proof.smoke.ts",
     "smoke:artifacts-verbs": "tsx implementations/delivery/smoke/artifacts-verbs.smoke.ts",
+    "smoke:artifacts-lifecycle": "tsx implementations/delivery/smoke/artifacts-lifecycle.smoke.ts",
     "smoke:up-serve:live": "tsx implementations/cli/smoke/up-serve-live.smoke.ts",
     "smoke:artifact-index-restore:live": "tsx implementations/cli/smoke/artifact-index-restore-live.smoke.ts",
     "smoke:artifact-store-no-reserve": "tsx packages/core/smoke/artifact-store-no-reserve.smoke.ts",
