@@ -130,12 +130,13 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // line (shared with the manager's PtyRuntime launch).
   // Use the same peer policy for installs and removals, including failed-add cleanup. Cotal links
   // its shared peers to the running binary's copies after npm changes the prefix.
-  // The prefix verifier requires every host-compatible dependency, including native optional
-  // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  // The prefix verifier requires a current package-lock.json and every host-compatible dependency,
+  // including native optional packages. CLI flags win over ambient package-lock=false or omit=optional,
+  // also when npm removes a sibling.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--package-lock=true", "--legacy-peer-deps"]);
   if (npm.missingOnPath && args[0] === "install" && !seeding)
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "npm is not on PATH; the extension install did not start", {
       remedy: "make npm available on PATH, check that `npm --version` works, then retry the original extension install",
