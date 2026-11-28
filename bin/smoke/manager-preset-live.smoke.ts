@@ -85,7 +85,7 @@ const loose = join(rosters, "loose.yaml");
 writeFileSync(loose, "agents: []\n");
 chmodSync(loose, 0o666);
 const link = join(rosters, "link.yaml");
-symlinkSync(roster, link);
+symlinkSync("roster.yaml", link);
 
 // ---- The adapter declares the roster path and the foreground mode ------------------------------
 const adapter = registry.all<LocalProcess>("local-process").find((row) => row.name === "manager-service");
@@ -102,7 +102,7 @@ else {
   const writable = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: loose }));
   check("a roster others can write is refused", writable?.startsWith("PERMISSION_DENIED") === true, writable);
   const linked = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: link }));
-  check("a symlinked roster is refused as a link", linked?.startsWith("PERMISSION_DENIED") === true && linked.includes("crosses a symlink"), linked);
+  check("a symlinked roster is refused without link paths in the diagnostic message", linked?.startsWith("PERMISSION_DENIED") === true && linked.includes("crosses a symlink") && !linked.includes(link) && !linked.includes("roster.yaml"), linked);
   const missing = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: join(rosters, "missing.yaml") }));
   check("a missing roster is refused", missing?.startsWith("DEPENDENCY_UNAVAILABLE") === true, missing);
 

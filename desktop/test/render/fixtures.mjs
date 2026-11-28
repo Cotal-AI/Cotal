@@ -54,7 +54,7 @@ export function nativeStub(scenario) {
       if (request.op === "agent-apps") {
         state.appsRequests = [...(state.appsRequests ?? []), request.refresh === true];
         if (state.appsHold) await new Promise(() => {});
-        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: "unchanged" } : {}) });
+        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: state.refreshService ?? "unchanged" } : {}) });
       }
       if (request.op === "agent-app-install" || request.op === "agent-app-sign-in") {
         state.appActions = [...(state.appActions ?? []), `${request.op}:${request.name}`];
@@ -66,7 +66,7 @@ export function nativeStub(scenario) {
         const app = { ...apps.find(item => item.name === request.name), state: installing && request.name === "claude" ? "signed-out" : installing ? "installed" : "signed-in", version: "2.1.332" };
         delete app.missing;
         state.agentApps = apps.map(item => item.name === request.name ? app : item);
-        return ok(installing ? { app, service: state.appService ?? "refreshed", ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
+        return ok(installing ? { app, service: state.appService ?? "refreshed", ...(state.serviceError ? { serviceError: state.serviceError } : {}), ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
       }
       if (request.op === "install") {
         for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
@@ -246,6 +246,21 @@ const appsScenarios = [
     assert.equal(await appButton(page, "Open sign-in page: Claude Code").isVisible(), true);
     await appButton(page, "Open sign-in page: Claude Code").click();
   } },
+  { name: "agent-apps-install-signs-in-service-failed", state: { ...accountOnly, agentApps: noApps, appService: "failed", serviceError: "the daemon did not answer within 60s" }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"][data-state="ready"]').waitFor(); }, expect: async page => {
+    // The automatic sign-in keeps the reason the service has not picked Claude Code up; only a refresh that ran clears it.
+    assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude", "agent-app-sign-in:claude"]);
+    const reason = "Claude Code is signed in, but the background service has not picked it up yet: the daemon did not answer within 60s. Choose Check again to try once more.";
+    assert.equal(await page.locator("#apps-message").textContent(), reason);
+    // "unchanged" also means the service did not answer, so the reason stays.
+    const asked = (await page.evaluate(() => window.__renderState.appsRequests)).length;
+    await page.click("#apps-refresh");
+    await page.waitForFunction(n => window.__renderState.appsRequests.length > n && !document.querySelector("#apps-refresh").disabled, asked);
+    assert.equal(await page.locator("#apps-message").textContent(), reason);
+    await page.evaluate(() => { window.__renderState.refreshService = "refreshed"; });
+    await page.click("#apps-refresh");
+    await page.waitForFunction(() => document.querySelector("#apps-message").textContent === "");
+    assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).at(-1), true);
+  } },
   { name: "agent-apps-install-failed", state: { ...connectedApps, appInstallFails: true }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="failed"]').waitFor(); }, expect: async page => {
     assert.match(await page.locator('[data-app="jcode"] .app-status').textContent(), /Couldn’t install: The installer stopped with exit code 1/);
     await page.locator('[data-app="jcode"] summary').click();
@@ -372,6 +387,22 @@ export const scenarios = [
   { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
   } },
+  ...[
+    ["offline", "No internet connection", "Cotal reconnects by itself when this computer is back online.", "Offline", "offline", "this computer cannot look up cotal.cloud (ENOTFOUND)", "No internet connection"],
+    ["unreachable", "Can't reach your space", "Cotal reconnects by itself when the space answers again.", "Can't connect", "warning", "cotal.cloud is not answering", "Can't reach this space"],
+  ].map(([kind, title, description, pill, icon, reason, row]) => ({
+    name: `account-connection-${kind}`,
+    state: { installed: true, signedIn: true, connected: true, managers: [{ space: "research", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }], connection: { state: kind, reason } }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: kind }] } },
+    expect: async page => {
+      assert.equal(await page.locator("#connection-title").textContent(), title, "a lost connection must not claim Connected or Starting");
+      assert.equal(await page.locator("#connection-description").textContent(), description);
+      assert.equal(await page.locator("#tray-label").textContent(), pill);
+      assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
+      assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), icon);
+      assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+      assert.equal(await page.locator('[data-space="research"] small').last().textContent(), `${row}: ${reason}`);
+    },
+  })),
 
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },

@@ -10,7 +10,7 @@ import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateI
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
 import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
-import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
+import { npmInvocation, npmProjectDirectory, npmUpdateChildEnvironment } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
 const counted = countedAssert(strictAssert);
@@ -221,11 +221,14 @@ async function npmNodeEngine(): Promise<void> {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
+    const lastPathFile = join(root, "npm-last-path");
     type NpmLaunch = { node: string; cwd: string; pathHead: string };
     const recordedLaunches = (): NpmLaunch[] => readFileSync(record, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
     writeFileSync(cli, `#!/usr/bin/env node
-require('node:fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(lastPathFile)}, process.env.PATH ?? '');
+fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({
   node: process.execPath, cwd: process.cwd(), pathHead: (process.env.PATH ?? '').split(require('node:path').delimiter)[0],
 }) + '\\n');
 console.log(JSON.stringify(${JSON.stringify(version)}));
@@ -370,6 +373,305 @@ require(${JSON.stringify(cli)});
       const viaIsolatedShim = run("--check", [shimDir], npmBin, project);
       assert.equal(viaIsolatedShim.status, 0, viaIsolatedShim.stdout + viaIsolatedShim.stderr);
       assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(`${alternate}.gone`), "the same shim can select Node from the isolated npm directory");
+
+      const asdfData = join(root, "asdf-data"), asdfShims = join(asdfData, "shims"), asdfBin = join(root, "asdf-bin");
+      const asdfPluginShim = join(asdfData, "plugins", "nodejs", "shims", "npm");
+      const asdfInstall = join(asdfData, "installs", "nodejs", process.versions.node);
+      for (const dir of [asdfShims, asdfBin, dirname(asdfPluginShim), join(asdfInstall, "bin")]) mkdirSync(dir, { recursive: true });
+      copyFileSync(process.execPath, join(asdfInstall, "bin", "node"));
+      symlinkSync(cli, join(asdfInstall, "bin", "npm"));
+      const asdfCalls = join(root, "asdf-calls");
+      const asdfExe = join(asdfBin, "asdf");
+      const writeAsdfExe = () => writeFileSync(asdfExe, `#!/bin/sh
+printf '%s\\n' "$1:$2:$PWD" >> ${JSON.stringify(asdfCalls)}
+if [ -n "$ASDF_TEST_SLEEP" ]; then /bin/sleep "$ASDF_TEST_SLEEP"; fi
+if [ -n "$ASDF_TEST_WHICH_OUT" ]; then printf '%b' "$ASDF_TEST_WHICH_OUT"; exit "\${ASDF_TEST_WHICH_CODE:-0}"; fi
+if [ ! -f .tool-versions ]; then
+  printf '%s\\n' 'No version is set for nodejs; please run \`asdf set [options] nodejs <version>\`' >&2
+  exit 1
+fi
+case "$1:$2" in
+  which:npm) printf '%s\\n' ${JSON.stringify(asdfPluginShim)} ;;
+  where:nodejs) cat .tool-versions ;;
+  exec:npm) shift 2; exec ${JSON.stringify(asdfPluginShim)} "$@" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+      writeAsdfExe();
+      writeFileSync(asdfPluginShim, `#!/bin/sh\ninstalled=$(${JSON.stringify(asdfExe)} where nodejs) || exit $?\nexec "$installed/bin/npm" "$@"\n`, { mode: 0o755 });
+      const writeGoAsdfShim = (asdfCmd = "asdf") => writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec ${asdfCmd} exec "npm" "$@"`, { mode: 0o755 });
+      writeGoAsdfShim();
+      const asdfExtra = [asdfBin, "/usr/bin", "/bin"];
+      const asdfBaseEnv = { ...cliEnv(asdfExtra, asdfShims), ASDF_DATA_DIR: asdfData };
+      writeFileSync(join(project, ".tool-versions"), `${asdfInstall}\n`);
+
+      rmSync(asdfCalls, { force: true });
+      const standaloneAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: project, encoding: "utf8", timeout: 60_000, env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
+      });
+      assert.equal(standaloneAsdf.status, 0, standaloneAsdf.stdout + standaloneAsdf.stderr);
+      assert.match(standaloneAsdf.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().at(-1), {
+        node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+      }, "project-selected asdf npm runs outside the project on Cotal's standalone compatible Node");
+      assert.deepEqual(readFileSync(asdfCalls, "utf8").trim().split(/\r?\n/), [
+        `which:npm:${realpathSync(project)}`, `where:nodejs:${realpathSync(project)}`,
+      ], "asdf npm resolution is memoised per process for the same shim and directory");
+
+      // Exact bash reshim template from asdf v0.10.2, v0.14.1, and v0.15.0 (`lib/commands/reshim.bash`),
+      // where `$(asdf_dir)` and `${executable_name}` expand when asdf writes the shim.
+      for (const asdfDirExpr of [asdfData, "${ASDF_DIR}"]) {
+        const legacyAsdfDir = join(asdfData, "bin");
+        mkdirSync(legacyAsdfDir, { recursive: true });
+        copyFileSync(asdfExe, join(legacyAsdfDir, "asdf"));
+        writeFileSync(join(asdfShims, "npm"), `#!/usr/bin/env bash\n# asdf-plugin: nodejs ${process.versions.node}\nexec ${asdfDirExpr}/bin/asdf exec "npm" "$@" # asdf_allow: ' asdf '\n`, { mode: 0o755 });
+        const legacyEnv = { ...cliEnv(["/usr/bin", "/bin"], asdfShims), ASDF_DATA_DIR: asdfData, ASDF_DIR: asdfData, NODE_OPTIONS: undefined };
+        const legacyAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+          cwd: project, encoding: "utf8", timeout: 60_000, env: legacyEnv,
+        });
+        assert.equal(legacyAsdf.status, 0, legacyAsdf.stdout + legacyAsdf.stderr);
+        assert.match(legacyAsdf.stdout, /Registry latest:/);
+        assert.deepEqual(recordedLaunches().at(-1), {
+          node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+        }, `bash-era asdf reshim template (${asdfDirExpr}) resolves the project's npm`);
+      }
+      writeGoAsdfShim();
+
+      const unsetAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: root, encoding: "utf8", timeout: 60_000, env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
+      });
+      assert.equal(unsetAsdf.status, 1, unsetAsdf.stdout + unsetAsdf.stderr);
+      assert.match(unsetAsdf.stderr, /No version is set for nodejs/);
+
+      // Failure fallbacks: missing absolute asdf (even with another asdf on PATH), >2s hang, and
+      // relative / multi-line / non-executable / non-npm answers each leave the original shim in place.
+      const missingAsdfPath = join(root, "missing-asdf-dir", "asdf");
+      writeFileSync(join(asdfShims, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec "${missingAsdfPath}" exec "npm" "$@"\n`, { mode: 0o755 });
+      const missingAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: project, encoding: "utf8", timeout: 60_000,
+        env: { ...asdfBaseEnv, NODE_OPTIONS: undefined },
+      });
+      assert.equal(missingAsdf.status, 1, missingAsdf.stdout + missingAsdf.stderr);
+      assert.match(missingAsdf.stderr, /missing-asdf-dir\/asdf/);
+      writeGoAsdfShim();
+
+      const nonExecNpm = join(root, "non-exec-npm");
+      writeFileSync(nonExecNpm, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+      const nonNpmExec = join(root, "non-npm-exec");
+      writeFileSync(nonNpmExec, "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+      const fallbackShimCalls = join(root, "fallback-shim-calls");
+      writeFileSync(join(asdfShims, "npm"), `#!/bin/sh
+# asdf-plugin: nodejs ${process.versions.node}
+exec asdf exec "npm" "$@"
+`, { mode: 0o755 });
+      writeFileSync(asdfExe, `#!/bin/sh
+case "$1:$2" in
+  which:npm)
+    if [ -n "$ASDF_TEST_SLEEP" ]; then exec /bin/sleep "$ASDF_TEST_SLEEP"; fi
+    printf '%b' "$ASDF_TEST_WHICH_OUT"
+    exit 0 ;;
+  exec:npm)
+    printf '%s\\n' "$PWD" >> ${JSON.stringify(fallbackShimCalls)}
+    shift 2
+    exec ${JSON.stringify(cli)} "$@" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+      for (const [label, extraEnv] of [
+        ["timeout", { ASDF_TEST_SLEEP: "3" }],
+        ["relative", { ASDF_TEST_WHICH_OUT: "relative/bin/npm\\n" }],
+        ["multiline", { ASDF_TEST_WHICH_OUT: `${join(asdfInstall, "bin", "npm")}\\n${join(asdfInstall, "bin", "npm")}\\n` }],
+        ["non-executable", { ASDF_TEST_WHICH_OUT: `${nonExecNpm}\\n` }],
+        ["non-npm", { ASDF_TEST_WHICH_OUT: `${nonNpmExec}\\n` }],
+      ] as const) {
+        rmSync(fallbackShimCalls, { force: true });
+        const fallbackRes = spawnSync(join(onlyNode, exe), [entry, "update", "--check"], {
+          cwd: project, encoding: "utf8", timeout: 60_000,
+          env: { ...asdfBaseEnv, NODE_OPTIONS: undefined, ...extraEnv },
+        });
+        assert.equal(fallbackRes.status, 0, `${label}: ${fallbackRes.stdout}${fallbackRes.stderr}`);
+        assert.deepEqual(readFileSync(fallbackShimCalls, "utf8").trim().split(/\r?\n/), [parse(root).root],
+          `${label} falls back to running the original shim from the isolated directory`);
+      }
+
+      // Linear bounded shim check: a 64 KB one-line file (and a sub-4KB pathological spaces line)
+      // with `# asdf-plugin:` returns in well under 1 s and is treated as not a shim.
+      writeAsdfExe();
+      for (const [label, content] of [
+        ["64kb-one-line", `# asdf-plugin: nodejs ${" ".repeat(65_536)}exec asdf exec "npm" "$@"`],
+        ["3kb-spaces", `#!/bin/sh\n# asdf-plugin: nodejs\nexec ${" ".repeat(3000)}not-asdf\n`],
+      ] as const) {
+        const bigNpmDir = join(root, `big-shim-${label}`);
+        mkdirSync(bigNpmDir, { recursive: true });
+        writeFileSync(join(bigNpmDir, "npm"), content, { mode: 0o755 });
+        rmSync(asdfCalls, { force: true });
+        const started = performance.now();
+        const invoked = await npmProjectDirectory.run(project, () =>
+          npmInvocation({ ...cliEnv(asdfExtra, bigNpmDir), ASDF_DATA_DIR: asdfData, NODE_OPTIONS: undefined }, ["view", "cotal-ai@latest", "version", "--json"]));
+        const elapsedMs = performance.now() - started;
+        assert.ok(elapsedMs < 500, `${label} shim check took ${elapsedMs}ms (must be well under 1000ms)`);
+        assert.equal(invoked.npm, undefined, `${label} is treated as not an asdf shim`);
+        assert.throws(() => readFileSync(asdfCalls), { code: "ENOENT" }, `${label} never invokes asdf`);
+      }
+
+      // Non-asdf npm wrapper on PATH is untouched and never consults asdf.
+      const customNpmDir = join(root, "custom-npm-bin");
+      mkdirSync(customNpmDir, { recursive: true });
+      const customNpmLog = join(root, "custom-npm-calls");
+      writeFileSync(join(customNpmDir, "npm"), `#!/bin/sh\nprintf '%s\\n' "$PWD" >> ${JSON.stringify(customNpmLog)}\nexec ${JSON.stringify(cli)} "$@"\n`, { mode: 0o755 });
+      rmSync(asdfCalls, { force: true });
+      const nonAsdfRes = spawnSync(join(onlyNode, exe), [entry, "update", "--check"], {
+        cwd: project, encoding: "utf8", timeout: 60_000,
+        env: { ...cliEnv(asdfExtra, customNpmDir), ASDF_DATA_DIR: asdfData, NODE_OPTIONS: undefined },
+      });
+      assert.equal(nonAsdfRes.status, 0, nonAsdfRes.stdout + nonAsdfRes.stderr);
+      assert.equal(readFileSync(customNpmLog, "utf8").trim(), parse(root).root, "non-asdf npm wrapper runs directly from /");
+      assert.throws(() => readFileSync(asdfCalls), { code: "ENOENT" }, "non-asdf npm never invokes asdf");
+
+      // Inherited COTAL_UPDATE_NPM is accepted only when npmEngine recognises it:
+      // a non-npm executable on PATH and one in a directory containing the PATH delimiter are both ignored.
+      writeGoAsdfShim();
+      writeFileSync(join(project, ".tool-versions"), `${asdfInstall}\n`);
+      const rogueLog = join(root, "rogue-update-npm-calls");
+      const rogueOnPath = join(asdfBin, "rogue-npm");
+      const rogueColonDir = join(root, `rogue${delimiter}npm`);
+      mkdirSync(rogueColonDir, { recursive: true });
+      const rogueInColonDir = join(rogueColonDir, "npm");
+      for (const rogue of [rogueOnPath, rogueInColonDir]) {
+        writeFileSync(rogue, `#!/bin/sh\nprintf 'ran\\n' >> ${JSON.stringify(rogueLog)}\nexit 99\n`, { mode: 0o755 });
+      }
+      for (const [label, inheritedValue] of [
+        ["non-npm on PATH", rogueOnPath],
+        ["non-npm in colon directory", rogueInColonDir],
+      ] as const) {
+        rmSync(rogueLog, { force: true });
+        const ignoredRes = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+          cwd: project, encoding: "utf8", timeout: 60_000,
+          env: { ...asdfBaseEnv, NODE_OPTIONS: undefined, COTAL_UPDATE_NPM: inheritedValue },
+        });
+        assert.equal(ignoredRes.status, 0, `${label}: ${ignoredRes.stdout}${ignoredRes.stderr}`);
+        assert.match(ignoredRes.stdout, /Registry latest:/);
+        assert.deepEqual(recordedLaunches().at(-1), {
+          node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+        }, `${label} is ignored in favour of the project's asdf npm`);
+        assert.throws(() => readFileSync(rogueLog), { code: "ENOENT" }, `${label} never executes`);
+      }
+
+      // Transient timeout retry: a first `asdf which npm` timeout is not cached as "no npm";
+      // a second call retries and caches a positive answer, while persistent timeouts ask at most once more.
+      {
+        const retryShimDir = join(root, "asdf-retry-shims");
+        const capShimDir = join(root, "asdf-cap-shims");
+        for (const dir of [retryShimDir, capShimDir]) {
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "npm"), `#!/bin/sh\n# asdf-plugin: nodejs ${process.versions.node}\nexec asdf exec "npm" "$@"\n`, { mode: 0o755 });
+        }
+        const onceMarker = join(root, "asdf-timeout-once");
+        writeFileSync(asdfExe, `#!/bin/sh
+printf '%s\\n' "$1:$2:$PWD" >> ${JSON.stringify(asdfCalls)}
+if [ "$1:$2" = "which:npm" ] && [ -n "$ASDF_ONCE_MARKER" ] && [ ! -f "$ASDF_ONCE_MARKER" ]; then
+  : > "$ASDF_ONCE_MARKER"
+  exec /bin/sleep 3
+fi
+if [ -n "$ASDF_TEST_SLEEP" ]; then exec /bin/sleep "$ASDF_TEST_SLEEP"; fi
+case "$1:$2" in
+  which:npm) printf '%s\\n' ${JSON.stringify(asdfPluginShim)} ;;
+  where:nodejs) cat .tool-versions ;;
+  exec:npm) shift 2; exec ${JSON.stringify(asdfPluginShim)} "$@" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+
+        rmSync(asdfCalls, { force: true });
+        rmSync(onceMarker, { force: true });
+        const retryEnv = { ...cliEnv(asdfExtra, retryShimDir), ASDF_DATA_DIR: asdfData, ASDF_ONCE_MARKER: onceMarker, NODE_OPTIONS: undefined };
+        const firstTry = await npmProjectDirectory.run(project, () => npmInvocation(retryEnv, ["view"]));
+        assert.equal(firstTry.npm, undefined, "first call falls back when asdf which npm times out");
+        const secondTry = await npmProjectDirectory.run(project, () => npmInvocation(retryEnv, ["view"]));
+        assert.equal(secondTry.npm, join(asdfInstall, "bin", "npm"), "second call retries after a timeout and resolves the project's npm");
+        const thirdTry = await npmProjectDirectory.run(project, () => npmInvocation(retryEnv, ["view"]));
+        assert.equal(thirdTry.npm, join(asdfInstall, "bin", "npm"), "third call reuses the cached positive answer");
+        assert.deepEqual(readFileSync(asdfCalls, "utf8").trim().split(/\r?\n/), [
+          `which:npm:${realpathSync(project)}`,
+          `which:npm:${realpathSync(project)}`,
+          `where:nodejs:${realpathSync(project)}`,
+        ], "timeout is retried once and positive resolution is then cached");
+
+        rmSync(asdfCalls, { force: true });
+        const capEnv = { ...cliEnv(asdfExtra, capShimDir), ASDF_DATA_DIR: asdfData, ASDF_TEST_SLEEP: "3", NODE_OPTIONS: undefined };
+        const cap1 = await npmProjectDirectory.run(project, () => npmInvocation(capEnv, ["view"]));
+        const cap2 = await npmProjectDirectory.run(project, () => npmInvocation(capEnv, ["view"]));
+        const startedCap3 = performance.now();
+        const cap3 = await npmProjectDirectory.run(project, () => npmInvocation(capEnv, ["view"]));
+        const cap3Elapsed = performance.now() - startedCap3;
+        assert.equal(cap1.npm, undefined);
+        assert.equal(cap2.npm, undefined);
+        assert.equal(cap3.npm, undefined);
+        assert.ok(cap3Elapsed < 500, `third call after two timeouts returned without probing (${cap3Elapsed}ms)`);
+        assert.deepEqual(readFileSync(asdfCalls, "utf8").trim().split(/\r?\n/), [
+          `which:npm:${realpathSync(project)}`,
+          `which:npm:${realpathSync(project)}`,
+        ], "persistent timeouts probe at most once more per command");
+        writeAsdfExe();
+      }
+
+      const compatibleAsdf = spawnSync(join(onlyNode, exe), [entry, "update", "--self"], {
+        cwd: project, encoding: "utf8", timeout: 60_000, env: asdfBaseEnv,
+      });
+      assert.equal(compatibleAsdf.status, 0, compatibleAsdf.stdout + compatibleAsdf.stderr);
+      assert.match(compatibleAsdf.stdout, /Registry latest:/);
+      assert.deepEqual(recordedLaunches().at(-1), {
+        node: realpathSync(join(asdfInstall, "bin", "node")), cwd: parse(root).root, pathHead: join(asdfInstall, "bin"),
+      }, "project-selected asdf npm uses its compatible Node when Cotal's Node does not satisfy npm's range");
+
+      const release = claimGlobalNpmUpdateLock(root);
+      try {
+        for (const installName of ["asdf runtime", "asdf:runtime"]) {
+          const customInstall = join(root, installName);
+          mkdirSync(join(customInstall, "bin"), { recursive: true });
+          symlinkSync(cli, join(customInstall, "bin", "npm"));
+          writeFileSync(join(project, ".tool-versions"), `${customInstall}\n`);
+          const childEnv = { ...asdfBaseEnv, NODE_OPTIONS: undefined };
+          const childFile = join(onlyNode, exe), childArgs = [entry, "update", "--check"];
+          for (const launch of [() => runGlobalProcess(root, "reconcile", childFile, childArgs, childEnv), () => runProcess(childFile, childArgs, childEnv)]) {
+            const child = await npmProjectDirectory.run(project, () => launch());
+            assert.equal(child.status, 0, child.stdout + child.stderr);
+            assert.deepEqual(recordedLaunches().at(-1), {
+              node: realpathSync(join(onlyNode, exe)), cwd: parse(root).root, pathHead: onlyNode,
+            }, `reconcile and update children retain the resolved asdf npm from ${installName}`);
+          }
+        }
+
+        // When node and npm come from different directories, the child's appended PATH tail keeps
+        // main's `[node, npm]` order (`dirname(node)` ahead of `dirname(npm)`).
+        const separateNpmInstall = join(root, "asdf-separate-npm");
+        const separateNodeBin = join(root, "asdf-separate-node", "bin");
+        mkdirSync(join(separateNpmInstall, "bin"), { recursive: true });
+        mkdirSync(separateNodeBin, { recursive: true });
+        symlinkSync(cli, join(separateNpmInstall, "bin", "npm"));
+        copyFileSync(process.execPath, join(separateNodeBin, exe));
+        writeFileSync(dispatcher, `#!/bin/sh\n[ "\${0##*/}" = node ] || exit 1\nexec "${join(separateNodeBin, exe)}" "$@"\n`, { mode: 0o755 });
+        writeFileSync(join(project, ".tool-versions"), `${separateNpmInstall}\n`);
+        const originalVersion = process.version;
+        Object.defineProperty(process, "version", { value: incompatibleVersion });
+        try {
+          const splitEnv = cliEnv([shimDir, ...asdfExtra], asdfShims);
+          const prepared = await npmProjectDirectory.run(project, () => npmUpdateChildEnvironment(splitEnv));
+          const expectedTail = [realpathSync(separateNodeBin), join(separateNpmInstall, "bin")];
+          assert.deepEqual((prepared.PATH ?? "").split(delimiter).slice(-2), expectedTail,
+            "npmUpdateChildEnvironment appends dirname(node) before dirname(npm)");
+          const childFile = join(onlyNode, exe), childArgs = [entry, "update", "--check"];
+          for (const launch of [() => runGlobalProcess(root, "reconcile", childFile, childArgs, splitEnv), () => runProcess(childFile, childArgs, splitEnv)]) {
+            const child = await npmProjectDirectory.run(project, () => launch());
+            assert.equal(child.status, 0, child.stdout + child.stderr);
+            assert.deepEqual(readFileSync(lastPathFile, "utf8").split(delimiter).slice(-2), expectedTail,
+              "child PATH keeps dirname(node) before dirname(npm) on the appended tail");
+          }
+        } finally {
+          Object.defineProperty(process, "version", { value: originalVersion });
+          writeFileSync(dispatcher, `#!/bin/sh\n[ -f .tool-versions ] && exit 126\nexec "${alternate}.gone" "$@"\n`);
+        }
+      } finally { release(); }
     }
     const updated = run("--self");
     assert.equal(updated.status, 0, updated.stdout + updated.stderr);
