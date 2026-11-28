@@ -719,13 +719,15 @@ if (process.platform !== "win32") {
       if (readFileSync(launcher, "utf8").startsWith("#!/usr/bin/env -S ")) entry.splice(0, entry.length, launcher);
     }
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
+    // Each shell runs two updates, including npm reconciliation of a fresh private prefix.
+    const retryDeadlineMs = 420_000;
     const result = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
       ...entry], {
-      cwd: home, encoding: "utf8", timeout: 180_000,
+      cwd: home, encoding: "utf8", timeout: retryDeadlineMs,
       env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
     });
-    assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`);
     assert.doesNotMatch(result.stdout + result.stderr, /getcwd\(\) failed|this folder no longer exists|update preflight failed|registry cannot be reached/i,
       "removed cwd does not refuse update or masquerade as unavailable registry metadata");
     assert.match(result.stdout, /Registry latest:/, "the actual updater completed its registry check");
@@ -738,7 +740,7 @@ if (process.platform !== "win32") {
           COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
       });
       let output = "", removed = false;
-      const timer = setTimeout(() => child.kill("SIGTERM"), 180_000);
+      const timer = setTimeout(() => child.kill("SIGTERM"), retryDeadlineMs);
       child.stdout.on("data", chunk => {
         output += chunk.toString();
         if (!removed && /Built-in connectors|installed package closure is current/.test(output)) {
