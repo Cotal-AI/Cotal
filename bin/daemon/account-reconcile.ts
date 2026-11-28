@@ -27,6 +27,17 @@ function readSavedSpaces(file: string): Saved {
   return raw;
 }
 
+function adoptMigratedOwner(saved: Saved, conflicts: Map<string, unknown>, refusals: Map<string, string>, retryAt: Map<string, number>, persist: () => void, oldOwner: string, newOwner: string): void {
+  let changed = false;
+  for (const [space, state] of Object.entries(saved.spaces)) {
+    const entry = state.owner === oldOwner ? findMesh(space) : undefined;
+    if (entry?.origin === "catalog" && entry.catalogOwner === newOwner) {
+      state.owner = newOwner; conflicts.delete(space); refusals.delete(space); retryAt.delete(space); changed = true;
+    }
+  }
+  if (changed) persist();
+}
+
 /** Reconcile through the same checked service and Manager operations as local setup. */
 export function createAccountReconciler(home: string, services: ServiceConnections, managers: Managers) {
   const file = join(home, "daemon", "account-spaces.json"), saved = readSavedSpaces(file);
@@ -149,17 +160,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       ? { holder: conflict.holder, candidate: conflict.candidate } : undefined;
   };
   return { apply, localRemoval, localAddition, serial,
-    reconcileMigratedOwner(oldOwner: string, newOwner: string) {
-      let changed = false;
-      for (const [space, state] of Object.entries(saved.spaces)) {
-        if (state.owner !== oldOwner) continue;
-        const entry = findMesh(space);
-        if (entry?.origin === "catalog" && entry.catalogOwner === newOwner) {
-          state.owner = newOwner; conflicts.delete(space); refusals.delete(space); retryAt.delete(space); changed = true;
-        }
-      }
-      if (changed) persist();
-    },
+    reconcileMigratedOwner: (oldOwner: string, newOwner: string) => adoptMigratedOwner(saved, conflicts, refusals, retryAt, persist, oldOwner, newOwner),
     accountHealth(owner: string, answering: boolean) {
       health.set(owner, answering ? 0 : (health.get(owner) ?? 0) + 1);
     },
