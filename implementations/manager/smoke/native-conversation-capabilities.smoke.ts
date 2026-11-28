@@ -160,15 +160,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     }
     await until(() => presence()?.status === "offline", "the last bearer did not expire");
     check("the live observer's offline row retains the last reported condition", presence()?.condition?.message === refusal);
+    check("the seat has not exchanged again before its bearer expires", readAgentAuthHealth(health)?.at === first.at);
 
     // The test authority approves the same actor again at a different lifecycle. Do not hand the
     // seat a new token or ask it to reconnect: its own next scheduled renewal must restore it.
     grantManagedActor(stateDir, { ...parent, tokenHash: hashActorToken(randomBytes(32).toString("base64url")), lifecycleUid: mintLifecycleUid(), custody: { kind: "foreground" } });
     try {
-      await until(() => presence()?.status === "idle" && readAgentAuthHealth(health)?.state === "ok",
-        "the slow renewal did not reconnect the unchanged child", 270_000);
-      check("the first successful renewal after the spawner returns clears the auth condition", !presence()?.condition, presence());
+      await until(() => readAgentAuthHealth(health)?.state === "ok", "the scheduled exchange did not succeed", 270_000);
       const elapsed = Date.parse(readAgentAuthHealth(health)!.at) - Date.parse(first.at);
+      await until(() => presence()?.status === "idle", "the renewed bearer did not reconnect the unchanged child");
+      check("the first successful renewal after the spawner returns clears the auth condition", !presence()?.condition, presence());
       check("the scheduled retry reconnects the same seat after two to four minutes",
         elapsed >= 120_000 && elapsed < 265_000 && presence()?.lifecycleUid === seat.lifecycleUid, elapsed);
     } finally {
