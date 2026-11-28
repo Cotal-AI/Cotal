@@ -67,6 +67,26 @@ async function checkUnreadableRestore(root: string, directory: string, file: str
   }
 }
 
+async function checkDeniedRestoreFolder(root: string, directory: string): Promise<void> {
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal), originalMode = statSync(directory).mode & 0o777;
+  for (const mode of [0o100, 0o400]) {
+    chmodSync(directory, mode);
+    try {
+      await assert.rejects(prepareRestore(root, { restore: directory }), (error: unknown) => {
+        if (!isCommandFailure(error)) return false;
+        assert.equal(error.outcome, "refused");
+        assert.equal(error.code, "PERMISSION_DENIED");
+        assert.deepEqual(error.target, { directory, root });
+        assert.match(error.native?.code ?? "", /^(EACCES|EPERM)$/);
+        return true;
+      });
+      assert.deepEqual(readFileSync(journal), before);
+      assert.deepEqual(readdirSync(join(root, ".cotal", "maintenance", "attempts")), []);
+    } finally { chmodSync(directory, originalMode); }
+  }
+}
+
 async function checkUnreadableManifest(root: string, directory: string): Promise<void> {
   const path = join(directory, "manifest.json");
   const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
@@ -177,7 +197,22 @@ try {
   const stagingParent = join(root, "staging");
   mkdirSync(stagingParent, { mode: 0o700 });
   if (process.geteuid && process.geteuid() !== 0) {
-    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(realpathSync(destination), file, stagingParent);
+    const directory = realpathSync(destination);
+    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(directory, file, stagingParent);
+    const originalMode = statSync(directory).mode & 0o777;
+    for (const mode of [0o400, 0o100]) {
+      chmodSync(directory, mode);
+      try {
+        for (const verb of ["inspect", "verify"])
+          assert.throws(() => backupRead({ positionals: [verb, directory], values: {}, raw: [] }), (error: unknown) => {
+            if (!isCommandFailure(error)) return false;
+            assert.deepEqual(error.target, { directory });
+            return error.code === "PERMISSION_DENIED" && /^(EACCES|EPERM)$/.test(error.native?.code ?? "") &&
+              error.remedy?.includes("read and search access") === true;
+          });
+      } finally { chmodSync(directory, originalMode); }
+    }
+    assert.equal(inspectBackupArtifact(directory, true).integrity, "matched-declared-sizes-and-sha256");
   }
   const staged = stageArtifact(destination, stagingParent);
   assert.deepEqual(readFileSync(join(staged.directory, "stream-a.snap")), Buffer.from([1, 2, 3]));
@@ -664,6 +699,7 @@ try {
       if (process.geteuid && process.geteuid() !== 0) {
         await checkUnreadableRestore(realpathSync(cleanRoot), realpathSync(destination), snapshot.path);
         await checkUnreadableManifest(realpathSync(cleanRoot), realpathSync(destination));
+        await checkDeniedRestoreFolder(realpathSync(cleanRoot), realpathSync(destination));
       }
       checkLinkedInterruptedBackup(cleanRoot);
     } finally { process.chdir(previousCwd); }

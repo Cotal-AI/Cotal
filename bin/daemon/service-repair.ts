@@ -81,11 +81,12 @@ export interface ServiceRepairIntent {
 }
 
 export const serviceRepairFile = (state: string): string => join(state, "service-repair.json");
+export const servicePolicyRepairFile = (state: string): string => join(state, "service-policy-repair.json");
 export const sourceDigest = (source: string): string => createHash("sha256").update(source).digest("hex");
 
 /** A protected intent binds both permitted file states. Unknown content never becomes repair authority. */
-export function readServiceRepair(state: string): ServiceRepairIntent | undefined {
-  const bytes = readLocalRecordSource(serviceRepairFile(state), 256 * 1024, true);
+export function readServiceRepair(state: string, file = serviceRepairFile(state)): ServiceRepairIntent | undefined {
+  const bytes = readLocalRecordSource(file, 256 * 1024, true);
   if (!bytes) return undefined;
   const value = JSON.parse(bytes.toString("utf8")) as ServiceRepairIntent;
   if (value.v !== 1 || typeof value.enabled !== "boolean" || typeof value.previousSource !== "string" || typeof value.nextSource !== "string"

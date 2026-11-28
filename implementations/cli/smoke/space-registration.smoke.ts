@@ -65,6 +65,9 @@ if (!existsSync(BIN)) {
 }
 
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
+// These saved definitions are inspected, never launched. Their executable must belong to this account.
+const fixtureExecutable = join(home, "fixture-executable");
+writeFileSync(fixtureExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
 const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshFile, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, resolveOnPath, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
@@ -266,9 +269,11 @@ setCurrent("keep");
   check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
 
   const conflictingServer = await json(["space", "add", "open1", "--server", DEAD, "--root", root]);
-  check("adding a registered name at a different broker is CONFLICT, exit 2, naming forget and --force",
-    refused(conflictingServer, 2, "CONFLICT") && /space forget open1/.test(conflictingServer.env?.error?.remedy ?? "") &&
-    /--force/.test(conflictingServer.env?.error?.remedy ?? "") && findMesh("open1")?.server === LIVE, shown(conflictingServer));
+  const conflictStep = conflictingServer.env?.error?.remedy ?? "";
+  check("a conflicting manual add explains the unchecked replacement, its verification and what forgetting clears",
+    refused(conflictingServer, 2, "CONFLICT") && conflictStep.includes("without checking the broker") &&
+    conflictStep.includes("repeat the same add without --force to verify it") && conflictStep.includes("`cotal space forget open1`") &&
+    conflictStep.includes("selection, per-space preferences and remembered chat sessions") && findMesh("open1")?.server === LIVE, shown(conflictingServer));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
 
@@ -284,6 +289,11 @@ setCurrent("keep");
   recordMesh({ space: "started", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const overUpBare = await json(["space", "add", "started", "--server", LIVE, "--root", root]);
   check("adding a space this machine started is CONFLICT and does not offer --force", refused(overUpBare, 2, "CONFLICT") && (overUpBare.env?.error?.message ?? "").includes("a space this machine started") && !/--force/.test(overUpBare.env?.error?.remedy ?? ""), shown(overUpBare));
+  const showStep = overUpBare.env?.error?.remedy?.match(/`cotal (space show started --json)`/)?.[1];
+  const inspection = showStep ? await run(showStep.split(" ")) : undefined;
+  check("the suggested JSON inspection reads the existing registration", inspection?.status === 0 && inspection.stdout.trimStart().startsWith("{") && JSON.parse(inspection.stdout).result?.root === root, showStep);
+  const overUpPlain = await run(["space", "add", "started", "--server", LIVE, "--root", root, "--plain"]);
+  check("plain registration conflict keeps the plain inspection", overUpPlain.status === 2 && overUpPlain.stderr.includes("`cotal space show started --plain`"), shown(overUpPlain));
   const overUp = await json(["space", "add", "started", "--server", LIVE, "--root", root, "--force"]);
   check("--force does not replace a space this machine started", refused(overUp, 2, "CONFLICT") && findMesh("started")?.origin === "up", shown(overUp));
 
@@ -735,7 +745,7 @@ setCurrent("keep");
     const brokerDefinition = (space: string, stackRoot: string) => {
       const config = join(stackRoot, ".cotal", "server.conf");
       writeFileSync(config, "", { mode: 0o600 });
-      serviceDefinitionStore(space).commit("stack-broker", undefined, { schemaVersion: 1, space, launch: { type: "adapter", adapter: "nats-broker", options: { root: stackRoot, config, binary: process.execPath, server: LIVE } }, readiness: { type: "adapter", timeoutMs: 30_000 } });
+      serviceDefinitionStore(space).commit("stack-broker", undefined, { schemaVersion: 1, space, launch: { type: "adapter", adapter: "nats-broker", options: { root: stackRoot, config, binary: fixtureExecutable, server: LIVE } }, readiness: { type: "adapter", timeoutMs: 30_000 } });
     };
 
     const runningRoot = stack("stackrun", "open", { broker: member("stackrun", "stack-broker", requireProcessIdentity(process.pid), false) }, "started");
@@ -1148,7 +1158,7 @@ if (process.platform === "linux") {
   mkdirSync(first);
   mkdirSync(second);
   const server = `nats://127.0.0.1:${await freePort()}`, definition = join(home, "inherit-tick.json");
-  writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "inherit", launch: { type: "process", executable: "/bin/sh", args: ["-c", "exit 0"], cwd: first }, readiness: { type: "process", timeoutMs: 3000 } }));
+  writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "inherit", launch: { type: "process", executable: fixtureExecutable, args: [], cwd: first }, readiness: { type: "process", timeoutMs: 3000 } }));
   await json(["space", "create", "inherit"], first);
   const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const fresh = await json(["up", "--detach", "--open", "--no-manager", "--server", server], first);
@@ -2099,7 +2109,8 @@ if (process.platform === "linux") {
     refused(underFile, 1, "USAGE_INVALID") && (underFile.env?.error?.message ?? "").includes(`${file}, in the --store-dir path ${join(file, "sub")}, is not a directory`), shown(underFile));
   const restoreFile = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", file], storeRoot);
   check("backup restore --store-dir naming a regular file is the same USAGE_INVALID, exit 1",
-    refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`), shown(restoreFile));
+    refused(restoreFile, 1, "USAGE_INVALID") && (restoreFile.env?.error?.message ?? "").includes(`the --store-dir path ${file} is not a directory`) &&
+      (restoreFile.env?.error?.remedy ?? "").includes("does not exist yet, inside an existing writable directory"), shown(restoreFile));
   const writable = await json(["up", "--server", DEAD, "--store-dir", join(exposed, "store")], storeRoot);
   check("up --store-dir in a directory every account can write is PERMISSION_DENIED, exit 2, naming it with its chmod",
     refused(writable, 2, "PERMISSION_DENIED") && (writable.env?.error?.message ?? "").includes(`${exposed} is writable by every local account`) &&
@@ -2115,7 +2126,9 @@ if (process.platform === "linux") {
     refused(inHome, 1, "USAGE_INVALID") && (inHome.env?.error?.message ?? "").includes(`the --store-dir path ${homeStore} is in the control directory ${process.env.COTAL_HOME}`), shown(inHome));
   const restoreControl = await json(["backup", "restore", join(home, "no-backup"), "--store-dir", join(control, "auth")], storeRoot);
   check("backup restore --store-dir in the root's .cotal is the same refusal",
-    refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`), shown(restoreControl));
+    refused(restoreControl, 1, "USAGE_INVALID") && (restoreControl.env?.error?.message ?? "").includes(`is in the control directory ${control}`) &&
+      (restoreControl.env?.error?.remedy ?? "").includes("does not exist yet, inside an existing writable directory") &&
+      (restoreControl.env?.error?.remedy ?? "").includes("outside the control directory"), shown(restoreControl));
   // A link would be recorded as the store path, which no reset removes: it refuses, naming its target.
   const real = join(realpathSync(home), "operator's store");
   mkdirSync(real, { mode: 0o700 });

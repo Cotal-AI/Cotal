@@ -127,6 +127,14 @@ try {
     check(again.ok === true && again.result!.pathAdded === undefined, "a second install finds claude on PATH and adds nothing");
     for (const file of startup) check(readFileSync(join(target.home, file), "utf8").split("export PATH=\"$HOME/.local/bin:$PATH\"").length === 2, `${file} still has one PATH line`);
   }
+  // Cell 3b: Hermes runs through uv, so its install downloads uv's installer and says so.
+  {
+    installer(target, "astral.sh", "uv", `echo "uv 0.13.10"`);
+    const frames = await request(target, { op: "agent-app-install", name: "hermes" });
+    const end = resultOf(frames);
+    check(end.ok === true && (end.result!.app as App).state === "installed", `hermes installs uv: ${JSON.stringify(end)}`);
+    check(progressOf(frames, "hermes")[0] === "Downloading the uv installer from astral.sh", `the download names uv: ${progressOf(frames, "hermes")[0]}`);
+  }
   // Cell 4: browser sign-in through the harness's own command, then its status check.
   {
     const frames = await request(target, { op: "agent-app-sign-in", name: "claude" });
@@ -173,7 +181,8 @@ try {
     } else app.kill("SIGKILL");
   }
   // Cell 8: with the service installed and agents running on it, an install and the app's later check
-  // both answer "waiting", and the unit, its receipt and the running service stay as they were.
+  // both answer "waiting", and the unit, its receipt and the running service stay as they were. Any other
+  // refusal leaves the install standing: the reply is the installed app, "failed" and the reason.
   if (process.platform === "linux") {
     const paths = daemonPaths(target.env, target.env.COTAL_HOME);
     const unitPath = join(target.env.XDG_CONFIG_HOME!, "systemd", "user", "cotal-daemon.service");
@@ -189,6 +198,7 @@ try {
     writeFileSync(join(target.dir, "native", "systemctl"), `#!/bin/sh\nif [ "$*" = "--user show-environment" ]; then printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME"; exit 0; fi\nprintf '%s\\n' "$*" >> "${systemctlCalls}"\nexit 99\n`, { mode: 0o700 });
     // The running service, holding the daemon's lifetime, has a Manager with a seat, so it refuses to prepare a restart.
     const ops: string[] = [];
+    let refusal = { code: "SEATS_ACTIVE", message: "hosted Manager holds 1 active seat", remedy: "stop the seat first" };
     mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
     const lifetime = holdLifetime(paths.lock);
     const daemon = createServer(peer => {
@@ -199,7 +209,7 @@ try {
         for (let newline; (newline = buffer.indexOf("\n")) !== -1; buffer = buffer.slice(newline + 1)) {
           const { id, v, op } = JSON.parse(buffer.slice(0, newline)) as { id: string; v: number; op: string };
           ops.push(op);
-          const reply = op === "managers-prepare-restart" ? { ok: false, error: { code: "SEATS_ACTIVE", message: "hosted Manager holds 1 active seat", remedy: "stop the seat first" } } : { ok: false, error: { code: "UNKNOWN_OP", message: `unexpected ${op}` } };
+          const reply = op === "managers-prepare-restart" ? { ok: false, error: refusal } : { ok: false, error: { code: "UNKNOWN_OP", message: `unexpected ${op}` } };
           peer.write(`${JSON.stringify({ id, v, ...reply })}\n`);
         }
       });
@@ -215,7 +225,11 @@ try {
       check(progressOf(frames, "claude").some(line => line.startsWith("service: waiting for hosted Managers")), "the wait is reported as progress");
       const checked = resultOf(await request(target, { op: "agent-apps", refresh: true }));
       check(checked.ok === true && checked.result!.service === "waiting", `the app's later check also answers waiting: ${JSON.stringify(checked)}`);
-      assert.deepEqual(ops, ["managers-prepare-restart", "managers-prepare-restart"], "each request asked the Manager once and never aborted or restarted"); checks++;
+      refusal = { code: "OPERATION_FAILED", message: "hosted Manager did not confirm readiness", remedy: "try again" };
+      const failed = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+      check(failed.ok === true && failed.result!.service === "failed" && /hosted Manager did not confirm readiness/.test(String(failed.result!.serviceError)), `an install whose service refresh fails still answers installed, with the reason: ${JSON.stringify(failed)}`);
+      check((failed.result!.app as App).state === "signed-in", "the failed refresh still reports the installed app");
+      assert.deepEqual(ops, ["managers-prepare-restart", "managers-prepare-restart", "managers-prepare-restart"], "each request asked the Manager once and never aborted or restarted"); checks++;
       check(readFileSync(unitPath, "utf8") === unit && readFileSync(receiptFile, "utf8") === receipt, "the unit and its receipt are unchanged");
       check(!existsSync(systemctlCalls), `the service was never reloaded or restarted: ${existsSync(systemctlCalls) ? readFileSync(systemctlCalls, "utf8") : ""}`);
     } finally {

@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string; preparedRoot?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -561,6 +561,25 @@ if (process.platform !== "win32") {
   check("while the selected space's folder no longer exists, a bare up refuses TARGET_UNAVAILABLE and does not start the folder's name",
     preparedMoved.status === 0 && selected.status === 0 && afterMove.status === 2 && afterMove.envelope?.error?.code === "TARGET_UNAVAILABLE"
       && afterMove.envelope.error.message === `the selected space "moved" is prepared in ${source}, which no longer exists, and this folder names no space, so up did not start "epsilon" here` && !records(join(desktop, "epsilon")), shown(afterMove));
+  check("recovering a moved selection keeps the requested startup options for either space",
+    afterMove.envelope?.error?.remedy === 'if this is that folder moved, forget it with `cotal space forget moved`, prepare it here with `cotal space create moved`, then repeat your startup command with the same options; to start "epsilon" here instead, add `--space epsilon` to your original command', shown(afterMove));
+  const blockedStart = () => run(["up", "--server", "nats://127.0.0.1:1", "--json"], join(desktop, "epsilon"));
+  writeFileSync(source, "obstruction");
+  const blocked = blockedStart();
+  check("a file at the selection's project path refuses startup before preparing another space",
+    blocked.status === 2 && blocked.envelope?.error?.code === "TARGET_UNAVAILABLE" && blocked.envelope.target?.preparedRoot === source
+      && blocked.envelope.error.message?.includes("is not a directory") === true && blocked.envelope.error.remedy?.includes("restore the original project folder") === true
+      && readFileSync(source, "utf8") === "obstruction" && !records(join(desktop, "epsilon")), shown(blocked));
+  rmSync(source);
+  if (process.getuid?.() !== 0) {
+    mkdirSync(source, { mode: 0o600 });
+    try {
+      const denied = blockedStart();
+      check("a selection whose project cannot be entered calls for restoring access, not forgetting it",
+        denied.status === 2 && denied.envelope?.error?.code === "TARGET_UNAVAILABLE" && denied.envelope.target?.preparedRoot === source
+          && denied.envelope.error.remedy?.includes("restore access") === true && !denied.envelope.error.remedy.includes("forget") && !records(join(desktop, "epsilon")), shown(denied));
+    } finally { chmodSync(source, 0o700); }
+  }
   for (const space of ["delta", "projspace", "moved"]) run(["space", "forget", space]);
 }
 

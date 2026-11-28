@@ -135,6 +135,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
           ? parts(`${message}, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(message, preparedRootRemedy(d.space, problem));
       }
+      if (d.firstStartServer !== undefined && d.space !== undefined && d.root !== undefined) {
+        const message = `"${d.space}" is prepared but not started`;
+        if (d.firstStartServer === null) return parts(message, "check the requested broker and select its registered space; this prepared project has no recorded broker");
+        const start = `cotal up --root ${shellPath(d.root)} --space${d.space.startsWith("-") ? "=" : " "}${shellPath(d.space)} --server ${shellPath(d.firstStartServer)}`;
+        return { message, remedy: `start it with ${codeSpan(start)}`, restartRoot: d.root };
+      }
       if (d.space !== undefined) return d.unsettled !== undefined
         ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
         : d.stopped !== undefined

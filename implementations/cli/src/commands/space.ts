@@ -52,6 +52,7 @@ import {
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
+import { spaceInventoryCommand } from "../lib/choose-target.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -294,7 +295,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     if (!m) {
       const p = findPreparedSpace(name);
       // No space has the name, so the refusal is not headed with it.
-      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { requested: name }, remedy: "see the registered spaces with `cotal space`" });
+      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { requested: name }, remedy: `see the registered spaces with ${spaceInventoryCommand(presentation)}` });
       const matching = moved?.recordedRoot === p.root && moved.journal.space === p.space ? moved : undefined;
       const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current, matching && project) };
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, (row) => preparedView(row, project, matching));

@@ -323,6 +323,7 @@ Before the first `up`,
 `down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
 A stop with a different name refuses with `UNSUPPORTED`, exit 2, with or without `--json` or
 `--plain`. The refusal names the mismatch and directs you to the requested space's project root.
+For a running legacy stack, the local stop retry keeps an explicit `--yes` when this folder's sole startup registration matches the requested space.
 A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
@@ -413,6 +414,8 @@ whole-stack target ownership, set exclusion, confirmed agent impact or schema
 reconciliation. The retained `down --preserve-state`
 route separately refuses a retained or unreadable additive record under its
 maintenance lock, without adopting its effects into the preserved set.
+If a legacy preserved stop is interrupted after the manager commits, run `cotal down --preserve-state`
+again from the same project. Once the stop finishes, `cotal up` resumes it.
 A validated completed restore in `active` for the registered space does not block ordinary
 bare `down`. The other root, ownership, sharing and native process guards still apply, and
 stopping leaves the restore journal and fallback store unchanged.

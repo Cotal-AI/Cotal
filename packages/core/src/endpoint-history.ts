@@ -5,12 +5,12 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
-import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, type ParsedSubject } from "./subjects.js";
+import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, parsePrincipalKey, unicastRecvFilter, unicastSubject, type ParsedSubject } from "./subjects.js";
 import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
 import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
-import type { CotalMessage, HistoryMessage, Delivery, MessageMeta } from "./types.js";
+import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
 /** Current transport and shared lifecycle operations used by history reads. */
@@ -1069,6 +1069,31 @@ export class EndpointHistory {
       return { messages: [], seqs: [], dropped: true, unanswered: true };
     }
     return { messages: collected, seqs, dropped, unanswered: false };
+  }
+
+  async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
+    const keys = [...new Set(principals)].map((p) => {
+      const key = parsePrincipalKey(p);
+      if (!key) throw new Error(`dmHistoryOf: "${p}" is not a principal <owner>.<actor>`);
+      return key;
+    });
+    if (!keys.length) return { state: "read", items: [] };
+    const limit = opts?.limit ?? 100;
+    const read = (subjects: string[]) => this.streamHistory(dmStream(this.identity.space), subjects, limit, undefined, opts?.signal);
+    let rows: { seq: number; msg: HistoryMessage }[];
+    try {
+      // A consumer refuses overlapping filters, and a DM between two of these principals matches a
+      // recipient filter and a sender filter, so each direction is its own read.
+      rows = (await Promise.all([
+        read(keys.map((k) => unicastRecvFilter(this.identity.space, k.owner, k.actor))),
+        read(keys.map((k) => unicastSubject(this.identity.space, "*", "*", k.owner, k.actor))),
+      ])).flat();
+    } catch (e) {
+      if (isPermissionDenied(e)) return { state: "denied", reason: (e as Error).message };
+      throw e;
+    }
+    const bySeq = new Map(rows.map((r) => [r.seq, r.msg]));
+    return { state: "read", items: [...bySeq].sort(([a], [b]) => a - b).slice(-limit).map(([, msg]) => msg) };
   }
 
   /** Phase 2 of a join — backfill each armed channel's history up to its frontier (replay-gated),

@@ -182,7 +182,9 @@ async function runInstaller(installer: HarnessInstaller, path: string, emit: Emi
     const root = systemRoot();
     if (!root) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; no installer was run");
     const powershell = win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `irm '${installer.script}' | iex`], { env: installerEnv, timeoutMs, emit });
+    // A script that stops by throwing leaves its own sentence as the last line, not a PowerShell error record.
+    const command = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); try { irm '${installer.script}' | iex } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { env: installerEnv, timeoutMs, emit });
   }
   const curl = resolveOnPath("curl", env);
   const shell = resolveOnPath(installer.shell ?? "sh", env);
@@ -276,10 +278,14 @@ export async function installAgentApp(name: string, emit: Emit): Promise<AgentAp
   const before = await accountPath();
   const missingNeeds = installer.needs?.filter(command => !resolveOnPath(command, { ...process.env, PATH: before })) ?? [];
   if (missingNeeds.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${app.install.title} installer needs ${missingNeeds.join(" and ")} on PATH`, { native: { code: "INSTALLER_NEEDS", detail: missingNeeds.join(",") } });
-  emit(`Downloading the ${app.install.title} installer from ${new URL(installer.script).host}`);
+  // Name what is downloaded: Hermes runs through uv, so its installer is uv's.
+  const installs = app.requires.every(command => command === app.name) ? app.install.title : new Intl.ListFormat("en", { type: "conjunction" }).format(app.requires);
+  emit(`Downloading the ${installs} installer from ${new URL(installer.script).host}`);
   const ran = await runInstaller(installer, before, emit);
   if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer did not finish within 15 minutes and was stopped`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
-  if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer stopped with exit code ${ran.code}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
+  // On Windows the last line is the reason the script gave; elsewhere the output is in Details.
+  const reason = process.platform === "win32" && ran.tail.length ? `: ${ran.tail.at(-1)}` : "";
+  if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer stopped with exit code ${ran.code}${reason}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
   let path = await accountPath();
   let pathAdded: string | undefined;
   const unresolved = () => app.requires.filter(command => !resolveOnPath(command, { ...process.env, PATH: path }));
@@ -315,13 +321,12 @@ export type AgentAppRequest =
 type ServiceOptions = Omit<InstallOptions, "report">;
 
 /** Let the installed service find what was installed. Running agents defer it: the app says so and
- *  checks again later. Any other refusal is reported with the install it follows. */
-async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit, title?: string): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
+ *  checks again later. */
+async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
   try { return await refreshServiceForApplication({ ...service, report: line => progress(line) }, dirs, before); }
   catch (error) {
     if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") return "waiting";
-    if (!title) throw error;
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", `${title} is installed, but the background service could not be refreshed to find it: ${error instanceof Error ? error.message : String(error)}`, { remedy: "choose Check again" });
+    throw error;
   }
 }
 
@@ -346,6 +351,9 @@ async function answer(req: AgentAppRequest, service: ServiceOptions, emit: (fram
   const progress = (line: string) => emit({ v: 1, event: "agent-app-progress", name: req.name, line });
   if (req.op === "agent-app-sign-in") return { app: await signInAgentApp(req.name, progress) };
   const installed = await installAgentApp(req.name, progress);
-  const serviceState = await refreshService(service, installed.dirs, installed.before, progress, installed.app.title);
-  return { app: installed.app, service: serviceState, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
+  const done = { app: installed.app, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
+  // The install stands even when the service cannot pick it up yet, so the reply says both and Check
+  // again (`agent-apps` with refresh) tries the service once more.
+  try { return { ...done, service: await refreshService(service, installed.dirs, installed.before, progress) }; }
+  catch (error) { return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error) }; }
 }

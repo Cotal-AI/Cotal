@@ -111,8 +111,9 @@ function namedStopArguments(args: ParsedArgs): ParsedArgs {
   return { ...args, positionals: ["stop", args.positionals[0]!] };
 }
 
-function refuseLegacySpaceMismatch({ space, ...flags }: ParsedArgs["values"]): void {
-  if (typeof space !== "string" || !bareStop(flags) || flags["with-agents"] !== undefined) return;
+/** Refuse a known mismatch. Only a matching local startup record can carry confirmation to a root-scoped retry. */
+function checkLegacyStopSpace({ space, ...flags }: ParsedArgs["values"]): boolean {
+  if (typeof space !== "string" || !bareStop(flags) || flags["with-agents"] !== undefined) return false;
   let current: string | undefined, project: string | undefined;
   let source = "prepared";
   try {
@@ -132,6 +133,7 @@ function refuseLegacySpaceMismatch({ space, ...flags }: ParsedArgs["values"]): v
       remedy: project === undefined ? `locate the project root for space ${JSON.stringify(space)} before retrying` : `retry from the project root for space ${JSON.stringify(space)} at ${oneLine(project)}`,
     });
   }
+  return source === "recorded" && current === space;
 }
 
 /** Named stops use only the owned-service controller. Multiple definitions require complete
@@ -195,14 +197,14 @@ export function validateDownArguments(args: ParsedArgs): void {
         remedy: `run ${codeSpan(retry)} from this root`,
       });
     }
-    refuseLegacySpaceMismatch(args.values);
+    const sameSpace = checkLegacyStopSpace(args.values);
     if (args.values.file !== undefined || args.values.run !== undefined) {
       const preview = args.values["dry-run"] === true;
       throw new CommandFailure("refused", "UNSUPPORTED", `a legacy deployment ${preview ? "preview" : "teardown"} does not support --json or --plain`, {
         remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep ${preview ? "--dry-run and " : ""}the same deployment selection`, selfContained: true,
       });
     }
-    const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
+    const retry = bareStop(args.values) || sameSpace ? sameDown(args.values) : `${displayCmd()} down`;
     throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run ${codeSpan(retry)} from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
 }
@@ -665,11 +667,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     return;
   }
   if (values.space) {
-    refuseLegacySpaceMismatch(args.values);
+    const sameSpace = checkLegacyStopSpace(args.values);
     refuseSpaceElsewhere(cotalRoot(), values.space, args.values);
     throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
       target: { root: cotalRoot(), space: values.space },
-      remedy: "run `cotal down` without --space from the stack's root; to stop one saved service, run `cotal service stop <service-name> --space <space>`",
+      remedy: `run ${codeSpan(sameSpace ? sameDown(args.values) : `${displayCmd()} down`)} without --space from the stack's root; to stop one saved service, run \`cotal service stop <service-name> --space <space>\``,
     });
   }
   const guarded = guardLegacyBareDown();

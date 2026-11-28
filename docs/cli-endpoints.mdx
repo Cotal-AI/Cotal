@@ -267,7 +267,8 @@ cotal endpoint check <contract-file> [--json|--plain]
 the supplied name. Use `--dir` to choose another one. `init` creates missing directories with
 mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
 Retry with `--dir` set to a real directory path. If a scaffold file already exists, `init` leaves it
-unchanged and suggests `--dir <new-directory>` with the same endpoint name. The receipt lists the
+unchanged. Its retry keeps the endpoint name and output format. Replace `<new-directory>` with
+an unused directory. The receipt lists the
 paths created. A partial write leaves those paths in place for review.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
@@ -298,7 +299,8 @@ in the path, use shell completion to enter the directory and run the suggested c
 `check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
-endpoint. Authoring takes no space, broker, caller or invocation flags.
+endpoint. Authoring takes no space, broker, caller or invocation flags. If `check` refuses a bare
+`--server`, omit it and keep the contract path. No broker address is needed.
 
 With `--json`, the receipt's `command` is `endpoint init` or `endpoint check`, including when
 the operation is refused.

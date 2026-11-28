@@ -29,7 +29,7 @@ import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
 /** The serve connection's ping, the same as every agent connection's (CotalEndpoint's default), so a
- *  Manager and its agents judge one outage alike: every 10 s, stale after 2 unanswered (#10805). */
+ *  Manager and its agents judge one outage alike: every 10 s, stale after 2 unanswered. */
 const SERVE_PING_INTERVAL_MS = 10_000;
 const SERVE_MAX_PING_OUT = 2;
 
