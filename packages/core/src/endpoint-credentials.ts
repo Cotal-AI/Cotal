@@ -15,6 +15,10 @@ import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from 
 import { withDeadline } from "./deadline.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
 
+// Keep recognizing the managed exchange refusal from authorities already deployed. The suffix
+// is operator guidance and can change independently of the missing-parent diagnosis.
+const missingSpawnerRefusal = /^agent-bearer: exchange refused: (agent "[A-Za-z0-9_]+": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted)(?=[. ]|$)/;
+
 /** What the credentials component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on
  *  the endpoint at call time. */
@@ -37,8 +41,9 @@ export class EndpointCredentials {
    *  outcome; the internal chain never rejects. */
   private credsTxn: Promise<unknown> = Promise.resolve();
   private credsTimer?: NodeJS.Timeout;
+  private missingSpawner = false;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: CredentialState, private readonly deps: EndpointCredentialsDeps, private readonly parts: Pick<EndpointParts, "reconnection">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: CredentialState, private readonly deps: EndpointCredentialsDeps, private readonly parts: Pick<EndpointParts, "reconnection" | "presence">) {}
 
   private emitRecoverable(err: Error) { void this.deps.emitRecoverable(err); }
   private reconnect() { return this.deps.reconnect(); }
@@ -52,6 +57,7 @@ export class EndpointCredentials {
   /** A failed bearer renewal retries after about this long, doubling per failure up to the cap. */
   private static readonly BEARER_RETRY_MS = 5_000;
   private static readonly BEARER_RETRY_CAP_MS = 60_000;
+  private static readonly MISSING_SPAWNER_RETRY_MS = 240_000;
 
   /** Fetch a fresh bearer from the source, pin its principal to ours, arm the next renewal. On a
    *  fetch/principal failure: THROWS when `initial` (start() must fail loud before first connect);
@@ -97,6 +103,10 @@ export class EndpointCredentials {
       if (bearer !== held) this.cred.bearerAdoptedAtMs = Date.now();
       this.cred.currentBearer = bearer;
       this.cred.bearerRenewalFailures = 0;
+      if (this.missingSpawner) {
+        this.missingSpawner = false;
+        this.parts.presence.setBearerCondition(undefined);
+      }
       // The renewal point is drawn from the middle of the token's lifetime, spaced from this
       // process's other renewals in the space: a fixed margin before `exp` kept every endpoint
       // issued in one second renewing, and rebinding through the callout, in one second for life.
@@ -104,16 +114,31 @@ export class EndpointCredentials {
       this.armBearerTimer(armRenewal(this.identity.space, issuedAtMs, expiresAtMs, () => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));
     } catch (e) {
       if (initial) throw e;
-      if (this.cred.bearerRenewalFailures === 0)
-        this.emitRecoverable(new Error(`bearer refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
-      // A wait the source named is kept as named: never retried inside it, nor stretched by the backoff.
+      const reason = e instanceof Error ? e.message : String(e);
+      const missing = missingSpawnerRefusal.exec(reason);
+      if (missing) {
+        this.missingSpawner = true;
+        this.parts.presence.setBearerCondition(`${missing[1]}. Renewal requires that spawner's grant in space ${JSON.stringify(this.identity.space)}.`);
+      } else if (this.missingSpawner) {
+        this.missingSpawner = false;
+        this.cred.bearerRenewalFailures = 0;
+        this.parts.presence.setBearerCondition(undefined);
+      }
+      if (this.cred.bearerRenewalFailures === 0 && !this.missingSpawner)
+        this.emitRecoverable(new Error(`bearer refresh failed (${reason}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
+      // Never retry inside a wait the source named, or shorten the slow retry for a missing grant.
       const named = retryAfterMs(e);
-      const delay = named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
+      const slow = EndpointCredentials.MISSING_SPAWNER_RETRY_MS;
+      const delay = this.missingSpawner ? Math.max(named, jitteredBackoffMs(0, slow, slow)) : this.bearerRetryDelay(named);
       this.cred.bearerRenewalFailures++;
       const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
       timer.unref?.();
       this.armBearerTimer(() => clearTimeout(timer));
     }
+  }
+
+  private bearerRetryDelay(named: number): number {
+    return named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
   }
 
   private armBearerTimer(cancel: () => void): void {

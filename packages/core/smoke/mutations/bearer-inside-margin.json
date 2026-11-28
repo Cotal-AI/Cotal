@@ -97,8 +97,8 @@
     {
       "name": "a failed refresh retries after ten minutes instead of 2.5s to 5s",
       "file": "packages/core/src/endpoint-credentials.ts",
-      "find": "      const delay = named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);",
-      "replace": "      const delay = named > 0 ? named : 600_000;",
+      "find": "    return named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);",
+      "replace": "    return named > 0 ? named : 600_000;",
       "expectRed": "that refusal arms the first jittered retry, 2.5s to 5s, not the renewal window",
       "cell": "that refusal arms the first jittered retry, 2.5s to 5s, not the renewal window",
       "note": "This cell reads the delay the refusal arms."

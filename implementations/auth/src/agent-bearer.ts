@@ -18,6 +18,13 @@ export function writeAgentAuthHealth(path: string, state: "ok" | "failed", reaso
   writePrivateRecord(path, JSON.stringify({ state, at: new Date().toISOString(), ...(reason ? { reason } : {}) } satisfies AgentAuthHealth));
 }
 
+// Keep the diagnosis from both current and older authorities, without their operator instructions.
+function missingSpawnerDiagnosis(reason: string | undefined, actor: string, space: string): string | undefined {
+  const missing = /^agent "([A-Za-z0-9_]+)": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted(?=[. ]|$)/.exec(reason ?? "");
+  if (missing?.[1] !== actor) return reason;
+  return `${missing[0]}. Renewal requires that spawner's grant in space ${JSON.stringify(space)}.`;
+}
+
 /** `cotal agent-bearer` — the ONE thing a spawned user-mode agent execs to refresh its auth: read
  *  its spawn-time secret from the 0600 token file, exchange it at the space's auth service (agent
  *  grant type), print the fresh bearer to STDOUT, exit. Machine-facing: stdout carries the bearer
@@ -128,7 +135,8 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         process.stdout.write(`retry-after ${limited.retryAfterSeconds}\n`);
         throw Object.assign(new Error(`agent-bearer: ${limited.message}; ${limited.remedy}`), { exitCode: 2 });
       }
-      throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
+      const detail = res.status === 401 ? missingSpawnerDiagnosis(body.error, actor, space) : body.error;
+      throw new Error(`agent-bearer: exchange refused: ${detail ?? `HTTP ${res.status}`}`);
     }
     const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };
     if (typeof out.token !== "string" || !out.token)

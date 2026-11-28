@@ -8,9 +8,9 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/spawner-repair-flags.json",
   "why": [
     "A spawner's own ACL is the CEILING every agent beneath it is attenuated against, so the repair for",
-    "a broken delegation chain decides that ceiling. Both arms of this branch are arms with NO ROW to",
-    "copy that ceiling from: the missing-spawner row does not exist yet, and the revoke DELETED the",
-    "revoked one, so `cotal actor list` cannot help on either.",
+    "a broken delegation chain decides that ceiling. The delegation refusal has NO ROW to copy",
+    "that ceiling from: the missing-spawner row does not exist, so `cotal actor list` cannot show it.",
+    "Renewal uses a separate refusal that reports the missing grant without repair instructions.",
     "",
     "THE PROPERTY. An arm with no row to copy from prints NO pasteable grant line. Not a better line: no",
     "line. Every line such an arm could print is wrong in one of exactly two ways, and this site shipped",
@@ -69,15 +69,6 @@
       "expectRed": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
       "cell": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
       "note": "The second fix, blocked in turn: the command throws `invalid channel \"<what its agents may read>\"` on paste, and the shortest route to one that succeeds is to delete the flags, which is `>`. Same cell as S4 on purpose: one property kills both bad shapes, which is the whole reason the property is 'no line' and not 'a better line'."
-    },
-    {
-      "name": "S3 the shipped text on the revoked arm: re-grant it, then respawn, and no warning",
-      "file": "implementations/auth/src/ledger.ts",
-      "find": "          : `agent \"${leaf}\": spawner \"${parentKey}\"${deep ? ` (an ancestor)` : \"\"} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\\`cotal spawn\\`). The revoke deleted the row, so \\`cotal actor list\\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\\`>\\` read, \\`>\\` post) and a spawner's ACL is the ceiling for everything under it`,",
-      "replace": "          : `agent \"${leaf}\": spawner \"${parentKey}\"${deep ? ` (an ancestor)` : \"\"} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\\`cotal spawn\\`)`,",
-      "expectRed": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
-      "cell": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
-      "note": "The arm nobody had looked at, found by a security lens reading the sibling branch of the one being fixed. It is the worst arm to be silent on: the revoke deleted the row, so nothing is left for `cotal actor list` to show and the operator re-grants from memory."
     },
     {
       "name": "S6 the managed grant mints a lifecycle uid instead of refusing the omitted field",

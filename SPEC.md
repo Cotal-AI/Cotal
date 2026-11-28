@@ -444,7 +444,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | --- | --- | --- | --- |
 | `card` | `AgentCard` | MUST | identity record |
 | `status` | `PresenceStatus` | MUST | `idle`, `waiting`, `working`, or `offline` |
-| `condition` | `PresenceCondition` | MAY | harness-reported structured condition. Missing means nothing was reported. A connector relays the harness signal and MUST NOT infer a condition itself |
+| `condition` | `PresenceCondition` | MAY | Structured condition. Missing means nothing was reported. A connector relays what its harness reports and MUST NOT infer a harness condition. A user-auth endpoint may report `auth` in place of a harness condition when its own bearer exchange refuses renewal because a spawner's grant is missing. The endpoint clears that report on any other renewal outcome |
 | `environment` | string | MAY | opaque reference whose meaning belongs to the provider that issued it. Core MUST NOT parse it |
 | `activity` | string | MAY | freeform current activity |
 | `statusSince` | number | MAY | epoch ms when the instance entered its current `status` and `activity`. A change to either moves it; a heartbeat or a repeated report does not, so `ts` dates liveness and `statusSince` dates the report. An offline record MUST NOT carry it: an observer that derives `offline` from a stale `ts` does not know when the peer left |
@@ -508,7 +508,7 @@ read MUST NOT be reported as "no such peer". Observers that act on liveness tran
 | --- | --- | --- | --- |
 | `code` | `PresenceConditionCode` | MUST | `rate_limit` \| `overloaded` \| `auth` \| `billing` \| `budget` \| `context` \| `model` \| `request` \| `server` \| `retrying` \| `approval` \| `input` \| `failed` |
 | `source` | string | MAY | harness-native value, relayed verbatim |
-| `message` | string | MAY | free text from the harness |
+| `message` | string | MAY | free text describing the reported condition |
 | `since` | number | MAY | epoch ms when the condition began |
 
 ### 6.1 Plane liveness

@@ -87,8 +87,7 @@ judge("a joined receipt keeps a name", joinedAgentRows({ name: "ada", id: "local
 // where a terminal can answer its questions, `setup --help` anywhere else, so a scripted run
 // never follows the Next into a usage error.
 const nextOf = (report: ReturnType<typeof psView>): readonly { command: string; description: string }[] => {
-  for (const section of report.sections) for (const block of section.blocks) if (block.kind === "commands") return block.items;
-  return [];
+  return report.sections.flatMap((section) => section.blocks.flatMap((block) => block.kind === "commands" ? block.items : []));
 };
 const emptyPs = { kind: "seats", items: [], managers: [{ instanceId: "mgr", state: "answered" }] } as const;
 const interactiveNext = nextOf(psView(emptyPs, false, new Map(), true));
@@ -100,5 +99,20 @@ judge("an empty ps without a terminal offers setup --help instead of bare setup"
 const appNext = nextOf(psView(emptyPs, false, new Map(), false, undefined, false, "cotal spawn --space roster-check"));
 judge("an empty ps with an application set up still offers spawn without a terminal",
   appNext.length === 1 && appNext[0]!.command === "cotal spawn --space roster-check" && appNext[0]!.description === "Launch your default agent", appNext);
+
+const holder = "a".repeat(26), other = "b".repeat(26);
+const orphan = { ...baseRow, id: "local.probe", instanceId: other, authHealth: "auth-renewal-failed",
+  authReason: 'agent-bearer: exchange refused: agent "probe": spawner "local.parent" (an ancestor) is no longer granted. Renewal requires that spawner\'s grant in space "s".' };
+const scopes = { space: "s", resolvedSpace: "s", server: "nats://127.0.0.1:4222" };
+const reports = (row: typeof orphan, resolvedSpace = "s") => psView({
+  kind: "seats", items: [row], managers: [{ instanceId: other, state: "answered" }, { instanceId: holder, state: "answered" }],
+}, true, new Map([[holder, [row]]]), false, undefined, false, undefined, undefined, undefined, { ...scopes, resolvedSpace });
+const recovery = nextOf(reports(orphan));
+const route = `--on ${holder} --space s --server ${scopes.server}`;
+judge("ps recovery commands use the answering manager and distinguish the actor from the seat name",
+  recovery.length === 2 && recovery[0]?.command.endsWith(` spawn probe --name NEW_NAME --detach ${route}`) &&
+  recovery[1]?.command.endsWith(` stop seat ${route}`), recovery);
+judge("ps does not render recovery actions for a different space or principal",
+  nextOf(reports(orphan, "other")).length === 0 && nextOf(reports({ ...orphan, id: "local.other" })).length === 0);
 console.log(`\nps mesh column smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

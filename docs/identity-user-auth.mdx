@@ -274,8 +274,13 @@ less). It renews each one at a random point between half and four fifths of its 
 moves its connection onto the new bearer, so the broker never closes the connection for an
 expired one. Agents started together draw different points, and two connections in one process
 for the same space renew at least a second apart. An agent never presents an expired bearer: it
-renews first. While renewal fails it retries with growing, randomized waits of up to a minute,
-and reports the failure once until renewal works again. A locally provisioned foreground launch
+renews first. While renewal fails it retries with growing, randomized waits of up to a minute.
+If the exchange says a spawner's grant is gone, the seat reports the refusal in its presence and
+retries every two to four minutes while that refusal continues. After the seat loses its mesh
+connection, its presence shows only what it last reported, while `cotal ps` shows its latest
+renewal failure. A different failure clears the missing-grant diagnosis and resumes normal
+backoff. If the grant the seat needs returns, the next successful renewal reconnects the same
+seat and clears the diagnosis. A locally provisioned foreground launch
 refuses an existing actor rather than rotating another launch's secret. Its exit and failed-start cleanup
 revoke only the grant matching the launch's token and lifecycle. Broker-footprint deletion follows
 a successful owned revoke; credential files are removed only while they still hold this launch's

@@ -48,7 +48,11 @@ const mintAt = (expSec: number, sig = "sig", iatSec?: number): string =>
 const mintBearer = (expiresInMs: number, sig = "sig"): string =>
   mintAt(Math.floor((Date.now() + expiresInMs) / 1000), sig);
 
-type Internals = { credentials: { refreshBearer: (initial?: boolean) => Promise<void> }; cred: { currentBearer?: string } };
+type Internals = {
+  credentials: { refreshBearer: (initial?: boolean) => Promise<void> };
+  cred: { currentBearer?: string };
+  presence: { bearerCondition?: { code: string; message: string } };
+};
 
 const endpoints: CotalEndpoint[] = [];
 /** One endpoint per source, each in its own space: `currentBearer` is the state under test, and
@@ -233,6 +237,31 @@ await flaky.internals.credentials.refreshBearer();
 down = true;
 await flaky.internals.credentials.refreshBearer();
 c("after a renewal works, the next failure is reported again", flaky.warnings.length === 2, flaky.warnings.map((e) => e.message));
+
+const missingGrant = 'agent-bearer: exchange refused: agent "probe": spawner "local.parent" (an ancestor) is no longer granted';
+const orphanReplies = [
+  new Error(`${missingGrant} - revoking a spawner revokes everything under it`),
+  new Error(`${missingGrant}. Renewal requires that spawner's grant in space "s-orphan".`),
+  new Error('agent-bearer: exchange refused: agent "probe" exceeds its spawner\'s CURRENT grant'),
+  new Error(missingGrant),
+  Object.assign(new Error("exchange down"), { retryAfterSeconds: 30 }),
+];
+const orphan = armed("s-orphan", async () => { throw orphanReplies.shift(); });
+const missingMessage = 'agent "probe": spawner "local.parent" (an ancestor) is no longer granted. Renewal requires that spawner\'s grant in space "s-orphan".';
+for (const version of ["older", "current"]) {
+  const [delay] = await refreshAt(orphan.internals, Date.now());
+  const condition = orphan.internals.presence.bearerCondition;
+  c(`the ${version} missing-spawner refusal sets command-free auth presence and arms a 2-4 minute retry`,
+    delay! >= 120_000 && delay! <= 240_000 && condition?.code === "auth" && condition.message === missingMessage, delay);
+}
+const [narrowedDelay] = await refreshAt(orphan.internals, Date.now());
+c("a narrowed returning grant clears missing-spawner presence and restarts normal backoff",
+  !orphan.internals.presence.bearerCondition && narrowedDelay! >= 2_500 && narrowedDelay! <= 5_000 &&
+  orphan.warnings.at(-1)?.message.includes("CURRENT grant") === true, narrowedDelay);
+await refreshAt(orphan.internals, Date.now());
+const [outageDelay] = await refreshAt(orphan.internals, Date.now());
+c("an outage clears missing-spawner presence and honors the source's named wait",
+  !orphan.internals.presence.bearerCondition && outageDelay === 30_000 && orphan.warnings.at(-1)?.message.includes("exchange down") === true, outageDelay);
 
 // ── The cadence of a healthy short-TTL source, on the live clock ──────────────────────────────────
 // For it the 5s floor is the renewal cadence: a blanket backoff would leave its 5s token dead most

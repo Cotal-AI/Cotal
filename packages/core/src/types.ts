@@ -58,7 +58,7 @@ export interface AgentCard {
  */
 export type PresenceStatus = "idle" | "waiting" | "working" | "offline";
 
-/** Closed, provider-neutral categories a connector may relay from its harness's native signal. */
+/** Closed, provider-neutral categories for a reported presence condition. */
 export type PresenceConditionCode =
   | "rate_limit"
   | "overloaded"
@@ -74,12 +74,12 @@ export type PresenceConditionCode =
   | "input"
   | "failed";
 
-/** A condition the harness reported. Connectors relay it and never infer one from absence. */
+/** A condition reported by the harness or the seat's own exchange. Never inferred from absence. */
 export interface PresenceCondition {
   code: PresenceConditionCode;
   /** The harness's native value, preserved verbatim. */
   source?: string;
-  /** Free-text detail reported by the harness. */
+  /** Free-text detail describing the reported condition. */
   message?: string;
   /** Epoch ms when this condition began. */
   since?: number;

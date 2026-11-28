@@ -27,6 +27,7 @@ import {
   projectRootProblem,
   resolveSeatControlTarget,
   targetFlags,
+  windowsShellWord,
   writeResult,
   type Block,
   type ConnectFlags,
@@ -494,11 +495,46 @@ export function joinedAgentRows(agent: { name: string; id: string; managerInstan
   return [["Agent", psSeatLabel({ name: agent.name, id: agent.id })], ["Identity", agent.id], ["Manager", agent.managerInstanceId]];
 }
 
-/** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
- *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
- *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'
- *  do, and a field the seat leaves empty is left out. */
-function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
+type AuthRemedyTarget = { space?: string; server?: string };
+type ResolvedAuthRemedyTarget = AuthRemedyTarget & { resolvedSpace: string };
+
+/** Keep the bearer reason as data. Only the reader knows the launcher and how it reached the manager. */
+function authRemedy(row: AgentRow, target: ResolvedAuthRemedyTarget | undefined, manager: string | undefined): Block[] {
+  if (row.authHealth !== "auth-renewal-failed" || !target || !manager) return [];
+  const diagnosis = /^agent-bearer: exchange refused: agent "([A-Za-z0-9_]+)": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted\. Renewal requires that spawner's grant in space /.exec(row.authReason ?? "");
+  const principal = /^[A-Za-z0-9_]+\.([A-Za-z0-9_]+)$/.exec(row.id);
+  if (!diagnosis || row.authReason !== `${diagnosis[0]}${JSON.stringify(target.resolvedSpace)}.` ||
+      principal?.[1] !== diagnosis[1] || !/^[A-Za-z0-9_]+$/.test(row.name)) return [];
+  try { assertLifecycleToken(manager, "instanceId"); } catch { return []; }
+  const targetArgs = recoveryTargetWords(target);
+  if (targetArgs === undefined) return [];
+  const persona = diagnosis[1]!;
+  const launcher = displayCmd();
+  const at = ` --on ${manager}${targetArgs}`;
+  return [
+    { kind: "lines", lines: ["While this refusal persists, the seat retries every two to four minutes and can reconnect if the grant returns.",
+      `If the saved persona is named ${persona}, use an unused name in place of NEW_NAME to start a replacement.`] },
+    { kind: "commands", items: [{ command: `${launcher} spawn ${persona} --name NEW_NAME --detach${at}`, description: "" }] },
+    { kind: "lines", lines: ["Once the replacement is up, stop the old seat so it stops retrying."] },
+    { kind: "commands", items: [{ command: `${launcher} stop ${row.name}${at}`, description: "" }] },
+  ];
+}
+
+function recoveryTargetWords(target: AuthRemedyTarget): string | undefined {
+  if (process.platform !== "win32") return targetWords(target);
+  let args = "";
+  for (const flag of ["space", "server"] as const) {
+    const value = target[flag];
+    if (value === undefined) continue;
+    const word = windowsShellWord(value);
+    if (word === undefined) return undefined;
+    args += ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+  }
+  return args;
+}
+
+/** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. */
+function seatBlocks(rows: readonly AgentRow[], wide: boolean, target?: ResolvedAuthRemedyTarget, manager?: string): Block[] {
   const auth = rows.some((r) => r.authHealth);
   const cells = (r: AgentRow): [string, Cell][] => [
     ["NAME", psSeatLabel(r)],
@@ -514,8 +550,10 @@ function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
         columns: cells(rows[0]!).map(([label]) => ({ key: label, label })),
         rows: rows.map((r) => Object.fromEntries(cells(r))),
       }];
-  const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${psSeatLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
-  if (reasons.length) blocks.push({ kind: "lines", lines: reasons });
+  for (const row of rows) if (row.authHealth && row.authReason) {
+    blocks.push({ kind: "lines", lines: [{ text: `${psSeatLabel(row)}: ${row.authReason}`, tone: authTone(row) }] });
+    blocks.push(...authRemedy(row, target, manager ?? row.instanceId));
+  }
   const joins = rows.filter((r) => r.joinHealth).map((r): Cell => ({ text: `${psSeatLabel(r)}: ${r.joinHealth!.reason}`, tone: "failed" }));
   if (joins.length) blocks.push({ kind: "lines", lines: joins });
   return blocks;
@@ -598,12 +636,12 @@ export interface PsResult {
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
  *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
-export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string, launchBlock?: string): Report {
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string, launchBlock?: string, authTarget?: ResolvedAuthRemedyTarget): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
-  const blocksFor = (rows: readonly unknown[]): Block[] =>
+  const blocksFor = (rows: readonly unknown[], manager?: string): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
     : result.kind === "slots" ? slotBlocks(rows as SlotRow[])
-    : seatBlocks(rows as AgentRow[], wide);
+    : seatBlocks(rows as AgentRow[], wide, authTarget, manager);
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
   // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) {
@@ -613,7 +651,7 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
     ] : noApplication ? [interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }]
     : spawnCommand === undefined ? [] : [{ command: spawnCommand, description: "Launch your default agent" }];
     const sections: Section[] = [
-      { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
+      { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items, result.managers[0]?.instanceId) },
       ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
     ];
     if (next.length || launchBlock) sections.push({ title: "Next", blocks: [
@@ -636,7 +674,7 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
       if (m.state === "refused") return { title, blocks: [{ kind: "lines", lines: [{ text: `list refused: ${m.error}`, tone: "failed" }] }] };
       const rows = rowsOf.get(m.instanceId) ?? [];
       const count = rows.length ? `${rows.length} ${result.kind === "slots" ? "slot" : "agent"}${rows.length === 1 ? "" : "s"}` : `no ${result.kind === "slots" ? "slots" : "agents"}`;
-      return { title, blocks: [{ kind: "lines", lines: [{ text: count, tone: "hint" }] }, ...(rows.length ? blocksFor(rows) : [])] };
+      return { title, blocks: [{ kind: "lines", lines: [{ text: count, tone: "hint" }] }, ...(rows.length ? blocksFor(rows, m.instanceId) : [])] };
     }),
   };
 }
@@ -770,14 +808,13 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const scope = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
-    : { space: v.server === undefined ? census.target.space : v.space, server: v.server };
+  const scope = authRemedyTarget(v, census.target.space);
   const spawnCommand = scope && onRerun(`${displayCmd()} spawn`, scope);
   const manager = census.target.managerInstanceId;
   const seatCommand = scope && ((verb: "attach" | "stop") => onRerun(`${displayCmd()} ${verb} <name>`, scope, manager ? ["--on", manager] : []));
   const view = (result: PsResult): Report => {
     const next = result.items.length || result.managers.length > 1 ? {} : psLaunchNext(scope ?? {}, spawnCommand);
-    return psView(result, wide, census.rowsOf, next.noApplication, census.mode, presentation === "rich" && canPrompt(), next.spawn, seatCommand, next.block);
+    return psView(result, wide, census.rowsOf, next.noApplication, census.mode, presentation === "rich" && canPrompt(), next.spawn, seatCommand, next.block, scope);
   };
   writeResult(
     presentation,
@@ -876,6 +913,11 @@ async function observedSeatModel(values: ConnectFlags, row: AgentRow) {
   }
 }
 
+function authRemedyTarget(values: AuthRemedyTarget, resolvedSpace: string): ResolvedAuthRemedyTarget | undefined {
+  if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server) return undefined;
+  return { space: values.server === undefined ? resolvedSpace : values.space, server: values.server, resolvedSpace };
+}
+
 /** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
@@ -930,6 +972,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
       { title: "Execution", blocks: [
         { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", model], ["Variant", result.details.variant ?? observed?.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
         ...(row.authReason ? [{ kind: "lines" as const, lines: [{ text: row.authReason, tone: authTone(row) }] }] : []),
+        ...authRemedy(row, authRemedyTarget(values, census.target.space), managerInstanceId ?? undefined),
       ] },
       { title: "Mesh", blocks: [
         { kind: "fields", rows: [["Exact presence", mesh.presenceState ?? "not established"], ["Connection", mesh.presenceState === null ? "not attributable to this lifecycle" : meshCell(row)], ["Name-matched roster", mesh.nameMatchedState === null ? "none separate" : meshCell(row)], ["Observed at", mesh.observedAt ?? "not reported"], ["Presence view", result.details.presenceView ?? "not reported"]] },
