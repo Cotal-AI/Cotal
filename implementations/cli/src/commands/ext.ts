@@ -21,7 +21,7 @@ import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../se
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
 import { generateExtensionManifest } from "../lib/extension-manifest-command.js";
 import { declaredExtensionEntry, readExtensionDeclaration } from "../lib/extension-install-declaration.js";
-import { BUILT_IN_PACKAGES, checkPluginCore } from "@cotal-ai/workspace";
+import { BUILT_IN_PACKAGES, checkPluginCore, commandFailureReport, isCommandFailure, renderReport } from "@cotal-ai/workspace";
 import { builtInExtension } from "../lib/built-in-extension.js";
 
 export const extFlags = [
@@ -113,7 +113,15 @@ export async function ext(args: ParsedArgs): Promise<void> {
   }
   if (sub === "seed") {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
-    return runSeed({ repair, reset, force });
+    try { return await runSeed({ repair, reset, force }); }
+    catch (error) {
+      if (!isCommandFailure(error) || error.code !== "PERMISSION_DENIED") throw error;
+      // Seed's text maintenance surface keeps exit 1 while showing the permission remedy.
+      const report = renderReport(commandFailureReport(error), "rich", process.stderr);
+      process.stderr.write(`${report.replace(/^Next$/m, "  Next")}\n`);
+      process.exitCode = 1;
+      return;
+    }
   }
   throw usage(EXT_USAGE);
 }

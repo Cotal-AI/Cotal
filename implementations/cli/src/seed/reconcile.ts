@@ -29,6 +29,7 @@ import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
+import { assertConfigAncestorProtected } from "../lib/update-connector-config.js";
 import { builtInRetirementsCurrent, builtInRetirementSpecs, retireBuiltInPackages } from "./builtin-retire.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
 import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
@@ -192,6 +193,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
   const generation = seedGeneration();
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
+  if (!automatic && mode !== "verify") assertConfigAncestorProtected();
   if (mode === "repair" && !automatic) {
     assertReleasedSeedWriter(generation, "reconcile");
     const release = claimUpdateClosureAccess();
@@ -244,6 +246,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
       return NOOP;
     }
   }
+  if (automatic) assertConfigAncestorProtected();
   const releaseClosure = claimUpdateClosureAccess();
   let interrupted: InterruptSignal | undefined;
   const onInterrupt = (signal: InterruptSignal): void => { interrupted ??= signal; };

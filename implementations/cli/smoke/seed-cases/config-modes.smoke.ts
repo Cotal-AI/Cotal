@@ -58,7 +58,7 @@ try {
     const run = cotal(cfg, ["ext", "seed"], env);
     check("config modes: seed refusal keeps its permission code and readable next command",
       run.status === 1 && run.stderr.includes("PERMISSION_DENIED") && run.stderr.includes("\n  Next\n") && run.stderr.includes(`chmod g-w ${realpathSync(cfg)}`) && !run.stderr.includes("\\u000a"), run.stderr);
-    check("config modes: seed refusal does not relax the unsafe ancestor", mode(cfg) === 0o775, mode(cfg));
+    check("config modes: seed refusal neither relaxes the ancestor nor creates managed config", mode(cfg) === 0o775 && !existsSync(join(cfg, "cotal")), mode(cfg));
   }
 
   {
