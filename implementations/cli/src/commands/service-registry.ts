@@ -398,7 +398,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     }
     // A stack member starts and stops with the stack. Starting one by itself leaves its process
     // running and the space unregistered, which no command except down then accepts.
-    const next = !running && isStackMember(space, row.name) ? "cotal up" : preset === "manager" && managers === 1 ? `cotal manager ${action}${onSpace}` : `cotal service ${action} ${row.name}${onSpace}`;
+    const next = !running && isStackMember(space, row.name) ? `cotal up --root ${shellWord(root)}${targetWords({ space })}` : preset === "manager" && managers === 1 ? `cotal manager ${action}${onSpace}` : `cotal service ${action} ${row.name}${onSpace}`;
     rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next });
   }
   for (const preset of catalog) {
