@@ -1,4 +1,5 @@
 import { setTimeout as wait } from "node:timers/promises";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { dmStream, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "../../src/index.js";
 import type { EndpointConsumers } from "../../src/endpoint-consumers.js";
 import type { ConnectionState } from "../../src/endpoint-connection-state.js";
@@ -98,7 +99,7 @@ export async function checkPluginJoinReplay(check: Check): Promise<void> {
 
 export async function checkPluginFirstFanout(check: Check): Promise<void> {
   const fixture = await startEnabledPluginSpace();
-  const { channel, endpoint, jsm, mintAgent, space } = fixture;
+  const { channel, endpoint, mintAgent, space } = fixture;
   try {
     const [sender, recipient] = await Promise.all([mintAgent({ post: [channel] }), mintAgent({ read: [channel] })]);
     const writer = endpoint({ creds: sender.creds, lifecycleUid: sender.lifecycleUid, consume: false,
@@ -115,15 +116,21 @@ export async function checkPluginFirstFanout(check: Check): Promise<void> {
     });
     await Promise.all([reader.start(), writer.start()]);
     await internals(reader).conn.nc!.flush();
-    const missing = await jsm.consumers.info(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE).then(() => false, isConsumerNotFound);
     const early = await writer.multicast("retained before the first delivery host bind", { channel, mentions: ["early-recipient"] });
+    let missing = false;
+    const stream = pluginChannelStream(space);
     const daemon = await fixture.startDelivery(async (ep) => {
+      const jsm = await jetstreamManager(internals(ep).conn.nc!);
+      missing = await jsm.consumers.info(stream, PLUGIN_FANOUT_DURABLE).then(() => false, (error) => {
+        if (!isConsumerNotFound(error)) throw error;
+        return true;
+      });
       if (!(await until(() => ep.getRoster().some(({ card }) => card.name === "early-recipient"))))
         throw new Error("first delivery fixture could not resolve its mention target before arming");
     });
     const delivered = await until(() =>
       pointed.some((value) => !!value && typeof value === "object" && "message" in value && value.message === early.id));
-    const consumer = await jsm.consumers.info(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE);
+    const consumer = await (await jetstreamManager(internals(daemon).conn.nc!)).consumers.info(stream, PLUGIN_FANOUT_DURABLE);
     check("first EXT fan-out bind routes a retained mention accepted before the consumer existed", missing && delivered,
       { pointed, pending: consumer.num_pending, delivered: consumer.delivered, floor: consumer.ack_floor, mode: consumer.config.deliver_policy,
         roster: daemon.getRoster().map(({ card }) => card.name), missing });
