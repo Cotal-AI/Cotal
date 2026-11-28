@@ -3207,33 +3207,60 @@ process.stdin.once('data', () => {
                 return [row.pid, row.lifecycleUid];
               };
               const before = await seat();
-              for (const args of [["update", "--self"], ["update"]]) {
-                const result = await run(...args);
-                assert.equal(result.code, 0, result.out + result.err);
-                assert.doesNotMatch(result.out + result.err, /cannot preserve running agents|Stop these agents/);
-                assert.match(result.out, args.length === 2 ? /installed package closure is current/ : /connector integrations refreshed/);
+              const pluginRoot = readFileSync(join(home, "claude-generated-plugin-root"), "utf8");
+              const types = join(pluginRoot, ".claude-plugin", "types");
+              assert.ok(existsSync(join(types, "claude-code", "index.d.ts")));
+              const sameSeat = async () => {
                 assert.deepEqual(await seat(), before);
                 const currentManager = await status();
                 assert.equal(currentManager.pid, view.pid);
                 assert.equal(currentManager.instanceId, view.instanceId);
                 assert.equal(resultOf(await ask(paths.socket, { op: "status" })).pid, child.pid);
-                check(`current ${args.join(" ")} preserves the joined Claude connector seat`, true);
+              };
+              const currentUpdate = async (args: string[], expected: RegExp) => {
+                const result = await run("update", ...args);
+                assert.equal(result.code, 0, result.out + result.err);
+                assert.doesNotMatch(result.out + result.err, /cannot preserve running agents|Stop these agents/);
+                assert.match(result.out, expected);
+                await sameSeat();
+                check(`current update ${args.join(" ")} preserves the joined Claude connector seat`, true);
+              };
+              for (const file of [undefined, join(types, "future-editor-metadata.json")]) {
+                if (file) writeFileSync(file, "{}\n");
+                await currentUpdate([], /connector integrations refreshed/);
+                await currentUpdate(["--self"], /installed package closure is current/);
+                const checked = await run("update", "--check", "--json");
+                assert.equal(checked.code, 0, checked.out + checked.err);
+                const { result } = JSON.parse(checked.out);
+                assert.equal(result.current, fixtureVersion);
+                assert.equal(result.latest, fixtureVersion);
+                assert.equal(result.updateAvailable, false);
+                assert.equal(result.installationChanged, false);
+                assert.equal(result.processesRestarted, false);
+                await sameSeat();
+                assert.ok(existsSync(join(types, "claude-code", "index.d.ts")));
+                if (file) assert.equal(readFileSync(file, "utf8"), "{}\n");
+                assert.ok(!existsSync(join(home, "claude-plugin", "cotal", ".claude-plugin", "types")), "refresh does not copy Claude's generated editor metadata");
               }
-              const pluginRoot = readFileSync(join(home, "claude-generated-plugin-root"), "utf8");
-              assert.ok(existsSync(join(pluginRoot, ".claude-plugin", "types", "claude-code", "index.d.ts")));
-              const extra = join(pluginRoot, ".claude-plugin", "types", "unexpected.js");
               const shipped = join(pluginRoot, "hooks", "hooks.json");
               const original = readFileSync(shipped);
-              for (const [file, bytes] of [[extra, ""], [shipped, `${original.toString()}\n`]] as const) {
-                writeFileSync(file, bytes);
+              for (const [file, plant] of [
+                [join(types, "unexpected.js"), (file: string) => writeFileSync(file, "")],
+                [join(types, "linked.d.ts"), (file: string) => symlinkSync(shipped, file)],
+                [join(pluginRoot, "unshipped.json"), (file: string) => writeFileSync(file, "{}")],
+                [shipped, (file: string) => writeFileSync(file, `${original.toString()}\n`)],
+              ] as const) {
+                plant(file);
                 try {
-                  const changed = await run("update", "--self");
-                  assert.equal(changed.code, 1, changed.out + changed.err);
-                  assert.match(changed.out + changed.err, /cannot preserve running agents/);
-                  assert.deepEqual(await seat(), before);
+                  for (const args of [[], ["--self"]]) {
+                    const changed = await run("update", ...args);
+                    assert.equal(changed.code, 1, changed.out + changed.err);
+                    assert.match(changed.out + changed.err, /cannot preserve running agents/);
+                    await sameSeat();
+                  }
                 } finally {
-                  if (file === extra) rmSync(extra);
-                  else writeFileSync(shipped, original);
+                  if (file === shipped) writeFileSync(shipped, original);
+                  else rmSync(file);
                 }
               }
               check("only Claude's unshipped generated files are ignored by update", true);
