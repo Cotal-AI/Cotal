@@ -45,7 +45,7 @@ if (process.platform === "linux") {
     `import { registry } from "@cotal-ai/core";`,
     `import { runCli } from "@cotal-ai/cli";`,
     `await import(${JSON.stringify(fileURLToPath(new URL("../dist/daemon/command.js", import.meta.url)))});`,
-    `await runCli(registry, process.argv.slice(2), { extensions: false });`,
+    `await runCli(registry, ["daemon", ...process.argv.slice(2)], { extensions: false });`,
   ].join("\n"), { mode: 0o600 });
   const fixture = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
   const cotal = join(root, "cotal");

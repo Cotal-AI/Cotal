@@ -11,6 +11,8 @@ import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, qu
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, daemonUserServiceEnv } from "./endpoint.js";
 import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled, stopInstalled } from "./install.js";
 import { nativeRun } from "./install-native-run.js";
+import { launchAgentService } from "./install-darwin.js";
+import { scheduledTaskService } from "./install-win32.js";
 import { readReceipt } from "./install-receipt.js";
 import { nativeDaemonLog, previousNativeDaemonLog } from "./native-log.js";
 import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
@@ -132,13 +134,18 @@ function serviceInstalled(target: ReturnType<DesktopBridgeOptions["resolveTarget
 
 /** True when automatic start is off, which is what `cotal daemon stop` leaves behind. An unreadable state is not treated as intentional. */
 function intentionalStop(target: ReturnType<DesktopBridgeOptions["resolveTarget"]>): boolean {
-  if (process.platform !== "linux") return false;
   const receipt = readReceipt(target.paths);
-  if (!receipt || !/^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(receipt.unit)) return false;
-  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", receipt.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
-  if (read.status !== 0) return false;
-  const state = read.stdout.trim();
-  return state === "disabled" || state === "static";
+  if (!receipt) return false;
+  try {
+    if (process.platform === "linux") {
+      if ((receipt.mechanism ?? "systemd-user") !== "systemd-user" || !/^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(receipt.unit)) return false;
+      const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", receipt.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
+      return read.status === 0 && (read.stdout.trim() === "disabled" || read.stdout.trim() === "static");
+    }
+    if (process.platform === "darwin") return receipt.mechanism === "launchd-agent" && !launchAgentService(nativeRun).isEnabled(receipt);
+    if (process.platform === "win32") return receipt.mechanism === "scheduled-task" && !scheduledTaskService(nativeRun).isEnabled(receipt);
+  } catch { return false; }
+  return false;
 }
 
 /** Read only a startup refusal line written during this install attempt, never an earlier launch's log. */
@@ -506,7 +513,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : daemonConnectionLost(e) ? "DAEMON_LOST" : "OPERATION_FAILED";
     // The app tells a stopped service (offer Start service) from one not set up yet (sign-in sets it up).
     const stoppedService = code === "NOT_RUNNING" && target !== undefined && serviceInstalled(target);
-    const stoppedByYou = stoppedService && req.op === "status" && target !== undefined && intentionalStop(target);
+    const stoppedByYou = stoppedService && (req.op === "status" || req.op === "status-watch") && target !== undefined && intentionalStop(target);
     const notAnswering = e instanceof CommandFailure && (req.op === "setup" || req.op === "install") && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING";
     const refusal = notAnswering && target && startedAt !== undefined ? attemptStartupRefusal(target.paths.state, startedAt) : undefined;
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;

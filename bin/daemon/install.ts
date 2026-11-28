@@ -211,8 +211,8 @@ export interface NativeService {
   publish(plan: NativePlan): void;
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
-  isEnabled?(receipt: UnitReceipt): boolean;
-  start(receipt: UnitReceipt, resume = false): void;
+  isEnabled(receipt: UnitReceipt): boolean;
+  start(receipt: UnitReceipt, resume?: boolean): void;
   /** Turn off automatic start, then stop the job. The source and receipt stay. */
   stop(receipt: UnitReceipt): Promise<void> | void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
@@ -561,7 +561,7 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
   if (!identity.same) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon source names another installation (${identity.installed}); update did not start it`);
   const { receipt, plan, service } = recorded;
   if (service) {
-    if (service.isEnabled && !service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
+    if (!service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
     service.start(receipt);
     return { started: true, unit: plan.unit, state: "enabled" };
   }
@@ -725,7 +725,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
       : renderedUnit ? { text: renderedUnit.bytes, sha256: renderedUnit.sha256 }
       : renderLaunchAgent({ label: receipt.unit, argv, searchPath: pinnedPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
     const published = !!intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource;
-    const enabled = intent?.enabled ?? (linux ? systemd(receipt).enabled : service!.isEnabled!(receipt));
+    const enabled = intent?.enabled ?? (linux ? systemd(receipt).enabled : service!.isEnabled(receipt));
     owner = readLifetimeRecord(paths.lock);
     try {
       socket = await openVerified({ paths });
