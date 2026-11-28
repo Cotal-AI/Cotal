@@ -2,14 +2,16 @@
  *  coordinate, and each part it does not hold is named. Each ceiling here is the evidence an agent
  *  mint records (provision.ts imports the minted permissions verbatim). No broker. */
 import { createSpaceAuth, mintCreds, permissionsFor, type MintOpts } from "../src/provision.js";
-import { mintLifecycleUid, newIdentity } from "../src/index.js";
+import { decodeChannelGrantClaims, mintLifecycleUid, newIdentity, projectChannelGrants } from "../src/index.js";
 import type { IssuanceSeam } from "../src/issued-authority.js";
-import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
+import { importNativeSubjectPermissions, issuedPermitsPattern, issuedPermitsSubject, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
 import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
 import { instanceOnlyManagerCapabilities, operatorInstrumentCapabilities, runCallerCapabilities, type EpCapability } from "../src/endpoint-grants.js";
-import { DEV_OWNER, spacePrefix } from "../src/subjects.js";
+import { channelBucket, channelInAllow, chatHistDurable, chatStream, chatSubject, DEV_OWNER, resolveReadAcl, spacePrefix } from "../src/subjects.js";
 import { lowerPersonaEndpoints } from "../src/persona-endpoints.js";
+import { legacyPluginChannelFilters, PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
+import { pluginChannelSpaceStateSubject } from "../src/plugin-channel-space-state.js";
 
 let pass = 0;
 let fail = 0;
@@ -64,6 +66,189 @@ console.log("wildcards");
   ok("an event-channel wildcard the spawner does not hold is refused", same(e, ["allowSubscribe:events.>"]), e);
 }
 
+console.log("routed channels");
+{
+  const linear = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
+  const resource = `${PLUGIN_CHANNEL_ROOT}.linear.one`;
+  const other = `${PLUGIN_CHANNEL_ROOT}.other.one`;
+  const routed = (read: string[], post = read) => evidence({ pluginChannelsEnabled: true, allowSubscribe: read, allowPublish: post });
+  const requested = (channel: string) => ({ allowSubscribe: [channel], allowPublish: [channel] });
+  const check = (ceiling: IssuedSubjectPermissions, channel: string) => grantOverreach(space, caller, ceiling, requested(channel), true).length;
+  ok("routed chat wildcard can be delegated with the same reserved-root deny", check(routed([">"]), ">") === 0);
+  ok("routed chat wildcard does not delegate plugin access", check(routed([">"]), resource) === 2);
+  ok("a plugin grant delegates a covered concrete resource", check(routed([linear]), resource) === 0);
+  ok("a plugin grant does not delegate access on another plugin", check(routed([linear]), other) === 2);
+  ok("disabled space still treats a reserved-looking name as ordinary chat", over(evidence(requested(">")), requested(resource)).length === 0);
+  ok("literal plugin identity, not a root wildcard, selects an isolated grant", channelInAllow([linear], resource, true)
+    && !channelInAllow(["*.>"], resource, true) && !channelInAllow([`${PLUGIN_CHANNEL_ROOT}.*.>`], resource, true));
+  ok("ordinary channel wildcard does not interfere with an explicit boot subscription", resolveReadAcl([resource], [">", linear], true).includes(linear));
+  for (const invalid of [PLUGIN_CHANNEL_ROOT, `${PLUGIN_CHANNEL_ROOT}.>`, `${PLUGIN_CHANNEL_ROOT}.*.>`]) {
+    let rejected = false;
+    try { routed([invalid]); } catch { rejected = true; }
+    ok(`routed mint refuses an unmappable grant ${invalid}`, rejected);
+    ok(`the same spelling remains a legacy chat grant when routing is off: ${invalid}`, over(evidence(requested(">")), requested(invalid)).length === 0);
+  }
+}
+
+console.log("profile isolation");
+{
+  const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
+  const pluginStream = pluginChannelStream(space);
+  const reserved = legacyPluginChannelFilters(space);
+  const offName = `${PLUGIN_CHANNEL_ROOT}.*.>`;
+  const disabledAgent = permissionsFor("agent", space, pr, { pluginChannelsEnabled: false, allowSubscribe: [offName], allowPublish: [offName] });
+  const legacyRows = disabledAgent as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[]; deny?: string[] } };
+  const legacyRead = chatSubject(space, "*", "*", offName);
+  const legacyReader = chatHistDurable(pr.owner, pr.actor, pr.lifecycleUid);
+  ok("off-state agent keeps the native legacy publish, subscription and filtered history rows",
+    legacyRows.pub.allow.includes(chatSubject(space, pr.owner, pr.actor, offName))
+    && legacyRows.sub.allow.includes(legacyRead)
+    && legacyRows.pub.allow.includes(`$JS.API.CONSUMER.CREATE.${chatStream(space)}.${legacyReader}.${legacyRead}`)
+    && reserved.every(row => !legacyRows.pub.deny?.includes(row) && !legacyRows.sub.deny?.includes(row)));
+  for (const profile of ["agent", "observer", "admin", "operator", "supervisor", "purger", "provisioner", "delivery"] as const) {
+    const off = permissionsFor(profile, space, pr, { pluginChannelsEnabled: false });
+    const unspecified = permissionsFor(profile, space, pr, {});
+    const on = permissionsFor(profile, space, pr, { pluginChannelsEnabled: true });
+    ok(`${profile}: off-state and legacy permission rows are identical`, JSON.stringify(off) === JSON.stringify(unspecified));
+    const rows = on as { pub: { allow?: string[]; deny: string[] }; sub: { allow?: string[]; deny: string[] } };
+    ok(`${profile}: routed permissions explicitly deny native legacy plugin access`, reserved.every(filter => rows.pub.deny.includes(filter) && rows.sub.deny.includes(filter)));
+    const issued = importNativeSubjectPermissions({ pub: rows.pub, sub: rows.sub });
+    const sample = pluginChannelSubject(space, pr.owner, pr.actor, `${PLUGIN_CHANNEL_ROOT}.linear.inbox`);
+    ok(`${profile}: no implicit access to a plugin publish or subscription`, !issuedPermitsSubject(issued.publish, sample) && !issuedPermitsSubject(issued.subscribe, sample));
+    ok(`${profile}: only provisioner and delivery may inspect plugin stream metadata`,
+      issuedPermitsSubject(issued.publish, `$JS.API.STREAM.INFO.${pluginStream}`) === (profile === "provisioner" || profile === "delivery"));
+  }
+  const stateSubject = pluginChannelSpaceStateSubject(space);
+  const ordinary = importNativeSubjectPermissions(permissionsFor("provisioner", space, pr, {}));
+  const bootstrap = importNativeSubjectPermissions(permissionsFor("provisioner", space, pr, { initializePluginChannelState: true }));
+  ok("ordinary off-space provisioner cannot write the protected routing key", !issuedPermitsSubject(ordinary.publish, stateSubject));
+  ok("initialization mint gains only the exact protected key", issuedPermitsSubject(bootstrap.publish, stateSubject) && !issuedPermitsSubject(bootstrap.publish, `${stateSubject}.other`));
+
+  const teardown = (transferStreams: string[]) =>
+    importNativeSubjectPermissions(permissionsFor("teardown", space, pr, { transferStreams })).publish;
+  const verbs = ["INFO", "DELETE"].map(verb => `$JS.API.STREAM.${verb}.${pluginStream}`);
+  const scan = teardown([]);
+  ok("teardown enumeration does not grant the unobserved plugin history stream",
+    issuedPermitsSubject(scan, "$JS.API.STREAM.NAMES") && verbs.every(row => !issuedPermitsSubject(scan, row)));
+  const observed = teardown([pluginStream]);
+  ok("an observed plugin history stream grants only its exact info and delete requests",
+    verbs.every(row => issuedPermitsSubject(observed, row))
+    && !issuedPermitsSubject(observed, `$JS.API.STREAM.MSG.GET.${pluginStream}`)
+    && !issuedPermitsSubject(observed, `$JS.API.STREAM.DELETE.${pluginChannelStream("another-space")}`));
+  let refusedForeignStream = false;
+  try { teardown([pluginChannelStream("another-space")]); } catch { refusedForeignStream = true; }
+  ok("teardown rejects a plugin history stream belonging to another space", refusedForeignStream);
+
+  const quiescence = (pluginChannelsEnabled: boolean) => importNativeSubjectPermissions(
+    permissionsFor("space-quiescence-reader", space, pr, { pluginChannelsEnabled })).publish;
+  const fanoutInfo = `$JS.API.CONSUMER.INFO.${pluginStream}.${PLUGIN_FANOUT_DURABLE}`;
+  const offReader = quiescence(false), onReader = quiescence(true);
+  ok("off-space quiescence does not inspect plugin history or its fan-out",
+    !issuedPermitsSubject(offReader, `$JS.API.STREAM.INFO.${pluginStream}`) && !issuedPermitsSubject(offReader, fanoutInfo));
+  ok("routed quiescence can inspect only plugin history and the stock fan-out, without pulling messages",
+    issuedPermitsSubject(onReader, `$JS.API.STREAM.INFO.${pluginStream}`) && issuedPermitsSubject(onReader, fanoutInfo)
+    && !issuedPermitsSubject(onReader, `$JS.API.CONSUMER.INFO.${pluginStream}.other`)
+    && !issuedPermitsSubject(onReader, `$JS.API.CONSUMER.MSG.NEXT.${pluginStream}.${PLUGIN_FANOUT_DURABLE}`)
+    && !issuedPermitsSubject(onReader, `$JS.API.STREAM.MSG.GET.${pluginStream}`));
+}
+
+console.log("channel grant projection");
+{
+  const plugin = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
+  const exact = `${PLUGIN_CHANNEL_ROOT}.linear.issue`;
+  const principal = { owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid };
+  const scope = { space, mode: "isolated", principal } as const;
+  const opts = { allowSubscribe: [">", plugin], allowPublish: [exact], pluginChannelsEnabled: true };
+  const routed = evidence(opts);
+  const view = projectChannelGrants(routed, scope);
+  ok("issued chat and explicit plugin reads retain their distinct native filters", same(view.read.map(({ kind, channel }) => `${kind}:${channel}`), [`chat:>`, `${PLUGIN_CHANNEL_ROOT}:${plugin}`]));
+  ok("the routed chat read keeps the reserved-subtree exclusions", same([...view.read[0]!.exclude], [...legacyPluginChannelFilters(space)]));
+  ok("an explicit plugin post is pinned to the named principal", view.post.length === 1 && view.post[0]?.subject === pluginChannelSubject(space, principal.owner, principal.actor, exact));
+  const pluginReader = view.history.find(row => row.kind === PLUGIN_CHANNEL_ROOT);
+  ok("history projection retains exact stream, filter, reader, and lifecycle", pluginReader?.stream === pluginChannelStream(space)
+    && pluginReader.subject === pluginChannelSubject(space, "*", "*", plugin) && pluginReader.consumer === chatHistDurable(principal.owner, principal.actor, principal.lifecycleUid)
+    && pluginReader.lifecycleUid === principal.lifecycleUid);
+  const legacy = projectChannelGrants(evidence({ ...opts, pluginChannelsEnabled: false }), { ...scope, mode: "legacy" });
+  ok("reserved-looking names remain ordinary chat when legacy state is supplied", [...legacy.read, ...legacy.post, ...legacy.history].every(row => row.kind === "chat")
+    && legacy.read.some(row => row.channel === plugin) && legacy.post.some(row => row.channel === exact));
+  const wrong = projectChannelGrants(routed, { ...scope, principal: { ...principal, lifecycleUid: mintLifecycleUid() } });
+  ok("an adjacent lifecycle cannot recover a history reader", wrong.history.length === 0);
+  ok("static credentials recover their lifecycle from the canonical reader name",
+    projectChannelGrants(routed, { ...scope, principal: { owner: principal.owner, actor: principal.actor } }).history.some(row => row.lifecycleUid === principal.lifecycleUid));
+  const foreign = projectChannelGrants(routed, { ...scope, principal: { ...principal, actor: "someone-else" } });
+  ok("another sender cannot recover the credential's post or history rows", foreign.post.length === 0 && foreign.history.length === 0);
+  const operator = projectChannelGrants(importNativeSubjectPermissions({ pub: { allow: [">"] }, sub: { allow: [">"] } }), scope);
+  ok("generic native wildcard rules synthesize no plugin or chat tap", operator.read.length === 0 && operator.post.length === 0 && operator.history.length === 0);
+  const filter = pluginChannelSubject(space, "*", "*", plugin);
+  const stream = pluginChannelStream(space);
+  const consumer = chatHistDurable(principal.owner, principal.actor, principal.lifecycleUid);
+  const create = `$JS.API.CONSUMER.CREATE.${stream}.${consumer}.${filter}`;
+  const readerOps = ["INFO", "MSG.NEXT", "DELETE"].map(verb => `$JS.API.CONSUMER.${verb}.${stream}.${consumer}`);
+  const raw = importNativeSubjectPermissions({
+    pub: { allow: [`$JS.API.CONSUMER.CREATE.${chatStream(space)}.${consumer}.${filter}`, create, ...readerOps], deny: [`$JS.API.CONSUMER.CREATE.${stream}.>`] },
+    sub: { allow: [filter], deny: [pluginChannelSubject(space, "*", "*", exact)] },
+  });
+  const denied = projectChannelGrants(raw, scope);
+  ok("overlapping denies and a history filter from a different stream do not produce a tap", denied.read.length === 0 && denied.history.length === 0);
+  const blockedFetch = importNativeSubjectPermissions({ pub: { allow: [create, ...readerOps], deny: [`$JS.API.CONSUMER.MSG.NEXT.${stream}.>`] } });
+  ok("a create row without usable pull authority is not a history reader", projectChannelGrants(blockedFetch, scope).history.length === 0);
+  const projectionGet = `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`;
+  const pr = { ...principal, connId: caller.actor };
+  for (const profile of ["agent", "admin", "observer", "operator", "provisioner", "delivery", "manager-caller", "agent-caller", "control-caller-admin", "purger", "supervisor"] as const) {
+    const permissions = importNativeSubjectPermissions(permissionsFor(profile, space, pr,
+      { ...opts, lifecycleUid: principal.lifecycleUid, managerInstanceId: principal.lifecycleUid }));
+    ok(`${profile}: channel registry leader read matches the viewer projection transport`,
+      issuedPermitsSubject(permissions.publish, projectionGet) === (["agent", "admin", "observer", "operator", "provisioner", "delivery"] as readonly string[]).includes(profile)
+      && issuedPermitsPattern(permissions.subscribe, `_INBOX_${pr.connId}.>`));
+    ok(`${profile}: only the explicitly scoped agent yields plugin history`,
+      projectChannelGrants(permissions, scope).history.some(row => row.kind === PLUGIN_CHANNEL_ROOT) === (profile === "agent"));
+  }
+}
+
+console.log("offline channel claims");
+{
+  const channel = `${PLUGIN_CHANNEL_ROOT}.linear.issue`;
+  const principal = { owner: caller.owner, actor: caller.actor };
+  const chatRead = chatSubject(space, "*", "*", channel);
+  const pluginRead = pluginChannelSubject(space, "*", "*", channel);
+  const chatPost = chatSubject(space, principal.owner, principal.actor, channel);
+  const pluginPost = pluginChannelSubject(space, principal.owner, principal.actor, channel);
+  const permissions = importNativeSubjectPermissions({
+    pub: { allow: [chatPost, pluginPost, pluginRead], deny: [pluginPost] },
+    sub: { allow: [chatRead, pluginRead, pluginRead, pluginChannelSubject("another-space", "*", "*", channel), ">"],
+      deny: [...legacyPluginChannelFilters(space)] },
+  });
+  const claimed = decodeChannelGrantClaims(permissions, space);
+  ok("offline claims keep the same logical spelling on distinct physical rails",
+    same(claimed.read.map(row => `${row.kind}:${row.channel}`), [`chat:${channel}`, `${PLUGIN_CHANNEL_ROOT}:${channel}`])
+    && same(claimed.read.map(row => row.subject), [chatRead, pluginRead]));
+  ok("offline claims preserve publisher pins without reporting effective access",
+    same(claimed.post.map(row => row.subject), [chatPost, pluginPost])
+    && claimed.post.every(row => row.owner === principal.owner && row.actor === principal.actor)
+    && same([...claimed.deny.publish], [pluginPost]) && same([...claimed.deny.subscribe], [...legacyPluginChannelFilters(space)]));
+  const isolated = projectChannelGrants(permissions, { space, principal, mode: "isolated" });
+  ok("bound projection still rejects stale chat and a denied plugin post",
+    same(isolated.read.map(row => row.subject), [pluginRead]) && isolated.post.length === 0);
+  const legacy = projectChannelGrants(permissions, { space, principal, mode: "legacy" });
+  ok("legacy bound projection still selects only the physical chat rail and honors denies",
+    legacy.read.length === 0 && same(legacy.post.map(row => row.subject), [chatPost]));
+  const generic = decodeChannelGrantClaims(importNativeSubjectPermissions({}), space);
+  ok("offline unrestricted rows do not invent explicit channel claims", generic.read.length === 0 && generic.post.length === 0);
+  const stream = pluginChannelStream(space);
+  const consumer = chatHistDurable(principal.owner, principal.actor, caller.uid);
+  const create = `$JS.API.CONSUMER.CREATE.${stream}.${consumer}.${pluginRead}`;
+  const unsafeCreate = importNativeSubjectPermissions({ pub: { allow: [create, `$JS.API.CONSUMER.CREATE.${stream}`, `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${consumer}.${pluginRead}`], deny: [create] } });
+  const hints = decodeChannelGrantClaims(unsafeCreate, space, principal).history;
+  ok("plugin-only offline create claims supply a lifecycle hint even when denied", hints.length === 1
+    && hints[0]?.kind === PLUGIN_CHANNEL_ROOT && hints[0].stream === stream && hints[0].consumer === consumer
+    && hints[0].subject === pluginRead && hints[0].lifecycleUid === caller.uid);
+  ok("offline history hints require the matching principal and optional lifecycle",
+    decodeChannelGrantClaims(unsafeCreate, space).history.length === 0
+    && decodeChannelGrantClaims(unsafeCreate, space, { ...principal, actor: "another-actor" }).history.length === 0
+    && decodeChannelGrantClaims(unsafeCreate, space, { ...principal, lifecycleUid: mintLifecycleUid() }).history.length === 0);
+  ok("a denied history hint cannot become a bound reader", projectChannelGrants(unsafeCreate, { space, principal, mode: "isolated" }).history.length === 0);
+}
+
 console.log("role");
 {
   const c = evidence({ role: "reviewer" });
@@ -105,6 +290,11 @@ console.log("ceiling modes");
   const denied: IssuedSubjectPermissions = { publish: { allow: { mode: "all" }, deny: [`${spacePrefix(space)}.chat.>`] }, subscribe: { allow: { mode: "all" }, deny: [] } };
   const d = names(over(denied, { allowPublish: ["x"] }));
   ok("an overlapping deny refuses", same(d, ["allowPublish:x"]), d);
+  const limited = { ...denied.publish, deny: ["space.private.>"] };
+  ok("a raw filter overlapping a broker deny is refused", !issuedPermitsPattern(limited, "space.>"));
+  ok("a delegated grant may retain the same deny", issuedPermitsPattern(limited, "space.>", ["space.private.>"]));
+  ok("a narrower exclusion cannot remove the parent's entire deny", !issuedPermitsPattern(limited, "space.>", ["space.private.one"]));
+  ok("an exclusion cannot make up for a missing parent allow", !issuedPermitsPattern(none.publish, "space.>", ["space.private.>"]));
   ok("the empty grant is within any ceiling", over(none, {}).length === 0);
 }
 

@@ -56,6 +56,7 @@ export interface EndpointIdentity {
   ttlMs: number;
   doRegister: boolean;
   omitFromLiveMembership: boolean;
+  readChannelRoutingProjection?: boolean;
   doWatch: boolean;
   doWatchChannels: boolean;
   readOnce: boolean;

@@ -358,6 +358,7 @@ export function assertWithinSpawnerGrant(
   dir: string,
   row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role">,
   boundary: "spawn" | "exchange",
+  pluginChannelsEnabled = false,
 ): void {
   // Walk the WHOLE delegation chain, not just the immediate link: per-link containment composes
   // transitively (child ⊆ parent at every hop ⇒ leaf ⊆ root), and every link must still EXIST — a
@@ -388,12 +389,13 @@ export function assertWithinSpawnerGrant(
           ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain, so grant "${pActor}" under owner "${pOwner}" first, carrying "spawn" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \`cotal actor grant\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\`>\` read, \`>\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`
           : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`). The revoke deleted the row, so \`cotal actor list\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\`>\` read, \`>\` post) and a spawner's ACL is the ceiling for everything under it`,
       );
-    if (parent.scope.includes("admin")) return;
-    if (child.owner !== pOwner)
+    const admin = parent.scope.includes("admin");
+    if (admin && !pluginChannelsEnabled) return;
+    if (!admin && child.owner !== pOwner)
       throw new Error(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
-    const { overScope, overSub, overPub, needRole } = overreachOf(parent, child);
+    const { overScope, overSub, overPub, needRole } = overreachOf(parent, child, pluginChannelsEnabled);
     if (overScope.length || overSub.length || overPub.length || needRole) {
       const wrongs = describeOverreach({ overScope, overSub, overPub, needRole }, parent, child.role);
       const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
@@ -407,6 +409,7 @@ export function assertWithinSpawnerGrant(
           (boundary === "spawn" ? ", then respawn" : ", or respawn within it"),
       );
     }
+    if (admin) return;
     child = parent;
   }
 }
@@ -415,21 +418,25 @@ export function assertWithinSpawnerGrant(
 function overreachOf(
   parent: { owner: string; actor: string; scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
   child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+  pluginChannelsEnabled = false,
 ): { overScope: string[]; overSub: string[]; overPub: string[]; needRole?: string } {
   // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
   // shares with the static bound). The vocabulary stays open: any token the parent lists is within.
-  const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
-  const overSub = child.allowSubscribe.filter((ch) => !patternInAllow([...parent.allowSubscribe], ch));
+  const admin = parent.scope.includes("admin");
+  const overScope = admin ? [] : child.scope.filter((s) => !capabilityWithin(parent.scope, s));
+  const exceeds = (allow: readonly string[], ch: string) =>
+    !(admin && patternInAllow([">"], ch, pluginChannelsEnabled)) && !patternInAllow([...allow], ch, pluginChannelsEnabled);
+  const overSub = child.allowSubscribe.filter((ch) => exceeds(parent.allowSubscribe, ch));
   // A spawner that may post its own events may hand each child that child's own event channel
   // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
   // walk still checks the spawner's own event channel against its parent up to the root.
-  const ownEvents = patternInAllow([...parent.allowPublish], eventChannel({ owner: parent.owner, actor: parent.actor })) ? eventChannel(child) : undefined;
-  const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow([...parent.allowPublish], ch));
+  const ownEvents = patternInAllow([...parent.allowPublish], eventChannel({ owner: parent.owner, actor: parent.actor }), pluginChannelsEnabled) ? eventChannel(child) : undefined;
+  const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && exceeds(parent.allowPublish, ch));
   // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
   // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
   // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
   // role delegation transitive for free.
-  const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
+  const needRole = !admin && child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
   return { overScope, overSub, overPub, ...(needRole !== undefined ? { needRole } : {}) };
 }
 
@@ -455,9 +462,10 @@ export function assertWithinRunDelegation(
   starter: { owner: string; actor: string },
   delegation: RunDelegation,
   child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+  pluginChannelsEnabled = false,
 ): void {
-  if (delegation.scope.includes("admin")) return;
-  const o = overreachOf({ ...starter, ...delegation }, child);
+  if (!pluginChannelsEnabled && delegation.scope.includes("admin")) return;
+  const o = overreachOf({ ...starter, ...delegation }, child, pluginChannelsEnabled);
   if (!o.overScope.length && !o.overSub.length && !o.overPub.length && !o.needRole) return;
   throw new Error(
     `agent "${child.actor}" would exceed what run ${runId}'s starter "${starter.owner}.${starter.actor}" held when the run was admitted - a run hands on only that: ` +
@@ -726,7 +734,7 @@ export function ledgerAuthorizeConnect(dir: string): (t: ValidatedUserToken) => 
  *  by both"). Serves bearers from both spaces (unified read). A missing row throws (the callout
  *  turns it into a signed deny). */
 export function ledgerAclResolver(dir: string): AclResolver {
-  return (t) => {
+  return (t, pluginChannelsEnabled = false) => {
     const row = findActorUnified(dir, t.owner, t.act.actor);
     if (!row) throw new Error(`actor "${t.act.actor}" has no ledger row - no channel ACL to mint`);
     // The row's recorded lifecycle UID is what the callout mints the agent's lifecycle-keyed
@@ -742,6 +750,7 @@ export function ledgerAclResolver(dir: string): AclResolver {
       throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
     if (t.act.lifecycleUid !== row.lifecycleUid)
       throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - re-exchange for a fresh bearer`);
+    if (pluginChannelsEnabled) assertWithinSpawnerGrant(dir, row, "exchange", true);
     // Issuance eligibility is separate from envelope containment, which exempts an admin parent.
     // Read the direct parent at this mint, never the bearer's audit link or a cached spawn grant.
     const parent = row.kind === "managed-agent" && typeof row.parent === "string" ? parsePrincipalKey(row.parent) : null;

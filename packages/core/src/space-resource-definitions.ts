@@ -78,9 +78,9 @@ export function spaceResourceCreationConfig(resource: SpaceResourceDefinition): 
 /** Collect the native bootstrap inputs without opening a connection or deriving SDK defaults.
  *  Definitions describe creation, not safe updates: authority and artifact verifiers still own
  *  their guards. Neither this value nor its hardening fields authorize provisioning or repair. */
-export function spaceResourceDefinitions(space: string, options: EndpointStreamOptions = {}) {
+export function spaceResourceDefinitions(space: string, options: EndpointStreamOptions & { pluginChannels?: boolean } = {}) {
   const streams = [
-    ...[...spaceMessageStreamConfigs(space), ...spaceRegistryStreamConfigs(space)].map((config) => ({ config, verification: "canonical-backup" as const })),
+    ...[...spaceMessageStreamConfigs(space, options.pluginChannels), ...spaceRegistryStreamConfigs(space)].map((config) => ({ config, verification: "canonical-backup" as const })),
     ...endpointDataStreamConfigs(space, options).map((config) => ({ config, verification: "declared-fields" as const })),
     { config: endpointContractStreamConfig(space), verification: "contract" as const },
   ];

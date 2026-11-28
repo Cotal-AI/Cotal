@@ -8,6 +8,7 @@ import { jetstream, jetstreamManager, JetStreamApiCodes, type JetStreamPublishOp
 import { Kvm, type KV } from "@nats-io/kv";
 import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { effectiveDeliveryClass, readChannelConfig, readChannelDefaults } from "./channels.js";
+import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isCasLoss } from "./endpoint-records.js";
 import type { ManagerLeaseInfo } from "./lease.js";
 import { openMembersRegistry, commitMemberRevision, tombstoneMember, activateMember, readMember, deleteMember, listMembers } from "./members.js";
@@ -310,7 +311,8 @@ export class EndpointDurableBackstop {
   async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
     if (!this.conn.channelKv) return effectiveDeliveryClass(undefined, undefined);
     const [cfg, defaults] = await Promise.all([
-      isConcreteChannel(channel) ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
+      isConcreteChannel(channel) && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)
+        ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
       readChannelDefaults(this.conn.channelKv),
     ]);
     return effectiveDeliveryClass(cfg, defaults);
@@ -341,6 +343,7 @@ export class EndpointDurableBackstop {
    *  and a racing fan-out copy collapse, from the same row or from two rows that both cover the post.
    *  The `principal` is the member's owner+actor dot-form. */
   async publishDinbox(principal: string, lifecycleUid: string, entry: Plane3Entry): Promise<void> {
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel)) return;
     if (!this.conn.js) return;
     const p = parsePrincipalKey(principal);
     if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
@@ -388,6 +391,7 @@ export class EndpointDurableBackstop {
     opts: { aclFence?: boolean } = {},
   ): Promise<{ durable: boolean; reason?: string; generation?: number }> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) return { durable: false };
     await this.parts.consumers.manager(); // ensure jsm — a non-consuming provisioner inits it lazily; catch-up + fence need it
     const kv = await this.membersRegistry();
     const existing = await readMember(kv, channel, owner, lifecycleUid);
@@ -457,6 +461,7 @@ export class EndpointDurableBackstop {
   /** Privileged durable-LEAVE write: tombstone the membership at `leaveCursor = frontier` so the
    *  backstop denies `seq > leaveCursor` while a pre-leave entry stays deliverable (SPEC §7 interval). */
   async durableLeaveFor(owner: string, channel: string, lifecycleUid: string, expectedGeneration?: number): Promise<void> {
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) return;
     if (!this.parts.deliveryPlane.plane3) return; // not a Plane-3 host — no membership to tombstone
     const kv = await this.membersRegistry();
     // expectedGeneration (captured by the agent at durableJoin) refuses a stale leave from tombstoning

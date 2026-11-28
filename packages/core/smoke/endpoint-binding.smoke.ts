@@ -49,6 +49,10 @@ import {
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import {
+  PLUGIN_CHANNEL_SPACE_STATE_KEY, initializePluginChannelSpaceState, pluginChannelSpaceStateSubject, readPluginChannelSpaceAuthority,
+  readPluginChannelSpaceState,
+} from "../src/plugin-channel-space-state.js";
 
 let ok = 0, fail = 0;
 // A PASSING CELL PRINTS: `mutation-proof` counts `✓` marks to tell "the mutation applied and no
@@ -62,6 +66,85 @@ const SPACE = "epbind";
 const UID = "u".repeat(26);
 const IID = "i".repeat(26);
 const caller: EpCaller = { owner: "u_abc", actor: "worker", uid: UID };
+
+async function checkPluginSpaceState(jsm: Awaited<ReturnType<typeof jetstreamManager>>, kvm: Kvm): Promise<void> {
+  const space = `${SPACE}-plugin-state`;
+  const read = () => readPluginChannelSpaceAuthority(jsm, space);
+  const initialize = () => initializePluginChannelSpaceState(jsm, space);
+  const refuse = async (label: string, query: () => Promise<unknown>) => {
+    try { await query(); c(label, false, "did not refuse"); } catch { c(label, true); }
+  };
+  await refuse("plugin state read refuses a missing bucket", read);
+  const kv = await kvm.create(recordsBucket(space));
+  const missing = await read();
+  c("leader-confirmed missing plugin state is off at epoch zero", missing.revision === 0 && !missing.state.enabled && missing.state.epoch === 0);
+  c("plugin state write subject pins the existing records bucket and exact key",
+    pluginChannelSpaceStateSubject(space) === `$KV.${recordsBucket(space)}.plugin-channel-space`);
+  const initialized = await initialize();
+  const repeated = await initialize();
+  const readBack = await read();
+  c("first-write CAS initializes only off state and never overwrites it",
+    initialized.revision > 0 && initialized.revision === repeated.revision && repeated.revision === readBack.revision &&
+    readBack.state.version === 1 && !readBack.state.enabled && readBack.state.epoch === 0);
+  const put = (value: unknown) => kv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, new TextEncoder().encode(JSON.stringify(value)));
+  const epochRevision = await put({ version: 1, epoch: 3, enabled: false });
+  c("trusted reads preserve an off epoch and its broker revision", (await read()).state.epoch === 3 && (await initialize()).revision === epochRevision);
+  const enabledRevision = await put({ version: 1, epoch: 4, enabled: true });
+  const enabled = await read();
+  c("Release B authority reader returns enabled state and its exact broker revision", enabled.state.version === 1 &&
+    enabled.state.epoch === 4 && enabled.state.enabled && enabled.revision === enabledRevision);
+  await refuse("dark release refuses enabled state on read", () => readPluginChannelSpaceState(jsm, space));
+  await refuse("dark release initializer refuses to replace enabled state", initialize);
+  c("the off-only initializer leaves enabled state untouched", (await read()).revision === enabledRevision);
+  const h = headers();
+  h.set("Nats-Expected-Last-Subject-Sequence", String(enabledRevision));
+  const ack = await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space),
+    new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 5, enabled: true })), { headers: h });
+  c("a normal JetStream write header is not a deletion marker", (await read()).revision === ack.seq);
+  await put({ version: 2, epoch: 4, enabled: false });
+  await refuse("unknown version is not interpreted as off", read);
+  await put({ version: 1, epoch: 4, enabled: false, plugins: {} });
+  await refuse("unexpected authority fields are not interpreted as off", read);
+  await put({ version: 1, epoch: -1, enabled: false });
+  await refuse("malformed epoch is not interpreted as off", read);
+  await kv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, Uint8Array.of(0xff));
+  await refuse("invalid UTF-8 is not interpreted as off", read);
+  await kv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, new TextEncoder().encode("{"));
+  await refuse("corrupt JSON is not interpreted as off", read);
+  await kv.delete(PLUGIN_CHANNEL_SPACE_STATE_KEY);
+  await refuse("deletion marker is not interpreted as off", read);
+  await refuse("initializer does not resurrect a deleted key", initialize);
+  await put({ version: 1, epoch: 6, enabled: true });
+  await kv.purge(PLUGIN_CHANNEL_SPACE_STATE_KEY);
+  await refuse("purge marker is not interpreted as off", read);
+}
+
+async function checkScopedPluginAuthority(ncAdmin: Awaited<ReturnType<typeof connect>>, servers: string): Promise<void> {
+  const kv = await new Kvm(ncAdmin).open(recordsBucket(SPACE));
+  const key = PLUGIN_CHANNEL_SPACE_STATE_KEY;
+  const revision = await kv.put(key, JSON.stringify({ version: 1, epoch: 9, enabled: true }));
+  const connectAs = (user: string) => connect({ servers, user, pass: "pw" });
+  const reader = await connectAs("plugin-state-reader");
+  try {
+    const jsm = await jetstreamManager(reader, { timeout: 1200, checkAPI: false });
+    const snapshot = await readPluginChannelSpaceAuthority(jsm, SPACE);
+    c("a credential with only the records leader-read verb reads enabled state", snapshot.state.enabled &&
+      snapshot.state.epoch === 9 && snapshot.revision === revision);
+    const refuses = async (fn: () => Promise<unknown>): Promise<boolean> => {
+      try { await fn(); return false; } catch { return true; }
+    };
+    c("the read credential cannot write the protected key", await refuses(() =>
+      jetstream(reader, { timeout: 1200 }).publish(pluginChannelSpaceStateSubject(SPACE),
+        new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 0, enabled: false })))));
+    const ordinary = await connectAs("agent");
+    try {
+      const denied = await jetstreamManager(ordinary, { timeout: 1200, checkAPI: false });
+      c("a broker-denied authority read refuses instead of returning off", await refuses(() => readPluginChannelSpaceAuthority(denied, SPACE)));
+    } finally { await ordinary.close(); }
+    await reader.close();
+    c("a closed transport refuses an authority read instead of returning off", await refuses(() => readPluginChannelSpaceAuthority(jsm, SPACE)));
+  } finally { await reader.close(); }
+}
 
 // ── name grammar (broker-free) ──
 c("stream names are the §13.12 forms",
@@ -615,6 +698,7 @@ try {
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
+  await checkPluginSpaceState(jsm, kvm);
 
   // A BARE CALL IS NOT A CELL. These two were `await …; await …; c("is idempotent", true)`, so a
   // mutant that made EITHER call throw ended the run with no assertion name on it — and the FIRST
@@ -935,6 +1019,7 @@ try {
       `    { user: "admin", password: "pw" }`,
       `    { user: "canon", password: "pw", permissions: { publish = ${JSON.stringify([...canonRows, "$JS.API.INFO"])}, subscribe = ["_INBOX.>"] } }`,
       `    { user: "agent", password: "pw", permissions: { publish = ["$JS.API.INFO"], subscribe = ["_INBOX.>"] } }`,
+      `    { user: "plugin-state-reader", password: "pw", permissions: { publish = ["$JS.API.STREAM.MSG.GET.${recordsKvStreamName(SPACE)}"], subscribe = ["_INBOX.>"] } }`,
       `    { user: "activator", password: "pw", permissions: { publish = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn01").publish)}, subscribe = ${JSON.stringify(activatorGrants(SPACE, "manager", "builds", "actconn01").subscribe)} } }`,
       "  ]",
       "}",
@@ -950,6 +1035,7 @@ try {
       const ncAdmin = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "admin", pass: "pw" });
       const jsmAdmin = await jetstreamManager(ncAdmin);
       await createEndpointStreams(jsmAdmin, new Kvm(ncAdmin), SPACE);
+      await checkScopedPluginAuthority(ncAdmin, `nats://127.0.0.1:${SPORT}`);
       await jsmAdmin.consumers.add(epwStreamName(SPACE), poolConsumerConfig(SPACE, "manager", "builds"));
 
       const ncCanon = await connect({ servers: `nats://127.0.0.1:${SPORT}`, user: "canon", pass: "pw" });

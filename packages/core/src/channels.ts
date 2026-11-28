@@ -12,6 +12,7 @@ import { drainAndClose } from "./connection-cleanup.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
+import { PLUGIN_CHANNEL_PROJECTION_KEY } from "./plugin-channel-projection.js";
 import { standaloneConnectOpts } from "./streams.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
@@ -84,6 +85,7 @@ export function validateChannelDefaults(d: ChannelDefaults): void {
  *  fails {@link validateChannelDefaults} (the defaults key) or {@link validateChannelConfig}
  *  throws, and every reader drops it as it drops a value that does not parse. */
 export function decodeChannelEntry(e: KvEntry): ChannelConfig | ChannelDefaults {
+  if (e.key === PLUGIN_CHANNEL_PROJECTION_KEY) throw new Error("plugin channel route projection is not channel configuration");
   const value: unknown = e.json();
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error("not a JSON object");
@@ -219,7 +221,7 @@ function entryValue(e: KvEntry | null): ChannelConfig | ChannelDefaults | undefi
 /** A delete or a missing key has no value. A value that does not decode names its error, and the
  *  caller decides whether that is absence or a report. */
 function entryDecode(e: KvEntry | null): { value?: ChannelConfig | ChannelDefaults; error?: string } {
-  if (!e || e.operation === "DEL" || e.operation === "PURGE") return {};
+  if (!e || e.key === PLUGIN_CHANNEL_PROJECTION_KEY || e.operation === "DEL" || e.operation === "PURGE") return {};
   try {
     return { value: decodeChannelEntry(e) };
   } catch (err) {
@@ -368,6 +370,7 @@ export async function readChannelRegistry(opts: {
         ? (await kv.status(), (await lastKvEntries(kv)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE"))
         : await liveKvEntries(kv);
       for (const e of entries) {
+        if (e.key === PLUGIN_CHANNEL_PROJECTION_KEY) continue;
         const decoded = entryDecode(e);
         if (decoded.error !== undefined) {
           undecodable.push({ key: e.key, error: decoded.error });

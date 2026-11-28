@@ -13,7 +13,7 @@
  * **sequence** (`joinCursor`/`leaveCursor`), never wall-clock.
  */
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
-import { membersBucket, memberKey, parseMemberKey, familiesCovering, isConcreteChannel, isChannelFamily, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
+import { membersBucket, memberKey, parseMemberKey, familiesCovering, isConcreteChannel, isChannelFamily, membershipInAllow, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { KvReadView } from "./kv-read-view.js";
@@ -229,14 +229,20 @@ export async function listMembers(
 
 const fanoutViews = new WeakMap<KV, KvReadView>();
 
+/** The reserved root is not a membership family. A plugin row has a literal plugin id. */
+export function membershipFamilies(channel: string, pluginChannels: boolean | undefined): string[] {
+  const families = familiesCovering(channel);
+  return pluginChannels ? families.filter((family) => membershipInAllow([family], channel, true)) : families;
+}
+
 /** Fresh channel and family rows for fan-out. The channel suffix and owner
  *  prefix share a NATS token in a member key, so a broker subject filter cannot select them. */
-export async function membersForFanout(kv: KV, channel: string): Promise<MembershipRecord[]> {
+export async function membersForFanout(kv: KV, channel: string, pluginChannels?: boolean): Promise<MembershipRecord[]> {
   let view = fanoutViews.get(kv);
   if (!view) fanoutViews.set(kv, view = new KvReadView(kv, (key) => parseMemberKey(key)?.channel));
   const current = await view.refresh();
   const members: MembershipRecord[] = [];
-  for (const group of [channel, ...familiesCovering(channel)]) {
+  for (const group of [channel, ...membershipFamilies(channel, pluginChannels)]) {
     for (const entry of current.entries(group)) {
       try { members.push(entry.json<MembershipRecord>()); } catch { /* skip undecodable */ }
     }

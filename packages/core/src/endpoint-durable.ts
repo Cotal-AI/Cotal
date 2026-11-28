@@ -9,9 +9,10 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { readAcl } from "./acls.js";
+import { endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
-import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
+import { membershipInAllow, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, parseSubject, subjectMatches } from "./subjects.js";
 import type { CotalMessage } from "./types.js";
 import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
@@ -43,7 +44,9 @@ export class EndpointDurable {
    *  direct reads, so a row narrowed before this read began is the row it returns. */
   async aclAllows(owner: string, lifecycleUid: string, channel: string): Promise<boolean> {
     const row = await readAcl(await this.parts.durableBackstop.aclRegistry(), owner, lifecycleUid);
-    return row !== undefined && membershipInAllow(row.record.allowSubscribe, channel);
+    if (!row || !membershipInAllow(row.record.allowSubscribe, channel, this.conn.pluginChannelsEnabled)) return false;
+    return !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ||
+      membershipInAllow(row.record.issuedAllowSubscribe ?? [], channel, true);
   }
 
   /** Idempotently copy the eligible chat messages in `(fromSeqExcl, toSeqIncl]` for `channel` into the
@@ -60,7 +63,9 @@ export class EndpointDurable {
     owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<number> {
     if (!this.conn.js || !this.conn.jsm || toSeqIncl <= fromSeqExcl) return 0;
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    if (route.kind !== "chat") return 0;
+    const subject = route.subject("*", "*");
     const family = isChannelFamily(channel);
     const durableClass = new Map<string, Promise<boolean>>();
     const stored = (ch: string): Promise<boolean> => {
@@ -78,14 +83,14 @@ export class EndpointDurable {
     const cuP = parsePrincipalKey(owner);
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
     // A failed read throws, leaving the pending row to retry over the same window.
-    await this.parts.consumers.deleteConsumerIfPresent(chatStream(this.identity.space), name);
-    await this.conn.jsm.consumers.add(chatStream(this.identity.space), {
+    await this.parts.consumers.deleteConsumerIfPresent(route.stream, name);
+    await this.conn.jsm.consumers.add(route.stream, {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
       inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: fromSeqExcl + 1,
     });
     let copied = 0;
     try {
-      const consumer = await this.conn.js.consumers.get(chatStream(this.identity.space), name);
+      const consumer = await this.conn.js.consumers.get(route.stream, name);
       let pending = (await consumer.info()).num_pending;
       while (pending > 0) {
         const want = Math.min(pending, 256);
@@ -98,7 +103,9 @@ export class EndpointDurable {
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
-          if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
+          if (!parsed || parsed.kind !== route.kind || !subjectMatches(subject, m.subject)) continue;
+          if (route.kind === "chat" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, parsed.rest)) continue;
+          if (!isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
           if (!(await stored(parsed.rest))) continue;
           await this.parts.durableBackstop.publishDinbox(owner, lifecycleUid, {
             msg, channel: parsed.rest, seq: m.seq, reason: "durable-channel", generation, ...(family ? { row: channel } : {}),
@@ -109,7 +116,7 @@ export class EndpointDurable {
         pending -= got;
       }
     } finally {
-      await this.parts.consumers.deleteConsumerIfPresent(chatStream(this.identity.space), name);
+      await this.parts.consumers.deleteConsumerIfPresent(route.stream, name);
     }
     return copied;
   }

@@ -26,6 +26,7 @@ import {
   type SpaceBackupSelection,
   realDirNoSymlink,
   spaceBackupInventory,
+  spacePluginStreams,
 } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, oneLine, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
@@ -284,13 +285,24 @@ function parseManifest(bytes: Buffer): BackupManifest {
 /** The streams an artifact holds for its selection. A user-mode artifact holds no workflow store:
  *  the records store's lifecycle heads name credential ledger rows in the auth store, which a backup
  *  does not carry, so a restored head would name a row that is gone. */
-export function artifactStreams(manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode">): readonly string[] {
-  const inventory = spaceBackupInventory(manifest.space);
+export function artifactStreams(
+  manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode">,
+  inventory = spaceBackupInventory(manifest.space),
+): readonly string[] {
   if (manifest.selection !== "full") return inventory.registry;
   return inventory.backedUp.filter((stream) =>
     (manifest.format === BACKUP_MANIFEST_FORMAT || stream.name !== eventPayloadStream(manifest.space)) &&
     (!(manifest.format === BACKUP_MANIFEST_FORMAT_V1 || manifest.mode === "user") || stream.class !== "workflow"),
   ).map((stream) => stream.name);
+}
+
+/** A full artifact declares either the old inventory or the complete plugin inventory. The restore
+ *  coordinator checks this against the destination's independent space state. */
+export function declaredArtifactStreams(manifest: BackupManifest): readonly string[] {
+  const actual = new Set(manifest.streams.map((entry) => entry.stream));
+  const pluginChannels = manifest.format === BACKUP_MANIFEST_FORMAT && manifest.mode !== "open" &&
+    spacePluginStreams(manifest.space).some((stream) => actual.has(stream));
+  return artifactStreams(manifest, spaceBackupInventory(manifest.space, pluginChannels));
 }
 
 /** The manifest's shape, format, inventory and source identity. Messages name no manifest value. */

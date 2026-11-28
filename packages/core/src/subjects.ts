@@ -31,6 +31,7 @@
  */
 import { fromPublic } from "@nats-io/nkeys";
 import type { Presence, PresenceAgentEndpoint, PresenceStatus } from "./types.js";
+import { classifyChannel, PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import {
   token,
   ROOT,
@@ -60,6 +61,7 @@ export {
   assertValidRole,
   chatSubject,
   chatSubjectPrefix,
+  chatStream,
   isConcreteChannel,
   isChannelFamily,
   familiesCovering,
@@ -96,13 +98,24 @@ export {
 } from "./subject-grammar.js";
 export type { DeprovisionTarget } from "./subject-grammar.js";
 
+function sameChannelRail(cap: string, pattern: string): boolean {
+  try {
+    const held = classifyChannel(cap), requested = classifyChannel(pattern);
+    return held.kind === PLUGIN_CHANNEL_ROOT
+      ? requested.kind === PLUGIN_CHANNEL_ROOT && held.plugin === requested.plugin
+      : requested.kind === held.kind;
+  } catch {
+    return false;
+  }
+}
+
 /** Is `channel` within a read/post ACL `allow` (a list of channel patterns)? True when some
  *  entry covers it — exact, or a wildcard subtree (`team.>` covers `team.backend`). Channels are
  *  dotted token strings, so this rides {@link subjectMatches}. The single covering rule shared by
  *  the load-time invariant (`subscribe ⊆ allowSubscribe`), the connector subset check, and the
  *  manager's mediated-join validation (`channel ∈ allowSubscribe`) so they can't drift. */
-export function channelInAllow(allow: string[], channel: string): boolean {
-  return allow.some((a) => subjectMatches(a, channel));
+export function channelInAllow(allow: readonly string[], channel: string, pluginChannelsEnabled = false): boolean {
+  return allow.some((a) => (!pluginChannelsEnabled || sameChannelRail(a, channel)) && subjectMatches(a, channel));
 }
 
 /** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
@@ -110,10 +123,10 @@ export function channelInAllow(allow: string[], channel: string): boolean {
  *  and a pattern must lie inside one entry ({@link patternInAllow}), as `cotal_join` checks it, so
  *  `perm.>` is outside `perm.*`. Every site that resolves an agent's read list calls this, so a
  *  launcher, the session it starts and the provisioner cannot disagree on the default. */
-export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
+export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined, pluginChannelsEnabled = false): string[] {
   const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
   for (const ch of subscribe)
-    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch))
+    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch, pluginChannelsEnabled))
       throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
   return allow;
 }
@@ -124,7 +137,12 @@ export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | u
  *  ({@link patternInAllow}): where {@link channelInAllow} asks "is this concrete channel readable
  *  under this ACL", this asks "is this ACL *entry* grantable under this ACL" — pattern vs pattern,
  *  so `review.>` is within `review.>` but exceeds `review.pua`. */
-export function patternCovers(cap: string, pattern: string): boolean {
+export function patternCovers(cap: string, pattern: string, pluginChannelsEnabled = false): boolean {
+  return (!pluginChannelsEnabled || sameChannelRail(cap, pattern)) && subjectPatternCovers(cap, pattern);
+}
+
+/** Check containment of two NATS subject filters without interpreting them as channel names. */
+export function subjectPatternCovers(cap: string, pattern: string): boolean {
   const c = cap.split(".");
   const p = pattern.split(".");
   // A non-terminal '>' is outside the policy grammar (assertValidChannel) — fail closed on BOTH
@@ -146,15 +164,15 @@ export function patternCovers(cap: string, pattern: string): boolean {
  *  entries is deliberately NOT considered (`[a.b, a.c]` does not admit `a.*`): per-entry containment
  *  is conservative — it can refuse a technically-covered pattern, never admit an uncovered one —
  *  and keeps the refusal explainable ("name the entry that covers it, or widen the grant"). */
-export function patternInAllow(allow: string[], pattern: string): boolean {
-  return allow.some((a) => patternCovers(a, pattern));
+export function patternInAllow(allow: readonly string[], pattern: string, pluginChannelsEnabled = false): boolean {
+  return allow.some((a) => patternCovers(a, pattern, pluginChannelsEnabled));
 }
 
 /** Does read ACL `allow` admit a durable membership on `channel`? A family must lie inside one entry
  *  ({@link patternInAllow}), so every channel under it is readable; a concrete channel must be covered
  *  ({@link channelInAllow}). */
-export function membershipInAllow(allow: string[], channel: string): boolean {
-  return isChannelFamily(channel) ? patternInAllow(allow, channel) : channelInAllow(allow, channel);
+export function membershipInAllow(allow: readonly string[], channel: string, pluginChannelsEnabled = false): boolean {
+  return isChannelFamily(channel) ? patternInAllow(allow, channel, pluginChannelsEnabled) : channelInAllow(allow, channel, pluginChannelsEnabled);
 }
 
 // ---- Principal-keyed channel grants ----
@@ -466,15 +484,15 @@ export type DeliveryMode = "chat" | "anycast" | "unicast";
 /** A subject parsed into its routing parts (owner+actor grammar, Shape A). `owner`/`actor` are the
  *  publishing principal's two tokens; `sender` is their canonical dot-form `<owner>.<actor>` (=
  *  {@link principalKey}`.key`), so guards that compare `msg.from.id === parsed.sender` keep working
- *  verbatim once `from.id` carries the principal dot-form. `rest` is the channel (chat) or the routed
+ *  verbatim once `from.id` carries the principal dot-form. `rest` is the logical channel (CHAT or plugin) or the routed
  *  target/role/service (inst → recipient principal dot-form; svc → role; ctl → service). */
 export interface ParsedSubject {
-  kind: "chat" | "evp" | "inst" | "svc" | "ctl";
+  kind: "chat" | typeof PLUGIN_CHANNEL_ROOT | "evp" | "inst" | "svc" | "ctl";
   owner: string;
   actor: string;
   /** The sender principal in canonical dot-form `<owner>.<actor>`. */
   sender: string;
-  /** chat → channel (possibly hierarchical); inst → recipient principal `<owner>.<actor>`; svc → role; ctl → service. */
+  /** chat/ext → logical channel (possibly hierarchical); inst → recipient principal `<owner>.<actor>`; svc → role; ctl → service. */
   rest: string;
 }
 
@@ -482,12 +500,13 @@ export interface ParsedSubject {
  * The single authority on the subject layout — every reader of a wire subject goes through this, so the
  * owner+actor sender positions live in exactly one place (`kind` stays at [2]):
  *   chat.<owner>.<actor>.<channel…>              sender owner[3] actor[4], channel is everything after
+ *   ext.<owner>.<actor>.<plugin>.<resource…>    same sender slots, restore `ext.` to the logical channel
  *   inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>   sender owner[5] actor[6], recipient = [3].[4]
  *   svc.<role>.<owner>.<actor>                   sender owner[4] actor[5], role = [3]
  *   ctl.<service>.<owner>.<actor>                sender owner[4] actor[5], service = [3]
- * Validates the prefix and per-kind arity first and returns `null` on anything else, so a malformed
- * subject can never be read as if it carried a principal. This SPLITS ONLY (no owner-token validation)
- * — the broker already forge-locked the identity slots via the minted grant; a reader recovers them.
+ * Legacy subjects retain their structural parse. The plugin rail also checks token syntax and
+ * requires a literal plugin ID and a resource path. Parsing a subject does not authenticate its sender,
+ * authorize the route, or say whether the space uses it.
  */
 export function parseSubject(subject: string): ParsedSubject | null {
   const parts = subject.split(".");
@@ -503,6 +522,19 @@ export function parseSubject(subject: string): ParsedSubject | null {
     if (parts.length < 6) return null; // cotal.<space>.chat.<owner>.<actor>.<channel…>
     return mk(kind, parts[3], parts[4], parts.slice(5).join("."));
   }
+  if (kind === PLUGIN_CHANNEL_ROOT) {
+    const space = parts[1];
+    if (parts.length < 7 || !space || space !== token(space)) return null;
+    const rest = `${PLUGIN_CHANNEL_ROOT}.${parts.slice(5).join(".")}`;
+    try {
+      ownerToken(parts[3]);
+      ownerToken(parts[4]);
+      classifyChannel(rest);
+    } catch {
+      return null;
+    }
+    return mk(kind, parts[3], parts[4], rest);
+  }
   if (kind === "inst") {
     if (parts.length !== 7) return null; // cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>
     return mk(kind, parts[5], parts[6], `${parts[3]}.${parts[4]}`);
@@ -515,8 +547,8 @@ export function parseSubject(subject: string): ParsedSubject | null {
 }
 
 /**
- * Classify a subject's delivery mode, or `null` for control/trace/etc. A thin map over
- * {@link parseSubject}. Observers (e.g. a feed) use this instead of re-parsing the layout.
+ * Classify a subject's legacy delivery mode, or `null` for other rails. A thin map over
+ * {@link parseSubject}. Plugin channels need a scoped route, not the legacy observer mode.
  */
 export function deliveryOf(subject: string): DeliveryMode | null {
   const p = parseSubject(subject);
@@ -878,11 +910,6 @@ export function partition(n: number, key: string): number {
 }
 
 // ---- JetStream streams (the durable backing for the three delivery modes) ----
-
-/** Stream capturing `chat.>` — multicast backlog + history. */
-export function chatStream(space: string): string {
-  return `CHAT_${token(space)}`;
-}
 
 /** Stream capturing `inst.>` — per-instance direct-message inboxes. */
 export function dmStream(space: string): string {
