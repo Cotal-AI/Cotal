@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
   checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
@@ -574,9 +574,34 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean, ho
           const checked = await checkDiscoveryDocument(response);
           if (checked.ok) {
             const { space, server, tlsRequired, userAuth } = checked.value;
-            const original = { ...target, root: record.root, space, server, tlsRequired,
-              userAuth: { ...target.userAuth, ...userAuth } };
-            if (trust(original) === record.trust) target = original;
+            const sentinelCandidates: (string | undefined)[] = [];
+            if (target.userAuth?.sentinelCredsPath) {
+              const leaf = basename(target.userAuth.sentinelCredsPath);
+              try { sentinelCandidates.push(join(userAuthStateDir(record.root, space, { readOnly: true }), leaf)); } catch {}
+              try { sentinelCandidates.push(join(userAuthStateDir(record.root, space, { readOnly: true }), "sentinel.creds")); } catch {}
+              if (target.root) {
+                try { sentinelCandidates.push(resolve(record.root, relative(target.root, target.userAuth.sentinelCredsPath))); } catch {}
+              }
+              const custody = (target as { catalogRoot?: string }).catalogRoot;
+              if (custody) {
+                try { sentinelCandidates.push(resolve(record.root, relative(custody, target.userAuth.sentinelCredsPath))); } catch {}
+              }
+              sentinelCandidates.push(target.userAuth.sentinelCredsPath);
+            } else {
+              try { sentinelCandidates.push(join(userAuthStateDir(record.root, space, { readOnly: true }), "sentinel.creds")); } catch {}
+            }
+            sentinelCandidates.push(undefined);
+
+            for (const sentinelPath of new Set(sentinelCandidates)) {
+              const candidateUserAuth = { ...target.userAuth, ...userAuth };
+              if (sentinelPath !== undefined) candidateUserAuth.sentinelCredsPath = sentinelPath;
+              else delete candidateUserAuth.sentinelCredsPath;
+              const original = { ...target, root: record.root, space, server, tlsRequired, userAuth: candidateUserAuth };
+              if (trust(original) === record.trust) {
+                target = original;
+                break;
+              }
+            }
           }
         }
       } catch { /* Unavailable original pins leave the record set aside, without authenticated recovery. */ }

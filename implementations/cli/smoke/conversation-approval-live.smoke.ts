@@ -654,6 +654,42 @@ try {
     recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: target.userAuth, policy: target.policy });
   });
+  await check("a legacy retiring identity whose space moved folders recovers matching original pins and reconnects under the same name", async () => {
+    recordMesh(remoteUserEntry(SPACE, target.server, target.root, bundle(), false, false));
+    const registeredTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(registeredTarget.userAuth?.remote, true);
+    assert(registeredTarget.userAuth?.sentinelCredsPath);
+    const session = "session-moved-folder";
+    const p = await pendingOf(provisionUserApp(registeredTarget, "moved-folder", session, true));
+    decide(p.requestId, { approve: EMPTY });
+    const c = await connected(provisionUserApp(registeredTarget, "moved-folder", session, true));
+    const file = join(c.retire.dir, "identity.json");
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
+    record.state = "retiring";
+    writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    const movedRoot = mkdtempSync(join(home, "moved-folder-"));
+    recordMesh(remoteUserEntry(SPACE, target.server, movedRoot, bundle(), false, false));
+    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(nextTarget.userAuth?.remote, true);
+    assert(nextTarget.userAuth?.sentinelCredsPath);
+    assert.notEqual(nextTarget.root, target.root);
+    assert.notEqual(nextTarget.userAuth?.sentinelCredsPath, registeredTarget.userAuth?.sentinelCredsPath);
+    const before = deletes;
+    const next = await pendingOf(provisionUserApp(nextTarget, "moved-folder", session, true));
+    assert.equal(deletes, before + 1);
+    assert.notEqual(next.requestId, p.requestId);
+    decide(next.requestId, { approve: EMPTY });
+    const reconnected = await connected(provisionUserApp(nextTarget, "moved-folder", session, true));
+    assert.equal(reconnected.env.COTAL_SERVERS, target.server);
+    assert.notEqual(reconnected.env.COTAL_ACTOR, c.env.COTAL_ACTOR);
+    enforceNames = false;
+    assert.notEqual(JSON.parse(readFileSync(file, "utf8")).token, record.token);
+    recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+      userAuth: target.userAuth, policy: target.policy });
+  });
   for (const changedPin of ["addresses", "issuer", "audience", "no-material"] as const) {
     await check(`a legacy retiring record with changed ${changedPin} is preserved without authenticated retirement`, async () => {
       const session = `session-legacy-${changedPin}`;
@@ -729,7 +765,7 @@ try {
     assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
     enforceNames = false;
   });
-  assert.equal(assertions, 50);
+  assert.equal(assertions, 51);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
