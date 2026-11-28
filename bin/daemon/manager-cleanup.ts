@@ -96,6 +96,14 @@ export function bindManagerCleanup(home: string, space: string, instanceId: stri
   return bound;
 }
 
+/** Point a cleanup record at the current instance after its older one was confirmed removed in the
+ *  space. One atomic write, so a crash leaves either the old record or the new one, never none. */
+export function rebindRemovedManagerCleanup(home: string, record: ManagerCleanupRecord, current: string): void {
+  assertLifecycleToken(current, "Manager cleanup instanceId");
+  const saved = validate({ ...record, instanceId: current, phase: "hosted" }, record.space);
+  writeSecretFileAtomic(managerCleanupFile(home, saved.space), `${JSON.stringify(saved)}\n`);
+}
+
 /** Check retained authority explicitly, without creating a missing store identity. */
 export function validateManagerCleanupAuthority(record: ManagerCleanupRecord): void {
   const saved = validate(record, record.space);
