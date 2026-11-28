@@ -21,7 +21,7 @@ export function pluginChannelSpaceStateSubject(space: string): string {
   return `$KV.${recordsBucket(space)}.${PLUGIN_CHANNEL_SPACE_STATE_KEY}`;
 }
 
-/** Trusted Release B control read. Uses the caller's leader-read grant and neither grants access nor activates a space. */
+/** Read the space's plugin channel state from the stream leader using the caller's existing grant. This read does not grant access or change routing. */
 export async function readPluginChannelSpaceAuthority(jsm: JetStreamManager, space: string): Promise<PluginChannelSpaceSnapshot> {
   const subject = pluginChannelSpaceStateSubject(space);
   const row = await jsm.streams.getMessage(`KV_${recordsBucket(space)}`, { last_by_subj: subject });

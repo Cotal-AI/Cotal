@@ -91,6 +91,32 @@ async function checkDegradedFeed(check: Check, fixture: Fixture, viewer: ReturnT
     history instanceof Error && history.message === "plugin channel routing projection is unavailable", history);
 }
 
+async function checkDegradedPublish(check: Check, fixture: Fixture) {
+  const legacy = await fixture.mintAgent({ post: [fixture.hiddenChannel, fixture.chatChannel], legacy: true });
+  let wire: NatsConnection | undefined;
+  const viewer = fixture.endpoint({ creds: legacy.creds, consume: false, channels: [], registerPresence: false,
+    watchPresence: false, watchChannels: false, readChannelRoutingProjection: true,
+    card: { kind: "endpoint", name: "degraded-legacy-publisher" }, onConnection(nc) { wire = nc; } });
+  await viewer.start();
+  const info = () => fixture.jsm.streams.info(chatStream(fixture.space));
+  const before = (await info()).state.last_seq;
+  const errorMessage = (error: unknown) => (error as Error).message;
+  const expected = "plugin channel routing projection is unavailable";
+  const simple = await viewer.multicast("must not enter legacy CHAT", { channel: fixture.hiddenChannel })
+    .then(() => undefined, errorMessage);
+  const append = { channel: fixture.hiddenChannel, id: "degraded-viewer-append", expectedLastSubjectSeq: 0,
+    parts: [{ kind: "text" as const, text: "must not append to legacy CHAT" }] };
+  const serial = await viewer.multicastExpecting(append).then(() => undefined, errorMessage);
+  const sizing = await Promise.resolve().then(() => viewer.encodedSize(append)).then(() => undefined, errorMessage);
+  await wire!.flush();
+  check("degraded viewer with a legacy write grant refuses both reserved publish paths and sizing before any CHAT write",
+    viewer.channelRoutingMode() === undefined && simple === expected && serial === expected && sizing === expected &&
+    (await info()).state.last_seq === before, { simple, serial, sizing, before });
+  // The same credential remains usable for an ordinary post on this connection.
+  const ordinary = await viewer.multicast("ordinary CHAT publish while degraded", { channel: fixture.chatChannel });
+  check("degraded viewer can still publish ordinary CHAT with the existing grant", Boolean(ordinary.id) && (await info()).state.last_seq === before + 1);
+}
+
 export async function checkCliViewerSeam(check: Check): Promise<void> {
   const fixture = await startEnabledPluginSpace();
   const { space, chatChannel, channel, hiddenChannel, endpoint, mintAgent } = fixture;
@@ -138,13 +164,15 @@ export async function checkCliViewerSeam(check: Check): Promise<void> {
     check("fresh viewer binds around the malformed projection without arming an EXT tap",
       !freshWire.isClosed() && fresh.pluginTaps.size === 0 && fresh.ep.channelRoutingMode() === undefined);
     await checkDegradedFeed(check, fixture, fresh, writer, legacyWriter, recipient.principal, "fresh viewer");
-    await fixture.writeProjection({ enabled: true, epoch: 2 });
-    await freshWire.reconnect();
-    const restored = await until(() => fresh.bound.length === 2 && freshWire.isClosed() && fresh.ep.channelRoutingMode() === "isolated");
-    if (restored) await fresh.bound[1].flush();
+    await checkDegradedPublish(check, fixture);
+    const cid = freshWire.info!.client_id;
+    await fixture.writeProjection({ enabled: true, epoch: 1 });
+    const restored = await until(() => fresh.ep.channelRoutingMode() === "isolated" && fresh.pluginTaps.has(freshWire));
+    if (restored) await freshWire.flush();
     const after = await writer.multicast("EXT after projection recovers", { channel });
-    check("restored isolated projection re-arms the existing authorized EXT tap only on a fresh wire", restored &&
-      fresh.pluginTaps.size === 1 && fresh.pluginTaps.has(fresh.bound[1]) && await until(() => fresh.seen.has(after.id)));
+    check("restored projection re-arms the withheld EXT tap without a reconnect or transport readiness event", restored &&
+      fresh.opened.length === 1 && fresh.bound.length === 1 && fresh.transportReady.length === 1 && !freshWire.isClosed() &&
+      freshWire.info?.client_id === cid && fresh.pluginTaps.size === 1 && await until(() => fresh.seen.has(after.id)));
   } finally {
     await fixture.close();
   }

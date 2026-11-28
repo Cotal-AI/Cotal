@@ -133,12 +133,6 @@ export class EndpointHistory {
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "connection" | "consumers" | "controlPlane">) {}
 
-  private requireKnownViewerRoute(channel: string): void {
-    if (isRoutedPluginChannel(true, channel) && this.parts.connection.viewerProjectionUnavailable())
-      throw new Error("plugin channel routing projection is unavailable");
-  }
-
-
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
    *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
    *  (#1413): every field present on a row was checked by the drain before the row was
@@ -154,7 +148,7 @@ export class EndpointHistory {
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryMessage[]> {
-    this.requireKnownViewerRoute(channel);
+    this.parts.connection.requireKnownViewerRoute(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind !== "chat") {
       const limit = opts?.limit ?? 100;
@@ -191,7 +185,7 @@ export class EndpointHistory {
   }
 
   private async channelHistoryRows(channel: string, opts?: ChannelHistoryPageOptions, family = false): Promise<{ items: HistoryRow[]; complete: boolean }> {
-    this.requireKnownViewerRoute(channel);
+    this.parts.connection.requireKnownViewerRoute(channel);
     assertValidChannel(channel);
     if (!isConcreteChannel(channel) && !(family && isChannelFamily(channel)))
       throw new Error("channelHistoryPage requires one concrete channel");
@@ -316,7 +310,7 @@ export class EndpointHistory {
       // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
       // it too, and it fails loud rather than serving a channel nobody asked for.
       assertValidChannel(channel);
-      this.requireKnownViewerRoute(channel);
+      this.parts.connection.requireKnownViewerRoute(channel);
       const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
       const subject = route.subject("*", "*");
       if (route.kind === "chat") return [subject];
@@ -1030,7 +1024,7 @@ export class EndpointHistory {
   }
 
   async channelFrontier(channel: string): Promise<number> {
-    this.requireKnownViewerRoute(channel);
+    this.parts.connection.requireKnownViewerRoute(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind === "chat") return this.parts.consumers.chatFrontier();
     await this.parts.consumers.manager();

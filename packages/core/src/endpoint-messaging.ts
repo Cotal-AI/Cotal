@@ -35,7 +35,7 @@ export interface EndpointMessagingDeps {
 /** The messaging verbs of one endpoint: multicast (plain and serialized), unicast, anycast, and the
  *  event-payload channel. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointMessaging {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointMessagingDeps, private readonly parts: Pick<EndpointParts, "history">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointMessagingDeps, private readonly parts: Pick<EndpointParts, "connection" | "history">) {}
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private ref() { return this.deps.ref(); }
@@ -58,6 +58,7 @@ export class EndpointMessaging {
       );
     if (!isConcreteChannel(channel))
       throw new Error(`cannot publish to wildcard channel "${channel}" - pick a concrete sub-channel`);
+    this.parts.connection.requireKnownViewerRoute(channel);
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
@@ -200,6 +201,7 @@ export class EndpointMessaging {
     // would have been refused before it ever reached the wire.
     if (!isConcreteChannel(opts.channel))
       throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    this.parts.connection.requireKnownViewerRoute(opts.channel);
     if (endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, opts.channel).kind !== "chat")
       throw new Error("serialized appends require a chat channel");
     assertIdToken(opts.id, "publish id");
@@ -264,6 +266,7 @@ export class EndpointMessaging {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(opts.channel))
       throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    this.parts.connection.requireKnownViewerRoute(opts.channel);
     if (endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, opts.channel).kind !== "chat")
       throw new Error("serialized appends require a chat channel");
     // Reuse the existing id grammar rather than mint a second one: [A-Za-z0-9_-]{1,64} admits a
