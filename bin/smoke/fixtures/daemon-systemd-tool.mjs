@@ -53,9 +53,10 @@ if (basename(process.argv[1]) === "loginctl") {
     DropInPaths: context.dropInPaths ?? "",
     NeedDaemonReload: context.needDaemonReload ?? "no",
     OOMPolicy: context.oomPolicy ?? "stop",
-    UnitFileState: context.unitFileState ?? "enabled",
+    UnitFileState: context.unitFileState ?? (context.denyLinger ? "disabled" : "enabled"),
   };
   const requested = args.filter((arg) => arg.startsWith("--property=")).map((arg) => arg.slice(11));
+  if (args.includes("--value") && requested.length === 1 && requested[0] === "UnitFileState") operation = "autostart-read";
   if (args.includes("--value") && requested.length === 1 && requested[0] in fields) console.log(fields[requested[0]]);
   else if (requested.length) { for (const key of requested) if (key in fields) console.log(`${key}=${fields[key]}`); }
   else console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${fields.FragmentPath}\nDropInPaths=${fields.DropInPaths}\nNeedDaemonReload=${fields.NeedDaemonReload}`);
