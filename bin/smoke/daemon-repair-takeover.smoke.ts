@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -162,6 +162,8 @@ process.exit(0)
   } finally {
     try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGTERM"); } catch { /* already gone */ }
     await killAndAwaitExit(daemon, "SIGTERM").catch(() => undefined);
+    // The copied installation is this run's own scratch; the fixture home stays for diagnosis.
+    if (otherEntry !== entry) rmSync(dirname(dirname(otherEntry)), { recursive: true, force: true });
     console.log(`Retained ${mode} takeover fixture: ${root}`);
   }
 }
