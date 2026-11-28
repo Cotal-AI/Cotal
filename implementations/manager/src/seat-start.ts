@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchChoice, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchChoice, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { SharedLaunchHeld } from "@cotal-ai/seat";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, isTrustedProject, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
@@ -65,6 +66,29 @@ export interface SeatStartLaunch {
 
 /** The agent-start path: admission, grant, launch, readiness and the rollback of a failed start. */
 export class SeatStart {
+  private readonly sharedLaunchHolds = new Map<string, () => void>();
+
+  get sharedLaunchHoldCount(): number { return this.sharedLaunchHolds.size; }
+
+  sharedLaunchHoldNames(): string[] { return [...this.sharedLaunchHolds.keys()]; }
+
+  clearSharedLaunchHolds(): void {
+    for (const [name, cleanup] of this.sharedLaunchHolds) {
+      cleanup();
+      this.sharedLaunchHolds.delete(name);
+    }
+  }
+
+  private settleUnusedLaunch(name: string, seatHome: string | undefined, snapshotUid: string | undefined, provisioned: TeardownTarget | undefined): void {
+    this.namesCapacity.release(name);
+    if (seatHome) rmSync(seatHome, { recursive: true, force: true });
+    const snapshotSettled = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);
+    if (!provisioned) return;
+    const target: TeardownTarget = { ...provisioned, ...(snapshotSettled ? { snapshotSettled: true } : {}) };
+    const principal = target.delegated ? parsePrincipalKey(target.id) : null;
+    if (principal) this.retirement.hold(target.name, { opId: managedRetirementOpId(target.lifecycleUid), owner: principal.owner, actor: principal.actor, target, startedAt: Date.now() });
+    this.trackDeprovision(target, "(orphaned spawn)");
+  }
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "harnessResolution" | "namesCapacity" | "personaCatalog">, private readonly launch: SeatStartLaunch, private readonly state: ManagerStartState) {}
 
   // The Manager members startActive reads, under their Manager names. Each reads through its dep
@@ -647,6 +671,7 @@ export class SeatStart {
     // The lifecycle whose inline snapshot this spawn wrote: removed by the finally unless a live seat
     // took it. A write that failed sets nothing, so the finally never removes a file it did not make.
     let snapshotUid: string | undefined;
+    let spec: LaunchSpec | undefined;
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
     hooks?.onEffect?.();
@@ -931,7 +956,6 @@ export class SeatStart {
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
       // manager path is produced for it, only the handoff its runtime writes into the child.
-      let spec: LaunchSpec | undefined;
       let handle: AgentHandle;
       if (runtime.spawnDelegated) {
         const handoff = this.userProvision.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
@@ -953,7 +977,7 @@ export class SeatStart {
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(cotalConfig, role) };
-        handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
+        handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody, this.userMode);
       }
       if (onceTask && !handle.waitForExit)
         throw new Error(`once: runtime "${handle.kind}" cannot prove the seat's exit, which is what ends its task when the seat goes first`);
@@ -1194,6 +1218,15 @@ export class SeatStart {
       }
       return { ok: true, data: okData };
     } catch (e) {
+      if (e instanceof SharedLaunchHeld) {
+        this.sharedLaunchHolds.set(name, () => {
+          e.releaseHolder?.();
+          discardLaunchArtifacts(spec?.artifacts);
+          this.settleUnusedLaunch(name, seatHome, snapshotUid, provisioned);
+        });
+        void hooks?.onOutcome?.({ kind: "uncertain", data: { reason: e.message }, atReadinessDeadline: true });
+        return controlReplyFromThrown(new EpEnvelopeError("unavailable", e.message, undefined, "unknown"), e.message);
+      }
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
       // Keep the envelope's code and lifecycle details on the ControlReply so the serve boundary
@@ -1208,23 +1241,7 @@ export class SeatStart {
       } catch { /* not a readable envelope */ }
       return { ok: false, error };
     } finally {
-      this.namesCapacity.release(name);
-      if (seatHome) rmSync(seatHome, { recursive: true, force: true });
-      // A failed removal is logged, never thrown, so the grant's teardown below is still scheduled.
-      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);
-      // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
-      // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
-      if (provisioned) {
-        // Settled when this spawn wrote no snapshot or removed the one it wrote. A file its write
-        // refused is not this lifecycle's, so the terminal leaves the uid's path alone; a removal
-        // that failed is the terminal's to retry and report.
-        const orphan: TeardownTarget = { ...provisioned, ...(snapshotGone ? { snapshotSettled: true as const } : {}) };
-        // The host enrolled this UID for the intent's user, so only that user's retirement intent
-        // retires it, and its name stays held for retireDelegatedAgent.
-        const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
-        if (p) this.retirement.hold(orphan.name, { opId: managedRetirementOpId(orphan.lifecycleUid), owner: p.owner, actor: p.actor, target: orphan, startedAt: Date.now() });
-        this.trackDeprovision(orphan, "(orphaned spawn)");
-      }
+      if (!this.sharedLaunchHolds.has(name)) this.settleUnusedLaunch(name, seatHome, snapshotUid, provisioned);
     }
   }
 }

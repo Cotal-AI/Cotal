@@ -24,6 +24,8 @@ import {
 import { ConnectorDiagnosticReader } from "./diagnostic.js";
 import { RECORD_VERSION, appendPrivate, bootToken, exitPath, processStartToken, processStatFields, writePrivate, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmGate } from "./startup-confirm.js";
+import { SharedScreen } from "./shared-screen.js";
+import { recordedProcess } from "./shared-record.js";
 
 export interface CustodianLaunch {
   id: string;
@@ -40,6 +42,7 @@ export interface CustodianLaunch {
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
   confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
+  confirmNotice?: string;
   /** Who started this custodian: the launcher's run marker, carried so a census can attribute an
    *  orphan to its run without walking `/proc/*\/cwd` (#1648). */
   run?: string;
@@ -54,21 +57,61 @@ export interface CustodianLaunch {
   artifactRoot?: string;
 }
 
-function send(sock: Socket, msg: ServerMessage): void {
-  if (!sock.writable) return;
-  sock.write(encodeFrame(msg));
+export interface CustodianChannel {
+  readonly writable: boolean;
+  readonly writableLength: number;
+  send(message: ServerMessage): void;
+  destroy(): void;
+  authorize(): void;
 }
 
-export async function runCustodian(launch: CustodianLaunch): Promise<void> {
+export interface CustodianSession {
+  receive(request: ClientRequest): void;
+  close(): void;
+}
+
+function send(sock: CustodianChannel, msg: ServerMessage): void {
+  if (!sock.writable) return;
+  if (sock.writableLength > MAX_FRAME_SIZE) { sock.destroy(); return; }
+  try { sock.send(msg); }
+  catch { sock.destroy(); }
+}
+
+/** A shared host owns the process lifetime; each seat still owns its own socket and exit record. */
+interface SharedCustodianLifetime {
+  readonly settled: () => void;
+  readonly record: (record: SeatRecord) => void;
+  readonly listenPath?: string;
+  readonly bind?: (accept: (channel: CustodianChannel) => CustodianSession) => void;
+  readonly prepare?: () => Promise<PreparedPty>;
+}
+
+interface PreparedPty {
+  readonly proc: pty.IPty;
+  readonly ready: Promise<{ pid: number; start: string; boot: string }>;
+  readonly commitAttempted: boolean;
+  commit(beforeDispatch: () => void): Promise<void>;
+  abort(): void;
+}
+
+async function openPty(launch: CustodianLaunch, shared: SharedCustodianLifetime | undefined): Promise<{ proc: pty.IPty; gate?: PreparedPty }> {
+  if (shared?.prepare) {
+    const gate = await shared.prepare();
+    return { proc: gate.proc, gate };
+  }
+  return { proc: pty.spawn(launch.command, launch.args, {
+    name: "xterm-256color", cols: DEFAULT_COLS, rows: DEFAULT_ROWS, cwd: launch.cwd, env: launch.env,
+  }) };
+}
+
+export async function runCustodian(launch: CustodianLaunch, shared?: SharedCustodianLifetime): Promise<void> {
   if (process.platform !== "linux") {
     throw new Error(`custody transport unsupported on ${process.platform}`);
   }
 
-  mkdirSync(dirname(launch.socket), { recursive: true, mode: 0o700 });
-  try {
-    unlinkSync(launch.socket);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  if (!shared?.bind) {
+    mkdirSync(dirname(launch.socket), { recursive: true, mode: 0o700 });
+    unlinkCustodianSocket(launch.socket);
   }
 
   // Removes the launch's files, logging rather than throwing: a refused path must not take down the
@@ -91,20 +134,15 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   let confirmGate: StartupConfirmGate | undefined;
   let proc: pty.IPty;
+  let gate: PreparedPty | undefined;
   try {
     // Built before the child exists, so a prompt that cannot match starts nothing.
     if ((launch.confirmBefore?.length || launch.confirmReady?.length || launch.confirmBlockers?.length) && launch.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers);
-    proc = pty.spawn(launch.command, launch.args, {
-      name: "xterm-256color",
-      cols: DEFAULT_COLS,
-      rows: DEFAULT_ROWS,
-      cwd: launch.cwd,
-      env: launch.env,
-    });
+    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers, launch.confirmNotice);
+    ({ proc, gate } = await openPty(launch, shared));
   } catch (e) {
     // No child was started, so none will read the files.
-    discardArtifacts(launch.artifacts);
+    if (!shared?.prepare) discardArtifacts(launch.artifacts);
     throw e;
   }
   const oomPref = preferSeatForOomKill(proc.pid);
@@ -136,10 +174,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let rows = DEFAULT_ROWS;
   let exit: SeatExit | undefined;
   const diagnostic = new ConnectorDiagnosticReader();
-  const dataSubs = new Map<number, Set<Socket>>();
-  const waiters = new Map<Socket, Set<number>>();
-  const controllers = new Set<Socket>();
-  const clients = new Set<Socket>();
+  const dataSubs = new Map<number, Set<CustodianChannel>>();
+  const waiters = new Map<CustodianChannel, Set<number>>();
+  const controllers = new Set<CustodianChannel>();
+  const clients = new Set<CustodianChannel>();
   let nextSub = 1;
   let early = "";
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -153,8 +191,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const EXIT_STATUS_GRACE_MS = 1_000;
   const UNATTENDED_MS = launch.unattendedMs ?? UNATTENDED_DEFAULT_MS;
 
-  const snapshot = (): Promise<string> =>
-    new Promise((resolve) => term.write("", () => resolve(serializer.serialize())));
+  const screen = shared ? new SharedScreen(term, serializer, (error, operation) => note(`screen ${operation}: ${String(error)}\n`)) : undefined;
+  const writeScreen = (data: string): void => { if (screen) screen.write(data); else term.write(data); };
+  const snapshot = (): Promise<string> => screen?.snapshot() ?? new Promise((resolve) => term.write("", () => resolve(serializer.serialize())));
 
   const resolveWaiters = (): void => {
     for (const [sock, ids] of waiters) {
@@ -164,8 +203,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
 
   const childGone = (): boolean => {
-    const state = processStatFields(proc.pid)?.[0];
-    return state === undefined || state === "Z";
+    if (shared) return childStart !== undefined && bootId !== undefined && recordedProcess(proc.pid, childStart, bootId) === "gone";
+    const fields = processStatFields(proc.pid);
+    return fields === undefined || fields[0] === "Z" || (childStart !== undefined && fields[19] !== childStart);
   };
 
   /**
@@ -181,7 +221,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     if (Date.now() - goneSince >= EXIT_STATUS_GRACE_MS) markExited({});
   };
 
-  const settleTerminal = (): void => {
+  const settleTerminal = (expired = false): void => {
     if (alive || settling || !ready) return;
     // Only an AUTHENTICATED peer holds this custodian open. A connected socket that never said
     // hello owns no session, no output subscription and no wait, so it is owed nothing by a settle,
@@ -189,7 +229,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     // unauthenticated dial (a probe, a half-open connect) pinned ~65 MB for the life of the host.
     // Every authed socket is added to `controllers` by the same `hello` that authenticates it and
     // removed by `drop`, so this is exactly "someone can still be told something".
-    if (controllers.size > 0) return;
+    if (controllers.size > 0 && !expired) return;
     if (!seenClient) return;
     settling = true;
     confirmGate?.disarm();
@@ -214,11 +254,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     } catch {
       /* already gone */
     }
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      /* already gone */
-    }
+    if (!gate) try { proc.kill("SIGKILL"); } catch { /* already gone */ }
     server?.close();
     for (const sock of clients) {
       try {
@@ -231,14 +267,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     controllers.clear();
     waiters.clear();
     dataSubs.clear();
-    try {
-      unlinkSync(launch.socket);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
+    if (!shared?.bind) unlinkCustodianSocket(launch.socket);
     // The custody record is retained on disk until verified reaping can consume it;
     // reapSeat proves kernel process identities and removes the record directory.
-    process.exit(0);
+    if (shared) shared.settled();
+    else process.exit(0);
   };
 
   /**
@@ -252,7 +285,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
    * reader of its PTY; the settle that follows its exit is the ordinary one.
    */
   const armUnattended = (): void => {
-    if (settling || !ready || unattendedTimer || controllers.size > 0) return;
+    if (shared || settling || !ready || unattendedTimer || controllers.size > 0) return;
     unattendedTimer = setTimeout(() => {
       unattendedTimer = undefined;
       if (settling || controllers.size > 0) return;
@@ -282,11 +315,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
 
   const armUnobservedHandoff = (): void => {
-    if (alive || seenClient || settling || !ready || handoffTimer) return;
+    if (alive || (!shared?.bind && seenClient) || settling || !ready || handoffTimer) return;
     handoffTimer = setTimeout(() => {
       handoffTimer = undefined;
       seenClient = true;
-      settleTerminal();
+      settleTerminal(shared?.bind !== undefined);
     }, LAUNCH_HANDOFF_MS);
     handoffTimer.unref();
   };
@@ -325,7 +358,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     // told of the exit, and drop the removed ones from the record so a later reap does not remove the
     // same names again. One that could not be removed stays listed, so the reap that proves this seat
     // gone tries it again. Losing a controller's connection is not this: only the child's exit is.
-    if (record.artifacts) {
+    if (record.artifacts && (!gate || gate.commitAttempted)) {
       discardArtifacts(record.artifacts);
       const left = record.artifacts.filter((dir) => existsSync(dir));
       if (left.length) record.artifacts = left;
@@ -335,9 +368,12 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
       if (ready) {
         try {
-          const tmp = `${launch.recordPath}.tmp`;
-          writeRecord(tmp, record);
-          renameSync(tmp, launch.recordPath);
+          if (shared) shared.record(record);
+          else {
+            const tmp = `${launch.recordPath}.tmp`;
+            writeRecord(tmp, record);
+            renameSync(tmp, launch.recordPath);
+          }
         } catch (e) {
           note(`${(e as Error).message}\n`);
         }
@@ -351,7 +387,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
 
   proc.onData((d) => {
-    term.write(d);
+    writeScreen(d);
     diagnostic.push(d);
     if (early.length < MAX_FRAME_SIZE) {
       early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;
@@ -389,7 +425,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   confirmGate?.arm(diagnostic, {
     report: (message) => {
       const line = `\r\n${message}\r\n`;
-      term.write(line);
+      writeScreen(line);
       const encoded = Buffer.from(line, "utf8").toString("base64");
       for (const [sub, socks] of dataSubs) {
         for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
@@ -418,8 +454,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     ...(launch.artifacts?.length ? { artifacts: launch.artifacts, artifactRoot: launch.artifactRoot } : {}),
   };
 
-  server = createServer((sock) => {
-    const reader = new FrameReader();
+  const accept = (sock: CustodianChannel): CustodianSession => {
     let authed = false;
     const owned = new Set<number>();
     clients.add(sock);
@@ -439,32 +474,16 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       // the last controller, it is now unattended and the bound starts from this disconnect.
       armUnattended();
     };
-    sock.on("data", (chunk) => {
-      let messages: unknown[];
-      try {
-        messages = reader.push(chunk);
-      } catch {
-        sock.destroy();
-        return;
-      }
-      for (const raw of messages) {
-        void handle(sock, raw, {
-          authed: () => authed,
-          setAuthed: (v) => {
-            authed = v;
-          },
-          owned,
-        }).catch((err) => {
-          send(sock, { id: (raw as { id?: number }).id ?? 0, ok: false, error: (err as Error).message });
-        });
-      }
-    });
-    sock.on("close", drop);
-    sock.on("error", drop);
-  });
+    return { close: drop, receive(raw) {
+      void handle(sock, raw, { authed: () => authed, setAuthed: v => { authed = v; }, owned }).catch((err: unknown) => {
+        const id = raw && typeof raw === "object" && typeof raw.id === "number" ? raw.id : 0;
+        send(sock, { id, ok: false, error: (err as Error).message });
+      });
+    } };
+  };
 
   async function handle(
-    sock: Socket,
+    sock: CustodianChannel,
     raw: unknown,
     session: { authed: () => boolean; setAuthed: (v: boolean) => void; owned: Set<number> },
   ): Promise<void> {
@@ -474,13 +493,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       return;
     }
     try {
-      const cred = peerCredentials(sock);
-      const uid = process.getuid?.();
-      if (uid === undefined || cred.uid !== uid) {
-        send(sock, { id: req.id, ok: false, error: "peer uid mismatch" });
-        sock.destroy();
-        return;
-      }
+      sock.authorize();
     } catch (e) {
       send(sock, { id: req.id, ok: false, error: (e as Error).message });
       sock.destroy();
@@ -505,7 +518,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         // authenticated would see "custodian socket closed" instead of its reply.
         controllers.add(sock);
         disarmUnattended();
-        if (handoffTimer) {
+        if (handoffTimer && !shared?.bind) {
           clearTimeout(handoffTimer);
           handoffTimer = undefined;
         }
@@ -531,7 +544,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
       case "subscribe-output": {
         const sub = nextSub++;
-        const socks = dataSubs.get(sub) ?? new Set<Socket>();
+        const socks = dataSubs.get(sub) ?? new Set<CustodianChannel>();
         socks.add(sock);
         dataSubs.set(sub, socks);
         session.owned.add(sub);
@@ -560,7 +573,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         if (req.cols > 0 && req.rows > 0) {
           cols = req.cols;
           rows = req.rows;
-          term.resize(req.cols, req.rows);
+          if (screen) screen.resize(req.cols, req.rows); else term.resize(req.cols, req.rows);
           if (alive) proc.resize(req.cols, req.rows);
         }
         send(sock, { id: req.id, ok: true, op: "resize" });
@@ -596,6 +609,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           pid: proc.pid,
           status: alive ? "running" : "exited",
           protocol: PROTOCOL_VERSION,
+          ...(shared && confirmGate ? { startup: confirmGate.outcome } : {}),
         });
         return;
       }
@@ -606,43 +620,70 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   }
 
-  const listening = server;
-  if (!listening) throw new Error("custodian server missing");
+  try {
+    if (gate) {
+      const placed = await gate.ready;
+      if (placed.pid !== record.childPid || placed.start !== childStart || placed.boot !== bootId) throw new Error("shared PTY placement could not be proved");
+    }
+    if (shared?.bind) shared.bind(accept);
+    else {
+      server = createServer(sock => attachCustodianSocket(sock, accept));
+      await listenCustodianSocket(server, shared?.listenPath ?? launch.socket, launch.socket);
+    }
+    if (gate) await gate.commit(() => shared!.record(record));
+    else if (shared) shared.record(record);
+    else writeRecord(launch.recordPath, record);
+    ready = true;
+    const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
+    if (launch.logPath) note(announced);
+    else if (!shared) process.stdout.write(announced);
+    armUnobservedHandoff();
+    armUnattended();
+    settleTerminal();
+  } catch (e) {
+    gate?.abort();
+    if (gate?.commitAttempted) { ready = true; settleTerminal(); throw e; }
+    confirmGate?.disarm();
+    clearInterval(reap);
+    if (server?.listening) server.close();
+    for (const client of clients) client.destroy();
+    try { if (alive && !gate) proc.kill("SIGKILL"); } catch { /* the child ended */ }
+    if (shared) { ready = true; seenClient = true; settleTerminal(); }
+    throw e;
+  }
+}
+
+function unlinkCustodianSocket(path: string): void {
+  try { unlinkSync(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
+function attachCustodianSocket(socket: Socket, accept: (channel: CustodianChannel) => CustodianSession): void {
+  const reader = new FrameReader();
+  const session = accept({
+    get writable() { return socket.writable; }, get writableLength() { return socket.writableLength; },
+    send: message => { socket.write(encodeFrame(message)); }, destroy: () => socket.destroy(),
+    authorize() { if (peerCredentials(socket).uid !== process.getuid?.()) throw new Error("peer uid mismatch"); },
+  });
+  socket.on("data", chunk => {
+    try { for (const raw of reader.push(chunk)) session.receive(raw as ClientRequest); }
+    catch { socket.destroy(); }
+  });
+  socket.once("close", session.close);
+  socket.on("error", () => {});
+}
+
+async function listenCustodianSocket(server: ReturnType<typeof createServer>, listenPath: string, diskPath: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    listening.once("error", reject);
-    listening.listen(launch.socket, () => {
-      // EVERY throw in here must reach `reject`. A callback is not on the promise's call stack, so an
-      // exception raised inside it becomes an UNCAUGHT exception: it bypasses the `.catch` at the
-      // bottom of this file that writes the log, and the process dies having explained nothing. The
-      // launcher then reports only `custodian exited before ready: pid N gone`, which is what made a
-      // silently-truncated socket path unattributable.
+    server.once("error", reject);
+    server.listen(listenPath, () => {
       try {
-        // The bind can land on a DIFFERENT path than the one requested: libuv copies into a fixed
-        // 108-byte `sun_path` and truncates rather than failing. `launchSeat` refuses an overlong
-        // path up front, but a custodian can also be started directly, so verify what was actually
-        // created rather than trusting that listen succeeded on the name we asked for.
-        const bound = listening.address();
-        if (typeof bound === "string" && bound !== launch.socket)
-          throw new Error(`custodian bound ${bound} but was asked for ${launch.socket}; the path was truncated, so it would clean up a socket it never created`);
-        chmodSync(launch.socket, 0o600);
-        writeRecord(launch.recordPath, record);
-        ready = true;
-        const announced = `${JSON.stringify({ ready: true, childPid: proc.pid, custodianPid: process.pid })}\n`;
-        if (launch.logPath) note(announced);
-        else process.stdout.write(announced);
-        armUnobservedHandoff();
-        armUnattended();
-        settleTerminal();
+        const bound = server.address();
+        if (typeof bound === "string" && bound !== listenPath)
+          throw new Error(`custodian bound ${bound} but was asked for ${listenPath}; the path was truncated, so it would clean up a socket it never created`);
+        chmodSync(diskPath, 0o600);
         resolve();
-      } catch (e) {
-        // The child outlives this process otherwise: nothing else holds its PTY.
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-        reject(e as Error);
-      }
+      } catch (error) { reject(error); }
     });
   });
 }

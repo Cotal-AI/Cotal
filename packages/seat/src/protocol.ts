@@ -71,11 +71,12 @@ export const MAX_SOCKET_PATH = 108;
 /** Refuse a socket path the kernel cannot hold, naming the limit, the overage and the cure. Called
  *  before any process is spawned, so an unusable custody root fails at the launch that asked for it
  *  rather than inside a detached process that cannot tell anyone. */
-export function assertSocketPathFits(socket: string): string {
+export function assertSocketPathFits(socket: string, platform: NodeJS.Platform = process.platform): string {
+  const max = platform === "darwin" ? 103 : MAX_SOCKET_PATH;
   const bytes = Buffer.byteLength(socket, "utf8");
-  if (bytes > MAX_SOCKET_PATH)
+  if (bytes > max)
     throw new Error(
-      `seat socket path is ${bytes} bytes, over the ${MAX_SOCKET_PATH}-byte limit for a Unix socket: ${socket}. ` +
+      `seat socket path is ${bytes} bytes, over the ${max}-byte limit for a Unix socket: ${socket}. ` +
         `The kernel would truncate it silently and the custodian would bind a different name than it cleans up. ` +
         `Use a shorter custody root (a deep TMPDIR inside a worktree is the usual cause).`,
     );
@@ -134,6 +135,7 @@ export type ServerReply =
       pid: number;
       status: "running" | "exited";
       protocol: number;
+      startup?: import("./startup-confirm.js").StartupOutcome;
     }
   | { id: number; ok: false; error: string };
 

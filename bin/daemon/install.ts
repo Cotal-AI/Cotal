@@ -46,7 +46,7 @@ import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource,
 import { checkDir, daemonUserServiceEnv, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
-import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
+import { darwinLaunchdJob, drainLinuxSharedPty, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
 import { finishRecordedOomPolicyIntent, missingSystemdProgram, observeSystemdRepairUnit, reconcileInstalledSystemdOomPolicy as reconcileSystemdOomPolicy } from "./install-linux-repair.js";
@@ -1245,8 +1245,12 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw uncertain("a daemon endpoint still answers"); }
     catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
     // The wait above must not turn a changed source/receipt into deletion authority.
-    const current = recordedUnit(paths, daemonHome, nativeRun, recovered === true).receipt;
-    if (current.unitSha256 !== receipt.unitSha256 || current.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
+    const current = recordedUnit(paths, daemonHome, nativeRun, recovered === true);
+    if (current.receipt.unitSha256 !== receipt.unitSha256 || current.receipt.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
+    if (process.platform === "linux") {
+      try { await drainLinuxSharedPty(recordedDaemonIdentity(current).installedEntry, undefined, false, undefined, daemonHome ?? dirname(paths.state)); }
+      catch { throw uncertain("stopping the installation's PTY hosts was not confirmed"); }
+    }
     let removedServiceRecords: string[];
     try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }
     catch { throw uncertain("removing local service credentials and identity records failed; some records may remain. Repair their permissions and retry uninstall; the remote records may remain until you remove the computer in the dashboard"); }

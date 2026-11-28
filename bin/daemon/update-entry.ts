@@ -19,6 +19,7 @@ import { cleanupExecutionStore } from "../execution-store.js";
 import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
+import { readSettledHostedStatus } from "./update-launch-settlement.js";
 import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
@@ -563,14 +564,9 @@ const composed: Command = { ...command, async run(args) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
       // Keep the fresh, instance-pinned custody check below as the authority for update admission.
       if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run \`cotal daemon service-disconnect --space ${manager.space}\`, correct its sign-in or connection, then run \`cotal update\` again` });
-      const reply = await withIdpSessionDir(homeCotalDir(), async () => {
-        const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
-        return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
-      });
-      if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string };
+      const instanceId = manager.instanceId;
+      const status = await readSettledHostedStatus(daemonPaths(), manager.space, instanceId, args.values.self === true ? "update --self" : "update", console.log);
       if (status.custody === "legacy" && status.agentCount !== 0) {
-        const instanceId = manager.instanceId;
         const inventory = await withIdpSessionDir(homeCotalDir(), async () => {
           const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
           const rows = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "ps", undefined, target.auth, "owner", 3000, { instanceId });

@@ -1,10 +1,10 @@
 /** Loopback signed-in participant for the real installed update harness. No Manager is started. */
 import assert from "node:assert/strict";
-import { createServer, request as httpRequest, type Server } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+import { mintCreds, mintLifecycleUid, newIdentity, SERVICE_AUTHORITY_MAX_BYTES, setupSpaceStreams } from "@cotal-ai/core";
 import { checkDiscoveryDocument, discoveryDocumentUrl, findMesh, getCurrent, recordMesh, refreshRegistrationPolicy, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, saveIdpSession, startAuthService } from "../src/index.js";
 import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
@@ -15,6 +15,21 @@ export interface UpdateParticipantContext {
   project: string;
   cotalHome: string;
   report: Record<string, unknown>;
+  beforeManagedEnrollment?: (name: string) => Promise<void>;
+}
+
+async function readEnrollmentFixtureRequest(request: IncomingMessage, before: (name: string) => Promise<void>): Promise<Buffer> {
+  const blocks: Buffer[] = [];
+  let bytes = 0;
+  for await (const block of request) {
+    bytes += block.length;
+    if (bytes > SERVICE_AUTHORITY_MAX_BYTES) throw new Error("fixture authority request exceeds the service limit");
+    blocks.push(block);
+  }
+  const body = Buffer.concat(blocks);
+  const { request: inner } = JSON.parse(body.toString("utf8")) as { request?: { kind?: string; target?: { actor?: string } } };
+  if (inner?.kind === "manager-managed-agent-enrollment" && typeof inner.target?.actor === "string") await before(inner.target.actor);
+  return body;
 }
 
 /** Uses join-user's broker/auth/IdP composition, selecting the private registry home until close. */
@@ -108,12 +123,19 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
         } catch { response.writeHead(502); response.end(); }
         return;
       }
+      let body: Buffer | undefined;
+      if (context.beforeManagedEnrollment && request.method === "POST" && target.pathname === "/manager-service-authority") {
+        try { body = await readEnrollmentFixtureRequest(request, context.beforeManagedEnrollment); }
+        catch { response.writeHead(503); response.end(); return; }
+      }
+      if (response.destroyed) return;
       const forwarded = httpRequest(target, { method: request.method, headers: request.headers }, result => {
         response.writeHead(result.statusCode ?? 502, result.headers);
         result.pipe(response);
       });
       forwarded.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
-      request.pipe(forwarded);
+      if (body) forwarded.end(body);
+      else request.pipe(forwarded);
     });
     await new Promise<void>((resolve, reject) => { exchange!.once("error", reject); exchange!.listen(0, "127.0.0.1", resolve); });
     exchangeUrl = `http://127.0.0.1:${(exchange.address() as { port: number }).port}`;

@@ -101,6 +101,9 @@
   "implementations/cli/src/lib/service-process.ts": {
     "spawn(started.program, [...started.args])": "POSIX service launch. Windows uses a separate native custodian that starts the process hidden."
   },
+  "implementations/manager/src/runtime/shared-pty.ts": {
+    "spawnSync(\"/usr/bin/loginctl\", [\"show-user\", \"--property=UID\", \"--property=Linger\", \"--\", String(uid)])": "Linux-only hosted PTY linger eligibility check."
+  },
   "implementations/manager/src/vitals.ts": {
     "execFile(\"/sbin/mount\", [])": "macOS mount inspection."
   },
@@ -116,6 +119,25 @@
   "packages/seat/src/launcher.ts": {
     "spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run])": "Linux-only seat custodian bootstrap.",
     "spawnSync(\"sleep\", [\"0.025\"])": "Linux-only seat custodian wait."
+  },
+  "packages/seat/src/shared-cgroup.ts": {
+    "spawnSync(\"/usr/bin/systemctl\", [\"--user\", \"show\", \"--no-pager\", \"-p\", \"ControlGroup\", \"-p\", \"MainPID\", \"-p\", \"Transient\", \"-p\", \"Delegate\", \"-p\", \"DelegateControllers\", \"--\", scope])": "Linux-only transient service cgroup verification after validating exact Linux cgroup membership."
+  },
+  "packages/seat/src/shared-closure-lease.ts": {
+    "spawnSync(\"/usr/bin/flock\", [exclusive ? \"--exclusive\" : \"--shared\", \"--nonblock\", \"3\"])": "Linux-only closure lease on an open file descriptor under a Linux-validated store."
+  },
+  "packages/seat/src/shared-execution-lease.ts": {
+    "spawnSync(\"/usr/bin/flock\", [`--${mode}`, \"--nonblock\", \"3\"])": "Linux-only lease on the verified execution inventory inode."
+  },
+  "packages/seat/src/shared-linux.ts": {
+    "execFile(\"/usr/bin/systemctl\", [\"--user\", \"--no-pager\", \"--no-ask-password\", ...args])": "Linux-only shared PTY cgroup observation and drain.",
+    "spawnSync(\"/usr/bin/systemctl\", [\"--user\", \"show\", \"--property=Version\", \"--value\"])": "Linux-only user systemd availability check."
+  },
+  "packages/seat/src/shared-managed.ts": {
+    "execFile(\"/usr/bin/systemd-run\", args)": "Linux-only transient PTY host start after the cgroup v2 eligibility check."
+  },
+  "packages/seat/src/shared-runtime-closure.ts": {
+    "spawnSync(node, [\"--no-global-search-paths\", \"--input-type=module\", \"--eval\", script])": "Linux-only copied Node and native addon check after closure preparation validates the platform."
   },
   "packages/workspace/src/pid.ts": {
     "spawnSync(\"ps\", [\"-U\", String(uid), \"-o\", \"pid=,command=\"])": "Non-Linux POSIX process enumeration after the Windows early return.",

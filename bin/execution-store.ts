@@ -308,6 +308,8 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       } catch (error) { warn(error); }
     };
     for (const name of names) {
+      // Published generation trees can be pinned by a hosted seat even with no daemon or Manager.
+      // This collector only removes scratch trees and finished transactions, never a generation.
       if (/^\.(?:installing|preparing)-[A-Za-z0-9]+$/.test(name)) remove(join(store, name));
     }
     for (const row of transactions.filter(row => row.finished && row.path !== protectedJournal)) remove(row.directory);

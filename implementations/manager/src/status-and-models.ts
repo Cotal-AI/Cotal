@@ -10,6 +10,7 @@ import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
+import { SharedPtyRuntime } from "./runtime/shared-pty.js";
 
 // Capture the loaded package version before an installation can replace its files.
 export const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -37,6 +38,7 @@ const NO_OWNER_MATCHES = "-no-owner-";
 /** What {@link StatusAndModels} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface StatusAndModelsDeps {
+  sharedLaunchHoldCount?: () => number;
   agents: () => Manager["agents"];
   ep: () => Manager["ep"];
   leaseStopping: () => Manager["leaseStopping"];
@@ -61,6 +63,7 @@ export interface StatusAndModelsDeps {
 export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
   return {
     agents: () => m["agents"],
+    sharedLaunchHoldCount: () => m["seatLaunch"].sharedLaunchHoldCount,
     ep: () => m["ep"],
     leaseStopping: () => m["leaseStopping"],
     maintenanceState: () => m["maintenanceState"],
@@ -188,7 +191,10 @@ export class StatusAndModels {
   }
 
   /** Parent-local inventory read. It does not enter maintenance or change admission. */
-  hostedSeatCount(): number { return this.agents.size; }
+  hostedSeatCount(): number {
+    const runtime = this.config.execution === "runtime" ? this.requiredRuntime : undefined;
+    return this.agents.size + (this.deps.sharedLaunchHoldCount?.() ?? 0) + (runtime instanceof SharedPtyRuntime ? runtime.sharedLaunchesInFlight : 0);
+  }
 
   /** Public local-seat facts for the owning machine daemon. No mesh or secret reads. */
   hostedAgents(): { name: string; id: string; lifecycleUid: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {

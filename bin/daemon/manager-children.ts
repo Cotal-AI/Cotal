@@ -9,6 +9,7 @@ import { drainAndClose } from "@cotal-ai/core";
 import { isConnectRefusal, spaceFromSegment } from "@cotal-ai/workspace";
 import { managerCleanupFile } from "./manager-cleanup.js";
 import type { Live, ProbeSession } from "./manager.js";
+import { validHostedLaunches, type HostedLaunches } from "./protocol.js";
 
 /** What the child-control helpers read from createHostedManagers. Both are bound once before the
  *  helpers are built and never reassigned. */
@@ -18,17 +19,37 @@ export interface HostedManagerChildrenDeps {
 }
 
 export interface HostedManagerChildren {
-  generationCall: (child: ChildProcess, attemptId: string, op: "inspect" | "prepare" | "abort") => Promise<number | undefined>;
+  generationCall: (child: ChildProcess, attemptId: string, op: "inspect" | "prepare" | "abort", launches?: (value: HostedLaunches | undefined) => void) => Promise<number | undefined>;
   isRateLimited: (error: unknown) => boolean;
   closeProbeSession: (l: Live, expected?: ProbeSession) => void;
   stopChild: (l: Live) => Promise<void>;
   spaces: (refusals?: boolean) => string[];
 }
 
+/** Split decoded output per pipe. Discard oversized lines without emitting fragments. */
+export function managerOutputLines(sanitize: (text: string) => string, accept: (line: string) => void) {
+  let pending = "", dropping = false;
+  const flush = () => {
+    accept(dropping ? "<oversized Manager log line omitted>\n" : sanitize(pending));
+    pending = "";
+    dropping = false;
+  };
+  return (text: string, end = false) => {
+    for (const part of text.split(/(?<=\n)/)) {
+      if (!dropping) {
+        if (pending.length + part.length > 16_384) { pending = ""; dropping = true; }
+        else pending += part;
+      }
+      if (part.endsWith("\n")) flush();
+    }
+    if (end && (pending || dropping)) flush();
+  };
+}
+
 /** The child-control helpers over one daemon's hosted Managers. Bodies read their deps by the closure's names. */
 export function hostedManagerChildren(deps: HostedManagerChildrenDeps): HostedManagerChildren {
   const { home, notify } = deps;
-  const generationCall = (child: ChildProcess, attemptId: string, op: "inspect" | "prepare" | "abort") => new Promise<number | undefined>((resolve, reject) => {
+  const generationCall: HostedManagerChildren["generationCall"] = (child, attemptId, op, launches) => new Promise<number | undefined>((resolve, reject) => {
     if (child.exitCode !== null || child.signalCode !== null) { resolve(undefined); return; }
     const finish = (error?: Error) => {
       clearTimeout(timer);
@@ -36,9 +57,11 @@ export function hostedManagerChildren(deps: HostedManagerChildrenDeps): HostedMa
       error ? reject(error) : resolve(seats);
     };
     const receive = (raw: unknown) => {
-      const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown; ok?: unknown; seats?: unknown } | null;
+      const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown; ok?: unknown; seats?: unknown; launches?: unknown } | null;
       if (frame?.kind === "machine-generation-result" && frame.attemptId === attemptId && frame.op === op) {
         if (op === "inspect" && (!Number.isSafeInteger(frame.seats) || Number(frame.seats) < 0)) { finish(new Error("hosted Manager did not confirm its seat count")); return; }
+        if (launches && frame.launches !== undefined && !validHostedLaunches(frame.launches)) { finish(new Error("hosted Manager returned invalid launch counts")); return; }
+        if (frame.ok === true && launches) launches(frame.launches as HostedLaunches | undefined);
         seats = op === "inspect" ? Number(frame.seats) : undefined;
         finish(frame.ok === true ? undefined : new Error("hosted Manager still holds seats or cannot confirm an idle preservation fence"));
       }

@@ -213,7 +213,7 @@ export function executionDescriptorPath(root: string): string {
 }
 
 /** Select a verified program, or the installed first generation when no matching descriptor exists. */
-export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean } {
+export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean; inventorySha256?: string } {
   return executionProgram(root, true);
 }
 
@@ -227,7 +227,7 @@ export function observeExecutionVersion(root: string): string {
   return meta.version;
 }
 
-function executionProgram(root: string, verifyInventory: boolean): { root: string; entry: string; retained: boolean } {
+function executionProgram(root: string, verifyInventory: boolean): { root: string; entry: string; retained: boolean; inventorySha256?: string } {
   const installed = realpathSync.native(root), descriptorPath = executionDescriptorPath(installed);
   const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === realpathSync.native(dirname(fileURLToPath(import.meta.url)))
     ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
@@ -298,10 +298,24 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
   }
   const meta = object(JSON.parse(readFileSync(join(canonicalSelected, "package.json"), "utf8")));
   if (meta.name !== "cotal-ai" || meta.version !== generation.version) throw new Error("retained execution manifest differs");
-  return { root: canonicalSelected, entry: join(canonicalSelected, "dist", "cotal-program.js"), retained: true };
+  return { root: canonicalSelected, entry: join(canonicalSelected, "dist", "cotal-program.js"), retained: true, ...(verifyInventory ? { inventorySha256: generation.inventorySha256 } : {}) };
 }
 
 const executionStarted = Symbol.for("cotal.execution.started");
+
+function pinLoadedExecution(root: string): { stamp: string; version: string } | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const manifest = join(root, "package.json");
+    const capture = () => [manifest, join(root, "dist", "cotal.js"), join(root, "dist", "cotal-program.js")].map(path => {
+      const s = lstatSync(path, { bigint: true });
+      if (!s.isFile()) throw new Error("invalid loaded execution file");
+      return [s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs].map(String).join(":");
+    }).join("/");
+    const stamp = capture(), { version } = object(JSON.parse(readFileSync(manifest, "utf8")));
+    if (typeof version === "string" && version && stamp === capture()) return Object.freeze({ stamp, version });
+  } catch { /* An unproved generation can still run without shared custody. */ }
+}
 /** Whether Node was started on this file. Both sides go through the native canonical path, because
  *  Node keeps a Windows extended-length (`\\?\`) or short-name spelling in `argv[1]` and not in the
  *  module URL. */
@@ -373,8 +387,9 @@ export function startExecutionProgram(): void {
       const logicalEntry = realpathSync.native(fileURLToPath(import.meta.url));
       const loadedEntry = realpathSync.native(join(selected.root, "dist", "cotal.js"));
       const launchEntry = direct ? executionLaunchEntry(packageRoot, process.argv[1]!) : logicalEntry;
+      const loaded = pinLoadedExecution(selected.root);
       Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
-        value: Object.freeze({ logicalEntry, launchEntry, loadedEntry }),
+        value: Object.freeze({ logicalEntry, launchEntry, loadedEntry, ...(loaded ? { loaded } : {}), ...(selected.inventorySha256 ? { inventorySha256: selected.inventorySha256 } : {}) }),
         configurable: false, writable: false,
       });
     }

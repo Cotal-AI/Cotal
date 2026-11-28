@@ -14,7 +14,7 @@ import { validAccountComputerStatus } from "./account-state.js";
 import { randomUUID } from "node:crypto";
 import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
-import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, validHostedLaunches, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedLaunches, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { observeLifetimeRecord, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { CommandFailure } from "@cotal-ai/workspace";
 
@@ -66,6 +66,27 @@ export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peer
 
 export interface ClientCounters {
   bytesWritten: number;
+}
+
+/** Read the updater-only observation through the authenticated local daemon. Older daemons or
+ * children may omit support, in which case the updater keeps its instance-pinned status read. */
+export async function inspectHostedLaunches(paths: DaemonPaths, space: string, instanceId: string, timeoutMs: number): Promise<HostedLaunches | undefined> {
+  const deadline = performance.now() + timeoutMs;
+  const sock = await openVerified({ paths, timeoutMs });
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "manager-launch-inspect", space }));
+    const reply = JSON.parse(await readLine(sock, Math.max(1, Math.ceil(deadline - performance.now())))) as DaemonResponse;
+    if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("invalid launch inspection reply");
+    if (!reply.ok) {
+      if (reply.error.code === "UNKNOWN_OP") return undefined;
+      throw new Error(reply.error.message);
+    }
+    if (!("instanceId" in reply.result) || reply.result.instanceId !== instanceId) throw new Error("hosted Manager identity changed during launch inspection");
+    const launches = "launches" in reply.result ? reply.result.launches : undefined;
+    if (launches !== undefined && !validHostedLaunches(launches)) throw new Error("hosted Manager returned invalid launch counts");
+    return launches;
+  } finally { sock.destroy(); }
 }
 
 /** Send a bounded machine-control request after authenticating the daemon's live process. */

@@ -5,6 +5,10 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { validUpdateAdmission, type UpdateAdmission } from "@cotal-ai/workspace";
 import type { ExecutionPreinstallRequest } from "./execution-preinstall.js";
 
+export const PREINSTALL_PROGRESS = "COTAL_PREINSTALL_PROGRESS ";
+// Allow the target's three-minute launch settlement and leave time for custody verification.
+export const PREINSTALL_TIMEOUT_MS = 240_000;
+
 export interface ExecutionPreinstallReceipt {
   readonly v: 1;
   readonly nonce: string;
@@ -28,17 +32,22 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   };
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [entry, JSON.stringify(request)], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let stdout = "", stderr = "", failure = "";
+    let stdout = "", stderr = "", failure = "", processed = 0;
     let escalation: ReturnType<typeof setTimeout> | undefined;
     const terminate = () => { child.kill("SIGTERM"); escalation ??= setTimeout(() => child.kill("SIGKILL"), 2000); };
     const collect = (chunk: Buffer, stream: "stdout" | "stderr") => {
       if (failure) return;
       if (stream === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
-      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 1024 * 1024) { failure = "target pre-install output exceeded its limit"; terminate(); }
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 1024 * 1024) { failure = "target pre-install output exceeded its limit"; terminate(); return; }
+      if (stream === "stdout") for (let end = stdout.indexOf("\n", processed); end !== -1; end = stdout.indexOf("\n", processed)) {
+        const line = stdout.slice(processed, end);
+        processed = end + 1;
+        if (line.startsWith(PREINSTALL_PROGRESS)) console.log(line.slice(PREINSTALL_PROGRESS.length).replace(/[\x00-\x1f\x7f]/g, ""));
+      }
     };
     child.stdout.on("data", chunk => collect(chunk, "stdout"));
     child.stderr.on("data", chunk => collect(chunk, "stderr"));
-    const timer = setTimeout(() => { failure = "target pre-install checks timed out"; terminate(); }, 120_000);
+    const timer = setTimeout(() => { failure = "target pre-install checks timed out"; terminate(); }, PREINSTALL_TIMEOUT_MS);
     const clear = () => { clearTimeout(timer); if (escalation) clearTimeout(escalation); };
     child.once("error", error => { clear(); reject(error); });
     child.once("close", status => { clear(); if (failure) reject(new Error(failure)); else resolve({ status, stdout, stderr }); });

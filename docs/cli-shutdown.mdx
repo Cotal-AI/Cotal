@@ -590,8 +590,12 @@ progress while the owner is live, calls the reservation stale only when the owne
 not a pid, and otherwise refuses without advising deletion because the owner's liveness could not be
 confirmed.
 When a manager starts shutdown, it cancels outstanding readiness waits before draining admitted
-launches. Its default stop then stops its in-process PTY seats, waits for their exit, including
+launches. Its default stop then stops the built-in PTY seats it cannot release, waits for their exit, including
 runtime escalation for a seat that ignores SIGTERM, and deprovisions them before the manager exits.
+This includes seats in a shared Linux PTY host. If the machine daemon dies, its Managers shut down
+their built-in PTY seats. If an owning Manager dies, verified death triggers teardown of its hosted
+seat cgroups. On a shared Linux PTY host, processes a seat starts end when that seat exits or stops,
+even if they detach from its terminal and start a new session.
 
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
 A refused stop preserves both the space-scoped credential and its legacy copy. Credential removal

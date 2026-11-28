@@ -4,13 +4,18 @@
  * No top-of-file skip. References #1297.
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import assert from "node:assert/strict";
+import { copyFileSync, cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync, statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { unsupportedTransport } from "../src/protocol.js";
+import { assertSocketPathFits, unsupportedTransport } from "../src/protocol.js";
 import { nativeHelperPath, unsupportedNativeArch } from "../src/peercred.js";
+import { acquireSharedClosureLease, collectSharedRuntimeClosures } from "../src/shared-closure-lease.js";
+import { acquireSharedExecutionLease } from "../src/shared-execution-lease.js";
+import { parseSharedUnitDescription, sharedInstallationTag, sharedPtyInstallation, sharedUnitCgroup, sharedUnitDescription, sharedUnitPrefix } from "../src/shared-linux.js";
+import { isSharedScope } from "../src/shared-record.js";
 
 let pass = 0;
 let fail = 0;
@@ -28,6 +33,104 @@ const childEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return env;
 };
+
+{
+  const tag = "c9dcc0be5cd11bf410b5a7caf0e49b26fa0e16656eecc3927afbd029dc900524";
+  const lineage = "p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const description = "Cotal shared PTY c9dcc0be5cd11bf410b5a7caf0e49b26fa0e16656eecc3927afbd029dc900524 p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2357 90901 8d70adf9-6273-4eaf-aca9-e42c83a51189";
+  const owner = { pid: 2357, start: "90901", bootId: "8d70adf9-6273-4eaf-aca9-e42c83a51189" };
+  const scope = "cotal-pty-c9dcc0be5cd11bf40123456789abcdef.service";
+  const entry = "/opt/cotal/bin/cotal.js", home = "/home/alice/.cotal";
+  check("cross-release shared PTY installation tag", sharedInstallationTag(entry, 1001, home) === tag);
+  const previous = process.env.COTAL_SEAT_ROOT, hostedTag = sharedPtyInstallation(entry, home);
+  try {
+    process.env.COTAL_SEAT_ROOT = join(tmpdir(), "other-seat-root");
+    check("a shell seat root never changes hosted unit authority", sharedPtyInstallation(entry, home) === hostedTag);
+    check("another daemon home has different unit authority", sharedPtyInstallation(entry, `${home}-other`) !== hostedTag);
+  } finally {
+    if (previous === undefined) delete process.env.COTAL_SEAT_ROOT;
+    else process.env.COTAL_SEAT_ROOT = previous;
+  }
+  check("cross-release shared PTY scope name", sharedUnitPrefix(tag) === "cotal-pty-c9dcc0be5cd11bf4" && isSharedScope(scope) && !isSharedScope(scope.replace(".service", ".scope")));
+  check("cross-release shared PTY cgroup", sharedUnitCgroup(scope, 1001) === "/user.slice/user-1001.slice/user@1001.service/app.slice/cotal-pty-c9dcc0be5cd11bf40123456789abcdef.service");
+  check("cross-release shared PTY Description stays writable", sharedUnitDescription(tag, `/private/${lineage}`, owner) === description);
+  assert.deepEqual(parseSharedUnitDescription(description), { tag, lineage, owner });
+  check("cross-release shared PTY Description stays readable and rejects extra data", parseSharedUnitDescription(`${description} suffix`) === undefined);
+}
+
+for (const [platform, max] of [["darwin", 103], ["linux", 108]] as const) {
+  const path = `/${"a".repeat(max - 3)}é`;
+  check(`${platform} accepts a UTF-8 path of exactly ${max} bytes`, assertSocketPathFits(path, platform) === path);
+  assert.throws(() => assertSocketPathFits(`${path}a`, platform), new RegExp(`${max + 1} bytes, over the ${max}-byte limit`));
+  check(`${platform} rejects one UTF-8 byte over its limit`, true);
+}
+
+if (process.platform === "linux" && existsSync("/usr/bin/flock") &&
+    [0xef53, 0x58465342, 0x9123683e, 0x01021994].includes(statfsSync(tmpdir()).type >>> 0)) {
+  const store = mkdtempSync(join(realpathSync(tmpdir()), "closure-lease-"));
+  const current = "a".repeat(64), pinned = "b".repeat(64), link = "c".repeat(64), malformed = "d".repeat(64);
+  const nodeOnly = (digest: string, bytes: Buffer) => {
+    const root = join(store, digest), bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "node"), bytes, { mode: 0o500 });
+    chmodSync(bin, 0o500);
+    chmodSync(root, 0o500);
+  };
+  const now = Date.now;
+  try {
+    const elf = Buffer.from("7f454c46", "hex"); // Header fixture; never executed.
+    nodeOnly(current, elf);
+    nodeOnly(pinned, elf);
+    nodeOnly(malformed, Buffer.from("not an executable"));
+    symlinkSync(join(store, pinned), join(store, link));
+    assert.throws(() => acquireSharedClosureLease(store, link));
+    assert.equal(collectSharedRuntimeClosures(store, current), 0, "recent closures stay");
+    Date.now = () => now() + 48 * 60 * 60 * 1000;
+    const manager = acquireSharedClosureLease(store, pinned);
+    try {
+      const host = acquireSharedClosureLease(store, pinned);
+      try {
+        assert.equal(manager.ino, host.ino);
+        assert.equal(collectSharedRuntimeClosures(store, current), 0);
+        manager.release();
+        assert.equal(collectSharedRuntimeClosures(store, current), 0, "host lease outlives Manager lease");
+      } finally { host.release(); }
+    } finally { manager.release(); }
+    assert.equal(collectSharedRuntimeClosures(store, current), 1);
+    assert.deepEqual(readdirSync(store).sort(), [current, link, malformed]);
+    check("closure collector skips current, young, held, malformed and symlink entries", true);
+    const generation = join(store, ".cotal-generations", "e".repeat(32));
+    const staged = join(generation, "cotal-ai"), inventory = join(generation, "inventory.json");
+    mkdirSync(staged, { recursive: true });
+    writeFileSync(inventory, "[ ]", { mode: 0o600 });
+    const sha = createHash("sha256").update("[]").digest("hex");
+    assert.throws(() => acquireSharedExecutionLease(staged, "shared", current), /digest mismatch/);
+    const first = acquireSharedExecutionLease(staged, "shared", sha);
+    try {
+      const second = acquireSharedExecutionLease(staged, "shared", sha);
+      try {
+        assert.equal(first.ino, second.ino);
+        assert.throws(() => acquireSharedExecutionLease(staged, "exclusive", sha), /unavailable/);
+        first.release();
+        assert.throws(() => acquireSharedExecutionLease(staged, "exclusive", sha), /unavailable/);
+        renameSync(inventory, `${inventory}.saved`);
+        writeFileSync(inventory, "[]", { mode: 0o600 });
+        assert.throws(() => second.assertCurrent(), /changed/);
+      } finally { second.release(); }
+    } finally { first.release(); }
+    renameSync(`${inventory}.saved`, inventory);
+    const exclusive = acquireSharedExecutionLease(staged, "exclusive", sha);
+    try { exclusive.assertCurrent(); } finally { exclusive.release(); }
+    check("staged inventory lease enforces same-inode handoff and exclusion", true);
+  } finally {
+    Date.now = now;
+    for (const digest of [current, pinned, malformed]) {
+      const root = join(store, digest);
+      if (existsSync(root)) { chmodSync(root, 0o700); chmodSync(join(root, "bin"), 0o700); }
+    }
+    rmSync(store, { recursive: true, force: true });
+  }
+} else console.log("  closure lease smoke unrun: Linux flock on a supported local filesystem required");
 
 // Header fixtures exercise packaging validation only; they are never loaded or published.
 const writeHostFixtures = (root: string): string[] => {
@@ -122,7 +225,7 @@ if (process.platform !== "linux") {
     manifest.scripts?.prepublishOnly === "node scripts/assert-shipped-natives.mjs && pnpm run build:ts",
     manifest.scripts,
   );
-  check("the TypeScript-only build does not rebuild natives", manifest.scripts?.["build:ts"] === "tsc -p tsconfig.json", manifest.scripts);
+  check("the TypeScript-only build clears stale dist without rebuilding natives", manifest.scripts?.["build:ts"] === "node scripts/clear-dist.mjs && tsc -p tsconfig.json", manifest.scripts);
   check(
     "prepare is absent so install-from-git is not gated",
     manifest.scripts?.prepare === undefined,

@@ -132,8 +132,12 @@ Stop each named service with the command in the refusal, then stop the stack.
 
 <Callout type="warn" title="Check agent lifetime before shutdown">
 
-Bare `cotal down` leaves managed agents running as unmanaged OS processes, except built-in `pty` seats, which stop with their manager.
+Bare `cotal down` leaves managed agents running as unmanaged OS processes, except built-in `pty` seats, which stop during an orderly Manager shutdown.
 Pass `--with-agents` to stop and deprovision the managed agents too.
+
+On Linux, stopping a shared PTY host's systemd user service or restarting the systemd user manager
+ends every seat in that host. Logging out also ends those seats if linger is disabled and the user
+manager stops. A lost connection between the Manager and the host does not by itself end seats.
 
 A pinned older manager may have no spare-capability record and may not understand the reap request.
 Stop its agents explicitly before whole-stack shutdown.
