@@ -87,7 +87,7 @@ export function nativeStub(scenario) {
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(state.stoppedByYou ? { stopped: "by-you" } : {}) } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...(state.diskFull ? { diskFull: true } : {}), ...(state.generation ? { generation: state.generation } : {}), ...(state.recovery ? { recovery: state.recovery } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account && !state.signedOut ? { account: state.account } : {}), ...(state.signedOut ? { account: { mode: "signed-out", hostSupport: "unknown", spaces: [] } } : {}), ...(state.diskFull ? { diskFull: true } : {}), ...(state.generation ? { generation: state.generation } : {}), ...(state.recovery ? { recovery: state.recovery } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; if (state.missingAfterSignIn && state.signedIn && state.statusRequests > 1) state.installed = false; return ok(statusPayload()); }
       if (request.op === "status-watch") {
@@ -885,6 +885,14 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is stopped");
     assert.equal(await page.locator("#tray-indicator").evaluate(el => el.classList.contains("error")), true);
     assert.equal(await page.evaluate(() => window.__renderState.tray?.at(-1)?.label), "Service stopped");
+  } },
+  // A sign-out frame follows an account. The window must not keep saying Connected from memory.
+  { name: "surface-signed-out-after-account", state: { installed: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => {
+    await page.waitForFunction(() => document.querySelector("#tray-label")?.textContent === "Connected");
+    await page.evaluate(() => { window.__renderState.signedOut = true; window.__pushStatus(); });
+  }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Not set up");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is not set up");
   } },
   { name: "surface-not-set-up", state: { signedIn: true, installed: true, missingAfterSignIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
     assert.equal(await page.locator("#tray-label").textContent(), "Not set up");

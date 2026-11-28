@@ -107,7 +107,8 @@ function readSurface(anyConnected: boolean) {
   const refused = new Set(rows.filter(row => row.lastRefusal).map(row => row.space));
   const managers = Array.isArray((serviceStatus as { managers?: unknown } | undefined)?.managers) ? (serviceStatus as { managers: { state?: unknown }[] }).managers : [];
   const verified = [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space));
-  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && verified, Boolean(account) || accountSeen, managers.some(item => item.state === "starting"), verified), service: serviceNotice });
+  const registered = account?.mode === "account" || account?.mode === "sign-in-required";
+  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && verified, registered, managers.some(item => item.state === "starting"), verified), service: serviceNotice });
 }
 async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
   if (tick && Date.now() < nextAppApplyTick) return;
@@ -305,7 +306,6 @@ async function runAccountAction(): Promise<void> {
         if (result.localLoginCleared !== true && result.localLogin !== "absent") throw new Error("Sign-out was not confirmed. Refresh and check before retrying.");
         signedOutProviders.add(canonicalProvider(target.provider));
         if (sameProvider(signedInProvider, target.provider)) signedInProvider = undefined;
-        accountSeen = false;
         outcomes.push(result.localLogin === "absent" ? `No cached sign-in for ${accountHost(target.provider)}. Other server sessions were not revoked. Existing connections keep running.` : `Signed out of ${accountHost(target.provider)}. Existing connections keep running.`);
       } catch (error) { outcomes.push(`Sign-out: ${error instanceof Error ? error.message : String(error)}`); }
     } else {
@@ -387,8 +387,6 @@ let refreshGeneration = 0;
 const accountSpaces = new Map<string, AccountSpace>();
 let signedInProvider: string | undefined;
 let computerAccount: ComputerAccount | undefined;
-/** Once an account has been seen, a later status frame that omits it does not mean the computer was never set up. */
-let accountSeen = false;
 const computerRows = new Map<string, ComputerSpace>();
 const connections = new Map<string, string>();
 let choosingSpace = false;
@@ -973,7 +971,6 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     else if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
   }
   computerAccount = frameAccount;
-  if (frameAccount) accountSeen = true;
   if (computerAccount?.hostSupport === "supported") {
     computerRows.clear(); connections.clear();
     for (const row of computerSpaces(computerAccount)) {
@@ -996,7 +993,6 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     else connections.delete(name);
   }
   if (connections.size && !editing && !linked) listOpened = true;
-  if (Array.isArray(status.managers) && status.managers.some(item => item.state === "starting") && !editing) { listOpened = true; showStage("finished"); }
   if (upgradeNeeded) {
     state("ready", space);
     showStage(stage);
