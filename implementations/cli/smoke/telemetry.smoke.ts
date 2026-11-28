@@ -95,6 +95,15 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
     event?.outcome === "refused" && event.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(file), shown(r));
 }
 
+if (process.platform !== "win32") {
+  const s = sandbox(), cfg = join(s.home, "fixture-update-config");
+  mkdirSync(cfg);
+  chmodSync(cfg, 0o707);
+  const r = await s.run(["update"], { XDG_CONFIG_HOME: cfg }), event = r.sent.find(row => row.event === "command");
+  check("update reports a config folder permission refusal without collecting its path", r.status === 1 && r.stderr.includes("config folder protection:") && r.stderr.includes("chmod o-w") && r.stderr.includes("fixture-update-config") &&
+    event?.outcome === "refused" && event.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes("fixture-update-config"), shown(r));
+}
+
 // ---- regular: the first command of the day sends the install event, then its own ----
 {
   const s = sandbox();

@@ -20,6 +20,7 @@ import {
   readUpdateSettings,
   observeUpdateVersion,
   UPDATE_HOUR_MS,
+  recordOperationContext,
   recordUpdateCompletion,
   recordUpdateDeferral,
   recordUpdateReleaseHold,
@@ -339,6 +340,12 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectUpdateCaches(dirname(scratch));
 }
 
+function reportConfigProtectionFailure(rt: UpdateRuntime, version: string, error: unknown): void {
+  rt.err(c.red(`✗ config folder protection: ${refusal(error)}`));
+  recordUpdateDeferral(version, `config folder protection: ${preflightDetail(error)}`);
+  if (isCommandFailure(error)) recordOperationContext({ reportedFailure: { outcome: error.outcome, code: error.code } });
+}
+
 async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<string | undefined> {
   if (args.values.check === true) { await checkUpdate(args, rt); return; }
   if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
@@ -389,8 +396,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   try {
     assertConfigAncestorProtected();
   } catch (e) {
-    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
-    recordUpdateDeferral(rt.version(), `config folder protection: ${preflightDetail(e)}`);
+    reportConfigProtectionFailure(rt, rt.version(), e);
     process.exitCode = 1;
     return;
   }
@@ -925,8 +931,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     assertConfigAncestorProtected();
   } catch (e) {
-    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
-    recordUpdateDeferral(targetVersion, `config folder protection: ${preflightDetail(e)}`);
+    reportConfigProtectionFailure(rt, targetVersion, e);
     return 1;
   }
 

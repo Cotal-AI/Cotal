@@ -100,6 +100,7 @@ When a foreground launch or its preview refuses a missing or malformed persona, 
 If a foreground connector reports an overlong control socket path, the CLI shows the path and the shorter-directory remedy locally. The command event reports `USAGE_INVALID` without the message or stack.
 If `endpoint check` cannot open its local contract file because of permissions or a refused link, the local diagnostic names the path. The event carries `PERMISSION_DENIED` without the message or stack.
 If `setup` rejects a destination, an unknown runtime, or a scripted project path that is not a directory, its diagnostic stays local. The command event still reports `USAGE_INVALID`.
+If `update` refuses an unprotected parent of the config folder, the event records `refused` and `PERMISSION_DENIED`. The folder path and repair instructions stay local.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at
