@@ -90,15 +90,15 @@ let stageBeforeService: Stage | undefined;
 let trayWord: SurfaceState["word"] | undefined;
 /** One reading of the status frame for the sidebar word, its dot, and the tray. */
 function readSurface(anyConnected: boolean): SurfaceState {
-  const frame = serviceStatus as (SurfaceFrame & { account?: ComputerAccount }) | undefined;
-  const account = computerAccount ?? frame?.account;
+  const frame = serviceStatus as (SurfaceFrame & { account?: ComputerAccount & { accounts?: ComputerAccount[] } }) | undefined;
+  const account = computerAccount ?? (frame?.account?.accounts ? undefined : frame?.account);
   const rows = account ? computerSpaces(account) : [];
   const refused = new Set(rows.filter(row => row.lastRefusal).map(row => row.space));
   const managers = Array.isArray((serviceStatus as { managers?: unknown } | undefined)?.managers) ? (serviceStatus as { managers: { state?: unknown }[] }).managers : [];
   const verified = [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space));
   const registered = account?.mode === "account" || account?.mode === "sign-in-required";
   const starting = !initialized || managers.some(item => item.state === "starting");
-  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && verified, registered, starting, verified), service: !initialized ? undefined : serviceAvailability });
+  return surfaceState({ ...surfaceInputs(frame && { ...frame, account }, rows, anyConnected && verified, registered, starting, verified), service: !initialized ? undefined : serviceAvailability });
 }
 function renderSurface(surface: SurfaceState): void {
   text("sidebar-status-word", surface.word);
@@ -502,21 +502,22 @@ function setupProgress(frame: Frame): void {
 function showStage(next: Stage, focus = false): void {
   stage = next;
   renderSettings();
-  const finished = next === "finished";
   const anyConnected = [...connections].some(([space, value]) => value === "launch-ready" && !computerRows.get(space)?.lastRefusal);
   const surface = readSurface(!upgradeNeeded && anyConnected);
   renderSurface(surface);
+  const needsSignIn = surface.word === "Sign in required" && next !== "sign-in" && !setupActive;
+  const finished = next === "finished" || needsSignIn;
   const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
-  const signIn = next === "welcome" || next === "sign-in";
+  const signIn = !needsSignIn && (next === "welcome" || next === "sign-in");
   el("sign-in-panel").hidden = !signIn;
-  el("space-panel").hidden = !((next === "connect" || finished && addingSpace) && choosingSpace) || setupActive;
-  el("connect-panel").hidden = !(next === "connect" || finished && addingSpace) || setupActive;
+  el("space-panel").hidden = needsSignIn || !((next === "connect" || finished && addingSpace) && choosingSpace) || setupActive;
+  el("connect-panel").hidden = needsSignIn || !(next === "connect" || finished && addingSpace) || setupActive;
   el("connected-panel").hidden = !finished;
   el("setup-progress").hidden = (!setupActive && !progress.some(value => value !== "waiting")) || finished && !setupActive;
   document.querySelector(".app")!.classList.toggle("later-open", (finished || listOpened) && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
   el("link-context").hidden = !linked || next !== "welcome";
-  el("refresh").hidden = signIn || busy || (finished && !pending);
+  el("refresh").hidden = needsSignIn || signIn || busy || (finished && !pending);
   text("refresh", pending ? "Check approval" : "Refresh status");
   el("custom-host").hidden = !customHost || loginActive;
   el("login-actions").hidden = loginActive;
@@ -525,7 +526,8 @@ function showStage(next: Stage, focus = false): void {
   el("step-caption").hidden = finished;
   if (finished && !problem && !agentActionProblem) el("details").hidden = true;
   let title: string, description: string;
-  if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
+  if (needsSignIn) { title = surface.title; description = surface.description; }
+  else if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
   else if (finished && computerAccount?.hostSupport === "supported") { title = surface.title; description = surface.description; }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
@@ -536,7 +538,7 @@ function showStage(next: Stage, focus = false): void {
   const issue = problem === "NOT_ANSWERING" ? problem : surface.word === "Disk full" ? "DISK_FULL" : serviceAvailability === "stopped" && !problem ? "SERVICE_STOPPED" : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const surfaceRecovery = issue === "DISK_FULL" || issue === "SERVICE_STOPPED";
   const networkLoss = surface.title === CONNECTION_COPY.offline.title || surface.title === CONNECTION_COPY.unreachable.title;
-  const recovery = issue && !networkLoss ? refusalView(issue, applications) : undefined;
+  const recovery = issue && !networkLoss && !needsSignIn ? refusalView(issue, applications) : undefined;
   if (recovery) {
     title = recovery.title;
     description = recovery.description;
@@ -558,7 +560,7 @@ function showStage(next: Stage, focus = false): void {
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
   renderConnectionTitle(title, surface);
   const target = accountSpaces.get(selectedSpace());
-  if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
+  if (next === "connect" && !needsSignIn && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
   text("connection-description", description);
   el("selected-space").hidden = !addingSpace;
   text("selected-space", target ? addingSpace ? `People authorized in ${shownSpaceLabel(target.label, target.space)} will be able to launch agent applications on this computer as you.` : `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.");
@@ -573,23 +575,18 @@ function showStage(next: Stage, focus = false): void {
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   el("another-space").hidden = addingSpace;
   text("another-space", connections.size ? "Add to another space" : "Add a space");
-  el("sign-in-again").hidden = addingSpace || computerAccount?.mode !== "sign-in-required";
-  if (finished && computerAccount?.mode === "sign-in-required") {
-    text("sign-in-again", "Sign in");
-    el("connected-spaces").hidden = true;
-  } else el("connected-spaces").hidden = false;
+  el("sign-in-again").hidden = !needsSignIn;
+  el("connected-spaces").hidden = needsSignIn;
   el("retry-login").hidden = addingSpace;
   el("choose-space").hidden = true;
   el("sync").hidden = addingSpace;
-  if (finished && computerAccount?.mode === "sign-in-required") {
+  if (needsSignIn) {
     for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
-  if (finished && computerAccount?.hostSupport === "supported") {
-    const signInRequired = computerAccount.mode === "sign-in-required";
-    el("spaces-heading").hidden = signInRequired || !anyConnected;
-  } else el("spaces-heading").hidden = connections.size === 0;
-  document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
-  el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
+  el("spaces-heading").hidden = needsSignIn || (finished && computerAccount?.hostSupport === "supported" ? !anyConnected : connections.size === 0);
+  document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = needsSignIn || connections.size === 0;
+  el("dashboard-spaces-note").hidden = needsSignIn || !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerSpaces(computerAccount).length === 0;
+  placeRefreshAction();
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
   renderConnections();
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
@@ -615,6 +612,12 @@ function showStage(next: Stage, focus = false): void {
     announce(title);
   }
   buttons();
+}
+function placeRefreshAction(): void {
+  const refresh = el("refresh"), actions = el("connect-actions"), details = el("details");
+  if (!el("connect-panel").hidden) {
+    if (refresh.parentElement !== actions) el("connect").after(refresh);
+  } else if (refresh.previousElementSibling !== details) details.after(refresh);
 }
 function renderConnections(): void {
   const list = el("connected-spaces");
@@ -1159,7 +1162,12 @@ el("another-space").addEventListener("click", () => {
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("finished", true); select.focus();
 });
 el("retry-login").addEventListener("click", beginSignIn);
-el("sign-in-again").addEventListener("click", () => { beginSignIn(); if (computerAccount?.mode === "sign-in-required") el<HTMLFormElement>("login-form").requestSubmit(); });
+el("sign-in-again").addEventListener("click", () => {
+  if (busy) return;
+  const recoverSignIn = !el("sign-in-again").hidden;
+  beginSignIn();
+  if (recoverSignIn) el<HTMLFormElement>("login-form").requestSubmit();
+});
 el("connect").addEventListener("click", () => void action(async () => {
   if (connected() || selectionPending || addingSpace && connections.has(selectedSpace()) || !ready || !selectedSpace()) return;
   if (networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], false))) return;
