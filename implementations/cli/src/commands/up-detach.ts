@@ -3,6 +3,7 @@ import { noteUpProjectCreated, trustFreshUpProject } from "./up-project-trust.js
 import { type ChildProcess } from "node:child_process";
 import { openBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
+import { freezeSmokeRestoreListener, recordRestoreListenerSpawn, spawnMarkedListener } from "../lib/restore-listener-spawn.js";
 import { mkdirSync, readFileSync, statSync, closeSync, realpathSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
@@ -44,6 +45,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
   readMaintenanceJournal,
+  type MaintenanceLock,
   readBrokerPolicy,
   removePidPair,
   writePidPair,
@@ -61,6 +63,7 @@ import {
   terminalWidth,
   codeSpan,
 } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { ensureAuthService } from "../lib/auth-proc.js";
 import { c, hang, stderrLine } from "../ui.js";
 import { natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
@@ -106,7 +109,7 @@ export const failedListeners = new WeakSet<ChildProcess>();
  * outlives both keeps its record and fails loud with its pid. A listener whose pid publish threw
  * passes `published` false and leaves `nats.pid` as found.
  */
-async function stopFailedListener(child: ChildProcess, published = true): Promise<void> {
+async function stopFailedListener(child: ChildProcess, published = true, heldLock?: MaintenanceLock): Promise<void> {
   failedListeners.add(child);
   child.kill("SIGTERM");
   if (!await waitForChildExit(child, 5_000)) {
@@ -115,6 +118,7 @@ async function stopFailedListener(child: ChildProcess, published = true): Promis
       throw new Error(`nats-server process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
   }
   if (published) removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
+  recordRestoreListenerSpawn(cotalRoot(), "not-started", heldLock);
 }
 
 /** Bring the space's USER-AUTH service up with the broker (user mode only — `setup.prepared` is the
@@ -241,15 +245,17 @@ export function reportDegradedControlPlane(why: string): void {
  * and a journal naming the exact process for recovery to adopt or retire. A publish or bind that
  * throws stops the listener. Both launch modes call it right after the spawn.
  */
-export async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
+export async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"], heldLock?: MaintenanceLock): Promise<void> {
   if (!child.pid) throw new Error("nats-server spawned with no pid");
   try {
     writeSecretFile(cotalPath("stack-home.json"), JSON.stringify({ home: canonicalRoot(homeCotalDir()) }));
+    // The listener is running and its spawn mark is durable, but its pid is not published.
+    if (bound && process.env.COTAL_SMOKE_EXIT_BEFORE_RESTORE_LISTENER_PID === "1") process.exit(87);
     writePidPair(cotalPath(NATS_PIDFILE), child.pid); // #969/#1238: publish the pair by rename, never torn
   } catch (error) {
     // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
     // rename), so it is left as found: unrecording would read it and throw over this error.
-    await stopFailedListener(child, false);
+    await stopFailedListener(child, false, heldLock);
     throw error;
   }
   if (!bound) return;
@@ -257,7 +263,7 @@ export async function recordSpawnedListener(child: ChildProcess, startedAt: stri
   try {
     bound.onSpawn(child.pid, startedAt);
   } catch (error) {
-    await stopFailedListener(child);
+    await stopFailedListener(child, true, heldLock);
     throw error;
   }
 }
@@ -284,6 +290,8 @@ export async function awaitSpawnedListener(l: {
   /** Where the listener's output goes, named when it never answers. */
   log: string;
   boundListener?: DetachOpts["boundListener"];
+  /** The startup lock, when this launch already holds it. */
+  heldLock?: MaintenanceLock;
 }): Promise<void> {
   const { child, server, space } = l;
   let facts: BrokerFacts;
@@ -291,7 +299,7 @@ export async function awaitSpawnedListener(l: {
     if (!(await waitReady(server, l.creds, l.tls, l.log))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
     facts = await brokerVersion(server, space, l.creds);
   } catch (e) {
-    await stopFailedListener(child);
+    await stopFailedListener(child, true, l.heldLock);
     throw e;
   }
   if (belowPresenceSafeBroker(facts.version) && facts.presenceFileBacked)
@@ -363,6 +371,8 @@ export async function serveReadyListener(l: {
   onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   /** Suppress startup failure diagnostics while a foreground guarded stop is in progress. */
   isStopping?: () => boolean;
+  /** The startup lock, when this launch already holds it. */
+  heldLock?: MaintenanceLock;
 }): Promise<{ authService: boolean; controlPlane: Awaited<ReturnType<typeof ensureControlPlane>> | undefined }> {
   const { child, server, space, setup, transport } = l;
   try {
@@ -374,7 +384,7 @@ export async function serveReadyListener(l: {
       await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     }
   } catch (e) {
-    await stopFailedListener(child);
+    await stopFailedListener(child, true, l.heldLock);
     throw e;
   }
   // Register the prepared trust before delivery starts. Auth follows delivery's liveness oracle,
@@ -406,7 +416,7 @@ export async function serveReadyListener(l: {
       ts: new Date().toISOString(),
     }, "started", l.quietBoot);
   } catch (e) {
-    await stopFailedListener(child);
+    await stopFailedListener(child, true, l.heldLock);
     throw e;
   }
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
@@ -518,6 +528,8 @@ export interface DetachOpts {
     onSpawn(pid: number, startedAt: string): void;
     verify(): Promise<void>;
   };
+  /** The startup lock, when this launch already holds it. The spawn mark journals under that lock. */
+  heldLock?: MaintenanceLock;
 }
 
 /** Prepare the existing broker's local trust, configuration and launch inputs without starting a
@@ -591,12 +603,15 @@ export async function startMeshDetached(
   const fd = openBrokerLog(logPath);
   const listenerStartedAt = new Date().toISOString();
   let child: ChildProcess;
-  try { child = spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd], windowsHide: true }); }
-  finally { closeSync(fd); }
-  await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
+  try {
+    child = spawnMarkedListener(cotalRoot(), opts.boundListener, () =>
+      spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd], windowsHide: true }), opts.heldLock);
+    freezeSmokeRestoreListener(child);
+  } finally { closeSync(fd); }
+  await recordSpawnedListener(child, listenerStartedAt, opts.boundListener, opts.heldLock);
   child.unref();
 
-  await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
+  await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener, heldLock: opts.heldLock });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile: opts.seed, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
@@ -614,6 +629,7 @@ export async function startMeshDetached(
     launch: opts.launch,
     noManager: opts.noManager,
     quietBoot: opts.quietBoot,
+    heldLock: opts.heldLock,
   });
   if (opts.noManager && useAuth && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
   const delivery = useAuth && deliveryUp(space);
@@ -689,8 +705,7 @@ export function ensureRootForSpace(space: string, separateRootNeedsPreparation =
     const problem = projectRootProblem(prepared.root);
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, {
       target: { space, root: prepared.root },
-      remedy: problem === "missing" ? `forget it with \`cotal space forget ${space}\`, then start it here`
-        : problem ? preparedRootRemedy(space, problem)
+      remedy: problem ? preparedRootRemedy(space, problem, "start it here")
         : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
     });
   }
@@ -794,7 +809,7 @@ export async function claimSpace(space: string, server: string, root: string): P
   if (existing.origin === "manual" || existing.origin === "catalog")
     throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name`, { target, remedy: existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server) });
   if (relative)
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name`, { target, remedy: `drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\`` });
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name`, { target, remedy: `drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\`` }));
   if (await isReachable(existing.server)) {
     // A space name is this machine's, so a separate space here needs a name of its own.
     let controller = false;

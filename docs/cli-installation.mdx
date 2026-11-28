@@ -55,9 +55,7 @@ and waits for your approval, as `cotal login` does. With several spaces it asks 
 that no project uses yet asks for the project folder your agents work in. A space already set up in
 a project keeps that project.
 
-Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
-is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. For local setup, use the example for
+Without a terminal, or with `--yes`, `--no-input`, `--plain` or `--json`, every input is a flag. A missing input refuses with `USAGE_INVALID` before anything is written. Add the missing flags to your original command so its project, destination and other options stay the same. For local setup, use the example for
 your shell. Each creates the project folder first. The example uses Claude Code, which must be installed
 for its setup to complete.
 
@@ -311,9 +309,9 @@ Update that app with its signed platform installer so the app, CLI and runtime s
 If npm is missing from `PATH`, `update --self` exits 1 and `update --check` reports partial results
 with exit 4. Install npm or add it to `PATH`, then retry. A registry connection failure still
 leaves the installation unchanged without failing `update --self`.
-On Linux and macOS, an installed self-update restores owner write access to its own connector
-directories before staging a release. If it cannot make those directories writable, it names the
-directory to fix and stops before staging.
+On Linux and macOS, an installed self-update restores owner read, write, and search access to its
+own connector directories before staging a release, and reports when it restores that access. If it
+cannot restore access, it names the directory to fix and stops before staging.
 On Linux and macOS, `cotal update --self` can restore owner read access to its extensions manifest
 and owner search access to folders on its path inside the Cotal config. It does this only for a
 regular manifest and real folders owned by your account. It reports the repair and continues without
@@ -854,6 +852,7 @@ cotal ext seed [--repair|--reset|--force]
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
+If `add` cannot find npm on your PATH, it returns `DEPENDENCY_UNAVAILABLE` (exit 2) and leaves the installed extensions unchanged. Make `npm --version` work in the same shell and retry the original command.
 For a folder below the current directory, include the `./` prefix: `./plugins/example`.
 An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
@@ -871,7 +870,7 @@ Use `npm pack --dry-run ./example-extension` to check the source package content
 For local use, set the `file:` dependency to the absolute path of an existing archive and run `cotal ext add ./example-extension` again.
 For distribution, use a dependency npm can install from a registry.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
-For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
+Keep the full scope and package spelling, including a leading dot in a scope (`@.acme/tool`) or a leading underscore in the package (`@acme/_helper`).
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 On Linux and macOS, when Cotal runs a recognized npm script directly with its own Node because

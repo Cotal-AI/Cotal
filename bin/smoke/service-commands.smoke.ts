@@ -372,13 +372,16 @@ try {
   const selected = cotal(["use", SPACE, "--json"]);
   check("the calling project has selected the other space", selected.status === 0, out(selected));
   for (const verb of ["logs", "status"]) {
-    const missing = cotal(["service", verb, "absent-worker", "--space", PREPARED, "--json"]);
-    const { error, target } = JSON.parse(missing.stdout);
-    const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
-    const listed = inventory ? cotal([...inventory.split(" "), "--json"]) : undefined;
-    check(`a missing custom service ${verb} offers a read of the requested space's definitions`,
-      missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
-        && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+    for (const operand of [[], ["absent-worker"]]) {
+      const missing = cotal(["service", verb, ...operand, "--space", PREPARED, "--json"]);
+      const { error, target } = JSON.parse(missing.stdout);
+      const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
+      const listed = inventory === `service --space ${PREPARED} --json` ? cotal(inventory.split(" ")) : undefined;
+      check(`service ${verb} with ${operand.length ? "an unknown" : "no"} name offers a JSON listing of the requested space`,
+        (operand.length ? missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
+          : missing.status === 1 && error?.code === "USAGE_INVALID" && error.message === `service ${verb} needs a definition name`)
+          && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+    }
   }
   const missingLog = cotal(["service", "logs", "stack-manager", "--space", PREPARED, "--tail", "30", "--json"]);
   const logError = JSON.parse(missingLog.stdout).error;
@@ -524,7 +527,15 @@ try {
     typeof emptyConfig === "object" && emptyConfig.message === "the service options do not match the installed adapter's closed schema at --config; option values were not printed" && emptyConfig.remedy === next("b2"), emptyConfig);
 
   // ---- A preset name reaches the space's one service built on it, for show and remove too -------
-  const manager = cotal(["service", "add", "m1", "--preset", "manager", "--space", SPACE]);
+  const addManager = ["service", "add", "m1", "--preset", "manager", "--space", SPACE, "--json", "--max-sessions"];
+  for (const [input, rule] of [["0", ">= 1"], ["9007199254740992", "<= 9007199254740991"], ['"private-input-marker"', "integer"]] as const) {
+    const refused = cotal([...addManager, input]);
+    const { error } = JSON.parse(refused.stdout);
+    check(`Manager preset add reports the declared ${rule} constraint without saving a definition`,
+      refused.status === 1 && error?.code === "SCHEMA_INVALID" && error.message.includes(`at --max-sessions (must be ${rule})`)
+        && !out(refused).includes("private-input-marker") && !serviceDefinitionStore(SPACE).read("m1"), out(refused));
+  }
+  const manager = cotal([...addManager, "1"]);
   check("service add m1 --preset manager saves m1", manager.status === 0, out(manager));
   for (const args of [["service", "start", "m1", "--space", SPACE, "--help"], ["help", "--", "service", "start", "m1", "--space", SPACE]]) {
     const m1Help = cotal(args);

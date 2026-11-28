@@ -1,3 +1,4 @@
+import { delimiter, resolve } from "node:path";
 import { catalogChoiceRefusal, connectorServers, readModelCatalog, registry, spawnEnvAllow } from "@cotal-ai/core";
 import type { CommandInput, Connector, CotalConfig, LaunchChoice, LaunchModes, LaunchOpts, ModelCatalog } from "@cotal-ai/core";
 import { connectorInstallHint, manifestExtensionNames, materializeFromManifest, resolveOnPath } from "@cotal-ai/workspace";
@@ -16,13 +17,27 @@ export function optInLaunchFields(launch: { askPermissions?: boolean; reasoningE
 const catalogKey = (binaries: Readonly<Record<string, string>> | undefined, envAllow: readonly string[] | undefined): string =>
   JSON.stringify([binaries ?? {}, envAllow ?? []]);
 
-/** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
- *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
-export function resolveHarness(name: string, requires: readonly string[]): { binaries: Record<string, string>; reason?: string } {
+function recordedOnPath(bin: string, recorded: string | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!recorded || (!recorded.includes("/") && !recorded.includes("\\")) || resolveOnPath(recorded, env) !== recorded)
+    return false;
+  if (bin.includes("/") || bin.includes("\\")) return resolveOnPath(bin, env) === recorded;
+  const pathValue = env.PATH ?? Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1] ?? "";
+  return pathValue.split(delimiter).some((dir) => Boolean(dir) && resolveOnPath(resolve(dir, bin), env) === recorded);
+}
+
+/** One connector's declared harness binaries resolved on PATH now, keeping any recorded paths that
+ *  still exist and still resolve on PATH. The refusal sentence is built only here, so boot, status
+ *  and launch checks never word it apart. */
+export function resolveHarness(
+  name: string,
+  requires: readonly string[],
+  recorded?: Readonly<Record<string, string>>,
+): { binaries: Record<string, string>; reason?: string } {
   const binaries: Record<string, string> = {};
   const missing: string[] = [];
   for (const bin of requires) {
-    const path = resolveOnPath(bin);
+    const pinned = recorded?.[bin];
+    const path = recordedOnPath(bin, pinned) ? pinned : resolveOnPath(bin);
     if (path) binaries[bin] = path;
     else missing.push(bin);
   }
@@ -71,17 +86,21 @@ export class HarnessResolution {
     return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.config.expectedConnectorGeneration });
   }
 
-  /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
-   *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
-   *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
-   *  is there. Callers recheck unavailable rows first; available rows retain their resolved files.
-   *  A connector registered after boot has no inventory row and is checked on PATH now. */
+  /** The harness binaries a managed launch runs, or the refusal naming what is missing. Spawn, resume,
+   *  command listing and the model catalog refresh the named connector row first and read its outcome
+   *  here, so each path checks once. A connector registered after boot has no inventory row and is
+   *  checked on PATH now. */
   launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
     const row = this.parts.connectorInventory.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };
     const { reason } = resolveHarness(connector.name, connector.requires ?? []);
     return reason ? { refusal: reason } : {};
+  }
+
+  /** Drop any kept model catalog for a connector whose harness became unavailable. */
+  forgetCatalog(name: string): void {
+    this.catalogs.delete(name);
   }
 
   /** The launch fields the host supplies rather than the seat. Spawn and resume both take them from

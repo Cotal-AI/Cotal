@@ -19,6 +19,8 @@ import {
   homeCotalDir,
   getCurrent,
   preparedSpaceAt,
+  projectRootProblem,
+  projectRootProblemText,
   localMeshesForRoot,
   presentationOf,
   parsePositiveIntegerFlag,
@@ -31,6 +33,7 @@ import {
   DAEMON_ENDPOINT_BOOTSTRAPS,
   parseServeEndpoints,
 } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveSpace } from "../lib/status.js";
 import { cotalRoot, homeHoldsStack, linkedCotalRefusal, upRootWriteProblem } from "../lib/paths.js";
@@ -202,11 +205,11 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
     const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
-    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" });
+    if (pathProblem) throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" }));
     const control = rootControlProblem(root);
-    if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
-      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
-      : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
+    if (control) throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
+      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then repeat your original startup command with --root set to that folder"
+      : `repeat your original startup command with ${codeSpan(`--root ${shellWord(control.project)}`)} for the enclosing project` }));
     assertUpRootWritable(root);
     // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
     if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"), beforeRestore);
@@ -485,17 +488,18 @@ export function folderSpace(): string {
   return resolveSpace(process.cwd());
 }
 
-/** A bare `up` in a folder that names no space starts a space it names itself. When the selected
- *  space is prepared in a folder that no longer exists, as after that folder was moved, that space is
- *  not what was meant, so `up` refuses with the step that prepares the selection here. */
+/** An unavailable selected project must not turn an unnamed startup into a different space. */
 export function assertSelectionNotMoved(root: string, space: string): void {
   const current = getCurrent();
   const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
-  if (!prepared || existsSync(prepared.root)) return;
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which no longer exists, and this folder names no space, so up did not start "${space}" here`, {
+  if (!prepared) return;
+  const problem = projectRootProblem(prepared.root);
+  if (!problem) return;
+  const recover = problem === "inaccessible" ? "restore access to the original project folder" : "restore the original project folder at its recorded path";
+  throw localDiagnostic(new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which ${projectRootProblemText(problem)}, and this folder names no space, so up did not start "${space}" here`, {
     target: { root, space: current, preparedRoot: prepared.root },
-    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
-  });
+    remedy: `${recover}, then repeat your startup command in that folder; to start "${space}" here instead, add \`--space ${space}\` to your original command`,
+  }));
 }
 
 /** `--serve`: the endpoints the delivery daemon also serves, or `undefined` when not given. Parsed

@@ -1,7 +1,7 @@
 import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
 import { EVENT_CHANNEL_PREFIX } from "./event-channel.js";
-import { spacePrefix, chatSubject, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
+import { spacePrefix, chatSubject, chatWildcard, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, artifactsCallerCapabilities, ARTIFACTS_CAPABILITY, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
 import { epcStreamName } from "./endpoint-binding.js";
@@ -409,8 +409,8 @@ export function permissionsFor(
     const sub = [
       ...eventPayloadReadSubjects(space, pr.owner, [], profile === "admin"),
       ...(profile === "admin"
-        ? [`${spacePrefix(space)}.chat.>`, `${spacePrefix(space)}.inst.>`, `${spacePrefix(space)}.svc.>`, inbox]
-        : [`${spacePrefix(space)}.chat.>`, inbox]),
+        ? [chatWildcard(space), `${spacePrefix(space)}.inst.>`, `${spacePrefix(space)}.svc.>`, inbox]
+        : [chatWildcard(space), inbox]),
     ];
     // History readers (channelHistory, multiChannelHistory, dmHistory) are named consumers keyed on
     // this connection's reader id (see MintPrincipal.readerId). The profile may delete exactly those

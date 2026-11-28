@@ -40,11 +40,11 @@ export interface WorkspaceErrorParts {
 const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy === undefined ? { message } : { message, remedy });
 
 /** The choices when a prepared space's recorded path cannot be used. */
-export function preparedRootRemedy(space: string, problem: ProjectRootProblem): string {
+export function preparedRootRemedy(space: string, problem: ProjectRootProblem, retryAfterMissing?: string): string {
   if (problem === "inaccessible") return "restore access to the original project folder, then try again";
   const name = shellPath(space);
-  const reprepare = `forget it with ${codeSpan(`cotal space forget ${space.startsWith("-") ? "-- " : ""}${name}`)}, then prepare it again with ${codeSpan(`cotal space create ${space.startsWith("-") ? "<name>" : name} --root <dir>`)}`;
-  return problem === "missing" ? reprepare : `restore the original project folder at its recorded path, or ${reprepare}`;
+  const next = problem === "missing" && retryAfterMissing ? retryAfterMissing : `prepare it again with ${codeSpan(`cotal space create ${space.startsWith("-") ? "<name>" : name} --root <dir>`)}`;
+  return `restore the original project folder at its recorded path, or forget it with ${codeSpan(`cotal space forget ${space.startsWith("-") ? "-- " : ""}${name}`)}, then ${next}`;
 }
 
 /** A workspace failure as its message and remedy, for a caller that reports them apart, such as a
@@ -134,6 +134,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         return d.stackRemedy !== undefined
           ? parts(`${message}, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(message, preparedRootRemedy(d.space, problem));
+      }
+      if (d.firstStartServer !== undefined && d.space !== undefined && d.root !== undefined) {
+        const message = `"${d.space}" is prepared but not started`;
+        if (d.firstStartServer === null) return parts(message, "check the requested broker and select its registered space; this prepared project has no recorded broker");
+        const start = `cotal up --root ${shellPath(d.root)} --space${d.space.startsWith("-") ? "=" : " "}${shellPath(d.space)} --server ${shellPath(d.firstStartServer)}`;
+        return { message, remedy: `start it with ${codeSpan(start)}`, restartRoot: d.root };
       }
       if (d.space !== undefined) return d.unsettled !== undefined
         ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)

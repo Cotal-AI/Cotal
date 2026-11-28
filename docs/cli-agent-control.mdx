@@ -45,6 +45,8 @@ When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the 
 in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
 If `stop`, `attach`, `input` or named `status` refuses an empty pin or a roster principal ID, look up
 the manager in the space and on the broker you selected. The refusal identifies that roster.
+When `stop` or `input` cannot find a named agent, its suggested roster keeps your space, broker,
+explicit manager pin and requested output format.
 
 Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
 and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach

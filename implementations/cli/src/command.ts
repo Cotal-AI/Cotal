@@ -607,8 +607,8 @@ function stripGlobalFlags(cmd: Command, words: string[]): string[] {
 function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, beforeSeparator = false) {
   if (cmd.name === "run" && (flag.name === "adopt" || flag.name === "release") && helpPath(cmd, words).path[0] === "check")
     return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
-  if (cmd.name === "endpoint" && flag.name === "file" && helpPath(cmd, words).path[0] === "check")
-    return { message: "`endpoint check` does not take --file", remedy: "omit --file and keep the contract path" };
+  if (cmd.name === "endpoint" && helpPath(cmd, words).path[0] === "check" && findSubcommand(cmd, "check")?.flagNames?.includes(flag.name) === false)
+    return { message: `\`endpoint check\` does not take --${flag.name}`, remedy: `omit --${flag.name} and keep the contract path` };
   if (cmd.name === "service" && flag.name === "exec" && helpPath(cmd, words).path[0] === "status")
     return { message: "`service status` does not take --exec", remedy: "omit --exec" };
   if (cmd.name === "history") {
@@ -1300,7 +1300,7 @@ function dispatchSeedRefusal(e: unknown, cmd: Command | undefined, parsed: Parse
   if (cmd && structured(cmd, sub)) {
     const message = e instanceof Error ? e.message : String(e);
     const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
-      e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
+      { cause: e, ...(e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {}) });
     const end = rest.indexOf("--");
     const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
     failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);

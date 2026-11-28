@@ -99,7 +99,8 @@ root can keep using these flags.
 
 If a separately started manager service blocks `up`, the refusal names the command to stop that
 instance. When you used `--root` from another project, the retry keeps the target root and space.
-A broker-only retry also keeps `--no-manager`. For a foreground start, stop the named service
+The printed retry keeps `--json` or `--plain` when requested. A broker-only retry also keeps `--no-manager`.
+For a foreground start, stop the named service
 instance and repeat your original command from the same folder. This keeps the stack attached to
 your terminal and preserves the broker options you chose.
 
@@ -130,6 +131,7 @@ itself, whose `.cotal` holds this machine's own records, `up` refuses `CONFLICT`
 folder, as `space create` does there. In a folder that is, or is in, a control directory, `up`
 refuses `CONFLICT` before anything is started or written and names the project folder to run it from. A home that already holds a stack an earlier release started
 there keeps starting it in place, and `up --root <dir>` from the home starts that prepared project.
+If a file occupies `.cotal` in the requested project, startup leaves it untouched. Use another prepared project or restore the project's `.cotal` directory before retrying.
 When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
 stops the folder's stack, and `down --space` is not a remote replacement for that scope. With no
@@ -614,7 +616,7 @@ so it is named by its host.
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
-conflicting `--server` or `--open` refuses before effects. With no journal and no registration, as
+conflicting `--server` or `--open` refuses before effects. If the address conflicts, repeat the original command with `--server` set to the recorded address. This preserves `--foreground` and `--no-manager` when you requested them. With no journal and no registration, as
 after a damaged journal was removed, `up` starts at the address the saved `stack-broker` definition
 names and warns `STACK_ADDRESS_RECOVERED`. It also keeps the open mode and JetStream store path
 from the broker configuration that definition names. With no definition either, a root that holds the space's
@@ -626,8 +628,7 @@ address or another program holds it. The next `up` plans it as a first start, wi
 another `--server`, and `down` reports that nothing runs there. That refusal names the address and
 any space this machine registered there. For a first `up`, it offers a retry from the original folder
 with the same options and a different port if one is available, or says how to free the original port.
-For a stack that ran, it is stopping that space or program and
-running bare `cotal up`, because the stack keeps its address. A stack whose broker does not listen on its recorded address,
+If another program holds a previously started stack's recorded address, free that address before retrying. A stack whose broker does not listen on its recorded address,
 because a bind host recorded beside it names another address, or because no bind host was recorded
 and the address is not `127.0.0.1`, cannot be reached and pins no bind host. `up` there refuses
 `CONFLICT` before anything starts and names `cotal up --host <host>` with the address's own host,
@@ -851,11 +852,12 @@ startup. No user caller is replaced by a static or borrowed caller.
 
 The manager requires an existing signed-in, granted CLI login. First enable can therefore start
 the other members and return partial `OPERATION_PARTIAL` with native cause `AUTH_REQUIRED`, while
-leaving the manager unattempted. Sign in with `cotal login`, obtain the required grant, then run
-bare `cotal up` to continue that known partial operation. Before it starts the manager, `up`
+leaving the manager unattempted. Sign in with the named provider, obtain the required grant, then
+follow the suggested startup command. When you started from another folder with `--root`, the retry
+keeps that project and space. It also keeps your manager settings and output format. Before it starts the manager, `up`
 confirms the cached sign-in with its IdP. A sign-in the IdP rejects because it expired or was
 revoked counts as none: the manager is not attempted, and Next names `cotal login --idp <base>`,
-then bare `cotal up` again. Any other failure of that check, such as an IdP that does not answer,
+then the startup retry. Any other failure of that check, such as an IdP that does not answer,
 is left to the manager's start. `cotal manager start` refuses the same
 way, with `AUTH_REQUIRED` and exit 2, before it saves or launches anything. Stopping the manager
 needs no sign-in in the folder that hosts the space: `cotal down` and `cotal manager stop` read its

@@ -14,26 +14,30 @@ import {
 } from "@cotal-ai/workspace";
 import { openEndpointConnection } from "../lib/endpoint-client.js";
 import { onInstance, type ManagerRetry } from "../lib/control.js";
-import { managerPin } from "../lib/manager-choice.js";
+import { managerPin, managerRosterHint } from "../lib/manager-choice.js";
+import { targetWords } from "../lib/confirmation-required.js";
 import { openTransient } from "../lib/transient.js";
 import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
 import type { PersonaValues } from "./persona.js";
 
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 
-function personaRetry(mode: string | undefined, name: string | undefined, values: PersonaValues): ManagerRetry {
-  if (mode === "create") return {
-    remedy: "run `cotal ps` against the same space, then replace only the --on value in the original command with the full manager instance id" +
+function personaPinRetry(mode: string | undefined, name: string | undefined, values: PersonaValues) {
+  const output = presentationOf(values);
+  const lookup = `cotal ps${targetWords({ space: values.space, server: values.server })}${output === "rich" ? "" : ` --${output}`}`;
+  const roster = managerRosterHint(values, lookup);
+  const retry: ManagerRetry = mode === "create" ? {
+    remedy: `find the full manager instance id using ${roster}, then replace only the --on value in the original command` +
       (values.file === "-" || values.from === "-" ? "; pipe the original input into the command again" : ""),
-  };
-  return mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
+  } : mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
+  return { retry, roster, lookup };
 }
 
 export function validateRemotePersonaArguments(args: ParsedArgs): void {
-  presentationOf(args.values);
   const values = args.values as PersonaValues;
   const [mode, name, ...extra] = args.positionals;
-  onInstance(values.on!, personaRetry(mode, name, values));
+  const { retry, roster } = personaPinRetry(mode, name, values);
+  onInstance(values.on!, retry, roster);
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
@@ -122,7 +126,8 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = (await managerPin(values, personaRetry(mode, name, values)))!;
+  const { retry, lookup } = personaPinRetry(mode, name, values);
+  const instanceId = (await managerPin(values, retry, lookup))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;

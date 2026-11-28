@@ -27,6 +27,9 @@ import type { AgentCatalog, ChannelRow, ManagerChoice, PersonaRow } from "./mesh
 export const DEFAULT_MODEL = "default";
 /** The value of a variant choice that leaves the variant to the model. */
 export const DEFAULT_VARIANT = "default";
+/** The reasoning option's id. Not `variant`: T3 Code reads an option of that id as OpenCode's own
+ *  and shows its value as "Unknown" until one is chosen. */
+export const REASONING = "reasoning";
 /** The value of a persona choice that uses the manager's default persona. */
 export const DEFAULT_PERSONA = "default";
 /** The value of a channel choice that subscribes the new seat to no extra channel. */
@@ -200,7 +203,7 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
       if (why) throw new Error(why);
       return parseModel(selection.model).agent === value ? selection : { ...selection, model: `${value}/${DEFAULT_MODEL}`, variant: DEFAULT_VARIANT };
     }
-    case "variant":
+    case REASONING:
       if (value !== DEFAULT_VARIANT && !variantsOf(offer, selection).includes(value))
         throw new Error(`the selected model has no variant "${value}"`);
       return { ...selection, variant: value };
@@ -322,7 +325,7 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
   const someVariants = usable(offer.catalogs).some((c) => c.models.some((m) => offerable(m.variants)));
   if (someVariants && variants.length < MAX_CHOICES)
     options.push({
-      id: "variant",
+      id: REASONING,
       name: "Reasoning",
       category: "thought_level",
       type: "select",
@@ -356,7 +359,7 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
       currentValue: selection.machine ?? NO_MACHINE,
       options: [
         ...(selection.machine === undefined ? [{ value: NO_MACHINE, name: "No machine chosen" }] : []),
-        ...offer.managers.map((m) => ({ value: m.instanceId, name: `${m.host ?? m.instanceId}${m.local ? " (this machine)" : ""}` })),
+        ...offer.managers.map((m) => ({ value: m.instanceId, name: m.local ? "This machine" : m.host ?? m.instanceId })),
       ],
     });
   return options;

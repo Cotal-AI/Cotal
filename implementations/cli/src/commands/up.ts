@@ -137,6 +137,7 @@ import {
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
+import { freezeSmokeRestoreListener, spawnMarkedListener, unreadableUnboundRestoreRefusal } from "../lib/restore-listener-spawn.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { freshStackServer, legacyUpRetry, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
@@ -486,6 +487,13 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
 
 const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has a maintenance attempt to recover - a resume needs a manager to commit the preserved inventory; recover it (`cotal up` alone) or roll it back first";
 
+function unfinishedPreservedStop(root: string, space: string): CommandFailure {
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the preserved stop committed but has not finished; nothing was started", {
+    target: { root, space, state: "cut-committed" },
+    remedy: `from ${codeSpan(shellWord(root))}, finish the stop with \`cotal down --preserve-state\`, then resume with \`cotal up\``,
+  });
+}
+
 function retainedStartupPresentationRefusal(root: string): CommandFailure {
   return new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
 }
@@ -638,8 +646,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // manager half. The manager half is why the FLAG specifically cannot apply. A settled active
     // restore of this root's own controller stack has nothing left to commit; it takes the
     // controller stack route below, which applies --no-manager as an ordinary start does.
-    if (values["no-manager"] && readMaintenanceJournal(root) && !admittedStackRestore(root))
+    const brokerOnlyJournal = values["no-manager"] ? readMaintenanceJournal(root) : undefined;
+    if (brokerOnlyJournal && !admittedStackRestore(root)) {
+      if (brokerOnlyJournal.state === "cut-committed" && !cutController(brokerOnlyJournal.cut)) throw unfinishedPreservedStop(root, brokerOnlyJournal.space);
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", NO_MANAGER_DURING_RECOVERY, { target: { root } });
+    }
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
@@ -893,6 +904,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`` });
       } else if (journal) {
+        if (journal.state === "cut-committed" && !controllerCut) throw unfinishedPreservedStop(root, journal.space);
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
       // The re-entries run INSIDE this block, under the lock the journal was just written with, and
@@ -1221,7 +1233,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // So EVERY helper below that journals under this lock takes it as a parameter, on both the restore
   // and the ordinary side: the two ADOPT paths (proven-restore and proven-ordinary listeners, which
   // recover by adopting an already-live listener rather than spawning a competitor), the spawn-path
-  // listener binds (detached and foreground, restore and ordinary), the dead-listener replacement,
+  // listener binds (detached and foreground, restore and ordinary), the unbound restore spawn mark,
+  // the dead-listener replacement,
   // `completeResumeActivation` and the manager-commit / activation / degraded writers it calls.
   //
   // Read that list as a rule, not an inventory. The trap is that a call site with no lock ARGUMENT
@@ -1365,14 +1378,18 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
       replacePreparedDeadRestoreListener(restoredAttempt, startupLock);
     } else if (restoredAttempt) {
-      // No listener is bound to this attempt. A listener that an interrupted run spawned and never
-      // bound may still be opening the restored store, and a second one would open it beside it, so
-      // every process that names the attempt must be gone. Then the attempt starts its listener,
-      // from commit intent (#7127).
-      const naming = processesNaming(restoredAttempt.attemptId);
-      if (naming.kind === "unreadable")
-        throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and this host cannot show that no listener it started still runs (${naming.why}); preserving recovery state`);
-      if (naming.pids.length)
+      // No listener is bound. An interrupted spawn may still be opening the restored store, so a
+      // process naming the attempt must be gone. When command lines cannot be read, the attempt's
+      // spawn mark and the published pid's creation-time pin decide. A recorded spawn with no
+      // published pid refuses. A pin that does not match is a reused pid and does not block.
+      const naming = process.env.COTAL_SMOKE_UNREADABLE_PROCESSES === "1"
+        ? { kind: "unreadable" as const, why: "process command lines were not read" }
+        : processesNaming(restoredAttempt.attemptId);
+      if (naming.kind === "unreadable") {
+        const refusal = unreadableUnboundRestoreRefusal(restoredAttempt.root, restoredAttempt.attemptId, restoredAttempt.serverName, naming.why);
+        if (refusal) throw new Error(refusal);
+      }
+      if (naming.kind === "pids" && naming.pids.length)
         throw new Error(`restore attempt ${resumeAttempt} re-entry has no bound listener proof, and process ${naming.pids.join(", ")} started for it still runs; stop it, then run \`${displayCmd()} up\` again; preserving recovery state`);
       if (await isReachable(restoredAttempt.server))
         throw new Error(`restore attempt ${resumeAttempt} refuses the occupied foreign listener at ${restoredAttempt.server}`);
@@ -1842,6 +1859,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       resumeAttempt,
       resumeCommit: commitTokenHandoff(cotalRoot(), (restored?.managerCommit ?? ordinaryAttempt?.managerCommit) !== undefined, startupLock),
       boundListener,
+      heldLock: startupLock,
       ...(quietRestore ? { quietBoot: true } : {}),
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
@@ -1931,11 +1949,13 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
   // Keep the POSIX broker out of the terminal's process group for manager-first teardown on Ctrl-C.
-  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32", windowsHide: false });
-  await recordSpawnedListener(child, listenerStartedAt, boundListener);
+  const child = spawnMarkedListener(cotalRoot(), restored, () =>
+    spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32", windowsHide: false }), startupLock);
+  freezeSmokeRestoreListener(child);
+  await recordSpawnedListener(child, listenerStartedAt, boundListener, startupLock);
   const foreground = holdForegroundListener({ child, server, space, executable: natsServer, log: brokerOutput, resuming: resumeAttempt !== undefined, restored, releaseStartupLock });
   try {
-    await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener });
+    await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener, heldLock: startupLock });
     foreground.listenerReady();
     await foreground.waitForRestoreStop();
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
@@ -2000,6 +2020,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       noManager,
       onDeliveryExit,
       isStopping: foreground.isStopping,
+      heldLock: startupLock,
     }));
     await foreground.waitForRestoreStop();
     if (noManager && setup && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
