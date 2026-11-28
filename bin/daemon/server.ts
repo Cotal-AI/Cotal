@@ -21,7 +21,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
+import { claimSocketPath, generationOf, holdLifetime, processBirth, type DaemonPeerLifetime, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedLaunchInspection, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
@@ -136,7 +136,7 @@ export interface ServeOptions {
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
   /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
-  readonly stopAllowed?: () => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
+  readonly stopAllowed?: (peer?: DaemonPeerLifetime) => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
   /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
   readonly admit?: () => void;
 }
@@ -296,7 +296,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   };
   // One connection whose peer the kernel already reported as this user: decode its requests.
   const daemonRestartOwner = `daemon:${process.pid}:${processBirth(process.pid)}`;
-  const serveConnection = (sock: Socket, restartOwner: () => string): void => {
+  const serveConnection = (sock: Socket, restartOwner: () => string, peerLifetime?: DaemonPeerLifetime): void => {
     counters.accepted++;
     let buf = "";
     let bufBytes = 0;
@@ -353,7 +353,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         // The reply acknowledges the request, not completed shutdown. The uninstaller
         // independently waits for this process and endpoint to disappear.
         void (async () => {
-          const observation = req.commit ? stopPrepared : await opts.stopAllowed?.();
+          const observation = req.commit ? stopPrepared : await opts.stopAllowed?.(peerLifetime);
           const allowed = typeof observation === "object" ? observation.state === "owned" : observation === true;
           if (!allowed) {
             const unknown = typeof observation === "object" && observation.state === "unknown";
@@ -665,18 +665,18 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         sock.destroy();
         return;
       }
-      let owner: string | undefined;
+      let lifetime: DaemonPeerLifetime | undefined;
       try {
         const identity = localPeerCredentials(sock);
         const birth = processBirth(identity.pid);
         if (identity.uid === uid && Number.isSafeInteger(identity.pid) && identity.pid > 0 && birth) {
-          owner = JSON.stringify(["peer", identity.uid, identity.pid, birth]);
+          lifetime = { pid: identity.pid, birth };
         }
       } catch { /* Ordinary requests do not require restart ownership. */ }
       serveConnection(sock, () => {
-        if (!owner) throw new Error("restart owner process identity is unavailable");
-        return owner;
-      });
+        if (!lifetime) throw new Error("restart owner process identity is unavailable");
+        return JSON.stringify(["peer", uid, lifetime.pid, lifetime.birth]);
+      }, lifetime);
     });
   }
 

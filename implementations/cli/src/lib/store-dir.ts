@@ -263,7 +263,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
   const physical = stat ? join(realpathSync.native(existing), relative(existing, path)) : path;
   const control = controlDirectory(path) ?? controlDirectory(physical);
   if (control !== undefined && path !== join(resolve(root), ".cotal", "nats"))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: purpose === "restore" ? `${NEW_RESTORE_STORE}. Choose a parent outside the control directory.` : "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" });
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: purpose === "restore" ? `${NEW_RESTORE_STORE}. Choose a parent outside the control directory.` : "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" }));
   if (!stat) return;
   if (!stat.isDirectory())
     throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: purpose === "restore" ? NEW_RESTORE_STORE : "name a directory, or a path to create in one, with --store-dir" }));
