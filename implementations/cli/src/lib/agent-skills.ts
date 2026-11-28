@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
-import { codeSpan, homeCotalDir } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 import { displayCmd } from "./self-exec.js";
 
 /**
@@ -94,9 +94,15 @@ function manifestPath(): string {
 
 type Manifest = { skills: Record<string, string> }; // skill name -> digest Cotal last wrote
 
-function corruptManifest(path: string, reason: string): Error {
-  const remedy = codeSpan(`${displayCmd()} setup --skills`);
-  return new Error(`Corrupt Cotal skills manifest at ${path} (${reason}). Restore a valid manifest, then run ${remedy}.`);
+function corruptManifest(path: string, reason: string): CommandFailure {
+  return new CommandFailure("refused", "SCHEMA_INVALID", `Corrupt Cotal skills manifest at ${path} (${reason})`, {
+    target: { path }, remedy: `Restore a valid manifest, then run ${codeSpan(`${displayCmd()} setup --skills`)}.`,
+  });
+}
+
+/** Check ownership before setup starts writing. Reconciliation reads the manifest again when it uses it. */
+export function validateAgentSkillsManifest(): void {
+  readManifest();
 }
 
 /** Read the ownership manifest. Absent bootstraps to empty; a present-but-malformed manifest (bad JSON,
@@ -105,13 +111,19 @@ function corruptManifest(path: string, reason: string): Error {
  *  must never be trusted to name what we may remove, nor silently forget what we still own. */
 function readManifest(): Manifest {
   const path = manifestPath();
-  if (!existsSync(path)) return { skills: {} };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    throw corruptManifest(path, "invalid JSON");
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { skills: {} };
+    if (code === "EACCES" || code === "EPERM") throw new CommandFailure("refused", "PERMISSION_DENIED", `This account cannot read the Cotal skills manifest at ${path}`, {
+      target: { path }, native: { code }, remedy: `Restore read access, then run ${codeSpan(`${displayCmd()} setup --skills`)}.`,
+    });
+    throw error;
   }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); }
+  catch { throw corruptManifest(path, "invalid JSON"); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw corruptManifest(path, "unexpected shape");
   const skills = (parsed as { skills?: unknown }).skills;
