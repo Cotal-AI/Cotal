@@ -220,7 +220,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let watchNotifyQueued = false;
   let notifyStatusWatchers = (): void => {};
   const services = createServiceConnections(machineHome, observeDiskFull);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers(), observeDiskFull, diskFull.wrote);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers(), { failed: observeDiskFull, wrote: diskFull.wrote });
   const reconciler = createAccountReconciler(machineHome, services, managers, observeDiskFull);
   const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers(), observeDiskFull);
   const serviceDeps = { home: machineHome, services, managers, account, reconciler, observeDiskFull };

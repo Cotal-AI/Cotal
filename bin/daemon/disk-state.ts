@@ -86,7 +86,7 @@ export function diskFullRefusal(op: string) {
     ? "The disk is full, so this change wasn't saved. Free up space on this computer, then try again."
     : ["status", "manager-status", "update-check", "connect-check"].includes(op)
       ? "Cotal couldn't complete this because the disk is full. Free up space on this computer, then try again."
-      : "Cotal couldn't confirm this change because the disk is full. Free up space on this computer, then try again.";
+      : "The disk is full, so Cotal can't tell whether this change was saved. Free up space on this computer, then try again.";
   return { code: "OPERATION_FAILED" as const, message };
 }
 

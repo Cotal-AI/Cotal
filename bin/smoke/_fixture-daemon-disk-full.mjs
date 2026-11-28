@@ -24,7 +24,7 @@ const nameFile = join(records, "computer-name.json");
 assert.notEqual(statSync(home).dev, statSync(records).dev, "name and settings must live on separate mounts");
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
 const atomicMessage = "The disk is full, so this change wasn't saved. Free up space on this computer, then try again.";
-const multiMessage = "Cotal couldn't confirm this change because the disk is full. Free up space on this computer, then try again.";
+const multiMessage = "The disk is full, so Cotal can't tell whether this change was saved. Free up space on this computer, then try again.";
 const daemon = spawn(process.execPath, [cli, "daemon", "serve"], { stdio: ["ignore", "inherit", "inherit"] });
 let exited = false;
 daemon.once("exit", () => { exited = true; });

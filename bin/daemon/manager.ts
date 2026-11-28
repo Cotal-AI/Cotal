@@ -113,7 +113,9 @@ function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
   };
 }
 
-function hostedLogWriter(l: Live, root: string, append: (text: string) => void, notify: () => void, onWriteError?: ObserveDiskFull, onWriteSuccess?: (folder: string) => void) {
+type ManagerWriteObserver = { failed: ObserveDiskFull; wrote?: (folder: string) => void };
+
+function hostedLogWriter(l: Live, root: string, append: (text: string) => void, notify: () => void, writes?: ManagerWriteObserver) {
   return (text: string) => {
     const previous = l.view.logError;
     let message: string | undefined;
@@ -128,13 +130,13 @@ function hostedLogWriter(l: Live, root: string, append: (text: string) => void, 
         : "the hosted Manager log could not be written; inspect its private state directory";
     }
     if (message !== previous) l.view = { ...l.view, logError: message };
-    if (failed) onWriteError?.(failure, root);
-    else if (previous !== undefined) onWriteSuccess?.(root);
+    if (failed) writes?.failed(failure, root);
+    else if (previous !== undefined) writes?.wrote?.(root);
     if (message !== previous) notify();
   };
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, onWriteError?: ObserveDiskFull, onWriteSuccess?: (folder: string) => void) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, writes?: ManagerWriteObserver) {
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
@@ -479,7 +481,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const { space } = l.view;
     if (!isDiskFull(error)) return refuse(l, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${space}\``);
     l.view = { ...l.view, reason: diskFullRefusal("manager-start").message };
-    onWriteError?.(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
+    writes?.failed(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
     if (l.view.state !== "refused" && !l.child) schedule(l);
     throw error;
   }).finally(() => { l.starting = undefined; });
@@ -646,7 +648,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       });
     });
     child.stderr?.setEncoding("utf8");
-    const logged = hostedLogWriter(l, root, append, notify, onWriteError, onWriteSuccess);
+    const logged = hostedLogWriter(l, root, append, notify, writes);
     const stdoutLine = lines(logged);
     const stderrLine = lines((line) => {
       logged(line);
@@ -682,7 +684,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
       } catch (error) {
         last = error;
-        if (isDiskFull(error)) onWriteError?.(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
+        if (isDiskFull(error)) writes?.failed(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
         const reason = isDiskFull(error) ? diskFullRefusal("manager-start").message : safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
         l.view = isRateLimited(error)
           ? { ...l.view, state: "starting", reason, next: `wait for the CLI connect limit to refill, then run \`cotal daemon status --space ${space}\` again` }
@@ -981,7 +983,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     async resume() {
       const recordRefusal = (space: string, error: unknown) => {
         if (isDiskFull(error)) {
-          onWriteError?.(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
+          writes?.failed(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
           return;
         }
         const reason = safeDiagnostic(`could not resume hosted Manager: ${error instanceof Error ? error.message : String(error)}`).slice(0, 1500);

@@ -69,10 +69,13 @@ async function proveAppendRecovery(home: string, root: string): Promise<void> {
   const changes: (string | undefined)[] = [];
   const managers = createHostedManagers(home, undefined, undefined, () => {
     changes.push(managers.status(space).logError);
-  }, (error: unknown, directory: string) => {
-    const { code, syscall } = error as NodeJS.ErrnoException;
-    failures.push({ code, syscall, directory });
-  }, (directory: string) => { successes.push(directory); });
+  }, {
+    failed(error, directory) {
+      const { code, syscall } = error as NodeJS.ErrnoException;
+      failures.push({ code, syscall, directory });
+    },
+    wrote(directory) { successes.push(directory); },
+  });
   const prematureExit = managers.start(space).then(view => {
     throw new Error(`hosted Manager stopped before the append proof: ${view.reason ?? view.state}`);
   });
