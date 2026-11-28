@@ -90,12 +90,15 @@ test('ordinary landing push cannot admit the legacy priority cascade', () => {
   assert.equal(workflow.jobs['desktop-beside-cli'].needs, 'priority');
   assert(workflow.jobs['desktop-beside-cli'].if.includes("needs.priority.result == 'success' || needs.priority.result == 'failure'"));
 });
-test('durable events preserve immutable heads without privileged PR execution or cancellation', () => {
+test('durable events run without privileged PR execution, and only a replaced pull request head is cancelled', () => {
   assert.deepEqual(workflow.on.pull_request.types, ['opened', 'synchronize', 'reopened']);
   assert.equal(workflow.on.pull_request.paths, undefined);
   assert.deepEqual(workflow.on.workflow_run, { workflows: ['Changesets'], types: ['completed'] });
   assert.equal(workflow.on.pull_request_target, undefined);
-  assert.equal(workflow.concurrency, undefined);
+  assert.deepEqual(workflow.concurrency, {
+    group: "upgrade-matrix-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
+    'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
+  });
   assert.deepEqual(workflow.permissions, { contents: 'read', actions: 'read' });
   const select = workflow.jobs.select.steps.find(s => s.id === 'plan').with.script;
   for (const token of ['changeset-release/main', 'upgrade-publication', 'publication.sourceSHA', 'publication.runId', "actual.path, '.github/workflows/changesets.yml'"]) assert(select.includes(token), token);
