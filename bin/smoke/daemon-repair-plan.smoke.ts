@@ -1,6 +1,7 @@
 /** Repair's plan asks before anything that stops or starts what the person may be using, never
  *  downgrades the service, acts only on what the plan named, and reports a step that fails partway. */
 import assert from "node:assert/strict";
+import { dirname } from "node:path";
 import { failedCopy, pickupOutcome, planFrom, probeFailure, runSteps, startSpaces, type RepairProbe, type RepairStep } from "../daemon/repair.js";
 import type { DaemonStatus, HostedManager } from "../daemon/protocol.js";
 
@@ -164,5 +165,27 @@ await cell("W8: a rolled-back move and a failed restore each get their own next 
   assert.equal(restore, "This app's service didn't start, and the other copy's service didn't start again either, so no background service runs on this computer. Choose Repair to set up this app's service.");
 });
 
-const CELLS = 14;
+await cell("a recorded service that can't run (gone, or in a disk image, App Translocation or Downloads) is moved whatever its version; a real copy keeps the version guard", () => {
+  const home = "/Users/ada";
+  const at = (entry: string, version?: string): RepairProbe => ({ status: undefined, statusUnknown: false, service: { kind: "other", installed: dirname(dirname(entry)), entry, ...(version ? { version } : {}) } });
+  const owner = (probe: RepairProbe) => planFrom(probe, VERSION, home).steps.find(item => item.step === "service-owner")!;
+  for (const entry of [
+    "/Volumes/Cotal/Cotal.app/Contents/Resources/runtime/dist/cotal.js",
+    "/private/var/folders/xy/abc/T/AppTranslocation/1234-5678/d/Cotal.app/Contents/Resources/runtime/dist/cotal.js",
+    "/Users/ada/Downloads/Cotal.app/Contents/Resources/runtime/dist/cotal.js",
+  ]) {
+    const step = owner(at(entry));
+    assert.equal(step.outcome, "fix", entry);
+    assert.equal(step.consent, "takeover", entry);
+    assert.equal(step.found, "The background service points at a copy of Cotal that can't run from where it is now.", entry);
+    assert.equal(owner(at(entry, "9.0.0")).consent, "takeover", "even a newer version there can't run, so it moves");
+  }
+  const gone = owner({ status: undefined, statusUnknown: false, service: { kind: "other", installed: "/opt/cotal", entry: "/opt/cotal/dist/cotal.js", missing: true } });
+  assert.equal(gone.consent, "takeover", "a recorded program that no longer exists moves too");
+  const real = owner(at("/opt/cotal/dist/cotal.js"));
+  assert.equal(real.outcome, "cannot", "a real installed copy whose version can't be read keeps the W5 guard");
+  assert.equal(owner(at("/Users/ada/Downloads-old/Cotal.app/Contents/Resources/runtime/dist/cotal.js")).outcome, "cannot", "a folder that only starts with Downloads is not Downloads");
+});
+
+const CELLS = 15;
 if (failed.length) { console.log(`${failed.length} of ${CELLS} cells failed`); process.exit(1); }

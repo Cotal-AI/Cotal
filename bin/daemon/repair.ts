@@ -13,8 +13,9 @@
  * each space's service records. Only the native registration changes (see `applyMove`).
  */
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { lstatSync, readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths, PeerPid, PeerUid } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -98,7 +99,7 @@ export interface RepairProbe {
   readonly service:
     | { readonly kind: "none" }
     | { readonly kind: "this" }
-    | { readonly kind: "other"; readonly installed: string; readonly entry: string; readonly version?: string }
+    | { readonly kind: "other"; readonly installed: string; readonly entry: string; readonly version?: string; readonly missing?: boolean }
     /** The service record could not be verified, so nothing about it can be changed safely. */
     | { readonly kind: "unverified" };
 }
@@ -140,7 +141,7 @@ async function readProbe(opts: RepairOptions): Promise<RepairProbe> {
   if (!preflightInstalledDaemon(opts.paths, opts.daemonHome)) return { status, statusUnknown: unknown, service: { kind: "none" } };
   const identity = installedDaemonIdentity(opts.paths, opts.daemonHome);
   if (identity.same) return { status, statusUnknown: unknown, service: { kind: "this" } };
-  return { status, statusUnknown: unknown, service: { kind: "other", installed: identity.installed, entry: identity.installedEntry, version: status?.version ?? packageVersion(identity.installedEntry) } };
+  return { status, statusUnknown: unknown, service: { kind: "other", installed: identity.installed, entry: identity.installedEntry, version: status?.version ?? packageVersion(identity.installedEntry), ...(existsSync(identity.installedEntry) ? {} : { missing: true }) } };
 }
 
 /** Order two release versions; undefined when either is not one. A prerelease sorts before its release. */
@@ -174,8 +175,15 @@ function runningAgents(status: DaemonStatus | undefined): NonNullable<RepairStep
     : []);
 }
 
+/** A copy of Cotal that can't run from where it is: on a disk image, under App Translocation, or in
+ *  Downloads. Its version doesn't matter, because it can't keep running there. */
+export function temporaryLocation(entry: string, home = homedir()): boolean {
+  const inside = (root: string) => entry === root || entry.startsWith(root.endsWith(sep) ? root : root + sep);
+  return inside("/Volumes") || entry.split(sep).includes("AppTranslocation") || inside(join(home, "Downloads"));
+}
+
 /** The service step: is the background service installed by this installation? */
-function ownerStep(probe: RepairProbe, version: string): RepairStep {
+function ownerStep(probe: RepairProbe, version: string, home?: string): RepairStep {
   const { status, service } = probe;
   if (service.kind === "unverified") return { step: "service-owner", outcome: "cannot", action: "reinstall", found: "Cotal can't confirm the background service on this computer is the one it set up, so Repair won't change it. Download Cotal and install it again to replace the service." };
   if (service.kind === "none") {
@@ -185,8 +193,11 @@ function ownerStep(probe: RepairProbe, version: string): RepairStep {
   }
   if (service.kind === "this") return { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." };
   const owner = installationOwner(service.entry);
+  // A copy that is gone, or sits on a disk image, under App Translocation or in Downloads, can't run, so
+  // Repair moves the service to this app whatever its version.
+  const stranded = service.missing === true || temporaryLocation(service.entry, home);
   // A move never replaces a newer service with this older app, nor one whose version it can't tell.
-  const order = service.version === undefined ? undefined : compareVersions(service.version, version);
+  const order = stranded ? -1 : service.version === undefined ? undefined : compareVersions(service.version, version);
   if (order === undefined) return { step: "service-owner", outcome: "cannot", owner, action: "update", found: "Cotal can't tell which version the other copy is, so it won't replace it with this one. Update this app, then repair again." };
   if (order > 0)
     return { step: "service-owner", outcome: "cannot", owner, action: "update", found: "A newer copy of Cotal runs the background service. Update this app, then repair again." };
@@ -194,7 +205,8 @@ function ownerStep(probe: RepairProbe, version: string): RepairStep {
   const unknown = agentsUnknown(probe);
   return {
     step: "service-owner", outcome: "fix", consent: "takeover", owner, agents, ...(unknown ? { agentsUnknown: true as const } : {}),
-    found: owner.kind === "app" ? "Another copy of the Cotal app runs the background service." : "A command-line install of Cotal runs the background service.",
+    found: stranded ? "The background service points at a copy of Cotal that can't run from where it is now."
+      : owner.kind === "app" ? "Another copy of the Cotal app runs the background service." : "A command-line install of Cotal runs the background service.",
     change: unknown ? "Use this app for the background service. Any agents it runs stop."
       : agents.length ? `Use this app for the background service. ${agents.length === 1 ? "1 agent stops" : `${agents.length} agents stop`}.` : "Use this app for the background service.",
   };
@@ -268,9 +280,9 @@ function digestOf(steps: readonly RepairStep[]): string {
 }
 
 /** The plan for what `probeRepair` read, for `version`, this installation's version. */
-export function planFrom(probe: RepairProbe, version: string): RepairPlan {
+export function planFrom(probe: RepairProbe, version: string, home?: string): RepairPlan {
   const { status } = probe;
-  const owner = ownerStep(probe, version);
+  const owner = ownerStep(probe, version, home);
   const steps = [owner, runningStep(status, version, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status), ...accountSteps(status)];
   return { digest: digestOf(steps), steps };
 }
