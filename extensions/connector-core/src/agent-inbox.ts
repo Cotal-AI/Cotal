@@ -73,6 +73,10 @@ export class AgentInbox {
    *  got wrong (it acked at receive time, before handling). Two rotating windows bound memory. */
   private handledIds = new Set<string>();
   private handledIdsPrev = new Set<string>();
+  // Plugin notices can be independently queued after broker dedup expires. CHAT and DM traffic
+  // cannot rotate away their handled identities; the key is still the plugin channel and post id.
+  private handledPluginIds = new Set<string>();
+  private handledPluginIdsPrev = new Set<string>();
   /** Receive-time classes for overflow-evicted, unhandled channel ambient. Capacity exhaustion
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
@@ -286,7 +290,7 @@ export class AgentInbox {
     // second copy, arriving after the first was handled). Don't surface it again; if it's the durable
     // copy, ack it so JetStream stops redelivering — safe because the logical message was already
     // handled (handledIds is recorded at drain time, never at receive time).
-    if (key !== undefined && (this.handledIds.has(key) || this.handledIdsPrev.has(key))) {
+    if (key !== undefined && this.wasHandled(key)) {
       if (delivery.durable) delivery.ack();
       return;
     }
@@ -1016,12 +1020,30 @@ export class AgentInbox {
     return scope === "all" || (scope === "pull-only" ? p.pullOnly : !p.pullOnly);
   }
 
+  private wasHandled(id: string): boolean {
+    return this.isPluginReceiveKey(id)
+      ? this.handledPluginIds.has(id) || this.handledPluginIdsPrev.has(id)
+      : this.handledIds.has(id) || this.handledIdsPrev.has(id);
+  }
+
+  private isPluginReceiveKey(id: string): boolean {
+    return id.startsWith(`${this.recvKeySecret}:`);
+  }
+
   /** Record an id as surfaced/handled, for {@link ingest}'s commit-aware cross-path dedup. Bounded via
    *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
    *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
   private markHandled(id: string, pullOnly = false): void {
     if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
     if (pullOnly) this.protectDisposition(id, "pull-only");
+    if (this.isPluginReceiveKey(id)) {
+      this.handledPluginIds.add(id);
+      if (this.handledPluginIds.size >= 4096) {
+        this.handledPluginIdsPrev = this.handledPluginIds;
+        this.handledPluginIds = new Set();
+      }
+      return;
+    }
     this.handledIds.add(id);
     if (this.handledIds.size >= 4096) {
       this.handledIdsPrev = this.handledIds;

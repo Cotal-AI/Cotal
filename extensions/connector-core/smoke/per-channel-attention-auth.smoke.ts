@@ -231,7 +231,8 @@ async function checkPluginReviewTools(limited: MeshAgent, wildcard: MeshAgent, r
   const spawn = await limited.spawn("unauthorized-helper", undefined, { join: [plugin] });
   check("CHAT-only spawn cannot delegate a plugin join", !spawn.ok && spawn.error?.includes("a spawn can only hand on channels") === true, spawn);
 
-  const help = cotalToolSpecs(readOnly.config, "smoke").find((tool) => tool.name === "cotal_send")!.schema.shape.channel.description;
+  const send = cotalToolSpecs(readOnly.config, "smoke").find((tool) => tool.name === "cotal_send")!;
+  const help = (send.schema.shape.channel as { description?: string }).description;
   const noDefault = await runTool(readOnly, "cotal_send", { text: "no default" });
   check("send help does not promise the read-only plugin as a default",
     help?.includes("If there is no default, give a channel you may post to") === true && !help.includes(`default: ${plugin}`) &&
@@ -358,6 +359,61 @@ async function checkNarrowedPluginPointer(provisioner: Pick<CotalEndpoint, "comm
   }
 }
 
+async function checkLatePluginPointer(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, daemon: Pick<CotalEndpoint, "principal" | "card" | "renewDeliveryLease" | "unicastAttributed">, revision: number, seat: MeshAgent, publisher: CotalEndpoint) {
+  const { channel, space, jsm } = fixture;
+  const notices = new Map<string, CotalMessage>();
+  const incoming: InboxItem[] = [];
+  const focusWakes: InboxItem[] = [];
+  seat.ep.on("message", (m: CotalMessage) => { if (m.from.id === daemon.card.id) notices.set(m.id, m); });
+  seat.on("incoming", (item: InboxItem) => incoming.push(item));
+  seat.on("mention-wake", (item: InboxItem) => focusWakes.push(item));
+
+  const stream = dmStream(space);
+  const windowMs = ((await jsm.streams.info(stream)).config.duplicate_window ?? 0) / 1_000_000;
+  if (windowMs < 120_000 || windowMs >= 299_000) throw new Error(`expected a DM duplicate window of two to five minutes, got ${windowMs}ms`);
+  const creds = typeof seat.config.creds === "function" ? await seat.config.creds() : seat.config.creds!;
+  const nc = await connect({ servers: fixture.servers, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${seat.ep.principal.actor}` });
+  try {
+    const scoped = await jetstreamManager(nc);
+    const durable = dmDurable(seat.ep.principal.owner, seat.ep.principal.actor, seat.config.lifecycleUid!);
+    const cursor = () => scoped.consumers.info(stream, durable);
+    const before = (await cursor()).delivered.stream_seq;
+    const post = await publisher.multicast("late daemon notice uses the original post identity", { channel, mentions: [seat.displayName] });
+    const first = await waitFor(() => seat.peekInbox("automatic").some((i) => i.id === post.id && i.mentionsMe));
+    const firstNotice = [...notices.values()].find((m) => m.id.includes(post.id));
+    const firstSeq = (await cursor()).delivered.stream_seq;
+    if (!firstNotice || firstSeq <= before) throw new Error("the first daemon notice was not delivered from the DM stream");
+    const shown = seat.drainInbox().filter((i) => i.id === post.id && i.mentionsMe);
+
+    // Advance both ordinary handled windows through the exact-drain path used by adapters that
+    // commit a turn after its original buffered entries have gone. No fake plugin event is emitted.
+    seat.drainInboxDeliveries(Array.from({ length: 8192 }, (_, i) => `ordinary-handled-${i}`));
+    const deadline = performance.now() + windowMs + 1000;
+    while (performance.now() < deadline) {
+      revision = await daemon.renewDeliveryLease(0, revision);
+      await sleep(Math.min(5_000, Math.ceil(deadline - performance.now())));
+    }
+    const second = await daemon.unicastAttributed(seat.id, "", { parts: firstNotice.parts });
+    let committed = false;
+    for (let i = 0; i < 50 && !committed; i++) {
+      const info = await cursor();
+      committed = info.ack_floor.stream_seq >= second.ack.seq;
+      if (!committed) await sleep(100);
+    }
+    const delivered = (await cursor()).delivered.stream_seq === second.ack.seq;
+    const evidence = { firstSeq, secondSeq: second.ack.seq, committed, delivered, elapsedMs: second.msg.ts - firstNotice.ts,
+      windowMs, wakes: incoming.filter((i) => i.id === post.id && i.mentionsMe).length };
+    console.log(`  late pointer replay: ${JSON.stringify(evidence)}`);
+    check("two distinct daemon pointer records beyond the broker window yield one plugin post and mention",
+      first && shown.length === 1 && notices.has(second.msg.id) && firstSeq < second.ack.seq &&
+      !second.ack.duplicate && firstNotice.id !== second.msg.id && evidence.elapsedMs > windowMs && committed && delivered &&
+      evidence.wakes === 1 && focusWakes.every((i) => i.id !== post.id) &&
+      !seat.peekInbox().some((i) => i.id === post.id || i.id === firstNotice.id || i.id === second.msg.id), evidence);
+  } finally {
+    await nc.close();
+  }
+}
+
 async function checkEnabledPluginChannels(): Promise<void> {
   const fixture = await startEnabledPluginSpace();
   const seats: MeshAgent[] = [];
@@ -380,9 +436,10 @@ async function checkEnabledPluginChannels(): Promise<void> {
     const wildcard = await startSeat("wildcard-seat", [`${PLUGIN_CHANNEL_ROOT}.linear.>`], [], []);
     const readOnly = await startSeat("read-only-seat", [plugin], [">"], [plugin]);
     const pending = await startSeat("pending-seat", [plugin], [], []);
+    const replay = await startSeat("pointer-replay-seat", [plugin], [], []);
     const lease = await daemon.acquireDeliveryLease(0);
     const ready = await daemon.markDeliveryLeaseReady(0, lease);
-    const rosterReady = () => [seat.id, chatOnly.id, pending.id].every((id) => daemon.getRoster().some((p) => p.card.id === id));
+    const rosterReady = () => [seat.id, chatOnly.id, pending.id, replay.id].every((id) => daemon.getRoster().some((p) => p.card.id === id));
     for (let i = 0; i < 50 && !rosterReady(); i++) await sleep(100);
     check("the enabled daemon sees the authenticated test seats and holds their delivery lease",
       rosterReady() && await seat.ep.deliveryLeaseHolder(0) === daemon.card.id);
@@ -390,8 +447,9 @@ async function checkEnabledPluginChannels(): Promise<void> {
     const renewed = await daemon.renewDeliveryLease(0, ready);
     await checkPluginReviewTools(limited, wildcard, readOnly, publisher.ep, plugin, chat);
     await checkPluginPointerAdmission(pending, publisher.ep, plugin, daemon.card.id);
-    await daemon.renewDeliveryLease(0, renewed);
+    const replayRevision = await daemon.renewDeliveryLease(0, renewed);
     await checkNarrowedPluginPointer(fixture.provisioner, publisher.ep, seat, plugin, chat);
+    await checkLatePluginPointer(fixture, daemon, replayRevision, replay, publisher.ep);
   } finally {
     await Promise.allSettled(seats.map((seat) => seat.stop()));
     await fixture.close();
@@ -780,7 +838,7 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 await checkEnabledPluginChannels();
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 73;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
