@@ -398,9 +398,11 @@ npm's own record in the extensions prefix. One recorded at the binary's exact ve
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. The extension's entry file
 must also be present and loadable. The extension check does not compare file contents. A registry extension that
-needs repair is reinstalled at the binary's exact version. An extension recorded from a local
-folder, a tarball, Git, or a URL, even under `@cotal-ai/*`, keeps its recorded source and is not
-auto-updated from npm. On releases from `0.159.1` through `0.183.1`, `cotal update --self` checks
+needs repair is reinstalled at the binary's exact version. A local `@cotal-ai/*` extension at the
+binary's exact version is verified under the same checks and repaired from its recorded path if needed.
+An extension recorded from a local folder, a tarball, Git, or a URL keeps its recorded source and
+is not reconciled to a different version from the registry. On releases from `0.159.1` through
+`0.183.1`, `cotal update --self` checks
 every `@cotal-ai/*` package against npm before upgrading, so an installation holding an unpublished
 local `@cotal-ai/*` package upgrades once with `npm i -g cotal-ai@<version>` followed by
 `cotal update`. A built-in or extension
