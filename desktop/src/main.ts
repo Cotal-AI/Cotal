@@ -527,7 +527,7 @@ function showStage(next: Stage, focus = false): void {
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
-  if (finished && !problem && !agentActionProblem) el("details").hidden = true;
+  if (finished && !problem && !agentActionProblem && !el("refusal-detail").textContent) el("details").hidden = true;
   let title: string, description: string;
   if (needsSignIn) { title = surface.title; description = surface.description; }
   else if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
@@ -938,6 +938,9 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version "))))) clearDetails();
+  // A start inside its bound records its reason without becoming a problem. Only that sentence is cleared here,
+  // so the next status writes it again while the read still reports it and leaves every other detail alone.
+  if (!problem && el("refusal-detail").textContent?.includes("The agent host for this space is starting.")) clearDetails();
   // Another Cotal installation runs the service: say so and offer Repair while each status read finds it.
   if ((status.recovery as { reason?: unknown } | undefined)?.reason === "another-installation") { if (!problem || statusProblem) { problem = "ANOTHER_INSTALLATION"; statusProblem = true; } }
   else if (problem === "ANOTHER_INSTALLATION") { problem = undefined; statusProblem = false; }
@@ -998,7 +1001,13 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
     // A Manager's reason and next step are written for a terminal: Details keeps the reason, the card says it plainly (rule 0).
     // It comes from this status read, so the next read that no longer reports it clears it.
-    if (manager?.reason) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped." : `The agent host for this space stopped. The background service said: ${manager.reason}`), true);
+    // A start still inside the daemon's own launch bound is Starting, the same word as the pill. The daemon gives a launch
+    // 90 seconds before it stops the child and reports the failure, so only a start older than that, or a state other than
+    // starting, is the failure card.
+    const startedAt = typeof manager?.observedAt === "string" ? Date.parse(manager.observedAt) : Number.NaN;
+    const stillStarting = manager?.state === "starting" && !(Number.isFinite(startedAt) && Date.now() - startedAt >= 90_000);
+    if (manager?.reason && stillStarting) showRefusalDetail(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space is starting." : `The agent host for this space is starting. The background service said: ${manager.reason}`));
+    if (manager?.reason && !stillStarting) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped." : `The agent host for this space stopped. The background service said: ${manager.reason}`), true);
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
 }
