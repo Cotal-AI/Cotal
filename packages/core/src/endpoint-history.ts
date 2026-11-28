@@ -133,12 +133,6 @@ export class EndpointHistory {
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "connection" | "consumers" | "controlPlane">) {}
 
-  private requireKnownViewerRoute(channel: string): void {
-    if (isRoutedPluginChannel(true, channel) && this.parts.connection.viewerProjectionUnavailable())
-      throw new Error("plugin channel routing projection is unavailable");
-  }
-
-
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
    *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
    *  (#1413): every field present on a row was checked by the drain before the row was
@@ -154,7 +148,7 @@ export class EndpointHistory {
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryMessage[]> {
-    this.requireKnownViewerRoute(channel);
+    this.parts.connection.requireKnownViewerRoute(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind !== "chat") {
       const limit = opts?.limit ?? 100;
@@ -191,7 +185,7 @@ export class EndpointHistory {
   }
 
   private async channelHistoryRows(channel: string, opts?: ChannelHistoryPageOptions, family = false): Promise<{ items: HistoryRow[]; complete: boolean }> {
-    this.requireKnownViewerRoute(channel);
+    this.parts.connection.requireKnownViewerRoute(channel);
     assertValidChannel(channel);
     if (!isConcreteChannel(channel) && !(family && isChannelFamily(channel)))
       throw new Error("channelHistoryPage requires one concrete channel");
@@ -316,7 +310,7 @@ export class EndpointHistory {
       // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
       // it too, and it fails loud rather than serving a channel nobody asked for.
       assertValidChannel(channel);
-      this.requireKnownViewerRoute(channel);
+      this.parts.connection.requireKnownViewerRoute(channel);
       const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
       const subject = route.subject("*", "*");
       if (route.kind === "chat") return [subject];
@@ -1030,7 +1024,7 @@ export class EndpointHistory {
   }
 
   async channelFrontier(channel: string): Promise<number> {
-    this.requireKnownViewerRoute(channel);
+    this.parts.connection.requireKnownViewerRoute(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind === "chat") return this.parts.consumers.chatFrontier();
     await this.parts.consumers.manager();
@@ -1038,12 +1032,13 @@ export class EndpointHistory {
     return rows[0]?.seq ?? 0;
   }
 
-  async pluginJoinFrontier(channel: string): Promise<number> {
+  async pluginJoinFrontier(channel: string): Promise<number | undefined> {
     try { return await this.channelFrontier(channel); }
     catch (error) {
       if (isPermissionDenied(error) || isStreamNotFound(error)) throw error;
       this.deps.emit("warning", error);
-      return 0;
+      // Zero is a successful read of an empty channel, not a recovery position for a failed read.
+      return undefined;
     }
   }
 
@@ -1235,21 +1230,26 @@ export class EndpointHistory {
   async backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
-      const policy = await this.joinPolicyFresh(ch);
       if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch)) {
-        const stillJoined = this.parts.consumers.pluginReplayFence(ch);
-        if (!stillJoined()) continue;
-        const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
-        const replayed = policy.replay
-          ? await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier, stillJoined, true)
-          : 0;
-        if (replayed !== undefined && stillJoined()) this.parts.consumers.rememberPluginHistory(ch, frontier);
-        total += replayed ?? 0;
-      } else if (policy.replay) {
-        total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+        total += await this.backfillPluginJoin(ch, frontier, this.parts.consumers.pluginReplayFence(ch));
+      } else {
+        const policy = await this.joinPolicyFresh(ch);
+        if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
       }
     }
     return total;
+  }
+
+  /** Finish initial replay for a plugin subscription with a confirmed frontier (including a retry). */
+  async backfillPluginJoin(channel: string, frontier: number, stillJoined: () => boolean): Promise<number> {
+    const policy = await this.joinPolicyFresh(channel);
+    if (!stillJoined()) return 0;
+    const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
+    const replayed = policy.replay
+      ? await this.emitPluginHistory(channel, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier, stillJoined, true)
+      : 0;
+    if (replayed !== undefined && stillJoined()) this.parts.consumers.rememberPluginHistory(channel, frontier);
+    return replayed ?? 0;
   }
 
   /** Replay policy + backfill window read straight from the registry bucket (vs the watch cache)

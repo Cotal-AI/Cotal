@@ -149,6 +149,15 @@ async function refusal(values: Record<string, string | boolean>, positionals: st
 const item = (envelope: Envelope, label: string) => envelope.result.items.find((row) => row.label === label);
 
 try {
+  if (process.getuid && process.getuid() !== 0) {
+    chmodSync(agents, 0o100);
+    try {
+      const denied = await refusal({ space: SPACE }, ["auth"]);
+      assert.equal(denied.code, "PERMISSION_DENIED");
+      assert.ok(denied.remedy?.includes("chmod u+rx") && denied.remedy.includes(agents));
+    } finally { chmodSync(agents, 0o700); }
+    assert.equal(readFileSync(alice, "utf8"), unbounded, "restoring inventory access does not change the agent credential");
+  }
   // Plain diagnosis: three findings with their repairs, two quiet rows, and no sentinel row.
   {
     const { envelope, code } = await runDoctor({ json: true });

@@ -1888,7 +1888,7 @@ export class CotalEndpoint extends EventEmitter {
     return this.history.channelFrontier(channel);
   }
 
-  /** Routing mode validated on the current channel transport, if admitted. */
+  /** Routing mode validated on the current transport. An opted-in non-consuming viewer stays unknown until a retry succeeds. */
   channelRoutingMode(): "legacy" | "isolated" | undefined { return this.connection.channelRoutingMode(); }
 
   /** Whether this connection's account has a JetStream stream of this name. A missing stream is

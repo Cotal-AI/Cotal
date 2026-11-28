@@ -127,10 +127,13 @@ export class EndpointSubscriptions {
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
     }
     if (pluginHistoryOnly) {
-      try { armed.set(channel, await this.parts.history.pluginJoinFrontier(channel)); }
+      const stillJoined = this.parts.consumers.pluginReplayFence(channel);
+      let frontier: number | undefined;
+      try { frontier = await this.parts.history.pluginJoinFrontier(channel); }
       catch (error) { this.parts.consumers.unsubscribeChat(channel); throw error; }
-      if (!this.parts.consumers.pluginReplayFence(channel)())
+      if (!stillJoined())
         throw new Error(`cannot join "${channel}": live subscription could not be confirmed`);
+      if (frontier !== undefined) armed.set(channel, frontier);
     }
     this.identity.channels.push(channel);
     // Durable backstop. The live core-sub above already delivers (manager-free). For a `durable`-class

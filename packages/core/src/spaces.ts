@@ -37,7 +37,8 @@ export interface SpaceInfo {
   space: string;
   agents: number; // agent presence records, excluding endpoints
   channels: number; // distinct visible channels, excluding events
-  messages: number; // retained ordinary CHAT messages
+  /** Retained CHAT messages. Reserved plugin names count only when routing is known to be legacy. */
+  messages: number;
 }
 
 export interface ListSpacesOptions {

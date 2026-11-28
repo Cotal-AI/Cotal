@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
+import { localDiagnostic } from "../telemetry.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -419,11 +420,12 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
-    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry)} again`;
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
+    const format = request.presentation === "rich" ? "" : ` --${request.presentation}`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry + format)} again`;
+    throw localDiagnostic(new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
-    });
+    }));
   }
   if (legacy.length || brokerPidfile) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", brokerPidfile?.message ?? "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy }, remedy: brokerPidfile?.remedy });
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally started space uses this root; a single-space controller stack cannot share its broker", { target: { root, space } });

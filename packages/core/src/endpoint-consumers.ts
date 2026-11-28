@@ -124,20 +124,21 @@ export class EndpointConsumers {
     // channel history is replay-gated backfill. Reconnect uses the existing CHAT backstop and the
     // plugin history position only when it belongs to this route epoch.
     if (this.identity.channels.length) {
-      const join = this.firstConnect ? this.identity.channels : this.identity.channels.filter((channel) => {
-        const position = this.pluginHistoryFrontiers.get(channel);
-        return isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) &&
-          (!position || position.epoch !== this.conn.pluginChannelEpoch);
-      });
       const plugin = (channel: string) => isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
-      const armed = await this.armJoin(join.filter((ch) => !plugin(ch)));
+      const armed = await this.armJoin(this.firstConnect ? this.identity.channels.filter((ch) => !plugin(ch)) : []);
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      for (const ch of join.filter(plugin)) {
-        if (this.pluginReplayFence(ch)()) armed.set(ch, await this.parts.history.pluginJoinFrontier(ch));
+      if (this.firstConnect) {
+        for (const ch of this.identity.channels.filter(plugin)) {
+          const stillJoined = this.pluginReplayFence(ch);
+          if (!stillJoined()) continue;
+          const frontier = await this.parts.history.pluginJoinFrontier(ch);
+          if (frontier !== undefined && stillJoined()) armed.set(ch, frontier);
+        }
+        await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
+      } else {
+        await this.recoverPluginChannels();
       }
-      await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
-      if (!this.firstConnect) await this.recoverPluginChannels();
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
@@ -206,14 +207,21 @@ export class EndpointConsumers {
   }
 
   private async recoverPluginHistoryWindows(stillCurrent: () => boolean): Promise<void> {
-    for (const [channel, from] of this.pluginHistoryFrontiers) {
+    for (const channel of [...this.identity.channels]) {
       if (!stillCurrent()) return;
-      const sub = this.delivery.chatSubs.get(channel);
-      if (!sub || from.epoch !== this.conn.pluginChannelEpoch || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
+      if (!isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
+      const from = this.pluginHistoryFrontiers.get(channel);
       const replayFence = this.pluginReplayFence(channel);
       const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
+      if (!stillJoined()) continue;
       const through = await this.parts.history.pluginJoinFrontier(channel);
-      if (!stillJoined() || through <= from.seq) continue;
+      if (through === undefined || !stillJoined()) continue;
+      if (!from || from.epoch !== this.conn.pluginChannelEpoch) {
+        // No usable position yet: finish replay with the join policy, not an unbounded recovery from zero.
+        await this.parts.history.backfillPluginJoin(channel, through, stillJoined);
+        continue;
+      }
+      if (through <= from.seq) continue;
       const complete = await this.parts.history.recoverPluginHistory(channel, from.seq, through, stillJoined);
       if (complete && stillJoined()) this.pluginHistoryFrontiers.set(channel, { ...from, seq: through });
     }

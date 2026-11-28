@@ -292,7 +292,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     if (changed.length) throw new CommandFailure("partial", "OPERATION_PARTIAL", "native local credential material changed, but the final diagnostic/audit or coordination cleanup was not confirmed", { target, changed, remedy: "inspect the original local files and renewal owner; do not respawn agents or rotate the system account as an automatic substitute" });
     throw new CommandFailure(repair.attempted || repair.migrationAttempted ? "unknown" : "failed", repair.attempted || repair.migrationAttempted ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", repair.attempted || repair.migrationAttempted ? "the native daemon repair outcome is unconfirmed; no re-sign was retried" : "local credential observations could not be completed; raw credential and parser diagnostics were not printed", { target });
   }
-  const renewal = renewalObservation(root, auth.space);
+  const { readRemedy, ...renewal } = { readRemedy: undefined, ...renewalObservation(root, auth.space) };
   const items = reports.map((row) => ({
     label: row.label, kind: row.kind, path: row.path, state: row.revokedAt !== undefined ? "revoked" : row.superseded ? "superseded-local-file" : row.health?.state ?? (row.problem ? "missing" : "not-provisioned-here"),
     issuedAt: Number.isFinite(row.health?.iat) ? row.health!.iat! : null,
@@ -313,7 +313,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   const incomplete = renewal.state === "unreadable";
   const result = { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: auth.space, mode: userMode ? "user" : "static", scope: "local credential claims and recorded renewal only", items, exported, findings, renewal, repair, brokerAuthorization: "not-checked", liveAgentHealth: "not-checked", systemAccountRotated: false, agentCredentialsReminted: false };
   // A recorded refusal names the renewal owner to repair, so the finding keeps its next step.
-  const failure = incomplete ? new CommandFailure("partial", "OPERATION_PARTIAL", "credential observations were collected but the renewal record is unreadable; a complete healthy verdict was not inferred", { target, remedy: `restore ${renewalRecordPath(root, auth.space)} from backup, then start or repair this space's manager to record its next renewal; do not replace it with an inferred acceptance` }) : findings || refused ? new CommandFailure(repair.results.some((row) => row.ok) || repair.migrations.length ? "partial" : "failed", repair.results.some((row) => row.ok) || repair.migrations.length ? "OPERATION_PARTIAL" : "OPERATION_FAILED", refused ? "the recorded renewal was not broker-accepted; local re-signing alone cannot clear that finding" : "local credential findings remain; per-file native repair guidance is retained", { target, ...(refused ? { remedy: "start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding" } : {}) }) : undefined;
+  const failure = incomplete ? new CommandFailure("partial", "OPERATION_PARTIAL", "credential observations were collected but the renewal record is unreadable; a complete healthy verdict was not inferred", { target, remedy: readRemedy ?? `restore ${renewalRecordPath(root, auth.space)} from backup, then start or repair this space's manager to record its next renewal; do not replace it with an inferred acceptance` }) : findings || refused ? new CommandFailure(repair.results.some((row) => row.ok) || repair.migrations.length ? "partial" : "failed", repair.results.some((row) => row.ok) || repair.migrations.length ? "OPERATION_PARTIAL" : "OPERATION_FAILED", refused ? "the recorded renewal was not broker-accepted; local re-signing alone cannot clear that finding" : "local credential findings remain; per-file native repair guidance is retained", { target, ...(refused ? { remedy: "start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding" } : {}) }) : undefined;
   writeResult(presentationOf(values), { command: "doctor auth", target, result, completeness: incomplete ? "partial" : "complete", warnings, failure, noOp: failure === undefined && values.fix === true && !repair.attempted && !repair.migrations.length }, (data): Report => ({ sections: [
     { title: data.findings || refused || incomplete ? "Credential findings" : noFindingsTitle(data.items, data.exported), blocks: [
       { kind: "fields", rows: [["Root", data.root], ["Space", data.space], ["Mode", data.mode], ["Scope", data.scope], ["Current broker authorization", { text: "not checked", tone: "waiting" }], ["Live agent health", { text: "not checked", tone: "waiting" }], ["Repair requested", data.repair.requested ? "yes" : "no"], ["Acknowledged local migrations", String(data.repair.migrations.length)], ["Repair coordination", data.repair.authority ?? "not used"]] },
@@ -413,7 +413,10 @@ function renewalObservation(root: string, space: string) {
     const adoption = value.adoption as { ok?: unknown; error?: unknown } | undefined;
     if (adoption !== undefined && (!adoption || typeof adoption !== "object" || typeof adoption.ok !== "boolean")) throw new Error();
     return { state: "present" as const, recordedAt: value.ts, recordedOwner: value.owner, authority: value.authority === "lease" || value.authority === "offline" ? value.authority : null, brokerAcceptance: adoption === undefined ? "not-requested-by-that-pass" : adoption.ok ? "recorded-acceptance" : "recorded-refusal", deliveryResponderUnbound: responderUnboundAtLastRenewal(typeof adoption?.error === "string" ? adoption.error : undefined), legacyRecordPresent: legacyRenewalRecord(root) !== undefined };
-  } catch { return { ...absent, state: "unreadable" as const, brokerAcceptance: "not-established", legacyRecordPresent: false }; }
+  } catch (error) {
+    const readRemedy = isCommandFailure(error) && error.code === "PERMISSION_DENIED" ? error.remedy : undefined;
+    return { ...absent, state: "unreadable" as const, brokerAcceptance: "not-established", legacyRecordPresent: false, readRemedy };
+  }
 }
 
 /** One file `auth mint --out` wrote for this space, as it reads now. */
@@ -674,10 +677,22 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   // is also what keeps the report SPACE-scoped now that the dir holds every tenant's segment — a
   // diagnosis must not name a co-resident tenant's material.
   const agentDir = agentCredsDir(root, space, { readOnly, onMigrated });
-  if (existsSync(agentDir)) {
-    for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
-      reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space, revocations));
+  let files: string[] = [];
+  try { files = readdirSync(agentDir); } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") {
+      let remedy = `check this account's access to ${agentDir} and its parent folders, then retry`;
+      try {
+        const stat = lstatSync(agentDir);
+        if (process.getuid && stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o500) !== 0o500)
+          remedy = `restore owner access with ${codeSpan(`chmod u+rx ${shellWord(agentDir)}`)}, then retry`;
+      } catch { /* A parent may prevent even inspecting the directory. */ }
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "this account cannot list the selected space's agent credential directory", { target: { root, space, path: agentDir }, remedy });
     }
+    if (code !== "ENOENT") throw error;
+  }
+  for (const f of files.filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
+    reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space, revocations));
   }
   // SECOND PASS over the agent files (#1576). Supersession is a property of an alias's FAMILY, not of
   // a file, so it cannot be decided while the files are still being read one at a time — which is

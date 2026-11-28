@@ -67,6 +67,13 @@ fn account_connected(result: &serde_json::Value) -> Option<bool> {
     Some(account["mode"] == "account" && account["lastRegistration"].is_string())
 }
 
+/// The label for spaces whose Manager lost its connection: no internet before a space not answering.
+fn lost_connection<'a>(states: impl Iterator<Item = &'a serde_json::Value> + Clone) -> Option<&'static str> {
+    if states.clone().any(|state| state == "offline") { return Some("Offline"); }
+    if states.into_iter().any(|state| state == "unreachable") { return Some("Can't connect"); }
+    None
+}
+
 /// Describe verified Manager inventory without treating service-only connectivity as ready.
 pub fn tray_status(frame: &serde_json::Value) -> String {
     let base = connection_tray_status(frame);
@@ -92,9 +99,14 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     }
     if let Some(connected) = account_connected(result) {
         let account = &result["account"];
-        if !connected || account["message"].is_string() { return "Needs attention".into(); }
         let rows = account["spaces"].as_array();
         let count = rows.map_or(0, |rows| rows.iter().filter(|row| row["observed"] == "connected").count());
+        // A lost connection names itself before other problems, because it can cause them: offline,
+        // the account poll fails too and leaves its message. The window does not read that message.
+        if count == 0 {
+            if let Some(lost) = lost_connection(rows.into_iter().flatten().map(|row| &row["observed"])) { return lost.into(); }
+        }
+        if !connected || account["message"].is_string() { return "Needs attention".into(); }
         if rows.is_some_and(|rows| rows.iter().any(|row| row["lastRefusal"].is_string())) {
             return "Needs attention".into();
         }
@@ -105,9 +117,13 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     }
     if let Some(managers) = result["managers"].as_array() {
         let ready = managers.iter().filter(|m| m["state"] == "answering"
+            && m["connection"].is_null()
             && m["instanceId"].is_string()
             && m["connectors"].as_array().is_some_and(|cs| cs.iter().any(|c| c["state"] == "available"))).count();
         let active = managers.iter().filter(|m| m["state"] != "stopped").count();
+        if ready == 0 {
+            if let Some(lost) = lost_connection(managers.iter().map(|m| &m["connection"]["state"])) { return lost.into(); }
+        }
         if ready != active { return format!("Needs attention · {ready} connected"); }
         return match ready {
             0 => "Sign in required".into(),
@@ -213,7 +229,14 @@ mod tests {
         assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[]}})), "Sign in required");
         assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready.clone()]}})), "Connected · 1 space");
         assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready.clone(),ready.clone()]}})), "Connected · 2 spaces");
-        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready,{"state":"refused"}]}})), "Needs attention · 1 connected");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready.clone(),{"state":"refused"}]}})), "Needs attention · 1 connected");
+        let mut offline = ready.clone();
+        offline["connection"] = json!({"state":"offline","reason":"this computer cannot look up cotal.cloud (ENOTFOUND)"});
+        let mut unreachable = ready.clone();
+        unreachable["connection"] = json!({"state":"unreachable","reason":"cotal.cloud is not answering"});
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[unreachable.clone()]}})), "Can't connect");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[unreachable,offline.clone()]}})), "Offline");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready,offline]}})), "Needs attention · 1 connected");
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_RUNNING"}})), "Sign in required");
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_RUNNING","detail":{"installed":true}}})), "Needs attention");
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_ANSWERING"}})), "Needs attention");
@@ -228,6 +251,18 @@ mod tests {
         result["account"]["spaces"] = json!([{"desired":true,"observed":"starting"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Starting");
         result["account"]["spaces"] = json!([{"desired":true,"observed":"connected"}]);
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Connected");
+        result["account"]["spaces"] = json!([{"desired":true,"observed":"unreachable"},{"desired":true,"observed":"refused","lastRefusal":"Ask the owner."}]);
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Can't connect");
+        result["account"]["spaces"] = json!([{"desired":true,"observed":"unreachable"},{"desired":true,"observed":"offline"}]);
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Offline");
+        // Offline, the account poll fails as well and leaves its message; the tray still names the loss, as the window does.
+        result["account"]["message"] = json!("account computer request failed; existing connections are unchanged");
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Offline");
+        result["account"]["spaces"] = json!([{"desired":true,"observed":"starting"}]);
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Needs attention");
+        result["account"].as_object_mut().unwrap().remove("message");
+        result["account"]["spaces"] = json!([{"desired":true,"observed":"offline"},{"desired":true,"observed":"connected"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Connected");
         result["account"]["spaces"] = json!([{"desired":true,"observed":"removed on this computer"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Ready");
