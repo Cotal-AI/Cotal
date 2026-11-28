@@ -340,11 +340,17 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   {
     const read = unansweredHostFailure("run-ps", "s", sent("run-ps"), { space: "s", server: "nats://127.0.0.1:4222", creds: "op.creds", endpoint: "manager", json: true });
-    const page = "a list that misses its budget may miss it again; `cotal run --page --on <instance> --space s --server 'nats://127.0.0.1:4222' --creds op.creds --endpoint manager --json` reads one page. <instance> is one `cotal ps` names, and a page needs a manager at contract revision 29 or later";
+    const page = "a list that misses its budget may miss it again; `cotal run --page --on <instance> --space s --server 'nats://127.0.0.1:4222' --creds '<file>' --endpoint manager --json` reads one page. <instance> is one `cotal ps` names, and a page needs a manager at contract revision 29 or later";
     c("run-ps published and unanswered failed, exit 5, and names a page of the same list",
       read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
       && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
-      && !read.message.includes("disjoint at the broker") && read.remedy === page, { outcome: read.outcome, code: read.code, message: read.message, remedy: read.remedy });
+      && !read.message.includes("disjoint at the broker") && read.remedy === page && !String(read.remedy).includes("op.creds"), { outcome: read.outcome, code: read.code, message: read.message, remedy: read.remedy });
+  }
+  {
+    const hidden = unansweredHostFailure("run-ps", "s", sent("run-ps"), { server: "nats://sample:private-token@localhost:4222", creds: "private-caller.creds" });
+    c("a list remedy keeps the caller's flags and prints neither a credentials path nor a server that carries credentials",
+      !String(hidden.remedy).includes("private-token") && !String(hidden.remedy).includes("private-caller.creds")
+      && String(hidden.remedy).includes("--creds '<file>'") && !String(hidden.remedy).includes("--server"), hidden.remedy);
   }
   {
     const paged = unansweredHostFailure("run-ps", "s", sent("run-ps"), { page: true });

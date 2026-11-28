@@ -909,7 +909,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
     // No answer is not a usage error. Only this machine's records can name a manager that runs and
     // does not answer, and `cotal status` reads them.
-    if (e instanceof EpEnvelopeError && unansweredRequest(e)) throw unansweredHostFailure(command, t.space, e);
+    if (e instanceof EpEnvelopeError && unansweredRequest(e)) throw unansweredHostFailure(command, t.space, e, values);
     if (e instanceof EpEnvelopeError) {
       console.error(`${e.code}: ${e.message}`);
       process.exit(1);
@@ -1102,13 +1102,14 @@ function retryFlag(flag: string, value: string | undefined): string {
 }
 
 /** A page of the same list. `<instance>` is one `cotal ps` names. A manager answers a page from contract
- *  revision 29 on. */
+ *  revision 29 on. A private target value is never echoed: `--creds` stays a placeholder, and a server
+ *  address that carries credentials is not printed. */
 function runPageRemedy(values: RunValues): string {
-  const display = values.server === undefined || brokerAddressForDisplay(values.server) === oneLine(values.server);
-  const flags = display ? (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("") : "";
+  const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+  const shown: RunValues = { ...values, ...(values.creds !== undefined ? { creds: "<file>" } : {}), ...(privateServer ? { server: undefined } : {}) };
+  const flags = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, shown[flag])).join("");
   const output = values.json ? " --json" : values.plain ? " --plain" : "";
-  const page = display ? codeSpan(`cotal run --page --on <instance>${flags}${output}`) : "`cotal run --page`";
-  return `a list that misses its budget may miss it again; ${page} reads one page. <instance> is one \`cotal ps\` names, and a page needs a manager at contract revision 29 or later`;
+  return `a list that misses its budget may miss it again; ${codeSpan(`cotal run --page --on <instance>${flags}${output}`)} reads one page. <instance> is one \`cotal ps\` names, and a page needs a manager at contract revision 29 or later`;
 }
 
 /** A step key the run has no open request at, answered with the open keys whose step name it matches,

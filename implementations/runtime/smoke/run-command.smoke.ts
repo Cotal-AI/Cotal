@@ -30,7 +30,9 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
-  revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
+  revokeRunAdmission, recordAtomicKey, recordSpecKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
+  buildClusterArtifacts, buildClusterDocument, contractArtifactCanonicalBytes, contractStoreContext, deriveReplySubject,
+  ensureContractStore, openServerConfig, parseEpSubject, publishContractArtifact, singleDocumentClosure,
   activateRun, lastActivation, writeRunStatus, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
 import { authDir, clearCurrent, exitCode, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, shellPath } from "@cotal-ai/workspace";
@@ -1154,20 +1156,27 @@ const takeoverRun = startedId()!;
     await kv.put(statusKey, status.value);
   } finally { await nc.drain().catch(() => nc.close()); }
 
-  // Records the list does not read. More than one page of them must not add a list request.
+  // Records the list does not read. More than one page of them must not add a list request, so the
+  // request count is the same before and after they are written.
   const goals = 1025;
-  const writer = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint } }), tls: false }), maxReconnectAttempts: 0 });
-  try {
-    const kv = await openRecordsBucket(writer, SPACE);
-    for (let i = 0; i < goals; i++) await kv.put(`goal.${endpoint}.o.a.u.g${i}.spec`, new TextEncoder().encode("x"));
-  } finally { await writer.drain().catch(() => writer.close()); }
   const goalReader = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint, takeoverId: "batch-goals" } }), tls: false }), maxReconnectAttempts: 0 });
   try {
-    const before = goalReader.stats().outMsgs;
-    const beside = await cotalLangRunHost.list({ nc: goalReader, js: jetstream(goalReader), jsm: await jetstreamManager(goalReader), kv: await openRecordsBucket(goalReader, SPACE), space: SPACE }, { endpoint });
-    const requests = goalReader.stats().outMsgs - before;
-    c(`a list beside ${goals} records of another family keeps its one row and does not page those records`,
-      beside.length === 1 && beside[0]?.runId === runId && requests <= 12, { rows: beside.length, requests });
+    const planes = { nc: goalReader, js: jetstream(goalReader), jsm: await jetstreamManager(goalReader), kv: await openRecordsBucket(goalReader, SPACE), space: SPACE };
+    const count = async (): Promise<{ rows: number; runId?: string; requests: number }> => {
+      const before = goalReader.stats().outMsgs;
+      const rows = await cotalLangRunHost.list(planes, { endpoint });
+      return { rows: rows.length, runId: rows[0]?.runId, requests: goalReader.stats().outMsgs - before };
+    };
+    const first = await count();
+    const writer = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const kv = await openRecordsBucket(writer, SPACE);
+      for (let i = 0; i < goals; i++) await kv.put(`goal.${endpoint}.o.a.u.g${i}.spec`, new TextEncoder().encode("x"));
+    } finally { await writer.drain().catch(() => writer.close()); }
+    const second = await count();
+    c(`a list beside ${goals} records of another family keeps its one row and the same request count`,
+      first.rows === 1 && first.runId === runId && second.rows === 1 && second.runId === runId && second.requests === first.requests,
+      { before: first, after: second });
   } finally { await goalReader.drain().catch(() => goalReader.close()); }
 
   const listCreds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, takeoverId: "batch-list" } });
@@ -1208,9 +1217,94 @@ const takeoverRun = startedId()!;
     unavailable instanceof Error ? unavailable.message : unavailableRows);
 }
 
+// ── 16) a list that draws no reply, and a name that is not an endpoint, on an open mesh ────────
+{
+  const openSpace = "wfjopen";
+  const openPort = await pickFreePort();
+  const openDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfjopen-`));
+  const openServers = `nats://127.0.0.1:${openPort}`;
+  writeFileSync(join(openDir, "server.conf"), openServerConfig({ transport: { kind: "plaintext" }, port: openPort, storeDir: join(openDir, "js") }));
+  const openBroker = spawn("nats-server", ["-c", join(openDir, "server.conf")], { stdio: "ignore" });
+  const openRoot = mkdtempSync(join(tmpdir(), "cotal-wfjopen-root-"));
+  mkdirSync(join(openRoot, ".cotal"), { recursive: true });
+  let openUp = false;
+  for (let i = 0; i < 60 && !openUp; i += 1) {
+    openUp = await isReachable(openServers).catch(() => false);
+    if (!openUp) await wait(100);
+  }
+  c("the open mesh for the list cells answers", openUp, openServers);
+  if (openUp) {
+    await setupSpaceStreams({ servers: openServers, space: openSpace });
+    recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", ts: new Date().toISOString() });
+    const instance = mintLifecycleUid();
+    const fixture = await connect({ servers: openServers, ...standaloneConnectOpts({ tls: false }), maxReconnectAttempts: 0 });
+    // A list reaches run-ps only after a live registry row and a describe whose cluster is in the
+    // store. This double answers describe and stays silent on run-ps. The command then waits out its
+    // own launch deadline, so the suite runs that wait once.
+    const input = { type: "object", additionalProperties: false, properties: { endpoint: { type: "string", minLength: 1 } } };
+    const output = { type: "array" };
+    const cluster = buildClusterArtifacts(buildClusterDocument("ai.cotal.list", 1, [
+      { name: "run-ps", targeted: false, capability: "manager.read", input, output },
+    ]));
+    const inputClosure = singleDocumentClosure(input);
+    const outputClosure = singleDocumentClosure(output);
+    await ensureContractStore(await jetstreamManager(fixture), openSpace);
+    const store = await contractStoreContext(fixture, openSpace);
+    for (const artifact of [input, inputClosure.manifest, output, outputClosure.manifest, cluster.document, cluster.manifest])
+      await publishContractArtifact(store, contractArtifactCanonicalBytes(artifact));
+    const records = await openRecordsBucket(fixture, openSpace);
+    const spec = await records.create(recordSpecKey(RECORD_KINDS.svc, ["manager", instance]), new TextEncoder().encode(JSON.stringify({
+      endpoint: "manager", owner: "open", clusterDigests: [cluster.closureDigest], protocol: { v: 1 },
+    })));
+    await records.create(recordStatusKey(RECORD_KINDS.svc, ["manager", instance]), new TextEncoder().encode(JSON.stringify({
+      epoch: 1, state: "ready", observedSpecRevision: spec.revision,
+    })));
+    const seen: string[] = [];
+    const sub = fixture.subscribe(`cotal.${openSpace}.ep.>`);
+    const answering = (async () => {
+      for await (const msg of sub) {
+        const parsed = parseEpSubject(msg.subject);
+        if (parsed?.plane !== "request") continue;
+        seen.push(parsed.command);
+        if (parsed.command !== "describe") continue;
+        const req = JSON.parse(new TextDecoder().decode(msg.data)) as { id?: unknown };
+        fixture.publish(deriveReplySubject(openSpace, parsed, { instanceId: instance, epoch: 1 }), new TextEncoder().encode(JSON.stringify({
+          v: 1, id: req.id, ok: true,
+          data: { public: true, descriptor: { endpoint: "manager", owner: "open", clusters: [{ digest: cluster.closureDigest, commands: ["run-ps"] }] } },
+        })));
+      }
+    })();
+    await fixture.flush();
+    const flags = { server: openServers, space: openSpace, endpoint: "manager" };
+    const listed = async (values: Record<string, string | boolean | undefined>) => {
+      reset();
+      return wf(["ps"], { ...flags, local: undefined, ...values }).then(() => undefined, (e: unknown) => e);
+    };
+    const plain = await listed({});
+    const pageOf = (remedy: unknown) => typeof remedy === "string"
+      && remedy.includes("`cotal run --page --on <instance>")
+      && remedy.includes(`--space ${openSpace}`) && remedy.includes(`--server '${openServers}'`) && remedy.includes("--endpoint manager");
+    c("a list that draws no reply goes through the command, publishes run-ps, and names a page with the caller's space, server and endpoint",
+      isCommandFailure(plain) && plain.code === "OPERATION_FAILED" && pageOf(plain.remedy)
+      && seen.filter((command) => command === "run-ps").length === 1 && seen.includes("describe"),
+      { seen, remedy: isCommandFailure(plain) ? plain.remedy : plain });
+    const malformed = await envelopeOf(["ps"], { server: openServers, space: openSpace, endpoint: "not_dns" });
+    c("a name that is not DNS-shaped lists nothing and says the view holds no run record",
+      (malformed?.result as { items?: unknown[] } | undefined)?.items?.length === 0
+      && (malformed?.warnings ?? []).some((w) => w.code === "ENDPOINT_HAS_NO_RUNS" && w.message === "no run record in this view lives under endpoint not_dns; it holds no run record under any endpoint"),
+      malformed);
+    sub.unsubscribe();
+    await fixture.drain().catch(() => fixture.close());
+    await answering.catch(() => undefined);
+  }
+  try { openBroker.kill("SIGKILL"); } catch { /* already gone */ }
+  rmSync(openDir, { recursive: true, force: true });
+  rmSync(openRoot, { recursive: true, force: true });
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 149;
+const DECLARED = 152;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

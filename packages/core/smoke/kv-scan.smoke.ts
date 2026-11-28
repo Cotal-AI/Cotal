@@ -690,26 +690,29 @@ try {
   }
 
   // A filtered batched Direct Get. `Nats-Num-Pending` counts messages that still match the batch's
-  // `next_by_subj` (ADR-31, Response headers). More than one page of keys the filter does not match
-  // must not add a page: if the header counted them, the read would keep paging and this request
-  // count would grow with them.
+  // `next_by_subj` (ADR-31, Response headers). More than one page of matching keys, with keys the
+  // filter does not match between them, costs one request per page of matches and no more.
   {
     const jsmb = await jetstreamManager(nc);
     const batch = await kvm.create("batch_filter", { history: 1 });
-    const other = 1025;
-    for (let i = 0; i < other; i++) await batch.put(`other.${i}`, enc("x"));
-    await batch.put("run.m.a.spec", enc("a1"));
-    await batch.put("run.m.a.spec", enc("a2"));
-    await batch.delete("run.m.gone.spec");
+    const matching = 1025;
+    for (let i = 0; i < matching; i++) {
+      await batch.put(`skip.${i}`, enc("x"));
+      await batch.put(`keep.${i}`, enc(`v${i}`));
+    }
+    await batch.put("keep.0", enc("rewritten"));
+    await batch.delete("keep.gone");
     const before = (await jsmb.streams.info("KV_batch_filter")).state.consumer_count;
     const outBefore = nc.stats().outMsgs;
-    const read = await lastKvEntries(batch, "run.*.*.spec");
+    const read = await lastKvEntries(batch, "keep.>");
     const requests = nc.stats().outMsgs - outBefore;
     const after = (await jsmb.streams.info("KV_batch_filter")).state.consumer_count;
     const byKey = new Map(read.map((e) => [e.key, e]));
-    check("the filtered batch returns the live match and the delete marker, not the other family",
-      read.length === 2 && byKey.get("run.m.a.spec")?.string() === "a2" && byKey.get("run.m.gone.spec")?.operation === "DEL", [...byKey.keys()]);
-    check(`the filtered batch stays one page beside ${other} other records (${requests} requests)`, requests <= 3, requests);
+    const once = read.length === byKey.size && [...byKey.keys()].every((key) => key.startsWith("keep."));
+    check("the filtered batch returns each matching key once, including a rewrite and a delete marker",
+      once && read.length === matching + 1 && byKey.get("keep.0")?.string() === "rewritten" && byKey.get("keep.gone")?.operation === "DEL"
+      && byKey.get("keep.1")?.string() === "v1", { keys: read.length, distinct: byKey.size });
+    check("the filtered batch costs one request per page of matching keys", requests === Math.ceil((matching + 1) / 1024), requests);
     check("the filtered batch creates no consumer", after === before, { before, after });
     check("a filter matching nothing is one request in a bucket past one page",
       (await lastKvEntries(batch, "zzz.>")).length === 0);
