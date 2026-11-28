@@ -31,8 +31,7 @@ writes anything. **Change an answer** asks every question again with the answers
 **Cancel** saves nothing.
 
 Without a terminal, or with `--yes`, `--no-input`, or `--json`, `scriptedInputs` takes the inputs
-from the flags and refuses a missing one. That refusal (`MissingFlags`) prints the scripted form
-without the command help.
+from the flags and refuses a missing one. That refusal (`MissingFlags`) names the options to add to the original command, using the value placeholders from `setupFlags`.
 
 On a terminal the destination question also offers Cloud. `askCloud` lists the registered spaces
 whose catalog came from the Cotal Cloud sign-in. With none it runs the registered `login` command

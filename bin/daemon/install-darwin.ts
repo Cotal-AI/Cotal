@@ -209,6 +209,7 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     check(receipt: UnitReceipt) {
       owned(receipt);
     },
+    stopped(receipt) { return !owned(receipt); },
     isEnabled(receipt: UnitReceipt): boolean {
       const id = uid();
       owned(receipt);
@@ -236,7 +237,7 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     },
     start(receipt: UnitReceipt, resume = false) {
       const id = uid();
-      if (resume && !this.isEnabled(receipt)) step(["enable", `gui/${id}/${receipt.unit}`]);
+      if (resume && !this.isEnabled!(receipt)) step(["enable", `gui/${id}/${receipt.unit}`]);
       if (owned(receipt)) step(["kickstart", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
@@ -244,7 +245,7 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
       const id = uid();
       owned(receipt);
       step(["disable", `gui/${id}/${receipt.unit}`]);
-      if (!this.isEnabled(receipt)) {
+      if (!this.isEnabled!(receipt)) {
         try { if (owned(receipt)) step(["bootout", `gui/${id}/${receipt.unit}`]); }
         catch (error) { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `automatic start is already off for ${receipt.unit}, and the job did not unload. Start it again with \`cotal daemon start\` to turn automatic start back on.`, { cause: error }); }
         return;

@@ -49,10 +49,9 @@ import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, reconcileInstalledSystemdOomPolicy, repairMissingInstalledProgram, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { serviceApplicationPath } from "../daemon/desktop-path.js";
 import { upgradedSystemdOomPolicy } from "../daemon/install-linux-repair.js";
-import { readServiceRepair, servicePolicyRepairFile, serviceRepairFile } from "../daemon/service-repair.js";
 import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
-import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
+import { assertServiceRepairPair, readServiceRepair, servicePolicyRepairFile, serviceRepairFile, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
@@ -148,14 +147,14 @@ try {
       const unit = renderDaemonUnit(join(root, "units"), undefined);
       check("systemd bounds startup and accepts the in-unit readiness helper", unit.bytes.includes("Type=notify\nNotifyAccess=all\nTimeoutStartSec=60\n"));
       check("systemd allows retirement and signals only daemon first", unit.bytes.includes("TimeoutStopSec=90\n") && unit.bytes.includes("KillMode=mixed\n"));
+      const expected = [join(unitHome, ".opencode/bin"), "/usr/bin", "/bin", join(unitHome, ".local/bin"), join(unitHome, ".pi/agent/bin")].join(":");
+      check("systemd unit appends missing connector installer folders after caller PATH without duplicating existing ones", unit.bytes.includes(`Environment=PATH="${expected}"\n`), unit.bytes);
+      check("macOS serviceApplicationPath appends missing connector installer folders after caller PATH", serviceApplicationPath(`${join(unitHome, ".local/bin")}:/usr/bin:/bin`, "darwin", unitHome) === [join(unitHome, ".local/bin"), "/usr/bin", "/bin", join(unitHome, ".opencode/bin"), join(unitHome, ".pi/agent/bin")].join(":"));
       check("systemd keeps daemon, Manager and seats running when a child is OOM-killed", unit.bytes.includes("KillMode=mixed\nOOMPolicy=continue\n"));
       const legacy = unit.bytes.replace("OOMPolicy=continue\n", "");
       check("stock pre-fix unit upgrades to exact OOMPolicy=continue bytes", upgradedSystemdOomPolicy(legacy) === unit.bytes);
       check("older Restart=always stock unit upgrades OOMPolicy=continue", upgradedSystemdOomPolicy("[Service]\nExecStart=\"/bin/node\" \"/cotal.js\" daemon serve\nRestart=always\n")?.includes("Restart=always\nOOMPolicy=continue\n") === true);
       check("unit with explicit OOMPolicy is left unchanged", upgradedSystemdOomPolicy(unit.bytes) === undefined && upgradedSystemdOomPolicy(legacy + "OOMPolicy=stop\n") === undefined);
-      const expected = [join(unitHome, ".opencode/bin"), "/usr/bin", "/bin", join(unitHome, ".local/bin"), join(unitHome, ".pi/agent/bin")].join(":");
-      check("systemd unit appends missing connector installer folders after caller PATH without duplicating existing ones", unit.bytes.includes(`Environment=PATH="${expected}"\n`), unit.bytes);
-      check("macOS serviceApplicationPath appends missing connector installer folders after caller PATH", serviceApplicationPath(`${join(unitHome, ".local/bin")}:/usr/bin:/bin`, "darwin", unitHome) === [join(unitHome, ".local/bin"), "/usr/bin", "/bin", join(unitHome, ".opencode/bin"), join(unitHome, ".pi/agent/bin")].join(":"));
     } finally {
       process.argv[1] = entry!;
       process.execArgv = execArgv;

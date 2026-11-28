@@ -174,7 +174,7 @@ test("unconfigured notifications can be restored without changing shared auto", 
     a.node("update-preference").dispatchEvent(new a.dom.window.Event("change")); await settle();
     assert.deepEqual(JSON.parse(JSON.stringify(a.calls.filter(call => call.op === "update-settings").at(-1))), { op: "update-settings", notify: true });
     assert.ok(!a.calls.some(call => call.op === "update-policy" && call.auto !== undefined));
-    await a.click("settings-back");
+    await a.click("view-connection");
     assert.equal(a.node("update-banner").hidden, false);
   } finally { a.dom.window.close(); }
 });
@@ -337,17 +337,19 @@ test("interrupted about shows truthful unavailable computer details", async () =
 test("computer name edits save, cancel and reject invalid input before request", async () => {
   const a = await app({ installed: true });
   try {
-    await a.click("login"); await a.login(); await a.click("edit-computer-name");
+    await a.click("login"); await a.login();
+    await a.click("view-settings"); await a.click("settings-name");
     a.node<HTMLInputElement>("computer-name-input").value = "  Named laptop  ";
     a.node<HTMLFormElement>("computer-name-form").requestSubmit(); await settle();
     assert.equal(a.node("machine-name").textContent, "Named laptop");
+    assert.equal(a.node("settings-computer").textContent, "Named laptop");
     assert.equal(a.calls.filter(r => r.op === "name").length, 1);
-    await a.click("edit-computer-name"); a.node<HTMLInputElement>("computer-name-input").value = "";
+    await a.click("settings-name"); a.node<HTMLInputElement>("computer-name-input").value = "";
     a.node<HTMLFormElement>("computer-name-form").requestSubmit(); await settle();
     assert.match(a.node("computer-name-error").textContent ?? "", /1 to 128/);
     assert.equal(a.calls.filter(r => r.op === "name").length, 1);
     await a.click("cancel-computer-name"); assert.equal(a.node("machine-name").textContent, "Named laptop");
-    await a.click("edit-computer-name");
+    await a.click("settings-name");
     a.node("computer-name-input").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(a.node("computer-name-form").hidden, true);
   } finally { a.dom.window.close(); }
@@ -505,11 +507,16 @@ for (const option of ["ownProviderFailed", "oldDaemon"] as const) test(`${option
   } finally { a.dom.window.close(); }
 });
 
-test("tray Settings returns to Ready and dashboard retains the verified target while hidden polling continues", async () => {
+test("tray Settings preserves the chooser and dashboard retains the verified target while hidden polling continues", async () => {
   const a = await app({ installed: true, connected: true });
   try {
     await a.click("another-space");
     await a.emit("desktop-open-settings");
+    assert.equal(a.node("view-settings").getAttribute("aria-selected"), "true");
+    assert.equal(a.node("settings-panel").hidden, false);
+    await a.click("view-connection");
+    assert.equal(a.node("connection-view").hidden, false);
+    assert.equal(a.node("space-panel").hidden, false);
     assert.equal(a.node("connected-spaces").hidden, false);
     assert.equal(a.node("connection-title").textContent, "This computer is connected");
     await a.emit("desktop-open-dashboard");
@@ -663,23 +670,23 @@ test("a blank space label shows the space id", async () => {
   } finally { kept.dom.window.close(); }
   const chip = await app({ installed: true, connected: true, kind: " " });
   try {
-    assert.equal(chip.doc.querySelector('[data-testid="connected-space-row"] .application-chip')?.textContent, "Space");
+    assert.equal(chip.doc.querySelector('[data-testid="connected-space-row"] .space-kind')?.textContent, "Space");
   } finally { chip.dom.window.close(); }
   const named = await app({ installed: true, connected: true, kind: " ada" });
   try {
-    assert.equal(named.doc.querySelector('[data-testid="connected-space-row"] .application-chip')?.textContent, " ada");
+    assert.equal(named.doc.querySelector('[data-testid="connected-space-row"] .space-kind')?.textContent, "Ada");
   } finally { named.dom.window.close(); }
 });
 
 test("a blank account label shows the subject", async () => {
   const a = await app({ installed: true, connected: true, account: { label: " ", sub: "user-1" } });
   try {
-    await a.click("open-settings");
+    await a.click("view-settings");
     assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cotal.cloud · user-1");
   } finally { a.dom.window.close(); }
   const kept = await app({ installed: true, connected: true, account: { label: " ada", sub: "user-1" } });
   try {
-    await kept.click("open-settings");
+    await kept.click("view-settings");
     assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cotal.cloud ·  ada");
   } finally { kept.dom.window.close(); }
 });
@@ -687,11 +694,16 @@ test("a blank account label shows the subject", async () => {
 test("later open shows connection and secondary controls, never sign-in or space forms", async () => {
   const a = await app({ installed: true, connected: true, count: 2 });
   try {
+    const startup = a.node("autostart");
     assert.equal(a.node("connection-title").textContent, "This computer is connected");
-    assert.equal(a.node("connected-panel").hidden, false); assert.equal(a.node("preferences").hidden, true);
-    await a.click("open-settings");
-    assert.equal(a.node("settings-panel").hidden, false); assert.equal(a.node("preferences").hidden, false);
-    await a.click("open-settings"); assert.equal(a.node("preferences").hidden, true);
+    assert.equal(a.node("connected-panel").hidden, false);
+    assert.ok(startup.closest("[hidden]"));
+    await a.click("view-settings");
+    assert.equal(a.node("settings-panel").hidden, false);
+    assert.equal(startup.closest("#settings-startup"), a.node("settings-startup"));
+    assert.equal(startup.closest("[hidden]"), null);
+    await a.click("view-connection");
+    assert.ok(startup.closest("[hidden]"));
     assert.equal(a.node("sign-in-panel").hidden, true); assert.equal(a.node("space-panel").hidden, true);
     assert.ok(a.doc.querySelector(".app.later-open"));
     await a.click("another-space"); assert.equal(a.node("space-panel").hidden, false);
@@ -718,7 +730,8 @@ test("Ready removes a space and adds another only after confirmation", async () 
     (a.doc.querySelector('#connected-spaces button') as HTMLButtonElement).click(); await settle();
     assert.equal(JSON.stringify(a.calls.filter(r => r.op === "service-disconnect")), JSON.stringify([{ op: "service-disconnect", space: "team" }]));
     assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 0);
-    assert.equal(a.node("tray-label").textContent, "Not connected");
+    assert.equal(a.node("sidebar-status-word").textContent, "Connected");
+    assert.equal(a.node("sidebar-status-dot").dataset.tone, "ok");
     await a.click("another-space");
     a.node<HTMLSelectElement>("space").value = "other";
     a.node("space").dispatchEvent(new a.dom.window.Event("change")); await settle();
@@ -734,7 +747,7 @@ test("connected and pending spaces retain the connected view and waiting row", a
   const a = await app({ installed: true, connected: true, count: 2, serviceState: "approval-pending" });
   try {
     assert.equal(a.node("connection-title").textContent, "This computer is connected");
-    assert.equal(a.node("connection-icon").dataset.icon, "check");
+    assert.equal(a.node("sidebar-status-dot").dataset.tone, "ok");
     assert.equal(a.node("dashboard").hidden, false);
     assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 2);
     assert.match(a.node("connected-spaces").textContent!, /Other team.*Waiting for owner approval/);
@@ -743,7 +756,12 @@ test("connected and pending spaces retain the connected view and waiting row", a
 
 test("loading stays neutral until the native service answers", async () => {
   const a = await app({ loading: true });
-  try { assert.ok(a.doc.querySelector(".app.loading")); assert.equal(a.node("tray-label").textContent, "Checking connection"); assert.equal(a.calls.length, 1); }
+  try {
+    assert.ok(a.doc.querySelector(".app.loading"));
+    assert.equal(a.node("sidebar-status-word").textContent, "Starting");
+    assert.equal(a.node("sidebar-status-dot").dataset.tone, "waiting");
+    assert.equal(a.calls.length, 1);
+  }
   finally { a.dom.window.close(); }
 });
 
@@ -834,9 +852,8 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
       if (options.count === 0) { await a.click("login"); await a.login(); }
       if (options.serviceState === "approval-pending") {
         assert.equal(a.node("connection-title").textContent, "Waiting for owner approval");
-        assert.equal(a.node("connection-icon").dataset.icon, "clock");
-        assert.equal(a.node("connection-icon").dataset.tone, "waiting");
-        assert.equal(a.node("apps-strip-wrap").hidden, true);
+        assert.ok(a.doc.querySelector('[data-testid="approval-pending"]'));
+        assert.equal(a.node("apps-panel").hidden, true);
         assert.equal(a.node("dashboard").hidden, true);
         assert.equal(a.node("recovery-panel").hidden, true);
         assert.match(a.node("connected-spaces").textContent!, /Waiting for owner approval/);
@@ -850,11 +867,11 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
   }
 });
 
-test("reduced motion removes spin and travel with an opacity-only change", () => {
+test("reduced motion turns off the loading spinner and app progress animation", () => {
   const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
-  assert.match(css, /prefers-reduced-motion: reduce/);
-  assert.match(css, /animation: none !important/);
-  assert.match(css, /@keyframes reduced-enter \{ from \{ opacity:/);
+  const components = readFileSync(new URL("../src/components.css", import.meta.url), "utf8");
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.icon-spinner\s*\{\s*animation: none;/);
+  assert.match(components, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.app-bar::before\s*\{\s*animation: none;/);
 });
 test("unknown and service-only states cannot claim launch readiness", async () => {
   for (const serviceState of ["connected", "unknown-new-state"]) {

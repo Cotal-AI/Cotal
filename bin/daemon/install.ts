@@ -213,7 +213,8 @@ export interface NativeService {
   publish(plan: NativePlan): void;
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
-  isEnabled(receipt: UnitReceipt): boolean;
+  stopped(receipt: UnitReceipt): boolean;
+  isEnabled?(receipt: UnitReceipt): boolean;
   start(receipt: UnitReceipt, resume?: boolean): void;
   /** Turn off automatic start, then stop the job. The source and receipt stay. */
   stop(receipt: UnitReceipt): Promise<void> | void;
@@ -528,14 +529,6 @@ function pinnedPathMatch(mechanism: Exclude<ServiceMechanism, "scheduled-task">,
   return { pattern, match, old };
 }
 
-/** The PATH a recorded systemd or launchd service runs with. Undefined for the Windows task, which
- *  reads the account's PATH each time it starts. */
-export function installedServicePath(paths: DaemonPaths, daemonHome?: string): string | undefined {
-  const { receipt, plan } = recordedUnit(paths, daemonHome);
-  if (plan.mechanism === "scheduled-task") return undefined;
-  return pinnedPathMatch(plan.mechanism, readFileSync(receipt.unitPath, "utf8")).old;
-}
-
 export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
   if (mechanism === "scheduled-task") return undefined;
   const { pattern, match, old } = pinnedPathMatch(mechanism, source);
@@ -546,20 +539,21 @@ export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string,
 
 /** Prepare without changing disk or service state. The caller must hold the hosted seat fence
  *  before applying this installer-owned rewrite and restarting the service. */
-export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string): (() => void) | undefined {
+export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string, accountPath = process.env.PATH ?? ""): ((assertOwner?: () => void) => void) | undefined {
   const { receipt, plan } = recordedUnit(paths, daemonHome);
   if (plan.mechanism === "scheduled-task") return undefined;
   const source = readFileSync(receipt.unitPath, "utf8");
   const os = plan.mechanism === "launchd-agent" ? "darwin" : "linux";
   const merged = [...new Set([
-    ...pinnedPath(process.env.PATH ?? "", posix).split(posix.delimiter),
+    ...pinnedPath(accountPath, posix).split(posix.delimiter),
     ...pinnedPath(pinnedPathMatch(plan.mechanism, source).old, posix).split(posix.delimiter),
   ])].join(posix.delimiter);
   const next = refreshedDaemonPath(plan.mechanism, source, serviceApplicationPath(merged, os))!;
   const sha256 = createHash("sha256").update(next).digest("hex");
-  return () => {
+  return (assertOwner) => {
     const lock = process.platform === "darwin" || process.platform === "linux" ? acquireLock(join(paths.state, "service-repair.lock")) : undefined;
     try {
+    assertOwner?.();
     const current = recordedUnit(paths, daemonHome).receipt;
     if (current.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during setup; run setup again");
     writeSecretFileAtomic(receipt.unitPath, next);
@@ -671,7 +665,7 @@ async function requestDaemonStop(paths: DaemonPaths): Promise<void> {
 
 /** Turn off automatic start, then stop the recorded service. The unit, plist or task stays installed,
  *  and so do the sign-in and the spaces. `cotal daemon start` turns automatic start back on.
- *  `confirm` runs under the stop lock. It returns the live list, and a list that no longer matches
+ *  `confirm` runs under the stop lock and returns the live list. A live list that differs from
  *  the one the person confirmed is not stopped. */
 export async function stopInstalled(paths: DaemonPaths, daemonHome: string | undefined, expected: readonly string[] = [], confirm?: () => Promise<readonly string[] | undefined>): Promise<UninstallPlan & { readonly agents: readonly string[] }> {
   const lock = await acquireLockAsync(join(paths.state, "service-repair.lock"));
@@ -709,7 +703,7 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
   if (!identity.same) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon source names another installation (${identity.installed}); update did not start it`);
   const { receipt, plan, service } = recorded;
   if (service) {
-    if (!service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
+    if (!service.isEnabled?.(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
     service.start(receipt);
     return { started: true, unit: plan.unit, state: "enabled" };
   }
@@ -732,6 +726,37 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
     recordedSourceIdentity(receipt, plan.mechanism, () => [...expectedArgv]);
   } else installedDaemonIdentity(paths, daemonHome);
   return true;
+}
+
+/** Read the native registration without creating a unit, including when its receipt was lost. */
+export function nativeDaemonPresence(paths: DaemonPaths, daemonHome?: string): "absent" | "present" | "unavailable" {
+  if (process.platform !== "linux") {
+    const plan = planInstall(paths, daemonHome);
+    return plan.alreadyInstalled || plan.recovered ? "present" : "absent";
+  }
+  assertNoServiceRepair(paths);
+  const name = daemonUnitName(daemonHome);
+  const path = join(systemdUserUnitDirectory(daemonUserServiceEnv()), name);
+  try { lstatSync(path); return "present"; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const observed = nativeRun("systemctl", ["--user", "show", "--no-pager", "--property=LoadState", "--value", name], daemonUserServiceEnv(), 3000);
+  if (observed.status !== 0) return "unavailable";
+  const load = observed.stdout.trim();
+  return load === "not-found" ? "absent" : load ? "present" : "unavailable";
+}
+
+/** The caller still needs lifetime exclusion. In particular, an installed service whose
+ * supervisor reports activation or a restart must not be replaced by the Desktop sidecar. */
+export function installedDaemonActivity(paths: DaemonPaths, daemonHome?: string): "stopped" | "transition" | "unverified" | "unavailable" {
+  const recorded = recordedUnit(paths, daemonHome);
+  if (!recordedDaemonIdentity(recorded).same) return "unverified";
+  if (recorded.service) return recorded.service.stopped(recorded.receipt) ? "stopped" : "unverified";
+  const observed = nativeRun("systemctl", ["--user", "show", "--no-pager", "--property=ActiveState", "--value", recorded.receipt.unit], daemonUserServiceEnv(), 3000);
+  if (observed.status !== 0) return "unavailable";
+  const active = observed.stdout.trim();
+  if (active === "inactive") return "stopped";
+  if (["activating", "deactivating", "reloading", "refreshing"].includes(active)) return "transition";
+  return "unverified";
 }
 
 /** Recreate a shell installation's missing runtime binding without adopting another CLI's service. */
@@ -772,9 +797,15 @@ export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "sta
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string } {
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string; receiptKey: string } {
   const recorded = recordedUnit(paths, daemonHome);
-  return expectedArgv ? recordedSourceIdentity(recorded.receipt, recorded.plan.mechanism, () => [...expectedArgv]) : recordedDaemonIdentity(recorded);
+  const identity = expectedArgv ? recordedSourceIdentity(recorded.receipt, recorded.plan.mechanism, () => [...expectedArgv]) : recordedDaemonIdentity(recorded);
+  return { ...identity, receiptKey: `${recorded.receipt.installedAt}:${recorded.receipt.unitSha256}` };
+}
+
+/** Only the owner's installation kind is public. Never project its entry path. */
+export function installationOwner(installedEntry: string): { kind: "app" | "cli" } {
+  return { kind: existsSync(join(dirname(dirname(installedEntry)), "desktop-runtime.json")) ? "app" : "cli" };
 }
 
 /** Detect a candidate without asking the user manager about healthy or absent services. */
@@ -879,7 +910,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
       : renderedUnit ? { text: renderedUnit.bytes, sha256: renderedUnit.sha256 }
       : renderLaunchAgent({ label: receipt.unit, argv, searchPath: serviceApplicationPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
     const published = !!intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource;
-    const enabled = intent?.enabled ?? (linux ? systemd(receipt).enabled : service!.isEnabled(receipt));
+    const enabled = intent?.enabled ?? (linux ? systemd(receipt).enabled : service!.isEnabled!(receipt));
     owner = readLifetimeRecord(paths.lock);
     try {
       socket = await openVerified({ paths });
