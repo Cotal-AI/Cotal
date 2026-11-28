@@ -1,14 +1,14 @@
 import type { ComputerVitals } from "@cotal-ai/manager";
 import { defaultComputerName, readComputerName, saveComputerName } from "./computer-name.js";
 import { findMesh } from "@cotal-ai/workspace";
-import { IdpSessionRejectedError, loadIdpSession, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
+import { ACCOUNT_CLOUD_QUIET_MS, accountCloudNotice, accountSignInRequired, clearAccountRetry, noteAccountRetry, pollAccountComputer, writeAccountSpaceIntent, type AccountCloud, type AccountCloudReason } from "./account-retry.js";
+import { IdpSessionRejectedError, IdpUnreachableError, loadIdpSession, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
 import type { SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
-import { accountCloudNotice, accountSignInRequired, clearAccountRetry, noteAccountRetry, pollAccountComputer, writeAccountSpaceIntent, type AccountCloud, type AccountCloudReason } from "./account-retry.js";
 
-type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void>; failures: number; retryAt: number; logged?: string; cloud?: AccountCloud };
+type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void>; failures: number; retryAt: number; bareRefusals: number; logged?: string; cloud?: AccountCloud };
 
 async function recoverAccountSpace(home: string, reconciler: ReturnType<typeof createAccountReconciler>, contexts: Map<string, AccountContext>, tick: () => Promise<void>, space: string, candidate: string, holder: string) {
   await tick();
@@ -53,12 +53,14 @@ export function createAccountComputer(home: string, version: string, reconciler:
     context.logged = next;
     log(`daemon: account computer ${next}`);
   };
-  const beginRetry = (context: AccountContext, reason: AccountCloudReason) => {
-    const next = noteAccountRetry(context.cloud, context.failures, Date.now(), reason);
+  const runningAgents = () => reconciler.view().some(row => row.observed === "connected");
+  const beginRetry = (context: AccountContext, reason: AccountCloudReason, retryAfterMs?: number) => {
+    const next = noteAccountRetry(context.cloud, context.failures, Date.now(), reason, runningAgents(), retryAfterMs);
     context.cloud = next.cloud;
+    context.state.cloud = next.cloud;
     context.failures = next.failures;
     context.retryAt = next.retryAt;
-    delete context.state.message;
+    if (next.cloud.notice) context.state.message = next.cloud.notice;
     delete context.state.reason;
     noteCloud(context, next.logged);
   };
@@ -79,6 +81,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     else delete context.state.reason;
     context.cloud = undefined;
     context.failures = 0;
+    context.bareRefusals = 0;
     context.retryAt = 0;
     noteCloud(context, next.logged);
   };
@@ -90,14 +93,14 @@ export function createAccountComputer(home: string, version: string, reconciler:
     for (const key of contexts.keys()) if (!accounts.some(account => account.ownerKey === key)) { contexts.get(key)!.abort.abort(); contexts.delete(key); }
     accounts.forEach((account) => {
       const machineId = accountComputerId(home, account);
-      const context: NonNullable<ReturnType<typeof contexts.get>> = contexts.get(account.ownerKey) ?? { state: { machineId, mode: "account", hostSupport: "unknown", spaces: [] } as AccountComputerStatus, lastHeartbeat: 0, abort: new AbortController(), failures: 0, retryAt: 0 };
+      const context: NonNullable<ReturnType<typeof contexts.get>> = contexts.get(account.ownerKey) ?? { state: { machineId, mode: "account", hostSupport: "unknown", spaces: [] } as AccountComputerStatus, lastHeartbeat: 0, abort: new AbortController(), failures: 0, retryAt: 0, bareRefusals: 0 };
       const session = loadIdpSession(home, account.idpUrl);
       Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: name });
-      if (context.cloud?.state === "reachable") delete context.cloud;
-      else if (context.cloud) context.state.cloud = context.cloud;
-      const notice = accountCloudNotice(context.cloud, Date.now());
-      if (notice) context.state.message = notice;
-      else if (context.state.message === "Can't reach Cotal Cloud. Agents keep running. Cotal reconnects by itself.") delete context.state.message;
+      if (context.cloud?.state === "retrying") {
+        context.cloud.notice = accountCloudNotice(context.cloud, Date.now(), runningAgents());
+        context.state.cloud = context.cloud;
+        if (context.cloud.notice) context.state.message = context.cloud.notice;
+      }
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
@@ -108,7 +111,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
         if (error instanceof IdpSessionRejectedError) { requireSignIn(context); reconciler.accountHealth(account.ownerKey, false); return; }
         reconciler.accountHealth(account.ownerKey, false);
         if (error instanceof Error && error.message.startsWith("invalid computer")) { context.state.message = error.message; return; }
-        const reason: AccountCloudReason = /timed out|unreachable/i.test(error instanceof Error ? error.message : "") ? "unreachable" : "refused";
+        const reason: AccountCloudReason = error instanceof IdpUnreachableError ? "unreachable" : "refused";
         beginRetry(context, reason);
       }).finally(() => { tasks.delete(context.work!); context.work = undefined; notify(); if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
       tasks.add(context.work);
@@ -120,7 +123,14 @@ export function createAccountComputer(home: string, version: string, reconciler:
       work = undefined;
       notify();
       if (!stopped) {
-        const waits = [...contexts.values()].filter(context => context.state.mode === "account" && context.retryAt > Date.now()).map(context => context.retryAt - Date.now());
+        const now = Date.now();
+        const waits = [...contexts.values()].flatMap(context => {
+          if (context.state.mode !== "account" || context.retryAt <= now) return [];
+          const due = [context.retryAt - now];
+          const since = context.cloud?.state === "retrying" && context.cloud.since ? Date.parse(context.cloud.since) : NaN;
+          if (Number.isFinite(since) && since + ACCOUNT_CLOUD_QUIET_MS > now && !accountCloudNotice(context.cloud, now, runningAgents())) due.push(since + ACCOUNT_CLOUD_QUIET_MS - now);
+          return due;
+        });
         timer = setTimeout(run, waits.length ? Math.min(...waits) : 5000);
         timer.unref();
       }
@@ -158,7 +168,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
     async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
-    /** A fresh status read asks again now, instead of waiting out the backoff. */
+    /** A step the person starts asks again now. A status read reports the state this loop holds. */
     checkNow() { for (const context of contexts.values()) context.retryAt = 0; void tick(true).catch(() => {}); },
     recover: (space: string, candidate: string, holder: string) => recoverAccountSpace(home, reconciler, contexts, tick, space, candidate, holder).then(notify),
     vitals: () => vitals,

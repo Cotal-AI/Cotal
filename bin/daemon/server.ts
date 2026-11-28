@@ -365,7 +365,6 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        account.checkNow();
         managerResult(() => snapshotStatus(false));
         return;
       }

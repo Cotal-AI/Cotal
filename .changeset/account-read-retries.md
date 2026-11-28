@@ -3,4 +3,4 @@
 "@cotal-ai/auth": patch
 ---
 
-A short refusal from the account read is asked again, and a signed-in computer stays signed in until the account truly rejects the session or says this computer was removed.
+A short account-read refusal is asked again, and a signed-in computer stays signed in. A rejected session, a second refusal with no explanation, or a removed computer asks for a sign-in and stops.

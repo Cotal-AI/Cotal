@@ -92,7 +92,9 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     }
     if let Some(connected) = account_connected(result) {
         let account = &result["account"];
-        if !connected || account["message"].is_string() { return "Needs attention".into(); }
+        if !connected { return "Needs attention".into(); }
+        if account["cloud"]["state"] == "retrying" { return "Connected".into(); }
+        if account["message"].is_string() { return "Needs attention".into(); }
         let rows = account["spaces"].as_array();
         let count = rows.map_or(0, |rows| rows.iter().filter(|row| row["observed"] == "connected").count());
         if rows.is_some_and(|rows| rows.iter().any(|row| row["lastRefusal"].is_string())) {
@@ -232,8 +234,9 @@ mod tests {
         result["account"]["spaces"] = json!([{"desired":true,"observed":"removed on this computer"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Ready");
         result["account"]["mode"] = json!("sign-in-required");
-        assert_eq!(has_connected_space(&result), Some(false));
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Sign in required");
+        result["account"] = json!({"mode":"account","hostSupport":"supported","lastRegistration":"2026-11-11T00:00:00Z","spaces":[],"cloud":{"state":"retrying","notice":"Can't reach Cotal Cloud. Cotal asks again by itself."},"message":"Can't reach Cotal Cloud. Cotal asks again by itself."});
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Connected");
         result["account"] = json!({"mode":"signed-out","hostSupport":"unknown","spaces":[]});
         assert_eq!(tray_status(&json!({"ok":true,"result":result})), "Sign in required");
     }

@@ -13,8 +13,8 @@ export interface AccountComputerStatus {
   message?: string;
   /** Set only when this computer was removed from the account. */
   reason?: "computer-removed";
-  /** Present while a Cloud read is being retried, or just after one succeeded. */
-  cloud?: { state: "retrying" | "reachable"; since?: string; reason?: "refused" | "unreachable" | "timeout" };
+  /** Present while a Cloud read is being retried. `notice` is the one sentence every view shows. */
+  cloud?: { state: "retrying"; since?: string; reason?: "refused" | "unreachable" | "rate-limited"; notice?: string };
   /** `observed` is launch readiness. `machineService` is set while that separate registration is not connected. */
   spaces: { space: string; desired: boolean; observed: string; machineService?: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }[];
 }
@@ -45,7 +45,8 @@ function validAccountCloud(raw: unknown): boolean {
   if (raw === undefined) return true;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const cloud = raw as Record<string, unknown>;
-  return (cloud.state === "retrying" || cloud.state === "reachable")
+  return (cloud.state === "retrying")
     && (cloud.since === undefined || (typeof cloud.since === "string" && Number.isFinite(Date.parse(cloud.since))))
-    && (cloud.reason === undefined || cloud.reason === "refused" || cloud.reason === "unreachable" || cloud.reason === "timeout");
+    && (cloud.reason === undefined || cloud.reason === "refused" || cloud.reason === "unreachable" || cloud.reason === "rate-limited")
+    && (cloud.notice === undefined || typeof cloud.notice === "string");
 }

@@ -770,7 +770,7 @@ export async function requestAccountMachine(opts: {
   metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[]; vitals?: { sampledAt: string; cpu: { logicalCount: number; utilisationPercent: number; intervalMs: number; load1?: number; load5?: number; load15?: number }; memory: { totalBytes: number; availableBytes: number }; filesystems: Array<{ mount: string; totalBytes: number; freeBytes: number }>; uptimeSeconds: number } };
   etag?: string; signal?: AbortSignal;
   intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
-}): Promise<{ status: number; etag?: string; body?: unknown }> {
+}): Promise<{ status: number; etag?: string; body?: unknown; retryAfterMs?: number }> {
   const idp = normalizeIdpUrl(opts.idpUrl);
   if (!/^[0-9a-f-]{36}$/.test(opts.machineId)) throw new Error("invalid computer identity");
   const session = requireIdpSession(opts.dir, idp);
@@ -788,7 +788,17 @@ export async function requestAccountMachine(opts: {
   // A refusal can name a removed computer. Other error bodies stay unread.
   const errorBody = !response.ok && (response.status === 401 || response.status === 403 || response.status === 404)
     ? await readAccountRefusal(response) : undefined;
-  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}), ...(errorBody ? { body: errorBody } : {}) };
+  const retryAfterMs = response.status === 429 ? accountRetryAfterHeader(response.headers.get("retry-after")) : undefined;
+  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}), ...(errorBody ? { body: errorBody } : {}), ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+}
+
+/** A delay in seconds, or an HTTP date, as milliseconds from now. Absent when the header is not usable. */
+function accountRetryAfterHeader(header: string | null): number | undefined {
+  const value = header?.trim();
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
 /** A small JSON refusal, or nothing. A body that is not JSON, or is too large, is discarded. */

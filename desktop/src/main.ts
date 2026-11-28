@@ -521,7 +521,8 @@ function showStage(next: Stage, focus = false): void {
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
-  else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
+  else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = computerAccount.message || "Approve this computer in your browser to keep managing its spaces."; }
+  else if (finished && computerAccount?.cloud?.state === "retrying" && computerAccount.cloud.notice) { title = "Connected"; description = computerAccount.cloud.notice; }
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
     const summary = computerSummary(rows, anyConnected);
@@ -587,7 +588,8 @@ function showStage(next: Stage, focus = false): void {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
     const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
-    text("tray-label", signInRequired ? "Sign in required" : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
+    const notice = computerAccount.cloud?.state === "retrying" ? computerAccount.cloud.notice : undefined;
+    text("tray-label", signInRequired ? "Sign in required" : notice ? "Connected" : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
     el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
     el("tray-indicator").classList.toggle("error", signInRequired || summary === "attention");
     if (!anyConnected) {

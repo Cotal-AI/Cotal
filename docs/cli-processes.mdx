@@ -775,15 +775,7 @@ the daemon's machine status service needs the space owner's approval. Until then
 `machineService: approval-pending` and status adds that it waits for the owner. The wait refuses
 nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
-A short refusal, including HTTP 401 or 403 from the account read, keeps the last good mode and
-asks again: immediately, then after 5, 10, 20 and 30 seconds, then every 5 minutes. Status
-carries `cloud` with `state: "retrying"`, `since` and `reason` while that is happening, and drops
-it once a read succeeds. For the first minute the window stays quiet. After that it says
-"Can't reach Cotal Cloud. Agents keep running. Cotal reconnects by itself." A fresh status read
-asks again at once. A session the provider rejects, or a reply whose code is `computer-removed`,
-asks for a sign-in and stops. A removed computer says "This computer was removed from your account. Sign in to add it back."
-and sets `reason` to `computer-removed` on the account and on each entry in `accounts`. A rejected
-session says to sign in again. Network failures retain existing connections.
+A short refusal keeps the last good mode and asks again: immediately, then after 5, 10, 20 and 30 seconds, then every 5 minutes, each later wait spread by up to 30 seconds. HTTP 429 waits at least as long as its `Retry-After` header, and never longer than 5 minutes. Status carries `cloud` with `state: "retrying"`, `since`, `reason` (`refused`, `unreachable` or `rate-limited`) and, after the first quiet minute, `notice`. Window, pill and tray read that one notice and stay Connected. A status read reports the held state and does not ask the host. A dropped connection or a timeout uses `unreachable` and says "Can't reach Cotal Cloud." A refusal says "Cotal Cloud refused this computer." A rate limit says "Cotal Cloud asked this computer to wait." Each adds "Running agents keep running." only while an agent is running, then "Cotal asks again by itself." A session the token route rejects, a second consecutive 401 or 403 with no code, or a reply whose code is `computer-removed`, asks for a sign-in and stops. A removed computer says "This computer was removed from your account. Sign in to add it back." and sets `reason` to `computer-removed`. Anything else that ends says "Sign in again." Network failures retain existing connections.
 When another account holds a local space connection, the daemon does not transfer it automatically.
 Status names the holding account's sign-in address when the retained identity is known.
 If the holding account is signed out or three consecutive account-computer

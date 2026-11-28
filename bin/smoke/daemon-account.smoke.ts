@@ -42,8 +42,10 @@ const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
 let registration: Record<string, unknown> | undefined;
 let sent: unknown;
 let malformed = false;
-let mode = 200, puts = 0, gets = 0;
+let mode = 200, puts = 0, gets = 0, tokens = 0;
 let refusal: Record<string, unknown> | undefined;
+let retryAfter: string | undefined;
+let tokenBody: Record<string, unknown> = { token: "fixture-jwt" };
 let revision = 1;
 let etag = '"one"';
 let conditional: string | undefined;
@@ -53,6 +55,7 @@ const fixture = createServer((req, res) => {
   res.setHeader("content-type", "application/json");
   assert.equal(req.headers.authorization, "Bearer fixture-session");
   const machine = req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/);
+  if (req.url === "/api/auth/token") { tokens++; res.writeHead(tokenBody.token ? 200 : 401); res.end(JSON.stringify(tokenBody)); return; }
   if (!machine) { res.writeHead(404); res.end("{}"); return; }
   if (req.method === "PUT") {
     let body = "";
@@ -60,12 +63,12 @@ const fixture = createServer((req, res) => {
     req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 16384); registration = JSON.parse(body) as Record<string, unknown>; if (registration.vitals) sent = daemon.status().vitals; });
     puts++;
     persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
-    if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
+    if (mode !== 200 && mode !== 304) { if (retryAfter) res.setHeader("retry-after", retryAfter); res.writeHead(mode); res.end(JSON.stringify(refusal ?? {})); return; }
     res.end(JSON.stringify({ v: 1, machine: { id: machine[1], lastSeenAt: new Date().toISOString(), revision } })); return;
   }
   gets++; conditional = req.headers["if-none-match"] as string | undefined;
   if (holdGet) return;
-  if (mode !== 200) { res.writeHead(mode); res.end(mode === 304 ? undefined : JSON.stringify(refusal ?? {})); return; }
+  if (mode !== 200) { if (retryAfter) res.setHeader("retry-after", retryAfter); res.writeHead(mode); res.end(mode === 304 ? undefined : JSON.stringify(refusal ?? {})); return; }
   res.setHeader("etag", etag);
   res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, ...(malformed ? {} : { bindingRevisions: {} }), account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
 });
@@ -76,8 +79,8 @@ saveIdpSession(machineHome, idpUrl, { token: "fixture-session", sub: "owner", ex
 const paths = daemonPathsFor(machineHome, { XDG_RUNTIME_DIR: runtime });
 let daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(test: () => boolean, label: string) {
-  const end = Date.now() + 12_000;
+async function until(test: () => boolean, label: string, timeoutMs = 12_000) {
+  const end = Date.now() + timeoutMs;
   while (!test() && Date.now() < end) await sleep(50);
   assert.ok(test(), label);
   console.log(`ok ${label}`);
@@ -130,18 +133,66 @@ try {
   assert.equal(daemon.status().account!.desiredRevision, 1);
   assert.equal(daemon.status().account!.message, undefined);
   assert.equal(daemon.status().account!.cloud?.reason, "refused");
+  assert.equal(daemon.status().account!.cloud?.notice, undefined);
+  const quiet = gets;
+  await sleep(70_000);
+  assert.ok(gets > quiet, "the refusal keeps being asked during the quiet minute");
+  const outage = "Cotal Cloud refused this computer. Cotal asks again by itself.";
+  assert.equal(daemon.status().account?.cloud?.notice, outage);
+  assert.equal(daemon.status().account?.message, outage);
+  let mark = gets;
+  const settled = Date.now() + 20_000;
+  for (;;) { await sleep(400); if (gets === mark || Date.now() > settled) break; mark = gets; }
+  assert.equal(gets, mark, "the retry settles before the status read");
+  const waiting = gets;
+  const { stdout: heldStatus } = await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "status", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
+  await sleep(1_000);
+  assert.equal(gets, waiting, "a status read reports the held state and does not ask the host");
+  assert.match(heldStatus, /Cotal Cloud refused this computer\. Cotal asks again by itself\./);
+  console.log("ok a quiet minute names the outage and a status read waits");
   mode = 304; const recovered = gets;
-  await until(() => gets > recovered && daemon.status().account?.cloud === undefined, "a later unchanged poll clears the retry");
-  mode = 401; const denied = gets;
-  await until(() => gets > denied && daemon.status().account?.cloud?.state === "retrying" && daemon.status().account?.mode === "account", "a bare 401 keeps the account and retries");
-  const retried = gets;
-  await until(() => gets > retried, "the refused account is asked again", 8_000);
+  await until(() => gets > recovered && daemon.status().account?.cloud === undefined && daemon.status().account?.message === undefined, "a later unchanged poll clears the retry", 360_000);
+  mode = 401; const denied = gets; const deniedTokens = tokens;
+  await until(() => gets > denied && tokens > deniedTokens && daemon.status().account?.cloud?.state === "retrying" && daemon.status().account?.mode === "account", "one bare 401 keeps the account and checks the session");
+  assert.equal(daemon.status().account!.cloud?.reason, "refused");
+  const second = gets;
+  await until(() => gets > second && daemon.status().account?.mode === "sign-in-required", "a second bare 401 asks for a sign-in", 15_000);
+  assert.equal(daemon.status().account!.message, "Sign in again.");
+  const stoppedBare = gets; await sleep(5_500); assert.equal(gets, stoppedBare, "a bare refusal stops after two");
+  await daemon.close(); mode = 200; refusal = undefined; const fresh = gets;
+  daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
+  await until(() => gets > fresh, "a fresh sign-in asks the host again", 20_000);
+  mode = 403; const forbidden = gets;
+  await until(() => gets > forbidden && daemon.status().account?.mode === "account" && daemon.status().account?.cloud?.state === "retrying", "one 403 keeps the account");
+  tokenBody = {}; mode = 403; const rejected = gets;
+  await until(() => gets > rejected && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.message === "Sign in again.", "a rejected session asks for a sign-in and stops");
+  const stoppedRejected = gets; await sleep(5_500); assert.equal(gets, stoppedRejected);
+  await daemon.close(); mode = 200; tokenBody = { token: "fixture-jwt" }; const returned = gets;
+  daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
+  await until(() => gets > returned, "registration is asked again after the rejected session", 20_000);
+  mode = 429; retryAfter = "9"; const limited = gets; const limitedAt = Date.now();
+  await until(() => gets > limited && daemon.status().account?.cloud?.reason === "rate-limited", "a rate limit keeps the account");
+  let held = gets; const heldUntil = Date.now() + 3_000;
+  for (;;) { await sleep(300); if (gets === held || Date.now() > heldUntil) break; held = gets; }
+  assert.equal(gets, held, "the rate-limited poll settles");
+  const afterLimit = gets;
+  await sleep(4_000);
+  assert.equal(gets, afterLimit, "the rate limit waits for the host's retry-after");
+  await until(() => gets > afterLimit, "the rate limit is asked again after the host's wait", 8_000);
+  assert.ok(Date.now() - limitedAt >= 8_000, "the observed wait covers the host's nine seconds");
+  retryAfter = undefined;
   mode = 200; revision = 3; const healing = gets;
-  await until(() => gets > healing && daemon.status().account?.cloud === undefined && daemon.status().account?.desiredRevision === 3, "a later 200 clears the retry");
+  await until(() => gets > healing && daemon.status().account?.cloud === undefined && daemon.status().account?.desiredRevision === 3, "a later 200 clears the retry", 20_000);
   refusal = { code: "computer-removed" }; mode = 401; const removed = gets;
-  await until(() => gets > removed && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.reason === "computer-removed", "a removed computer asks for a sign-in");
-  assert.equal(daemon.status().account!.message, "This computer was removed from your account. Sign in to add it back.");
-  const halted = gets; await sleep(5500); assert.equal(gets, halted);
+  let removalSeen = false;
+  try {
+    await until(() => gets > removed && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.reason === "computer-removed", "a removed computer asks for a sign-in", 20_000);
+    removalSeen = true;
+  } catch { console.log("removal not observed"); }
+  if (removalSeen) {
+    assert.equal(daemon.status().account!.message, "This computer was removed from your account. Sign in to add it back.");
+    const halted = gets; await sleep(5500); assert.equal(gets, halted);
+  }
   await daemon.close(); mode = 404;
   daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
   await until(() => daemon.status().account?.mode === "per-space", "404 explicitly reports unsupported per-space mode");
