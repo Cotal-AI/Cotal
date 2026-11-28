@@ -14,12 +14,14 @@ Object.assign(process.env, {
   XDG_RUNTIME_DIR: join(disk, "run"), XDG_CONFIG_HOME: join(disk, "config"),
   COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1",
 });
-for (const key of ["HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME"]) mkdirSync(process.env[key], { mode: 0o700 });
+for (const key of ["TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME"]) mkdirSync(process.env[key], { mode: 0o700 });
 process.chdir(home);
 const { recordMesh, spaceSegment } = await import("@cotal-ai/workspace");
 
 const socket = join(disk, "run/cotal/daemon.sock");
-const fill = join(disk, "fill");
+const records = join(home, "daemon");
+const nameFile = join(records, "computer-name.json");
+assert.notEqual(statSync(home).dev, statSync(records).dev, "name and settings must live on separate mounts");
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
 const atomicMessage = "The disk is full, so this change wasn't saved. Free up space on this computer, then try again.";
 const multiMessage = "Cotal couldn't confirm this change because the disk is full. Free up space on this computer, then try again.";
@@ -83,26 +85,28 @@ function run(args, expected, message) {
   else if (message) assert.match(out, message);
 }
 
-function exhaust() {
+function exhaust(mount) {
+  const fill = join(mount, "fill");
   const fd = openSync(fill, "wx", 0o600);
   try {
-    const { blocks, bsize } = statfsSync(disk);
+    const { blocks, bsize } = statfsSync(mount);
     const page = Buffer.alloc(bsize);
     assert.throws(() => {
       for (let i = 0; i <= blocks; i++) writeSync(fd, page);
     }, { code: "ENOSPC" });
-    assert.equal(statfsSync(disk).bavail, 0);
+    assert.equal(statfsSync(mount).bavail, 0);
   } finally { closeSync(fd); }
+  return fill;
 }
 
 function exhaustInodes() {
-  const dir = join(disk, "inodes");
+  const dir = join(records, "inodes");
   mkdirSync(dir);
-  const { files } = statfsSync(disk);
+  const { files } = statfsSync(records);
   assert.throws(() => {
     for (let i = 0; i <= files; i++) closeSync(openSync(join(dir, String(i)), "wx", 0o600));
   }, { code: "ENOSPC" });
-  const space = statfsSync(disk);
+  const space = statfsSync(records);
   assert.equal(space.ffree, 0);
   assert.ok(space.bfree > 0, "inode exhaustion leaves free blocks");
   return dir;
@@ -114,10 +118,10 @@ function snapshot(file) {
 }
 
 async function nameCell() {
-  const file = join(home, "daemon/computer-name.json");
+  const file = nameFile;
   run(["name", "before-full"], 0);
   const before = snapshot(file);
-  exhaust();
+  const fill = exhaust(records);
   run(["name", "probe-disk-full"], 5, atomicMessage);
   run(["name", "bad\nname"], 1);
   assert.deepEqual(snapshot(file), before);
@@ -139,17 +143,22 @@ async function settingsCell() {
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), settings(false));
   const before = snapshot(file);
   assert.deepEqual(before.files, ["update-settings.json"]);
-  exhaust();
+  const fill = exhaust(disk);
   assert.deepEqual(await update(true), { v: 1, id: "probe", ok: false, error: { code: "OPERATION_FAILED", message: atomicMessage } });
   assert.deepEqual(snapshot(file), before, "failed dual-field update preserves bytes and record count");
   assert.equal((await status()).diskFull, true);
+  const rename = await frame("name", { name: "healthy-mount" });
+  assert.equal(rename.ok, true, JSON.stringify(rename));
+  assert.match(readFileSync(nameFile, "utf8"), /healthy-mount/);
+  assert.equal(rename.result.diskFull, true, "a name write on another mount must not clear the settings failure");
+  assert.deepEqual(snapshot(file), before);
   rmSync(fill);
   const retry = await update(true);
   assert.equal(retry.ok, true, JSON.stringify(retry));
   assert.equal(retry.result.diskFull, undefined, "successful write clears disk-full state");
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), settings(true));
   assert.deepEqual(snapshot(file).files, before.files);
-  console.log("  ✓ dual-field settings refusal preserves bytes and count, then both fields recover");
+  console.log("  ✓ dual-field settings refusal survives a healthy name write, preserves bytes and count, then recovers");
 }
 
 async function managerCell() {
@@ -159,7 +168,7 @@ async function managerCell() {
     provider: "cotal", remote: true, idp: { url: idp, issuer: idp, audience: idp }, endpoints: { url: idp },
   } });
   const start = () => frame("manager-start", { space });
-  const file = join(home, "daemon", spaceSegment(space), "manager-refusal.json");
+  const file = join(records, spaceSegment(space), "manager-refusal.json");
   const expectSignInRefusal = reply => {
     assert.equal(reply.ok, true, JSON.stringify(reply));
     assert.equal(reply.result.state, "refused");

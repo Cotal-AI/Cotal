@@ -17,7 +17,9 @@ const disk = mkdtempSync(join(realpathSync(tmpdir()), "ddf-"));
 const scenario = fileURLToPath(new URL("./_fixture-daemon-disk-full.mjs", import.meta.url));
 try {
   const runner = spawn("unshare", [...namespace, "sh", "-ec", `
-    mount -t tmpfs -o size=8m,nr_inodes=128,mode=0700 tmpfs "$1"
+    mount -t tmpfs -o size=8m,mode=0700 tmpfs "$1"
+    mkdir -m 0700 "$1/home" "$1/home/daemon"
+    mount -t tmpfs -o size=8m,nr_inodes=128,mode=0700 tmpfs "$1/home/daemon"
     exec "$2" "$3" "$1"
   `, "daemon-disk-full", disk, process.execPath, scenario], { env, stdio: "inherit", detached: true });
   const kill = () => { runner.kill("SIGKILL"); };
