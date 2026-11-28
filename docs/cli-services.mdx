@@ -254,7 +254,7 @@ Ctrl-D or closed input at that question leaves the service unchanged and exits 0
 `restart`, `remove` or `uninstall` cannot ask, it refuses and prints the command that confirms it,
 with `--space` and the `--instance` and `--with-agents` you gave, so that command acts on the same
 service. The `remove` confirmation also keeps `--plain` or `--json` when requested. The `stop` and
-`restart` confirmations for a service without an installed unit keep `--json` when requested. Without an
+`restart` confirmations for a service without an installed unit keep `--plain` or `--json` when requested. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
 start or stop that finds nothing to do says so and reports `no-op`. For a saved definition with no
 recorded instances, `stop` and `stop --dry-run` report `no-op` without asking for confirmation or
@@ -305,7 +305,7 @@ to remove the stopped definitions and records with the space.
 removes that unit. A preset is not installed as a unit in this release, the manager included:
 `install` of one refuses `UNSUPPORTED`, allocates nothing, and for a preset that runs in the
 foreground names the `ExecStart=` line, `cotal service start <name> --foreground`, for a unit of
-your own.
+your own. With `--dry-run`, the refusal points to the saved definitions in the requested space and keeps the output format. Following that advice starts nothing.
 
 The sections [Local service definitions](#local-service-definitions),
 [Service presets](#service-presets) and

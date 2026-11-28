@@ -10,6 +10,9 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { dialerFor, drainAndClose, membershipStoreDefinition } from "@cotal-ai/core";
+import { StorageType } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -106,6 +109,15 @@ try {
   assert.equal(logs.manualForeground.code, 2, logs.manualForeground.err); passed++;
   assert.match(logs.manualForeground.err, /stop the broker with the launcher that started it/); passed++;
   assert.doesNotMatch(logs.manualForeground.err, /cotal down/); passed++;
+  const nc = await dialerFor(server)({ servers: server });
+  try {
+    await new Kvm(nc).create(membershipStoreDefinition("manual-registration").bucket, { history: 1, storage: StorageType.File });
+    const migration = logs.manualMigration = await foregroundCliProbe(cliEntry, tsx, manualRoot, manualEnv, ["up", "--detach", "--server", server, "--space", "manual-registration", "--open"]);
+    assert.equal(migration.code, 2, migration.err);
+    assert.match(migration.err, /legacy File-backed membership store/);
+    assert.match(migration.err, /stop the broker with the launcher that started it/);
+    assert.doesNotMatch(migration.err, /cotal down/); passed++;
+  } finally { await drainAndClose(nc); }
   console.log("PASS foreground-up-running");
 } finally {
   try {

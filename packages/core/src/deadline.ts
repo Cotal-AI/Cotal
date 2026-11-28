@@ -7,3 +7,6 @@ export async function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () =
   try { return await Promise.race([p, timeout]); }
   finally { clearTimeout(timer); }
 }
+
+/** Default budget for an endpoint operation waiting on connection recovery. */
+export const CONNECTION_RECOVERY_MS = 10_000;

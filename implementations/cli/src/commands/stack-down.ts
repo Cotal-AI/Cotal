@@ -19,7 +19,7 @@ import {
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { cotalRoot } from "../lib/paths.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
@@ -224,10 +224,12 @@ function disabledJetStreamStop(journal: StackJournal, manager: Member, write: No
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
  *  Returns a settled active restore of this stack that was admitted, for the result to name. */
-function scopeRefusals(journal: StackJournal): string | undefined {
+function scopeRefusals(journal: StackJournal, values: ParsedArgs["values"]): string | undefined {
   const maintenance = stackMaintenanceFence(journal.root, journal);
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance attempt; the controller stack was not stopped under it", { target: { root: journal.root } });
-  stackScopeRefusals(journal, "bare `cotal down`");
+  const mode = presentationOf(values);
+  const retry = sameDown(values) + targetWords({ space: journal.space }) + (mode === "rich" ? "" : ` --${mode}`);
+  stackScopeRefusals(journal, `${codeSpan(retry)} from this stack's project folder`);
   return maintenance.admittedRestore;
 }
 
@@ -509,7 +511,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
   const manager = members.find((member) => member.role === "manager" && member.live);
   try {
-    restore = scopeRefusals(journal0);
+    restore = scopeRefusals(journal0, values);
     assertJournalWritable(root, values);
     assertServiceRecordsWritable(root, journal0.space, values);
     if (withAgents && !manager) throw missingStopManager(journal0, target);
@@ -586,7 +588,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   }
   const broker = members.find((member) => member.role === "broker" && member.live);
   const brokerPid = broker?.instance.record.value.process?.pid;
-  const admittedRestore = scopeRefusals(journal0);
+  const admittedRestore = scopeRefusals(journal0, values);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
   const manager = members.find((member) => member.role === "manager" && member.live);
@@ -688,7 +690,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       let kernel: ServiceAdapterKernelStopPlan | undefined;
       if (role === "broker") {
         // Recheck the whole scope now that earlier members are confirmed stopped.
-        scopeRefusals(journal);
+        scopeRefusals(journal, values);
         kernel = await prepareKernelServiceStop(member.definition, current);
       }
       const stopped = await stopProcessService(member.definition, current, holds, { plan: role === "manager" ? member.native : undefined, withAgents: role === "manager" && withAgents }, { plan: kernel });

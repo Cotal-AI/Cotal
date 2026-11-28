@@ -37,6 +37,11 @@ import { lockExclusiveNb, processStartTime } from "@cotal-ai/seat";
 import { codeSpan, shellPath, win32ProcessBinding } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
+export interface DaemonPeerLifetime {
+  readonly pid: number;
+  readonly birth: string;
+}
+
 /** The socket a holder published, identified by the inode it is, not by its path alone. */
 interface SocketGeneration {
   readonly path: string;
