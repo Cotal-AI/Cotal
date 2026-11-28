@@ -5,6 +5,14 @@ import {
   seededCommandsMismatch, type InstalledExtension, type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 
+/** Name the package when its declaration cannot be read. */
+export function readExtensionDeclaration(pkg: string, raw: unknown) {
+  try { return readPluginDeclaration(raw); }
+  catch (error) {
+    throw new Error(`${pkg}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+}
+
 /** Verify claims and construct the installed entry from package metadata alone. */
 export function declaredExtensionEntry(pkg: string, spec: string, metadata: InstalledExtensionPackage, recorded: readonly InstalledExtension[], seeded: boolean): InstalledExtension {
   if (metadata.cotal === undefined) {
@@ -16,15 +24,15 @@ export function declaredExtensionEntry(pkg: string, spec: string, metadata: Inst
     if (name === "@cotal-ai/workspace" || Object.hasOwn(BUILT_IN_PACKAGES, name))
       throw new Error(`${pkg} declares ${name}; that package shares process state with the CLI and cannot be a plugin dependency or peer`);
   }
-  const declaration = readPluginDeclaration(metadata.cotal);
+  const declaration = readExtensionDeclaration(pkg, metadata.cotal);
   for (const provided of declaration.provides) {
     for (const word of providedWords(provided)) {
       if (provided.kind === "connector" && RESERVED_CONNECTOR_NAMES.includes(word))
-        throw new Error(`contributes connector "${word}", which is a reserved name`);
+        throw new Error(`${pkg} contributes connector "${word}", which is a reserved name`);
       if (registry.has(provided.kind, word) || registry.provides(provided.kind, word))
-        throw new Error(`contributes ${provided.kind} "${word}", already provided by this CLI`);
+        throw new Error(`${pkg} contributes ${provided.kind} "${word}", already provided by this CLI`);
       const other = recorded.find((entry) => entry.pkg !== pkg && !Object.hasOwn(BUILT_IN_PACKAGES, entry.pkg) && extensionProvides(entry).some((ref) => ref.kind === provided.kind && providedWords(ref).includes(word)));
-      if (other) throw new Error(`contributes ${provided.kind} "${word}", already provided by installed extension ${other.pkg}@${other.version}; run \`cotal ext remove ${other.pkg}\` first if you want this one`);
+      if (other) throw new Error(`${pkg} contributes ${provided.kind} "${word}", already provided by installed extension ${other.pkg}@${other.version}; run \`cotal ext remove ${other.pkg}\` first if you want this one`);
     }
   }
   const mismatch = seeded ? seededCommandsMismatch(pkg, declaration.commands) : undefined;

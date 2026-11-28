@@ -20,8 +20,8 @@ import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
 import { generateExtensionManifest } from "../lib/extension-manifest-command.js";
-import { declaredExtensionEntry } from "../lib/extension-install-declaration.js";
-import { BUILT_IN_PACKAGES, checkPluginCore, readPluginDeclaration } from "@cotal-ai/workspace";
+import { declaredExtensionEntry, readExtensionDeclaration } from "../lib/extension-install-declaration.js";
+import { BUILT_IN_PACKAGES, checkPluginCore } from "@cotal-ai/workspace";
 import { builtInExtension } from "../lib/built-in-extension.js";
 
 export const extFlags = [
@@ -336,7 +336,7 @@ export async function installExtensionSet(
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
       const dir = extensionPackageDir(request.pkg);
       const entry = resolveExtensionEntry(dir, meta);
-      if (opts?.checkCoreVersion && meta.cotal !== undefined) checkPluginCore(request.pkg, meta, readPluginDeclaration(meta.cotal), entry);
+      if (opts?.checkCoreVersion && meta.cotal !== undefined) checkPluginCore(request.pkg, meta, readExtensionDeclaration(request.pkg, meta.cotal), entry);
       if (!existsSync(entry)) {
         const path = codeSpan(`./${oneLine(relative(dir, entry).split(sep).join("/"))}`);
         const message = `the installed npm package ${oneLine(request.pkg)} is missing its entry ${path}.`;
