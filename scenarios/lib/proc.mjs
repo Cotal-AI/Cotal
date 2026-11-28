@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 /** The environment the product sees: the user's own, without test-harness variables or tokens. */
 export function productEnv(extra = {}) {
   const env = { ...process.env };
-  for (const name of Object.keys(env)) if (name.startsWith('COTAL_') || ['NODE_OPTIONS', 'GITHUB_TOKEN', 'GH_TOKEN'].includes(name)) delete env[name];
+  for (const name of Object.keys(env)) if (name.startsWith('COTAL_') || ['NODE_OPTIONS', 'GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN_FILE'].includes(name)) delete env[name];
   return { ...env, DO_NOT_TRACK: '1', ...extra };
 }
 

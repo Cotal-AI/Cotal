@@ -18,7 +18,9 @@ export function assetName(version, kind) {
 
 async function listReleases() {
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'cotal-scenarios' };
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  // A test VM gets the token as a file, so it never appears on a command line.
+  const file = process.env.GITHUB_TOKEN_FILE;
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || (file && existsSync(file) ? readFileSync(file, 'utf8').trim() : '');
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(api, { headers, signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`GitHub release listing failed: HTTP ${response.status}`);

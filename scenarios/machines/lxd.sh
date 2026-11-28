@@ -38,7 +38,7 @@ wait_agent() {
   done
   die "$1 did not answer within three minutes"
 }
-as_user() { local vm=$1; shift; lxc exec "$vm" ${SCENARIO_JOB_URL:+--env SCENARIO_JOB_URL="$SCENARIO_JOB_URL"} --user $uid --group $uid --cwd /home/$user --env HOME=/home/$user --env USER=$user --env XDG_RUNTIME_DIR=/run/user/$uid --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus -- "$@"; }
+as_user() { local vm=$1; shift; lxc exec "$vm" ${SCENARIO_JOB_URL:+--env SCENARIO_JOB_URL="$SCENARIO_JOB_URL"} ${token_file:+--env GITHUB_TOKEN_FILE="$token_file"} --user $uid --group $uid --cwd /home/$user --env HOME=/home/$user --env USER=$user --env XDG_RUNTIME_DIR=/run/user/$uid --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus -- "$@"; }
 running_others() {
   lxc list --format csv -c ns | awk -F, -v self="$1" '$1 ~ /^cotal-(test|dev)-/ && $1 != self && $2 == "RUNNING" {print $1}'
 }
@@ -105,8 +105,15 @@ run() {
   lxc exec "$vm" -- rm -rf /home/$user/scenarios
   lxc file push -r -p "$scenarios" "$vm/home/$user/" >/dev/null
   lxc exec "$vm" -- sh -c "rm -rf /home/$user/scenarios/results; chown -R $user:$user /home/$user/scenarios"
-  local status=0
+  # Unauthenticated release listings share one small hourly limit per runner address. The token
+  # goes in through stdin into a 0600 file, never through a command line.
+  local status=0 token=${GITHUB_TOKEN:-${GH_TOKEN:-}} token_file=
+  if [ -n "$token" ]; then
+    token_file=/home/$user/.github-token
+    printf '%s' "$token" | lxc exec "$vm" -- sh -c "umask 077; cat > $token_file; chown $user:$user $token_file"
+  fi
   as_user "$vm" /opt/cotal-scenario-node/bin/node /home/$user/scenarios/run.mjs run "$scenario" --out /home/$user/result "$@" || status=$?
+  [ -z "$token_file" ] || lxc exec "$vm" -- rm -f "$token_file"
   lxc file pull -r "$vm/home/$user/result/." "$out/" >/dev/null 2>&1 || true
   lxc stop "$vm"
   echo "Result: $out/result.json"

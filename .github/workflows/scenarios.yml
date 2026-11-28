@@ -129,6 +129,7 @@ jobs:
       - name: Run the scenario on Fedora
         if: matrix.os == 'fedora'
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           SCENARIO_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
         run: |
           set -euo pipefail
