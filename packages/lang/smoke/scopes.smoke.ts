@@ -14,10 +14,11 @@
  */
 import { run, resume, RunDivergence } from "../src/interpret.js";
 import { validate } from "../src/grammar.js";
+import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import { resolvePins, WALKER_LANGUAGE_VERSION } from "../src/pins.js";
-import type { EffectHandler } from "../src/effects.js";
+import { RunReleased, type EffectContext, type EffectHandler, type SleepRequest, type TurnRequest, type TurnResultValue } from "../src/effects.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -32,6 +33,62 @@ const sink = (line: { scope: string; values: readonly unknown[] }) => {
 };
 
 const scopeOf = (j: Journal, kind: string) => j.entries().find((e) => e.kind === kind);
+
+{
+  const source = `const seat = await spawn("builder");
+    const replies = await parallel({
+      review: async () => await turn(seat, { name: "review" }),
+      sibling: async () => { await sleep("1s", { name: "in-flight" }); await sleep("1s", { name: "next" }); }
+    }, { name: "review-scope" });
+    log(replies.review.note);`;
+  const runId = "bound-turn-sibling";
+  let finished = false;
+  let interrupted = false;
+  let stopped = false;
+  let noteSiblingStarted!: () => void;
+  let finishSibling!: () => void;
+  const siblingStarted = new Promise<void>((resolve) => { noteSiblingStarted = resolve; });
+  const siblingMayFinish = new Promise<void>((resolve) => { finishSibling = resolve; });
+  const dispatches: string[] = [];
+  class ReleaseAfterBinding extends SimHandler {
+    async turn(_req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
+      dispatches.push(ctx.resume === undefined ? "submit" : "attach");
+      if (ctx.resume?.goalId === ctx.requestId) return { status: "done", note: "same goal", at: 0 };
+      await ctx.bind({ goalId: ctx.requestId, deadlineAt: 60_000 });
+      await siblingStarted;
+      stopped = true;
+      throw new RunReleased("turn reads went unanswered");
+    }
+    async sleep(_req: SleepRequest, ctx: EffectContext): Promise<null> {
+      dispatches.push(ctx.key.name);
+      if (ctx.key.name === "in-flight") {
+        ctx.signal.onCancel(() => { interrupted = true; });
+        noteSiblingStarted();
+        await siblingMayFinish;
+      }
+      return null;
+    }
+  }
+  const handler = new ReleaseAfterBinding({});
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const initial = run(source, { runId, handler, journal, pins }).catch((e: unknown) => e)
+    .finally(() => { finished = true; });
+  const entered = await Promise.race([siblingStarted.then(() => true), initial]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  ok("a bound turn release waits for its in-flight sibling without cancelling it", entered === true && stopped && !finished && !interrupted,
+    entered instanceof LangErrors ? entered.render() : { stopped, finished, interrupted });
+  finishSibling();
+  const released = await initial;
+  ok("the sibling may dispatch its next effect while the released scope stays pending",
+    released instanceof RunReleased && !interrupted && dispatches.includes("next")
+    && scopeOf(journal, "parallel")?.state === "pending"
+    && journal.entries().filter((e) => e.kind === "sleep" && e.status === "ok").length === 2);
+  const notes: unknown[] = [];
+  await resume(source, journal, { runId, handler, pins, onLog: (line) => notes.push(...line.values) });
+  ok("resume reads the same turn and replays both sibling effects",
+    notes[0] === "same goal" && dispatches.at(-1) === "attach" && dispatches.length === 4, { notes, dispatches });
+}
 
 // ---- 1) a race is journalled, with BOTH the index and the value ------------------------------
 

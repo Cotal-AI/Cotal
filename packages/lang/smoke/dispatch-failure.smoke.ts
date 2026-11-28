@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import {
-  Cancelled, EffectError, EffectRefused, Journal, JournalAppendRejected, RunHeld, SimHandler,
+  Cancelled, EffectError, EffectRefused, Journal, JournalAppendRejected, RunHeld, RunReleased, SimHandler,
   WALKER_LANGUAGE_VERSION, resolvePins, resume, run,
-  type EffectContext, type JournalEntry, type ObserveRequest, type SleepRequest,
+  type EffectContext, type JournalEntry, type ObserveRequest, type SleepRequest, type TurnRequest, type TurnResultValue,
 } from "../dist/index.js";
 
 const PROGRAMS = {
@@ -113,4 +113,59 @@ for (const [kind, source] of Object.entries(PROGRAMS)) {
   assert.equal(journal.entries()[0]?.state, "pending");
   assert.equal(journal.entries()[0]?.error, undefined);
   console.log(`ok ${kind}: journal append rejection is not settled as a handler fault`);
+}
+
+for (const kind of ["sleep", "unbound-turn", "wrong-goal", "missing-deadline", "open-conclave", "close-conclave"] as const) {
+  const source = kind === "sleep" ? PROGRAMS.sleep : kind.endsWith("conclave")
+    ? 'const seat = await spawn("builder"); await conclave([seat], async () => 1, { name: "room" });'
+    : 'const seat = await spawn("builder"); await turn(seat, { name: "review" });';
+  const step = kind === "sleep" ? "sleep" : kind.endsWith("conclave") ? "conclave" : "turn";
+  const runId = `reject-release-${kind}`;
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const release = new RunReleased("fixture release");
+  let attempts = 0;
+  class Releasing extends SimHandler {
+    async sleep(_req: SleepRequest, ctx: EffectContext): Promise<never> {
+      await ctx.bind({ goalId: ctx.requestId, deadlineAt: 60_000 });
+      attempts++;
+      throw release;
+    }
+    async turn(_req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
+      if (kind === "wrong-goal") await ctx.bind({ goalId: "another-goal", deadlineAt: 60_000 });
+      if (kind === "missing-deadline") await ctx.bind({ goalId: ctx.requestId });
+      attempts++;
+      throw release;
+    }
+    async openConclave(...args: Parameters<SimHandler["openConclave"]>) {
+      if (kind !== "open-conclave") return super.openConclave(...args);
+      attempts++;
+      throw release;
+    }
+    async closeConclave(...args: Parameters<SimHandler["closeConclave"]>) {
+      if (attempts++ === 0) throw release;
+      return await super.closeConclave(...args);
+    }
+  }
+  const handler = new Releasing({});
+  const isFailure = (e: unknown) => e instanceof EffectError && e.code === "L4000" && e.kind === "handler-fault";
+  await assert.rejects(run(source, { runId, journal, handler, pins }), isFailure);
+  const entry = journal.entries().find((e) => e.kind === step);
+  if (kind === "close-conclave") {
+    assert.equal(entry?.state, "pending");
+    assert.equal(attempts, 1);
+    const resumed = await resume(source, journal, { runId, handler, pins });
+    const closed = resumed.journal.entries().find((e) => e.kind === "conclave");
+    assert.equal(closed?.status, "ok");
+    assert.equal(closed?.closed, true);
+    assert.equal(attempts, 2, "resume retries the owed close");
+    console.log("ok close-conclave: a rejected release leaves the close owed until resume closes it");
+    continue;
+  }
+  assert.equal(entry?.state, "settled");
+  assert.equal(entry?.status, "failed");
+  assert.equal(entry?.error?.code, "L4000");
+  await assert.rejects(resume(source, journal, { runId, handler, pins }), isFailure);
+  assert.equal(attempts, 1, "resume replays the failure and does not perform the effect again");
+  console.log(`ok ${kind}: an ineligible handler release settles failed and does not redispatch`);
 }

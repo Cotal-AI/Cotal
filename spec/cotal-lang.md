@@ -706,8 +706,11 @@ already in flight is
 the handler's: an agent reply already in progress completes and is ignored. Cancellation is issued only by the scope's own semantics: a race's decision, and a
 branch's failure cancelling its siblings. A host release (L5012), a refused append (L5010,
 L5006) and a divergence (L5001) are not failures of a branch: a scope such an unwind passes
-through cancels no sibling and settles nothing, its in-flight branches run to their own next
-boundary (where each releases in turn), and the journal stays exactly where it was (§9.2, §10.5). A `catch` never sees a
+through cancels no sibling and leaves the scope entry pending (§9.2, §10.5). While a host's stop
+check returns a reason, each sibling stops before dispatching its next unrecorded effect. A release
+from a bound `turn` (§11.1) does not change that check. In `parallel` and `fanOut`, sibling branches
+may start more effects and record their results before the release propagates. In `race`, the
+released arm is not a candidate. A sibling may still win under the normal race rules. A `catch` never sees a
 cancellation (§9.2). A `race` may additionally cut a loser's pure work at a yield point once it can
 no longer win (§7.3); a pure loop in an arm that could still win ends on the step budget (L4013).
 
@@ -1181,10 +1184,15 @@ divergence (L5001). Where a build dispatches to more than one engine, a record w
 engine of that build serves is refused before any of this, with L5023 (§8.4), and the run MUST be
 left untouched: nothing activated, nothing appended. (A recorded branch missing from the source is L5022 only on a migration or fork
 walk entering a SETTLED scope, §11.2; a `pending` scope records no arm names to check and is
-re-entered by a resume.) A resume performs live every
-effect the journal has not settled, so a run that stops before its next effect (L5012, the host's
-release, asked before every unrecorded effect and never inside one) is exactly where its journal
-says it is. A **capability refusal** is the same shape one step later: the handler attempted
+re-entered by a resume.) A resume performs live every effect the journal has not settled.
+A host release (L5012) leaves the run where its journal says it is. The host can ask to stop
+before any unrecorded effect. An implementation MUST accept a release from a handler only for a
+pending `turn` whose recorded binding contains the entry's request id as `goalId` and a finite
+`deadlineAt`. The entry stays pending. On resume the handler MUST reattach to that goal and
+deadline without submitting another turn. For any other handler dispatch, a release signal is
+an L4000 `handler-fault`, not a host release, and settles the entry as failed. A `conclave` close
+reports the same fault but leaves the entry pending so replay can retry the owed close (§7.5).
+A **capability refusal** is different: the handler attempted
 nothing, the entry settles `refused` under the handler's code, and the run unwinds with L5025
 rather than recording a failure; a resume on a host that can perform the step finds the `refused`
 verdict (§10.7) and performs it live.
@@ -1355,7 +1363,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5009 | Resume pin mismatch |
 | L5010 | Journal append rejected |
 | L5011 | Journal belongs to a different run |
-| L5012 | Run released before the next effect |
+| L5012 | Run released by the host |
 | L5013 | Orphaned undelivered `notice` on migrate |
 | L5014 | Orphaned open `conclave` on migrate |
 | L5015 | No orphan policy for this entry kind on migrate |
@@ -1424,3 +1432,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-11-04 | A client deadline is an instance of the NATS client's `TimeoutError`, not an error that carries that name. The client's request and API deadlines reject that class with no cause. `AbortSignal.timeout` raises a `DOMException` of the same name, and any error can be renamed to it; matching the name retried those and, after the bound, failed the step as L4026. They are not a client deadline, so they fail on the first attempt as `L4000`. |
 | 2026-11-04 | An inline persona takes `endpoints`, a list of `{ endpoint, commands, instanceId? }` records naming the endpoint commands handed to the helper (§6.1). A malformed entry is refused with L3049 before the step key is minted, and the list is hashed with the rest of the definition (§6.4). |
 | 2026-11-17 | The free `map`, `filter`, `find`, `some` and `every` read the array's length once, before the first call, as their methods do (§5.2). Measured before it: a callback that pushed onto the array it walked was called for the appended element, so `map([1, 2], f)` with a push in the first call answered `[10, 20, 30]` where `xs.map(f)` answered `[10, 20]`, and a callback that pushed on every call ran until the run failed with L4013. |
+| 2026-11-24 | A handler may release a pending `turn` only after binding its goal and deadline (§11.1, L5012). A resume reattaches to that goal without submitting another turn. A turn releases with the L4026 diagnostic when its result, deadline or presence read exhausts unanswered attempts. The release does not request a stop at siblings' effect boundaries (§7.6). |

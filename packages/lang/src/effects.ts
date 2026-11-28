@@ -323,24 +323,21 @@ export class Cancelled extends Error {
 }
 
 /**
- * The host is stopping before the next effect, and the program is not at fault.
+ * The host is releasing the run, and the program is not at fault.
  *
  * A driver holds a run under a lease with an absolute horizon, and it may be asked to hand the run
  * back. Neither is a fact about the workflow: it has not failed and it has not finished, it is
- * exactly where its journal says it is. So this is raised BEFORE an effect is begun — never once a
- * handler has been dispatched — and it travels like {@link Cancelled} and `JournalAppendRejected`:
- * a workflow's `try` cannot catch it. A program that could catch its host's shutdown could carry on
- * performing effects after the horizon it was granted, which is the thing the stop exists to end.
- *
- * The language raises it; it never accepts it from outside. A caller answers only "should I stop,
- * and why" — if a driver could throw the class itself it could also throw something catchable, and
- * the guarantee would be the caller's to keep rather than the language's.
+ * exactly where its journal says it is. The language raises this before beginning an effect if the
+ * host's boundary check returns a reason to stop. A turn handler can also raise it after binding
+ * the turn's goal and deadline. The interpreter leaves that turn pending for reattachment and
+ * reports a handler fault if any other handler dispatch throws it. A workflow cannot catch an
+ * accepted release.
  */
 export class RunReleased extends Error {
   readonly code = "L5012";
 
   constructor(readonly reason: string) {
-    super(`this run was released before its next effect: ${reason}`);
+    super(`this run was released: ${reason}`);
     this.name = "RunReleased";
   }
 }
@@ -372,7 +369,7 @@ export class EffectRefused extends Error {
  * run on the way out (§9.2). The program is not at fault and has not failed; the run is exactly
  * where its journal says it is, holding one `refused` entry or one held step still `pending`, and
  * the repair is a capable host rather than anything the program could do with one more effect.
- * Like {@link RunReleased}, the language raises it and never accepts it from outside.
+ * A handler reports a capability refusal with {@link EffectRefused}. The language raises `RunHeld`.
  */
 export class RunHeld extends Error {
   readonly code = "L5025";

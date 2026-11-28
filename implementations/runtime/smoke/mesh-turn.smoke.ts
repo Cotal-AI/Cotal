@@ -72,6 +72,7 @@ import {
   writeRunNotice,
   readRunNotice,
   createRunSpec,
+  readRunRecord,
   writeRunStatus,
   replayRunJournal,
   newTakeoverId,
@@ -83,7 +84,7 @@ import {
   type ActionContext,
 } from "@cotal-ai/core";
 import { EffectError, type JournalEntry } from "@cotal-ai/lang";
-import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
+import { MeshHandler, EpfSettleWatcher, driveRun, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { POLL_ATTEMPTS, loopLag, type LoopLagObserver } from "../src/host-starvation.js";
@@ -968,10 +969,97 @@ if (!placedHostOnly) {
     JSON.stringify({ well, accepts: spawnAccepts.size, before }));
 }
 
-// Each seam delegates to the real plane unless the selected poll is being faulted. The hosted
-// CLI/proxy reproduction covers the actual client timeout separately from these boundary cells.
+// Stop only the owned broker, once the selected read proves the turn is already bound.
+async function recoverTurnAfterBrokerPause(read: "readGoalResult" | "expired"): Promise<void> {
+  console.log(`• 20a: six real ${read} timeouts leave the workflow resumable`);
+  const runId = `tn-outage-${read}`;
+  const handler = pollingHandler(runId, []);
+  const seam = handler as unknown as {
+    actionCtx(): Promise<ActionContext>;
+    expired(...args: unknown[]): Promise<unknown>;
+  };
+  const streams = (await seam.actionCtx()).jsm.streams;
+  const original = streams.getMessage;
+  const originalExpired = seam.expired;
+  const before = turnInvokes.length;
+  let stopped = false, timeouts = 0;
+  let recovery: ReturnType<typeof setTimeout> | undefined;
+  const resumeBroker = () => {
+    if (stopped) {
+      broker.kill("SIGCONT");
+      stopped = false;
+    }
+  };
+  const request = {
+    space: SPACE, endpoint: EP, kv, runId, lease: lease(), statusConnection: nc, handler,
+    source: `const seat = await spawn("builder");
+      const replies = await parallel({ review: async () => await turn(seat, { name: "review", deadline: "2m" }) });
+      log(replies.review.note);`,
+  };
+  let firstRead = true;
+  const pauseOnRead = async <T>(realRead: () => Promise<T>): Promise<T> => {
+    if (firstRead) {
+      firstRead = false;
+      if (!broker.kill("SIGSTOP")) throw new Error("could not stop the private broker");
+      stopped = true;
+    }
+    try { return await realRead(); }
+    catch (error) {
+      if (error instanceof TimeoutError && ++timeouts === POLL_ATTEMPTS) recovery = setTimeout(resumeBroker, 250);
+      throw error;
+    }
+  };
+  if (read === "expired") {
+    seam.expired = (...args) => pauseOnRead(() => originalExpired.apply(handler, args));
+  } else {
+    streams.getMessage = function (stream, query) {
+      const goalId = turnInvokes[before]?.goalId;
+      return goalId !== undefined && "last_by_subj" in query && query.last_by_subj?.endsWith(`.${goalId}.result`)
+        ? pauseOnRead(() => original.call(this, stream, query)) : original.call(this, stream, query);
+    };
+  }
+  try {
+    const initial = await withDeadline(driven(request), 60_000, "workflow across six real broker timeouts");
+    resumeBroker();
+    const state = (await readRunRecord(kv, EP, runId))?.status?.value.state;
+    const pending = (await journalEntries(runId, "turn")).at(-1);
+    const turn = turnInvokes[before];
+    c(`${read}: six broker timeouts release the run with its diagnostic and leave the original turn pending`,
+      timeouts === POLL_ATTEMPTS && initial?.status === "released" && state === "released"
+      && initial.reason.message.includes("L4026: ") && initial.reason.message.includes(`${read} could not be served: the plane did not answer 6 reads`)
+      && pending?.state === "pending" && turn !== undefined && pending.external?.goalId === turn.goalId,
+      { timeouts, initial, state, pending });
+    if (turn === undefined || state !== "released") throw new Error("expected a released run with a bound turn");
+
+    const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: turn.goalId });
+    const ref = { endpoint: EP, caller: CALLER, goalId: turn.goalId };
+    const { fact } = await commitGoalResult(goalCtx, {
+      ref, now: Date.now(), cause: "complete", state: "succeeded", data: { status: "done", note: "original yield", at: Date.now() },
+      committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH },
+      executor: { lifecycleUid: turn.target.lifecycleUid, epoch: 0 }, resolveCurrentEpoch: () => 0,
+    });
+    const notes: unknown[] = [];
+    const resumed = await withDeadline(driveRun(js, jsm, {
+      ...request, lease: { ...lease(), epoch: 2 }, handler: mk(runId),
+      onLog: (line) => notes.push(...line.values),
+    }), 20_000, "resume of the original turn after broker recovery");
+    c(`${read}: the timer and relay survive release, and resume reads the original yield without another submission`,
+      timer === undefined && fact.state === "succeeded" && resumed?.status === "completed"
+      && notes[0] === "original yield" && turnInvokes.length === before + 1,
+      { timer, fact, resumed, notes, invokes: turnInvokes.length - before });
+  } finally {
+    resumeBroker();
+    clearTimeout(recovery);
+    streams.getMessage = original;
+    seam.expired = originalExpired;
+  }
+}
+
+for (const read of ["readGoalResult", "expired"] as const) await recoverTurnAfterBrokerPause(read);
+
+// Each seam delegates to the real plane unless the selected poll is being faulted.
 {
-  console.log("• 20: turn poll reads recover, fail bounded by name, and retire abandoned relays");
+  console.log("• 20: turn poll reads recover or release, and failed turns retire abandoned relays");
   type PollSeam = {
     actionCtx(): Promise<ActionContext>;
     expired(...args: unknown[]): Promise<unknown>;
@@ -1019,13 +1107,14 @@ if (!placedHostOnly) {
     });
     try {
       const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(persistentId).ctx)), 30_000, `the ${read} retry budget`);
-      c(`${read}: repeated timeouts fail bounded and name the read`,
-        attempts === POLL_ATTEMPTS && (got as { code?: string })?.code === "L4026"
-        && String((got as { message?: string })?.message).includes(read), got);
+      const retryError = got as { name?: string; message?: string } | undefined;
+      c(`${read}: repeated timeouts release at the retry bound and name the read`,
+        attempts === POLL_ATTEMPTS && retryError?.name === "RunReleased"
+        && retryError.message?.includes("L4026: ") === true && retryError.message.includes(read), got);
       const fact = await import("@cotal-ai/core").then(({ readGoalResult }) => readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: persistentId }));
-      c(`${read}: an abandoned turn's relay is cancelled before the handler returns`, fact?.state === "cancelled", fact);
+      c(`${read}: release leaves the relay pending`, fact === undefined, fact);
       const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: persistentId });
-      c(`${read}: an abandoned turn's primary timer is claimed before the handler returns`, timer?.settle === "resumed", timer);
+      c(`${read}: release leaves the primary timer unclaimed`, timer === undefined, timer);
     } finally { restorePersistent(); }
   }
 
@@ -1100,7 +1189,7 @@ if (!placedHostOnly) {
     cleanup.withdrawCancelledRelay = originalWithdraw;
   }
 
-  for (const [code, kind] of [["L4026", "pause-unanswered"], ["L4025", "host-starved"]] as const) {
+  for (const [code, kind] of [["L4016", "handler-fault"], ["L4025", "host-starved"]] as const) {
     for (const failedCleanup of ["relay withdrawal", "primary timer claim"]) {
       const runId = `tn-cleanup-${code}-${failedCleanup.split(" ")[0]}`;
       const handler = pollingHandler(runId, []);
@@ -1319,7 +1408,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = placedHostOnly ? 18 : 104;
+const EXPECTED_CELLS = placedHostOnly ? 18 : 108;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -229,15 +229,12 @@ export interface RunOptions {
   /**
    * The HOST's stop, asked before every effect that has not already been recorded.
    *
-   * Return a reason to stop the run where it stands; return `undefined` to carry on. The interpreter
-   * raises {@link RunReleased} itself rather than accepting an error from the caller — a driver that
-   * could throw the class could also throw something a workflow's `try` would swallow, and then the
-   * guarantee would be the caller's to keep.
+   * Return a reason to stop the run where it stands, or `undefined` to carry on. The interpreter
+   * turns the reason into an uncatchable host release.
    *
    * This exists because a driver's reasons to stop are not the program's business and must not be
    * recorded as its outcome: an absolute work horizon reached, a pause requested by an operator.
-   * Asked here, nothing is half-done — no entry begun, no handler dispatched — so the run is exactly
-   * where its journal says it is and the next driver resumes from there.
+   * This check runs before the step starts. It does not interrupt a handler in flight.
    */
   readonly shouldStop?: () => string | undefined;
   /** Cooperative root cancellation, distinct from a next-boundary host release. */

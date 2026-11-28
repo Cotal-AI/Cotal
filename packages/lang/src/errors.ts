@@ -168,12 +168,8 @@ export const CATALOG = Object.freeze({
   // scope and name MATCHES: a mismatch is not a mislabelling, it is one run resuming from another
   // run's history and returning its results as its own.
   L5011: "Journal belongs to a different run",
-  // The DRIVER stopped, and the program did not. A run whose host must stop before the next effect
-  // — its work horizon reached, a pause requested — has not failed and has not finished: it is
-  // exactly where its journal says it is, and someone else can pick it up there. Recorded as its
-  // own code because settling the entry instead would write down a failure for work nobody
-  // attempted.
-  L5012: "Run released before the next effect",
+  // The host releases the run without claiming that the program finished or failed.
+  L5012: "Run released by the host",
   // The three refusals design 8.4's orphan table needs and does not number. Allocated here rather
   // than reused, because a code that means two things is worse than a code that means nothing: the
   // first three numbers this table wanted — L5005, L5006, L5007 — were already a pending effect, an
