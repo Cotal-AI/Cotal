@@ -140,8 +140,10 @@ try {
   try {
     appPeer.write(`${JSON.stringify({ v: 1, id: "app", op: "agent-app-install", appVersion: version, name: "claude" })}\n`);
     const refused = JSON.parse(await readLine(appPeer, 5000));
-    check("an actual foreground daemon refuses an app mutation without native provenance", refused.ok === false && refused.error.code === "LIFECYCLE_BLOCKED");
+    check("the daemon socket never runs an installer directly", refused.ok === false && refused.error.code === "UNKNOWN_OP");
   } finally { appPeer.destroy(); }
+  const refusedApp = await request({ op: "agent-app-install", name: "claude" });
+  check("the actual Desktop bridge refuses install against a foreground daemon without native provenance", refusedApp.ok === false && refusedApp.error.code === "LIFECYCLE_BLOCKED" && refusedApp.error.native?.code === "APP_FOREGROUND");
   const status = await request({ op: "status" });
   check("kernel-authenticated bridge reaches the actual daemon pid", status.ok === true && status.result.pid === process.pid);
   check("local readiness is explicit", status.result.state === "ready");
