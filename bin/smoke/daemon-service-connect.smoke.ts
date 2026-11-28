@@ -4294,7 +4294,13 @@ process.exit(result.status ?? 93);
               assert.equal(doc.completeness, "partial");
               assert.equal(doc.error.code, "OPERATION_PARTIAL");
               assert.deepEqual(doc.result, { version: "0.151.3", releaseInstalled: true, reconciliation: "deferred" });
-              assert.equal((await cli("status")).doc.result.version, "0.151.2");
+              let waiting = await cli("status");
+              for (let i = 0; i < 30 && !waiting.doc.result?.generation?.waiting; i++) {
+                await sleep(200);
+                waiting = await cli("status");
+              }
+              assert.equal(waiting.doc.result?.version, "0.151.2");
+              assert.match(waiting.doc.result?.generation?.waiting ?? "", /Connector reconciliation and daemon activation are waiting:/);
               assert.equal(child.pid, oldPid);
             } finally { chmodSync(config, 0o755); }
             if (process.argv.includes("--finish-connector-update-manual")) {
@@ -4314,7 +4320,11 @@ process.exit(result.status ?? 93);
             const { deferredUpdateActivation } = await import("@cotal-ai/workspace");
             assert.equal(deferredUpdateActivation(cliEntry, "0.151.3"), undefined);
             assertSeededInventory("0.151.3");
-            console.log("  ✓ protection repair reconciles connectors and activates the new service without a deferral");
+            const attempt = JSON.parse(readFileSync(join(home, "update-attempt.json"), "utf8"));
+            assert.equal(attempt.version, "0.151.3");
+            assert.notEqual(attempt.connectorReconciliationPending, true);
+            const route = process.argv.includes("--finish-connector-update-manual") ? "chmod and explicit update" : "chmod alone";
+            console.log(`  ✓ ${route}: all seven connectors reconciled and the new service answers without a deferral`);
             return;
           }
           if (process.argv.includes("--prepare-abort-repro")) {
