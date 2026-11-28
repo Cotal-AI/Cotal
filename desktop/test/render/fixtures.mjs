@@ -46,7 +46,12 @@ export function nativeStub(scenario) {
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
       if (command === "set_connection_state") { state.nativeConnection = args; return null; }
-      if (command === "open_browser" || command.startsWith("plugin:")) return null;
+      if (command === "open_browser") {
+        state.browserOpens = (state.browserOpens ?? 0) + 1;
+        if (state.browserOpens === state.browserFailureAt) throw "The browser could not be opened.";
+        return null;
+      }
+      if (command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
       if (state.trackAppNavigation && ["install", "login", "setup"].includes(request.op)) {
@@ -1115,6 +1120,25 @@ export const scenarios = [
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
   } },
   { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
+  ...[1, 2].map(browserFailureAt => ({
+    name: `approval-browser-${browserFailureAt === 1 ? "auto" : "manual"}-failure`,
+    state: { waiting: true, platform: "linux", browserFailureAt },
+    act: async page => {
+      await page.click("#login");
+      if (browserFailureAt === 2) await page.click("#open-approval");
+      await page.waitForFunction(attempt => window.__renderState.browserOpens === attempt, browserFailureAt);
+    },
+    expect: async page => {
+      assert.equal(await page.locator("#approval").isVisible(), true, "browser failure must not hide the pending approval");
+      assert.equal(await page.locator("#approval-code").textContent(), "WDJB-MJHT");
+      assert.match(await page.locator("#approval-expiry").textContent(), /^Expires in /);
+      assert.equal(await page.locator("#approval-browser-help").isVisible(), true);
+      assert.equal(await page.locator("#approval-link").textContent(), "https://cloud.cotal.ai/device?user_code=WDJB-MJHT");
+      await page.getByRole("button", { name: "Copy link" }).click();
+      assert.equal(await page.evaluate(() => window.__renderState.clipboard), "https://cloud.cotal.ai/device?user_code=WDJB-MJHT");
+      assert.equal(await page.locator("#recovery-panel").isHidden(), true);
+    },
+  })),
   { name: "signed-in", state: {}, act: signIn },
   { name: "spaces", state: { multiple: true }, act: signIn },
   { name: "personal", state: { multiple: true, personal: true }, act: signIn },

@@ -17,8 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
-import { acquireMaintenanceLock, CommandFailure, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, CommandFailure, releaseMaintenanceLock, userAuthStateDir } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { liveServicesRefusal } from "../src/commands/down-services.js";
 import { recordedProcessRefusal } from "../src/commands/service-registry.js";
 import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
@@ -218,6 +219,15 @@ for (const level of ["regular", "minimal"]) {
 }
 
 {
+  const s = sandbox(), marker = "fixture-preferences-marker", config = join(s.home, `config ${marker}`);
+  const dir = join(config, "cotal"), file = join(dir, "preferences.json");
+  mkdirSync(dir, { recursive: true }); writeFileSync(file, "{", { mode: 0o600 });
+  const r = await s.run(["history", "--json"], { XDG_CONFIG_HOME: config }), event = r.sent.find(row => row.event === "command");
+  check("invalid preferences name the file and parse error only locally", r.status === 1 && r.stdout.includes(marker) && r.stdout.includes("not JSON") && readFileSync(file, "utf8") === "{" &&
+    event?.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
+{
   const s = sandbox(), marker = "fixture-credential-name", file = join(s.home, `ordinary ${marker}`);
   writeFileSync(file, "invalid fixture text", { mode: 0o600 });
   for (const [path, code, status] of [[file, "SCHEMA_INVALID", 1], [`${file}-missing`, "TARGET_NOT_FOUND", 2]] as const) {
@@ -314,6 +324,21 @@ for (const level of ["regular", "minimal"]) {
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
+}
+
+{
+  const s = sandbox("project with private-location-marker"), space = "fixture-space";
+  const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"]);
+  check("prepare the project for the startup mode refusal", prepared.status === 0);
+  const state = userAuthStateDir(s.project, space);
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  const marker = join(state, "idp.json");
+  writeFileSync(marker, "{}", { mode: 0o600 });
+  const r = await s.run(["up", "--space", space, "--detach", "--server", "nats://127.0.0.1:1"]);
+  const event = r.sent.find(body => body.event === "command");
+  check("startup mode conflict names the state directory only locally", r.status === 2 && (r.stderr + r.stdout).includes(state) &&
+    readFileSync(marker, "utf8") === "{}" && !existsSync(join(s.project, ".cotal", "stack-controller.json")) &&
+    event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes("private-location-marker"));
 }
 
 {
@@ -457,6 +482,9 @@ for (const level of ["regular", "minimal"]) {
   const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
+  const service = liveServicesRefusal(space, [{ definition: "fixture-worker", instanceId: "fixture-instance", host: "fixture-host", process: "running", recordedState: "running", action: "stop-first", reason: null, remedy: null }], "down --preserve-state");
+  const blocked = telemetryErrorText("down", service);
+  check("a service blocking shutdown is identified locally but not in telemetry", service?.code === "LIFECYCLE_BLOCKED" && service.message.includes("fixture-worker instance fixture-instance") && blocked.message === null && blocked.stack === null);
   const failure = membershipConversionRefusal(space);
   const text = telemetryErrorText("up", failure);
   check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",

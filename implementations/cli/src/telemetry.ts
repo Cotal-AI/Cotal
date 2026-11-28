@@ -92,6 +92,9 @@ export function telemetryErrorText(command: string, error: unknown, flags: reado
   // A pinned input usage error can repeat the terminal text in the original command's retry.
   if (command === "input" && flags.includes("--on") && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
+  // A preferences validation or read error can include a path and text from the operator's file.
+  if (isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.target !== null &&
+      typeof error.target === "object" && "preferencesFile" in error.target) return { message: null, stack: null };
   // Credential-file refusals name the local file, even after a command restates the connection error.
   if (flags.includes("--creds") && (isConnectRefusal(error) || isCommandFailure(error)) && error.target !== null &&
       typeof error.target === "object" && "path" in error.target && typeof error.target.path === "string") return { message: null, stack: null };
