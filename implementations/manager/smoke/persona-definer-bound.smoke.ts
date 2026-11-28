@@ -36,8 +36,10 @@ import {
   withIssuerSession,
   DEV_OWNER,
   type AgentHandle,
+  type AuthProvider,
   type Connector,
   type ControlReply,
+  type EpCaller,
   type IssuedCaller,
   type LaunchOpts,
 } from "@cotal-ai/core";
@@ -105,10 +107,10 @@ async function caller(read: string[], post: string[]) {
       capabilities: ["spawn"], allowSubscribe: read, allowPublish: post,
     }),
   );
-  return door(creds, { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller);
+  return door(creds, { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation });
 }
 
-async function door(creds: string, who: IssuedCaller) {
+async function door(creds: string, who: EpCaller | IssuedCaller) {
   const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   conns.push(nc);
   const svc = await resolveService(nc, space, MANAGER_ENDPOINT, who, { deadlineMs: 8_000, commands: ["spawn", "define-persona"] });
@@ -171,6 +173,19 @@ try {
   check("the printed post override saves the definition without posts", postRemedy.test(plantedPost.message) && postFixed.ok && !loadAgentFile(file("planted_post")).allowPublish?.length, postFixed);
   const subFixed = await definer.define("planted_sub", "You help.", noRead);
   check("clearing both read fields also works when the startup list set the ACL", readRemedy.test(plantedSub.message) && subFixed.ok && !loadAgentFile(file("planted_sub")).subscribe?.length, subFixed);
+
+  const unissuedIdentity = newIdentity();
+  const unissuedUid = mintLifecycleUid();
+  const unissuedCreds = await mintCreds(auth, unissuedIdentity, "agent", {
+    lifecycleUid: unissuedUid, capabilities: ["spawn"], allowSubscribe: ["review"], allowPublish: ["review"],
+  });
+  const unissued = await door(unissuedCreds, { owner: DEV_OWNER, actor: unissuedIdentity.id, uid: unissuedUid });
+  const unissuedGrant = await unissued.define("unissued", "You help.", { subscribe: ["review"], allowPublish: ["review"] });
+  check("an unissued caller cannot save even channels its credential carries",
+    unissuedGrant.code === "permission-denied" && unissuedGrant.outcome === "not-executed" &&
+    /holds no issued evidence.*allowSubscribe review, allowPublish review/.test(unissuedGrant.message) && !existsSync(file("unissued")), unissuedGrant);
+  const unissuedPlain = await unissued.define("unissued", "You help.", { ...noRead, ...noPost });
+  check("an unissued caller can still save content without grants", unissuedPlain.ok && existsSync(file("unissued")), unissuedPlain);
 
   console.log("static mesh: a wire persona carries no launch options");
   const opts = await definer.define("planted_opts", frontmatter(["subscribe: [review]", "launchOptions:", "  add-dir: /workspace/review"]));
@@ -258,6 +273,20 @@ try {
   check("a user-auth definer with no row puts no channel into a persona", refused(stranger, /has no grant in this space/) && !existsSync(file("u_stranger", userAgents)), stranger);
   const strangerFixed = await define(principalKey(owner, "stranger").key, "u_stranger", noRead);
   check("clearing reads saves content without a channel grant", fixed(stranger, readRemedy, strangerFixed), strangerFixed);
+  const { actorGrant: _actorGrant, ...legacyProvider } = cotalAuthProvider;
+  registry.unregister("auth-provider", cotalAuthProvider.name);
+  registry.register(legacyProvider as AuthProvider);
+  try {
+    const legacyGrant = await define(definerKey, "u_legacy", { subscribe: ["review"] });
+    check("a provider missing actorGrant gives a named refusal without a write",
+      legacyGrant.code === "permission-denied" && legacyGrant.outcome === "not-executed" &&
+      refused(legacyGrant, /auth provider does not implement `actorGrant`/) && !existsSync(file("u_legacy", userAgents)), legacyGrant);
+    const legacyPlain = await define(definerKey, "u_legacy", noRead);
+    check("a provider missing actorGrant still allows content without grants", legacyPlain.ok && existsSync(file("u_legacy", userAgents)), legacyPlain);
+  } finally {
+    registry.unregister("auth-provider", legacyProvider.name);
+    registry.register(cotalAuthProvider);
+  }
   const boss = await define(principalKey(owner, "boss").key, "u_boss", { subscribe: [], allowSubscribe: ["secret"] });
   check("a definer whose row holds admin is exempt", boss.ok && existsSync(file("u_boss", userAgents)), boss);
   const userOpts = await define(definerKey, "u_opts", { persona: frontmatter(["subscribe: [review]", "launchOptions:", "  add-dir: /planted"]) });

@@ -4255,7 +4255,9 @@ same catalog entry. A spawn of the persona is bounded again against its spawner.
 are closed, so a revision-44 contract rejects either.
 `define-persona` MUST apply the delegation bound to the effective read and publish grants as well,
 including inherited lists and lists taken from prompt frontmatter. A manager without access to the
-user-auth ledger MUST refuse a nonempty read or publish grant. A wire definition MUST NOT retain
+user-auth ledger MUST refuse a nonempty read or publish grant. A local user-auth manager whose
+provider lacks `actorGrant` refuses a definition with a nonempty channel or capability grant as
+`permission-denied` with outcome `not-executed`. A wire definition MUST NOT retain
 `launchOptions` from either the prompt or an existing catalog file. This does not restrict options in
 an operator's local persona file or in a spawn request.
 An ownership refusal of `define-persona` MUST carry `permission-denied` with outcome

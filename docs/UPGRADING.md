@@ -232,19 +232,33 @@ the authorization URL printed by that login and finish there.
 
 `define-persona` refuses channel lists outside the definer's grant before writing, even if a later
 spawner holds those channels. This applies to prompt frontmatter, explicit arguments and lists kept
-on redefine. Replace `subscribe`, `allowSubscribe` and `allowPublish` with channels the definer
-holds. To save without channels, pass `subscribe: []`, `allowSubscribe: []` and `allowPublish: []`.
+on redefine. A static definer without issued evidence cannot include any channels, even channels
+its credential can read or post to. Start the definer with `cotal spawn --detach` so it has issued
+evidence, or save without channels. Replace `subscribe`, `allowSubscribe` and `allowPublish` with
+channels the definer holds. To save without channels, pass `subscribe: []`, `allowSubscribe: []`
+and `allowPublish: []`.
 For a hosted user-auth manager, also pass `capabilities: []` to save without granting capabilities.
 If saved `quiet` or `muted` entries name a channel you remove, have the operator remove those entries
 with `cotal persona edit <name>` on the manager host.
 
-A wire save drops `launchOptions` from the prompt and from a file it redefines. Pass options with
-`cotal spawn <name> --opt key=value`, or set `launchOptions` with `cotal persona edit <name>` on the
-manager host and edit that file locally to keep the options.
+A redefine that omits `capabilities` or `endpoints` keeps the saved list and checks it against the
+definer's grant. A CLI invocation that receives a `define-persona` grant refusal exits with status
+2 instead of 3. JSON reports `refused` with `PERMISSION_DENIED`.
+
+Upgrading does not rewrite previously saved files. On the manager host, use `cotal persona` to
+list the catalog and `cotal persona show <name> --json` to check existing definitions for channel
+grants and `launchOptions`. Correct entries that should not be there with `cotal persona edit <name>`.
+
+A wire save drops `launchOptions` from the prompt and from a file it redefines. This includes
+options an operator added to an agent-owned persona with `cotal persona edit <name>`. If the owner
+redefines that persona over the wire, the options are removed without a warning in the reply.
+Use `cotal spawn <name> --opt key=value` for options that must survive a redefine, or edit and maintain
+the definition locally on the manager host.
 
 Third-party `AuthProvider` implementations must add `actorGrant({ dir, owner, actor })`. Read the
 current principal row and return `{ scope, allowSubscribe, allowPublish }`, or return `undefined`
-if the principal has no grant. Update the provider together with the manager.
+if the principal has no grant. A manager using a provider without the method refuses definitions
+that grant capabilities or channels before writing. Update the provider together with the manager.
 
 ## The agent endpoint on every space
 
