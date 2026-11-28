@@ -5,6 +5,102 @@ kind: Reference
 audience: integrators
 ---
 
+## Linux process handles
+
+`@cotal-ai/seat` exports `capturePeerProcess(socket)` and `recoverProcess(identity)`.
+They return a `LinuxProcessHandle` bound to one Linux kernel process, with a frozen
+`LinuxProcessIdentity` containing its PID, UID, boot token, start token and PID namespace.
+The peer must be a connected Unix socket. Capture requires `SO_PEERPIDFD`; unsupported
+kernels and non-Linux platforms refuse instead of looking up the peer by numeric PID.
+
+Only processes whose real, effective, saved and filesystem UIDs match the caller are
+accepted. Recovery checks every recorded field while retaining the kernel handle.
+Missing, unreadable, exited or mismatched identity refuses. Keep records in a trusted
+owner-controlled store: the API validates process identity, not who supplied the record.
+
+`handle.hasExited()` reports kernel exit readiness, including a zombie awaiting reaping.
+`handle.waitForExit({ signal })` uses kernel readiness events; abort rejects only that wait.
+`handle.signal("SIGTERM")` rechecks identity before signalling through the retained handle.
+The kernel still enforces signal permissions. `handle.close()` releases the handle and
+rejects pending waits. Closing a descriptor does not establish process exit. Close handles
+explicitly when finished; worker shutdown releases pending native observation resources.
+
+`handle.kernel` records the kernel object's device, mode and decimal-string inode without
+exposing the owned descriptor. This metadata and import require kernel pidfs (Linux 6.9 or
+newer); older anonymous-inode pidfds cannot establish unique object identity and refuse.
+Capture and ordinary observation do not require this new metadata. `handle.retain()` returns an independently closeable handle to
+that same object. `importProcess(fd, { identity, kernel })` duplicates a borrowed pidfd from a
+trusted host. The caller still owns and must close the original descriptor. Live imports check
+current process identity; exited imports require an exact kernel-object match to the trusted
+same-boot receipt. Wrong objects, non-pidfds, thread-only pidfds and invalid records refuse.
+
+The host must authenticate both the receipt and continuous descriptor custody since capture.
+A name, activation environment or inode after every reference was released is insufficient.
+These primitives do not install a descriptor store, authenticate a service invocation or
+complete the namespace adapter's cold recovery. Signalling an exited imported handle refuses.
+
+`handle.requestStorage(name)` sends its own duplicated descriptor through installed libsystemd
+with `FDPOLL=0`. `requestProcessStorageRemoval(name)` requests removal by name. Both use the
+calling process's systemd notification context and a bounded notification barrier off the JS
+thread. Completion proves processing, not acceptance or removal: full or disabled stores can
+silently refuse storage. The host must authenticate its service invocation and verify exact
+object metadata before admitting work, and verify removal separately. Missing library or
+notification context refuses. An unconfirmed result must be inspected before retrying.
+Names must be unique within the owned store and must not contain secrets. These calls neither
+configure a service nor select a different service when the current context is unavailable.
+
+The optional Linux development probe is `pnpm --filter @cotal-ai/seat probe:process-import
+<new-absolute-case-directory>` after building the package. It requires an existing systemd
+user manager, Python, unshare and Node; these are probe prerequisites, not new package
+dependencies. It preserves its case files and removes only its generated transient service.
+The optional `probe:service-storage` script takes the same new-directory argument and tests
+the real notification/store boundary. Its separate worker fixture requires an owned, deliberately
+non-reading notification socket; worker termination waits for the bounded native call.
+This transport uses the libuv worker pool for notification acknowledgment, not for process-exit
+observation. The five-second limit bounds the active barrier call, not worker-pool queueing
+or total request latency. There is no request cancellation API. Concurrent startup cost and
+pool contention remain unmeasured; a host must not treat its own timeout as cancellation of
+a submitted storage request.
+
+A process handle alone does not establish ownership or closure of its descendants, cancel
+remote effects, or promise at-most-once execution. These APIs do not enable the built-in
+PTY runtime's automatic restart policy. The runtime must separately prove work closure.
+
+### Namespace adapter qualification
+
+The manager contains an unregistered namespace adapter for integration tests. It is not a
+selectable runtime and does not declare automatic restart support. The adapter uses a packaged
+Node bootstrap, a private durable custody record and installed Linux `unshare` and `bwrap` tools.
+The bootstrap blocks application execution until the host records namespace-init ownership.
+It then uses Node's experimental `process.execve` API, available from Node 22.15, to replace itself.
+
+The tests exercise terminal behavior and authenticated Manager/Delivery recovery with inert
+connectors. Their test-only policy admission does not enable the adapter for ordinary spawns.
+The current mount profile exposes the caller's workspace and `/usr`; it is not an adversarial
+sandbox or a complete connector mount policy. Without an external custody store, a cold crash
+can still leave an unproved journal and the successor refuses replacement.
+
+An optional internal `SystemdNamespaceCustody` binding takes a trusted host receipt naming the
+exact user unit, source file and SHA-256. It verifies native MainPID and invocation, unchanged
+source bytes, no drop-ins or pending reload, and the required storage policy. Native D-Bus
+integer metadata uses standard JSON reviver source text, preserving uint64 values without
+rounding. Unsupported metadata parsing refuses.
+
+The adapter writes a versioned launch receipt before retention, confirms the exact stored
+kernel object before execution, and rejects late admission after timeout or socket closure.
+Cold recovery imports the retained object, observes old namespace exit, verifies removal and
+journals closure before the replacement starts. Actual Manager/Delivery probes recovered the
+same actor and lifecycle; the replacement pulled and yielded its pending turn through its own
+issued credential. A late storage acknowledgment did not launch the connector. Deliberately
+lost storage left the native slot terminalizing without a replacement or invented closure.
+
+This remains an unregistered test path. The existing CLI service installer does not provision
+this configuration, and the host must supply its trusted installation receipt. System-tool
+packaging, connector compatibility, scale costs and production adoption remain unqualified.
+The service pin assumes a trusted local host/controller; it is not an adversarial same-UID
+boundary. Missing tools, unavailable evidence or unsupported hosts refuse; the built-in PTY
+runtime is unchanged.
+
 ## Workspace registry liveness
 
 `@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every
