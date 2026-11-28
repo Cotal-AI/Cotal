@@ -156,6 +156,13 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
+export {
+  snapshotManagedGrantSubtree,
+  commitManagedGrantSubtreeRevoke,
+  ManagedGrantSubtreeRevokeError,
+  type ManagedGrantCoordinate,
+  type ManagedGrantSubtreeSnapshot,
+} from "./managed-grant-subtree.js";
 export { runAuthService, startAuthService, type AuthServiceHandle, type PlatformControlInput } from "./service-host.js";
 export { parseAuthHostManifest, type AuthHostEntry, type AuthServiceRuntimeOptions, type OpenAuthAuthorityPlaneOptions, type AuthAuthorityPlaneHandle, type PublicFaceInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_ACTIVATE_PATH, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type ManagedLifecycleActivationRequest, type ManagedLifecycleActivationResult, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
