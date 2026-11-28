@@ -73,7 +73,7 @@ export function nativeStub(scenario) {
         if (state.installHold) await new Promise(resolve => { window.__releaseInstall = resolve; });
         if (state.installWait) await new Promise(() => {});
         if (state.installFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_UNKNOWN", message: "Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof", native: { code: "OPERATION_UNKNOWN" } } };
-        if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
+        if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Repair.", native: { code: "NOT_ANSWERING" } } };
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
@@ -825,14 +825,14 @@ export const scenarios = [
   } },
   // A failed Start service keeps its reason after a background status check, until the person acts on it.
   { name: "start-service-failure-stays", state: { serviceStopped: true, installFails: true }, act: page => page.click("#recover"), expect: async page => {
-    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "This operation could not finish");
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Something on this computer needs fixing");
     const reason = "OPERATION_UNKNOWN (OPERATION_UNKNOWN)\nWindows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof";
     assert.equal(await page.locator("#refusal-detail").textContent(), reason);
     const checks = await page.evaluate(() => window.__renderState.stoppedStatusChecks ?? 0);
     await page.evaluate(() => { window.__emitTauri("desktop-hidden", null); window.__emitTauri("desktop-shown", null); });
     await page.waitForFunction(count => (window.__renderState.stoppedStatusChecks ?? 0) > count, checks);
     await page.waitForTimeout(500);
-    assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish", "a background status check does not replace the failure");
+    assert.equal(await page.locator("#connection-title").textContent(), "Something on this computer needs fixing", "a background status check does not replace the failure");
     assert.equal(await page.locator("#refusal-detail").textContent(), reason, "the reason stays");
     await page.locator("#recover").click();
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "The background service is not running");
@@ -860,15 +860,15 @@ export const scenarios = [
   { name: "offline", state: { installed: true, signedIn: true, offline: true } },
   { name: "service-not-answering", state: { installNotAnswering: true }, act: signIn, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service has not started");
-    assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
-    assert.equal(await page.locator("#recover").textContent(), "Check status");
-    assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+    assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.");
+    assert.equal(await page.locator("#recover").textContent(), "Repair");
+    assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Repair.");
   } },
   // The service is killed while sign-in waits on it: say so, and clear once it answers again.
   { name: "sign-in-service-lost", state: { installed: true, loginLost: true }, act: page => page.click("#login"), expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service stopped");
-    assert.equal(await page.locator("#connection-description").textContent(), "It stopped before this could finish, so nothing was completed. This clears when the service is running again.");
-    assert.equal(await page.locator("#recover").textContent(), "Check status");
+    assert.equal(await page.locator("#connection-description").textContent(), "The background service stopped before Cotal could confirm the result. Repair checks what changed and starts the service again if needed.");
+    assert.equal(await page.locator("#recover").textContent(), "Repair");
     assert.ok(!(await page.locator("body").textContent()).includes("cotal daemon"), "no CLI is offered to a desktop user");
     await page.evaluate(() => window.__pushStatus());
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent !== "The background service stopped");
@@ -923,7 +923,7 @@ export const scenarios = [
   { name: "audit-credential-expired", state: { loginError: "CREDENTIAL_EXPIRED" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Sign in again"); assert.equal(await page.locator("#recover").textContent(), "Sign in again"); } },
   { name: "audit-unreachable", state: { loginError: "UNREACHABLE" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "We cannot reach your connection"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
   { name: "audit-approval-refusal", state: { installed: true, offline: true, offlineCode: "APPROVAL_PENDING" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval"); assert.equal(await page.locator("#recover").textContent(), "Check approval"); } },
-  { name: "audit-default-refusal", state: { installed: true, offline: true, offlineCode: "OPERATION_FAILED" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
+  { name: "audit-default-refusal", state: { installed: true, offline: true, offlineCode: "OPERATION_FAILED" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Something on this computer needs fixing"); assert.equal(await page.locator("#recover").textContent(), "Repair"); } },
   { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or menu bar. Quit app leaves the background service running.")), expect: async page => { assert.match(await page.locator("#notice").textContent(), /Cotal stays in your system tray/); } },
   { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
   { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },

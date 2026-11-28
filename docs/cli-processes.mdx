@@ -678,8 +678,8 @@ removal, the record is rebound to the current instance and the space's Manager s
 answer keeps the record. The current instance is never removed. The daemon request is
 `manager-repair-cleanup {space}`.
 
-The desktop app offers Repair as the one button on every error screen whose cause it handles, in
-Settings and in the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`.
+The desktop app offers Repair as the one button on every error screen whose cause it handles, and in
+the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`.
 Its `status` reply and every `status-watch` frame add `recovery: {reason: "another-installation", owner}`
 while another installation runs the service, so the window offers Repair without a manual refresh.
 A move holds the same `agent-app.lock` admission that agent-app installs and sign-ins hold, so it

@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { managerRefused?: boolean; recovery?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { removedAccount?: boolean; managerRefused?: boolean; recovery?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -81,7 +81,10 @@ async function app(options: { managerRefused?: boolean; recovery?: boolean; appR
         stopped = false;
         return ok({ installed: true });
       }
-      if (r.op === "repair-plan") return ok({ digest: "d".repeat(64), steps: options.recovery ? [
+      if (r.op === "repair-plan") return ok({ digest: "d".repeat(64), steps: options.removedAccount ? [
+        { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
+        { step: "account", outcome: "needs-you", space: COTAL_CLOUD_IDP, found: "This computer was removed from your account. Sign in to add it back." },
+      ] : options.recovery ? [
         { step: "service-owner", outcome: "fix", consent: "takeover", owner: { kind: "cli", location: "/usr/lib/node_modules/cotal-ai" }, agents: [{ space: "team", name: "reviewer", application: "Claude Code" }], found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service. 1 agent stops." },
         { step: "service-running", outcome: "ok", found: "Checked after the service is set up." },
       ] : [
@@ -392,10 +395,10 @@ test("a later status check keeps an error the status check did not raise", async
     await a.tick();
     a.arm();
     await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
     await a.tick();
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
   } finally { a.dom.window.close(); }
 });
@@ -419,6 +422,21 @@ test("Start service starts a stopped background service and leaves no notice", a
     assert.equal(a.node("notice").hidden, true);
     assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, false);
+  } finally { a.dom.window.close(); }
+});
+
+test("Repair for a computer removed from the account says so and offers Sign in, without applying anything", async () => {
+  const a = await app({ installed: true, connected: true, removedAccount: true });
+  try {
+    await a.click("login"); await a.login();
+    await a.emit("desktop-open-repair");
+    assert.match(a.node("repair-steps").textContent ?? "", /This computer was removed from your account\. Sign in to add it back\./);
+    assert.equal(a.node("repair-apply").textContent, "Sign in");
+    const before = a.calls.length;
+    await a.click("repair-apply");
+    assert.equal(a.calls.slice(before).filter(call => call.op === "repair-apply").length, 0, "nothing is applied for a sign-in only the person can give");
+    assert.ok(a.calls.slice(before).some(call => call.op === "login"), "the button starts sign-in");
+    assert.equal(a.node("repair-panel").hidden, true);
   } finally { a.dom.window.close(); }
 });
 
@@ -540,7 +558,7 @@ test("another provider failure does not block successful sign-in", async () => {
   const a = await app({ installed: true, otherProviderFailed: true });
   try {
     await a.click("login"); await a.login();
-    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
+    assert.notEqual(a.node("connection-title").textContent, "That didn't finish");
     assert.match(a.node("notice").textContent ?? "", /hack\.cotal\.ai/);
   } finally { a.dom.window.close(); }
 });
@@ -549,7 +567,7 @@ test("an account switch signs in without a notice when every previous credential
   const a = await app({ installed: true, switched: true });
   try {
     await a.click("login"); await a.login();
-    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
+    assert.notEqual(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("notice").textContent, "");
   } finally { a.dom.window.close(); }
 });
@@ -559,7 +577,7 @@ test("an account switch that kept credential files stays signed in and names eac
   const a = await app({ installed: true, credentialsKept: kept });
   try {
     await a.click("login"); await a.login();
-    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish", "the switched account is kept");
+    assert.notEqual(a.node("connection-title").textContent, "That didn't finish", "the switched account is kept");
     assert.equal(a.calls.filter(r => r.op === "spaces").length > 0, true, "it continues to the new account's spaces");
     const shown = a.node("notice").textContent ?? "";
     assert.match(shown, /could not be deleted/);
@@ -573,7 +591,7 @@ for (const option of ["ownProviderFailed", "oldDaemon"] as const) test(`${option
   const a = await app({ installed: true, [option]: true });
   try {
     await a.click("login"); await a.login();
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.match(a.node("refusal-detail").textContent ?? "", option === "ownProviderFailed" ? /cotal\.cloud/ : /Some space catalogs/);
   } finally { a.dom.window.close(); }
 });

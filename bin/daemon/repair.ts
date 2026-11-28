@@ -27,7 +27,7 @@ import { withAppMutation } from "./agent-app-admission.js";
 
 export { serviceOwner, type ServiceOwner };
 
-export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "spaces" | "stale-registration";
+export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "spaces" | "stale-registration" | "account";
 export const REPAIR_CONSENTS = ["takeover", "start-stopped", "remove-old-registration"] as const;
 export type RepairConsent = (typeof REPAIR_CONSENTS)[number];
 export type RepairOutcome = "ok" | "fix" | "needs-you" | "cannot";
@@ -135,6 +135,25 @@ function staleCleanupSteps(status: DaemonStatus | undefined): RepairStep[] {
   }));
 }
 
+/** Each signed-in account that needs the person to sign in again. A short Cloud outage (`cloud.state` retrying)
+ *  is not one: the service retries by itself, so Repair leaves it alone. A removed computer or an expired
+ *  sign-in needs the person to sign in again, which Repair cannot do for them. */
+export function accountSteps(status: DaemonStatus | undefined): RepairStep[] {
+  const account = status?.account;
+  const accounts = account?.accounts ?? (account ? [account] : []);
+  return accounts.filter(item => item.mode === "sign-in-required").map(item => {
+    const removed = (item as { reason?: unknown }).reason === "computer-removed";
+    let host = "your account";
+    try { if (item.idpUrl) host = new URL(item.idpUrl).host; } catch { /* keep the generic name */ }
+    // Name the provider when it is known, the host otherwise.
+    if (host === "cotal.cloud" || host === "cloud.cotal.ai") host = "Cotal Cloud";
+    return {
+      step: "account", outcome: "needs-you", space: item.idpUrl,
+      found: removed ? "This computer was removed from your account. Sign in to add it back." : `Sign in to ${host} again to keep using this computer from your spaces.`,
+    } satisfies RepairStep;
+  });
+}
+
 function digestOf(steps: readonly RepairStep[]): string {
   return createHash("sha256").update(JSON.stringify(steps.map(({ step, outcome, consent, owner, agents, space }) => ({ step, outcome, consent, owner, agents, space })))).digest("hex");
 }
@@ -143,7 +162,7 @@ function digestOf(steps: readonly RepairStep[]): string {
 export async function planRepair(opts: RepairOptions): Promise<RepairPlan> {
   const status = await readStatus(opts);
   const owner = ownerStep(opts, status);
-  const steps = [owner, runningStep(opts, status, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status)];
+  const steps = [owner, runningStep(opts, status, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status), ...accountSteps(status)];
   return { digest: digestOf(steps), steps };
 }
 
