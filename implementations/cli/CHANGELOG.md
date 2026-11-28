@@ -1,5 +1,35 @@
 # @cotal-ai/cli
 
+## 0.185.0
+
+### Patch Changes
+
+- bc33dd6: Keep backup file diagnostics local when inspection, verification or restore refuses a backup. The verification command suggested by restore now keeps the requested output format.
+- 179b9fb: Preserve the requested output format in service-stop commands suggested by a blocked controller shutdown. For legacy stacks, keep dependent service details out of telemetry and direct the operator back to the original shutdown options.
+- ee16d01: Keep the existing broker store's path and filesystem access diagnostics local when startup or a roster read refuses. Telemetry still reports the permission error code.
+- 56c4bc4: The desktop app can install its built-in connectors without system Node or npm and retry failed connector installs on startup.
+- c167a50: Explain filesystem path length failures during endpoint scaffolding. Report whether anything was created, name retained paths after a partial write, and show how to retry with a shorter directory.
+- fde04e7: When shutdown cannot read Manager impact because the stack's broker is gone, keep the space and output format on the recovery commands and preserve the stop's confirmation and agent policy. When stop or attach receives more than one agent name, explain how to correct the original command without dropping its target selectors.
+- 37eb68c: Keep JSON or plain output on the startup and forget commands suggested when a registration name is already prepared locally, and on the removal command suggested for a duplicate service definition.
+- d2655a7: Keep JSON or plain output on the inventory and clear commands suggested when a requested space does not exist. If shutdown was run outside the stack's folder, direct the operator to repeat the original command there without changing its options.
+- 4def782: Report an invalid offline workflow as a validation refusal in command telemetry. The file name and detailed findings stay in the local report.
+- 9708a08: Keep the preferences file path and validation details out of command telemetry. The local error still identifies the file and how to repair it.
+- 155cd96: When a Manager or service command cannot stop a process owned by its stack, show a read-only shutdown preview for that space in its owning project folder. Keep the requested output format and distinguish processes started by a supervisor.
+- b7ec91a: Keep the retained store path and restored broker details out of command telemetry when cleanup refuses to discard history or startup finds the restored broker still running. Keep rejected restore target paths and names of files that block restore or cleanup local too. Local diagnostics and recovery instructions stay unchanged.
+- 3eb0418: When startup refuses to leave a previous broker store behind, keep the store paths local and quote the suggested store option so it can be copied into the original command.
+- c46db77: Keep the requested space and output format in stop guidance when a running preset service refuses changed start options. A dry run now suggests previewing the stop.
+- 5c8a6a9: When a preset file is missing, show how to inspect the intended space and retry with that space’s file. Keep the local path out of telemetry. When a preset lacks a broker address, keep the retry on the original command instead of suggesting a startup in the current folder.
+- 56c4bc4: `cotal update --self` uses the npm shipped with the running Node when PATH has no npm, or when the npm on PATH states that it does not support that Node.
+- 6fee400: Keep the maintenance lock holder's process ID out of command telemetry. A blocked stack command still shows the process ID and recovery advice locally.
+- 24bb9ff: Keep the space name and state directory out of command telemetry when startup refuses an incompatible authentication mode. The local diagnosis and protection remain unchanged.
+- d022f01: Keep the store path and its unwritable parent out of command telemetry when startup or restore cannot create the requested store.
+- Updated dependencies [4def782]
+- Updated dependencies [9708a08]
+- Updated dependencies [658b202]
+  - @cotal-ai/workspace@0.185.0
+  - @cotal-ai/core@0.185.0
+  - @cotal-ai/seat@0.185.0
+
 ## 0.184.1
 
 ### Patch Changes

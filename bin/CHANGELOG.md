@@ -1,5 +1,54 @@
 # cotal-ai
 
+## 0.185.0
+
+### Minor Changes
+
+- cf0c50d: The desktop app can now fix this computer from inside the app. The error screens that used to offer only "Try again" or "Check status" now offer Repair where Repair can fix the cause. A screen whose cause nothing in the app can fix, such as a service that belongs to another user account, says why and offers no button. Repair checks the background service, its version, the agent apps it finds and the spaces it runs, shows what it found and what it will change, and runs only after you choose its button. One approval names every change it makes: moving the service from another copy of Cotal, starting a stopped service, and removing an old registration of this computer. When another copy of Cotal runs the background service, Repair moves it to this app. It names the agents that stop and says they don't start again by themselves, and it keeps your sign-in, this computer's identity and every space's records. It never replaces a newer copy, or one whose version it can't tell, with this app; it asks you to update instead. A service whose copy of Cotal can't run where it is, because that copy is gone or sits on a disk image, under App Translocation or in Downloads, is moved to this app whatever its version. It starts only spaces this computer still hosts, never one you disconnected. If this app's service does not start, the move puts the other copy's service back. A step that fails stops Repair, and the panel shows what changed before it, why it stopped and what to do next. A daemon message or next step that names a command or a file path is no longer shown in the window. The same check is `cotal daemon repair` on a computer without the app, where `--yes` approves every step that asks first, and the cross-installation refusal now carries `ANOTHER_INSTALLATION` with the owning copy's kind.
+
+### Patch Changes
+
+- 56c4bc4: The desktop app can install its built-in connectors without system Node or npm and retry failed connector installs on startup.
+- c52fd59: Installing the Cotal desktop app now gives you the `cotal` command in a new terminal on Windows, macOS and Linux, with no separate npm install. It runs the CLI bundled with the app on the app's own Node. Windows installers add the installation's `bin` folder to the end of your user PATH and uninstall takes it off again. On macOS the app adds its bundle's `bin` folder to the end of PATH in your login shell's startup file the first time it opens from Applications. Linux packages link `/usr/bin/cotal`. A `cotal` you already installed with npm or the shell installer stays first on PATH and keeps running, and the app never replaces a `cotal` it did not create.
+- cf0c50d: The desktop app no longer shows the background service's raw refusal in a space row. A row such as "The local space connection is held by https://…" now says "This space is set up under another sign-in on this computer." and each refused row has one button for its cause instead of only Remove. Details no longer shows command lines or web addresses, and a hosted Manager's reason in `cotal daemon status` names what happened while the command stays in its next step.
+- 2b21258: When your sign-in expires, the Desktop connection page shows the same state as the sidebar and offers a single Sign in button. Refresh status sits beside Connect this computer when you can connect.
+- 4f4c2f0: If your browser doesn’t open during Desktop sign-in, Cotal keeps the approval code visible and lets you copy the link to approve on another device.
+- a378fe7: Document the Linux distributions tested with the desktop `.deb` and `.rpm` packages, the EPEL and CRB setup for Enterprise Linux 10, and the command-line install for RHEL, AlmaLinux, and Rocky Linux 9.
+- 3426ce2: The desktop app now shows one state everywhere (window, tray and tooltip): Starting until a Manager is ready, Not set up after sign-out, Service stopped when you stopped it, and Disk full with Check again.
+- a55f7db: The desktop app shows the full application and model name when an agent chip is truncated.
+- Updated dependencies [bc33dd6]
+- Updated dependencies [179b9fb]
+- Updated dependencies [ee16d01]
+- Updated dependencies [56c4bc4]
+- Updated dependencies [c167a50]
+- Updated dependencies [fde04e7]
+- Updated dependencies [37eb68c]
+- Updated dependencies [d2655a7]
+- Updated dependencies [a378fe7]
+- Updated dependencies [4def782]
+- Updated dependencies [fb22c12]
+- Updated dependencies [9708a08]
+- Updated dependencies [155cd96]
+- Updated dependencies [658b202]
+- Updated dependencies [b7ec91a]
+- Updated dependencies [3eb0418]
+- Updated dependencies [c46db77]
+- Updated dependencies [5c8a6a9]
+- Updated dependencies [56c4bc4]
+- Updated dependencies [6fee400]
+- Updated dependencies [24bb9ff]
+- Updated dependencies [d022f01]
+  - @cotal-ai/cli@0.185.0
+  - @cotal-ai/connector-core@0.185.0
+  - @cotal-ai/runtime@0.185.0
+  - @cotal-ai/workspace@0.185.0
+  - @cotal-ai/manager@0.185.0
+  - @cotal-ai/delivery@0.185.0
+  - @cotal-ai/auth@0.185.0
+  - @cotal-ai/registry@0.185.0
+  - @cotal-ai/core@0.185.0
+  - @cotal-ai/seat@0.185.0
+
 ## 0.184.1
 
 ### Patch Changes
