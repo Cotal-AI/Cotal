@@ -14,15 +14,15 @@ import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, r
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
 
-/** Inspect saved definitions in the space and format of the original preview. */
-export function serviceListStep(space: string, values: ParsedArgs["values"]): string {
+/** List definitions in the requested output format, using the resolved space when available. */
+export function serviceListStep(values: ParsedArgs["values"], space = values.space): string {
   const output = values.json ? " --json" : values.plain ? " --plain" : "";
   return `list this space's saved definitions with ${codeSpan(`cotal service${targetWords({ space })}${output}`)}`;
 }
 
 /** A missing stop-preview target can lead to a corrected preview or a read of the selected catalog. */
 export function stopPreviewStep(space: string, values: ParsedArgs["values"], member?: { name: string; verb: string }): string {
-  if (!member) return serviceListStep(space, values);
+  if (!member) return serviceListStep(values, space);
   const output = values.json ? " --json" : values.plain ? " --plain" : "";
   const scope = targetWords({ space });
   const instance = typeof values.instance === "string" ? ` --instance=${shellWord(values.instance)}` : "";
