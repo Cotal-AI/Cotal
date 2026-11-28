@@ -110,7 +110,14 @@ process.exit(0)
   try {
     for (let i = 0; ; i++) {
       try { const reply = await queryDaemon({ paths }); if (reply.ok) break; } catch { /* wait for the other installation's daemon */ }
-      assert.ok(i < 400, "the other installation's daemon answers");
+      assert.ok(i < 2400, "the other installation's daemon answers");
+      await delay(25);
+    }
+    // Stop is refused until the daemon has verified its own native launch; on a busy host that
+    // observation can take seconds, so wait for its one log line before driving uninstall or a move.
+    const log = join(paths.state, "daemon.log");
+    for (let i = 0; !(existsSync(log) && /native ownership (owned|not-owned|unknown)/.test(readFileSync(log, "utf8"))); i++) {
+      assert.ok(i < 2400, "the daemon finished its native ownership check");
       await delay(25);
     }
     const before = files(home);
