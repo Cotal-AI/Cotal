@@ -67,6 +67,13 @@ polls. A successful poll clears the failure count. The daemon rechecks the curre
 candidate sign-in and fresh available catalog registration before moving local custody.
 An answering holder refuses replacement. Matching issuer and subject alone never transfer custody.
 
+## Local daemon disk status
+
+Local daemon status responses and watch events may include `diskFull: true` when a write failed
+for lack of space or quota and its destination has not accepted another write. The field is
+absent when there is no outstanding observed failure. Clients should accept responses without
+it, including from older daemons. The local daemon protocol version is unchanged.
+
 > **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.

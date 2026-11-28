@@ -119,6 +119,9 @@ export interface DaemonStatus {
   readonly vitalsError?: string;
   readonly computer?: string;
   readonly computerNameWarning?: string;
+  /** A daemon write failed with ENOSPC or EDQUOT and its destination has not recovered.
+   *  Absent when there is no outstanding observed failure. */
+  readonly diskFull?: boolean;
   /** Optional for older daemon clients. Shared with desktop status readers. */
   readonly update?: DaemonUpdateStatus;
   readonly account?: AccountComputerStatus;

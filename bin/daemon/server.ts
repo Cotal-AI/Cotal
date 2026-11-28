@@ -26,11 +26,12 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
-import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
+import { CommandFailure, homeCotalDir, isCommandFailure, isConnectRefusal, isDiskFull, spaceSegment } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
+import { createDiskFullState, daemonStatusFrame, diskFullRefusal, updateDaemonSettings, writeFailureFolder, type ObserveDiskFull } from "./disk-state.js";
+import { serviceRequest } from "./service-request.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
@@ -38,6 +39,7 @@ import { withAppMutation } from "./agent-app-admission.js";
 
 type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
+  if (isDiskFull(error)) return diskFullRefusal(op);
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
   log(`daemon: ${op} refused: ${cause}`);
@@ -111,6 +113,7 @@ export interface RunningDaemon {
   /** Whether the socket directory was created by this start; `none` for a Windows pipe. */
   readonly dirOutcome: "created" | "existing" | "none";
   status(): DaemonStatus;
+  readonly observeDiskFull: ObserveDiskFull;
   generationSeats(): Promise<{ space: string; seats: number }[]>;
   generationPending(installed: string | undefined, waiting?: string): void;
   prepareGenerationRestart(): Promise<void>;
@@ -197,6 +200,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
 
   const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, spacesAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0, connectChecksAnswered: 0, registersAnswered: 0, serviceAnswered: 0, socketsRecovered: 0, connectionsResumed: 0 };
   const machineHome = opts.sessionDir ?? homeCotalDir();
+  const records = join(machineHome, "daemon");
+  const diskFull = createDiskFullState(() => notifyStatusWatchers());
+  const observeDiskFull = diskFull.observe;
+  const observeRequest = (error: unknown, space?: string) => {
+    if (isDiskFull(error)) observeDiskFull(error, writeFailureFolder(error, space === undefined ? records : join(records, spaceSegment(space))));
+  };
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   let loginActive = false;
   let logoutActive = false;
@@ -210,27 +219,17 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let watchNotifying = false;
   let watchNotifyQueued = false;
   let notifyStatusWatchers = (): void => {};
-  const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
-  const reconciler = createAccountReconciler(machineHome, services, managers);
-  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
+  const services = createServiceConnections(machineHome, observeDiskFull);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers(), { failed: observeDiskFull, wrote: diskFull.wrote });
+  const reconciler = createAccountReconciler(machineHome, services, managers, observeDiskFull);
+  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers(), observeDiskFull);
+  const serviceDeps = { home: machineHome, services, managers, account, reconciler, observeDiskFull };
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
-  const status = (): DaemonStatus => ({
-    vitals: account.vitals(),
-    vitalsError: account.vitalsError(),
-    computer: account.name(),
-    ...(account.nameWarning() ? { computerNameWarning: account.nameWarning() } : {}),
-    state: "ready",
-    protocol: DAEMON_PROTOCOL_VERSION,
-    version: opts.version,
-    pid: process.pid,
-    startedAt: startedAt.toISOString(),
-    uptimeMs: Date.now() - startedAt.getTime(),
-    managers: managers.all(),
-    account: account.status(),
-    ...(opts.updateStatus ? { update: opts.updateStatus() } : {}),
-    ...(generation ? { generation } : {}),
+  const status = (): DaemonStatus => daemonStatusFrame({
+    diskFull: diskFull.full(), update: opts.updateStatus, version: opts.version, startedAt, generation,
+    vitals: account.vitals(), vitalsError: account.vitalsError(), computer: account.name(), computerNameWarning: account.nameWarning(),
+    managers: managers.all(), account: account.status(),
   });
   const statusWatchKey = (s: DaemonStatus): string => {
     const normAccount = (a: DaemonStatus["account"]) => a ? {
@@ -241,6 +240,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return JSON.stringify({
       computer: s.computer,
       computerNameWarning: s.computerNameWarning,
+      diskFull: s.diskFull,
       state: s.state,
       protocol: s.protocol,
       version: s.version,
@@ -375,6 +375,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           if (req.op !== "status") notifyStatusWatchers();
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
+          if (req.op !== "name" && req.op !== "update-settings") observeRequest(error, "space" in req ? req.space : undefined);
           counters.requestsRefused++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));
@@ -398,11 +399,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(() => snapshotStatus(false));
+        managerResult(() => { diskFull.recheck(); return snapshotStatus(false); });
         return;
       }
       if (req.op === "status-watch") {
         counters.statusAnswered++;
+        diskFull.recheck();
         const watcher: StatusWatcher = { id: req.id, sock, write, lastKey: "" };
         watchers.add(watcher);
         sock.once("close", () => watchers.delete(watcher));
@@ -418,17 +420,14 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           if (req.op === "update-check") {
             if (!opts.updateCheck) throw new Error("Update checks are unavailable in this daemon.");
             await opts.updateCheck();
-          } else {
-            readUpdateSettings();
-            if (req.auto !== undefined) setUpdateSetting("auto", req.auto);
-            if (req.notify !== undefined) setUpdateSetting("notify", req.notify);
-          }
+          } else updateDaemonSettings(diskFull, req);
           return status();
         });
         return;
       }
       if (req.op === "name") {
-        managerResult(async () => { if (req.name !== undefined) await account.rename(req.name); return status(); });
+        const { name } = req;
+        managerResult(async () => { if (name !== undefined) diskFull.guard(records, () => account.rename(name)); return status(); });
         return;
       }
       if (req.op === "spaces") {
@@ -453,7 +452,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "connect-check") {
-        replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
+        replyTask(connectCheck(req.space, machineHome, undefined, observeDiskFull).catch((error: unknown): ConnectCheckResult => {
+            observeRequest(error, req.space);
+            return { outcome: "refused", space: req.space, message: isDiskFull(error) ? diskFullRefusal(req.op).message : "the daemon could not complete the check" };
+          })
           .then((result) => {
             counters.connectChecksAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
@@ -461,7 +463,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "register") {
-        replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
+        replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((error: unknown): RegisterResult => {
+            observeRequest(error, req.space);
+            return { outcome: "refused", space: req.space, message: isDiskFull(error) ? diskFullRefusal(req.op).message : "the daemon could not complete the registration request; nothing is connected" };
+          })
           .then((result) => {
             counters.registersAnswered++;
             notifyStatusWatchers();
@@ -470,70 +475,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
-        const notRegistered = {
-          space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
-          remedy: "Check the space name or run `cotal space` to list registered spaces.",
-        };
-        const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
-          : (async () => {
-            if (req.op === "service-connect") {
-              const entry = findMesh(req.space);
-              if (!entry) return notRegistered;
-              if (entry.mode !== "user") return {
-                space: req.space, state: "unsupported" as const, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY,
-              };
-            }
-            // Disconnect retires local authority even when sign-in or the account host is gone.
-            // The local removal revision fences account reconciliation until a fresh enable.
-            if (req.op === "service-connect" && await account.intent(req.space, true)) return services.status(req.space);
-            const disconnect = req.op === "service-disconnect" ? services.disconnect(req.space) : undefined;
-            void disconnect?.catch(() => {});
-            return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
-            if (req.op === "service-connect") {
-              reconciler.localAddition(req.space);
-              return services.connect(req.space);
-            }
-            reconciler.localRemoval(req.space);
-            let disconnected: ServiceConnectionResult;
-            try { await managers.disconnect(req.space); }
-            finally { disconnected = await disconnect!; }
-            return disconnected;
-            }));
-          })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
-        managerResult(async () => {
-          const result = await run;
-          counters.serviceAnswered++;
-          if (req.op === "service-connect" && result.state === "not-registered") return result;
-          const manager = req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space);
-          // Read guidance only for these replies, after disconnect has finished removing records.
-          if (!manager.registrationCleanup && ((req.op === "service-status" && (result.state === "not-requested" || result.state === "unsupported")) ||
-              (req.op === "service-disconnect" && result.state === "disconnected"))) {
-            let damaged = false;
-            try {
-              const { entries, unusable } = readMeshRegistry();
-              // Keep pre-hex registrations visible without mistaking a damaged canonical record for a legacy one.
-              damaged = unusable.some(error => error.file === meshFile(req.space));
-              if (!damaged) {
-                const entry = entries.find(entry => entry.space === req.space);
-                if (req.op === "service-status" && result.state === "not-requested" && !entry) return notRegistered;
-                if (entry && entry.mode !== "user") {
-                  if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
-                  return { ...result, message: result.removedRecords?.length === 0 ? "This space does not use the machine service. There was nothing to disconnect." : result.message,
-                    manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
-                }
-              }
-            } catch (error) {
-              if (!isMeshRegistryError(error)) throw error;
-              damaged = true;
-            }
-            if (damaged) {
-              const remedy = "run `cotal daemon spaces` to identify unreadable records, then restore the mesh registry";
-              if (req.op === "service-status") return { space: req.space, state: "unavailable", message: "the mesh registry could not be read for this space", remedy };
-              return { ...result, manager: { ...manager, next: remedy } };
-            }
-          }
-          return { ...result, manager };
-        });
+        managerResult(async () => { const result = await serviceRequest(req, serviceDeps); counters.serviceAnswered++; return result; });
         return;
       }
       if (req.op === "login-cancel") {
@@ -693,9 +635,11 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }, () => {}),
     ]);
   }));
+  const stopDiskFullRecheck = diskFull.startRecheck();
 
   const close = (): Promise<void> => {
     closed ??= (async () => {
+      stopDiskFullRecheck();
       const servicesClosed = services.close();
       const managersClosed = managers.close();
       await account.close();
@@ -717,7 +661,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close, stopped,
+  return { paths, counters, dirOutcome, status, close, stopped, observeDiskFull,
     generationSeats: () => managers.generationSeats(),
     generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; notifyStatusWatchers(); },
     async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); notifyStatusWatchers(); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner).finally(() => notifyStatusWatchers()) };

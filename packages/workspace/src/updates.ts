@@ -102,6 +102,11 @@ export function setUpdateSetting(key: "auto" | "notify", enabled: boolean): Upda
   return settings;
 }
 
+/** One atomic publication of the whole update-settings record, for a request that may change several fields. */
+export function saveUpdateSettings(settings: UpdateSettings): void {
+  save("update-settings.json", { v: 1, auto: settings.auto, notify: settings.notify });
+}
+
 /** An unreadable recovery record is an error, never evidence that an install is healthy. */
 export function readUpdateRecovery(): UpdateRecovery | undefined {
   const value = readRecord("update-recovery.json");

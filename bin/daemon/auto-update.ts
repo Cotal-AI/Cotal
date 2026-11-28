@@ -8,6 +8,7 @@ import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanWindowsUpdate, startWindowsUpdate } from "./update-windows.js";
 import { WINDOWS_INTERRUPTED_UPDATE, readWindowsUpdatePause } from "@cotal-ai/workspace";
 import { cleanLaunchUpdate, startLaunchUpdate } from "./update-launchd.js";
+import { observeAsyncWrite, observeWrite, type ObserveWrite } from "./write-observation.js";
 
 function reconciliationPending(version: string): boolean {
   try {
@@ -27,9 +28,14 @@ interface UpdateHost {
 }
 
 /** Schedule only the existing updater. Manager preparation holds its native empty-seat admission fence. */
-export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStatus; check(): Promise<DaemonUpdateStatus>; updating(): boolean; close(): Promise<void> } {
+export function automaticUpdates(host: UpdateHost, observe?: ObserveWrite): { status(): DaemonUpdateStatus; check(): Promise<DaemonUpdateStatus>; updating(): boolean; close(): Promise<void> } {
   const desktop = existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url)));
-  const file = join(homeCotalDir(), "update-attempt.json");
+  const home = homeCotalDir();
+  const file = join(home, "update-attempt.json");
+  const check = (manual = false) => observeAsyncWrite(observe, home, () => checkForUpdate(error => {
+    if (manual) throw error;
+    observe?.(error, home);
+  }));
   let state: Attempt = { failures: 0, result: "not checked", next: Date.now() + Math.random() * UPDATE_HOUR_MS };
   try {
     const value = JSON.parse(readFileSync(file, "utf8"));
@@ -40,7 +46,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
   }
   let windowsPending = process.platform === "win32" && existsSync(join(homeCotalDir(), "update-windows.json"));
   let child: ChildProcess | undefined, busy: Promise<void> | undefined, closed = false, launchdPending = process.platform === "darwin" && (existsSync(join(homeCotalDir(), "update-launchd.json")) || existsSync(join(homeCotalDir(), "update-launchd-result.json")));
-  const persist = () => writeSecretFileAtomic(file, `${JSON.stringify(state)}\n`);
+  const persist = () => observeWrite(observe, home, () => writeSecretFileAtomic(file, `${JSON.stringify(state)}\n`));
   try { persist(); } catch (error) { host.report(`automatic updates paused: ${String(error)}`); state.next = Number.MAX_SAFE_INTEGER; }
   const status = (): DaemonUpdateStatus => {
     if (!busy) {
@@ -83,7 +89,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (process.platform === "darwin") {
       try {
         launchdPending = true;
-        if (cleanLaunchUpdate() === "pending") return;
+        if (observeWrite(observe, home, cleanLaunchUpdate) === "pending") return;
         launchdPending = false;
         state = JSON.parse(readFileSync(file, "utf8")) as Attempt;
       } catch (error) {
@@ -96,7 +102,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (process.platform === "win32") {
       try {
         windowsPending = true;
-        const custody = cleanWindowsUpdate();
+        const custody = observeWrite(observe, home, cleanWindowsUpdate);
         if (custody === "pending") return;
         windowsPending = false;
         if (custody === "paused") { state = { ...state, result: WINDOWS_INTERRUPTED_UPDATE, next: Number.MAX_SAFE_INTEGER }; persist(); return; }
@@ -114,7 +120,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       const recorded = JSON.parse(readFileSync(file, "utf8"));
       if (recorded && Number.isInteger(recorded.failures) && recorded.failures >= 0 && typeof recorded.result === "string" && Number.isFinite(recorded.next)) state = recorded;
     } catch { /* Keep the last validated attempt state when unreadable. */ }
-    const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
+    const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await check() : readUpdateCheck();
     const recovery = readUpdateRecovery();
     const retiring = recovery !== undefined && recoveryDisposition(recovery).action === "retire";
     if (closed || !retiring && Date.now() < state.next) return;
@@ -138,12 +144,12 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       state = { ...state, failures: state.failures, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
       persist();
       if (process.platform === "win32") {
-        try { windowsPending = true; startWindowsUpdate(state.failures); }
+        try { windowsPending = true; observeWrite(observe, home, () => startWindowsUpdate(state.failures)); }
         catch (error) { state = { ...state, result: `Windows automatic update handoff refused: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + UPDATE_HOUR_MS }; persist(); host.report(state.result); }
         return;
       }
       if (process.platform === "darwin") {
-        try { launchdPending = true; startLaunchUpdate(state.failures); }
+        try { launchdPending = true; observeWrite(observe, home, () => startLaunchUpdate(state.failures)); }
         catch (error) {
           state = { ...state, result: `launchd automatic update handoff refused: ${error instanceof Error ? error.message : String(error)}. Run \`cotal update --self\``, next: Date.now() + UPDATE_HOUR_MS };
           persist(); host.report(state.result);
@@ -153,8 +159,8 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       const updating = state.result;
       const ended = await new Promise<{ code: number | null; output: string }>(resolve => {
         const logPath = join(homeCotalDir(), "update-attempt.log");
-        const outputFd = openPrivateAppend(logPath);
-        ftruncateSync(outputFd, 0);
+        const outputFd = observeWrite(observe, home, () => openPrivateAppend(logPath));
+        observeWrite(observe, home, () => ftruncateSync(outputFd, 0));
         // A daemon loaded from a retained generation starts the updater at the installed entry: the
         // generation's own bootstrap is not an installation, and its updater refuses to stage from it.
         child = spawn(process.execPath, [logicalExecutionEntry() ?? fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], { env: { ...process.env, COTAL_NO_UPDATE_CHECK: "1", COTAL_AUTO_UPDATE: "1" }, stdio: ["ignore", outputFd, outputFd], detached: true, windowsHide: true });
@@ -177,7 +183,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     busy = tick().catch(error => { host.report(`automatic update: ${String(error)}`); }).finally(() => { busy = undefined; });
   }, 30_000);
   timer.unref();
-  return { status, async check() { await checkForUpdate(); return status(); }, updating: () => child !== undefined || launchdPending || windowsPending, async close() {
+  return { status, async check() { await check(true); return status(); }, updating: () => child !== undefined || launchdPending || windowsPending, async close() {
     closed = true; clearInterval(timer);
     if (child) {
       child.stdout?.destroy(); child.stderr?.destroy(); child.unref();

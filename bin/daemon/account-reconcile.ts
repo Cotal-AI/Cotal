@@ -4,10 +4,11 @@ import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount } from
 import { importAccountComputerSpace, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
-import { findMesh, readMeshRegistry, recordMeshes } from "@cotal-ai/workspace";
+import { findMesh, meshesDir, readMeshRegistry, recordMeshes } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
 import { knownMachineAccounts } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
+import { observeWrite, writeDirectory, type ObserveWrite } from "./write-observation.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
 interface Saved { v: 1; spaces: Record<string, ManagedSpace> }
@@ -27,10 +28,16 @@ function readSavedSpaces(file: string): Saved {
   return raw;
 }
 
+function catalogWrite(observe: ObserveWrite | undefined, write: () => void): void {
+  try { write(); }
+  catch (error) { observe?.(error, writeDirectory(error, meshesDir())); throw error; }
+}
+
 /** Reconcile through the same checked service and Manager operations as local setup. */
-export function createAccountReconciler(home: string, services: ServiceConnections, managers: Managers) {
+export function createAccountReconciler(home: string, services: ServiceConnections, managers: Managers, observe?: ObserveWrite) {
   const file = join(home, "daemon", "account-spaces.json"), saved = readSavedSpaces(file);
-  const persist = () => { mkSecretDir(join(file, "..")); writeSecretFileAtomic(file, JSON.stringify(saved)); };
+  const directory = join(file, "..");
+  const persist = () => observeWrite(observe, directory, () => { mkSecretDir(directory); writeSecretFileAtomic(file, JSON.stringify(saved)); });
   const refusals = new Map<string, string>();
   const retryAt = new Map<string, number>();
   const managerOnly = new Set<string>();
@@ -105,11 +112,11 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       try {
         if ("unavailable" in row) throw new Error("account space is currently unavailable");
         const legacy = !prior && connectedHere(row.slug);
-        importAccountComputerSpace(account, row);
+        catalogWrite(observe, () => importAccountComputerSpace(account, row));
         if (legacy) continue;
         // Persist custody before the first operation, so restart knows which spaces it may remove.
         saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision: bindingRevisions[row.id]! }; persist();
-        const check = await connectCheck(row.slug, home);
+        const check = await connectCheck(row.slug, home, undefined, observe);
         if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new Error(check.outcome);
         const manager = await ensureHostedManager(row.slug, managers);
         if (manager.state !== "answering") throw new Error("Manager is not answering");
@@ -162,7 +169,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         if (!signedIn.has(account.ownerKey) || !account.issuer || !account.sub || !desiredByOwner.get(account.ownerKey)?.has(space)) throw new Error("Sign in again and refresh your spaces before moving this connection.");
         const registered = findMesh(space);
         if (registered?.origin === "catalog" && registered.catalogOwner === prior.owner)
-          recordMeshes([{ ...registered, catalogOwner: account.ownerKey }]);
+          catalogWrite(observe, () => recordMeshes([{ ...registered, catalogOwner: account.ownerKey }]));
         prior.owner = account.ownerKey; persist(); conflicts.delete(space); refusals.delete(space); retryAt.delete(space);
     }),
     /** The answering Managers this computer hosts for the given account spaces, by catalog space id. */

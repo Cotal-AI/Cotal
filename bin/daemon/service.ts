@@ -31,7 +31,7 @@
  * owner token and command schemas; broker caller grants still control invoke access. It reports no vitals or machine metadata. No token, proof
  * or provider text leaves this module; every message is fixed text.
  */
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
@@ -39,13 +39,14 @@ import {
   ServiceAccessNotYetValidError, ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { removeServiceRecords } from "./service-records.js";
+import { observeAsyncWrite, observeWrite, writeDirectory, type ObserveWrite } from "./write-observation.js";
 
 /** Map registration outcomes consistently for setup and service status. */
 export function fromRegister(r: RegisterResult): ServiceConnectionState {
@@ -88,15 +89,20 @@ const ENDED = new Set(["expired", "approval-revoked", "root-revoked", "stale-wit
 
 /** The renewal source's own record keys go to the daemon's private store; every other key the source
  *  reads (the space's client sentinel) comes from the space's workspace store, read only. */
-function daemonServiceStore(home: string, space: string, workspace: SecretStore): SecretStore {
-  const own = new FsSecretStore(join(home, "daemon", spaceSegment(space), "service-store"));
+function daemonServiceStore(home: string, space: string, workspace: SecretStore, observe?: ObserveWrite): SecretStore {
+  const root = join(home, "daemon", spaceSegment(space), "service-store");
+  const own = new FsSecretStore(root);
   const ownKey = (k: string) => k.startsWith(`auth/${spaceSegment(space)}/service-renewal/`) || k.startsWith("daemon-ready/");
+  const mutate = <T>(k: string, write: () => Promise<T>) => {
+    if (!ownKey(k)) throw new Error("the daemon writes only its own service records");
+    return observeAsyncWrite(observe, dirname(join(root, k)), write);
+  };
   return {
-    get identity() { return own.identity; },
+    get identity() { return observeWrite(observe, root, () => own.identity); },
     get: (k) => (ownKey(k) ? own.get(k) : workspace.get(k)),
-    put: (k, v) => { if (!ownKey(k)) throw new Error("the daemon writes only its own service records"); return own.put(k, v); },
-    create: (k, v) => { if (!ownKey(k)) throw new Error("the daemon writes only its own service records"); return own.create(k, v); },
-    delete: (k) => { if (!ownKey(k)) throw new Error("the daemon writes only its own service records"); return own.delete(k); },
+    put: (k, v) => mutate(k, () => own.put(k, v)),
+    create: (k, v) => mutate(k, () => own.create(k, v)),
+    delete: (k) => mutate(k, () => own.delete(k)),
   };
 }
 
@@ -173,7 +179,7 @@ function hasDaemonConnectIntent(space: string, home: string): boolean {
   return intentSpace(daemonConnectIntentFile(space, home)) === space;
 }
 
-export function createServiceConnections(home: string = homeCotalDir()): ServiceConnections {
+export function createServiceConnections(home: string = homeCotalDir(), observe?: ObserveWrite): ServiceConnections {
   const live = new Map<string, Live>();
   const queue = new Map<string, Promise<unknown>>();
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -302,14 +308,14 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
     const entry = findMesh(space);
     if (!entry || entry.mode !== "user" || !entry.userAuth) { l.state = entry ? "unsupported" : "not-registered"; return result(space); }
-    const w = await daemonWitness(space, home, signal);
+    const w = await daemonWitness(space, home, signal, observe);
     signal.throwIfAborted();
     if ("outcome" in w) { l.state = fromRegister(w); l.remedy = "remedy" in w ? w.remedy : undefined; return result(space); }
     const witness = w.witness;
     l.instanceId = witness.instanceId;
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointRenewal || !provider.serviceEndpointAuthority || !provider.serviceEndpointInfo) { l.state = "unsupported"; return result(space); }
-    const store = daemonServiceStore(home, space, workspaceSecretStore(entry.root));
+    const store = daemonServiceStore(home, space, workspaceSecretStore(entry.root), observe);
     const dir = userAuthStateDir(entry.root, space, { readOnly: true });
     const source = provider.serviceEndpointRenewal({ store, dir, sessionDir: home, witness });
     l.source = source;
@@ -378,12 +384,13 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     return result(space);
   }
 
-  /** Record this space's connect intent. A store failure never changes the connection's
-   *  own reported state: it is reported as a resume that will not happen, not as a failed connect. */
+  /** A failed intent write does not change the live connection's state. */
   const remember = (space: string): void => {
     const path = daemonConnectIntentFile(space, home);
-    mkSecretDir(join(path, ".."));
-    writeSecretFile(path, `${JSON.stringify({ v: 1, space })}\n`);
+    observeWrite(observe, dirname(path), () => {
+      mkSecretDir(dirname(path));
+      writeSecretFileAtomic(path, `${JSON.stringify({ v: 1, space })}\n`);
+    });
   };
   const cancelRetry = (space: string): void => {
     clearTimeout(retries.get(space));
@@ -414,7 +421,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       const abort = new AbortController();
       registering.set(space, abort);
       try {
-        const r = await registerDaemon(space, home, abort.signal);
+        const r = await registerDaemon(space, home, abort.signal, observe);
         const current = live.get(space);
         // Registration alone cannot replace a live transport's state or revive ended authority.
         if (!abort.signal.aborted && !closed && !current?.endpoint && current?.state !== "ended") {
@@ -446,7 +453,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
           if (l) { await teardown(l); live.delete(space); }
           let removedRecords: string[];
           try { removedRecords = removeServiceRecords(home, space); }
-          catch {
+          catch (error) {
+            observe?.(error, writeDirectory(error, dirname(daemonConnectIntentFile(space, home))));
             live.set(space, { abort: new AbortController(), state: "local-state-error", brokerUp: false, serving: new Set() });
             return { ...result(space), message: "the connection is closed, but removing its local service records failed; some records may remain. Repair their permissions and retry service-disconnect; the remote record may remain until you remove the computer in the dashboard" };
           }

@@ -165,7 +165,7 @@ function uptimeText(seconds: number): string {
   return `${Math.floor(seconds / 86400)} days ${Math.floor(seconds % 86400 / 3600)} hours`;
 }
 function statusView(s: DaemonStatus): Report {
-  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }, ...(s.computerNameWarning ? [{ kind: "lines" as const, lines: [s.computerNameWarning] }] : []), ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
+  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`], ...(s.diskFull ? [["Disk", "full. Free up space on this computer. Cotal continues by itself once there is room."]] as [string, string][] : [])] }, ...(s.computerNameWarning ? [{ kind: "lines" as const, lines: [s.computerNameWarning] }] : []), ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
     ...(s.vitals ? [{ title: "Computer vitals", blocks: [{ kind: "fields" as const, rows: [["Sampled", s.vitals.sampledAt], ["CPU", `${s.vitals.cpu.logicalCount} logical, ${s.vitals.cpu.utilisationPercent.toFixed(1)}% over ${s.vitals.cpu.intervalMs}ms`], ...(s.vitals.cpu.load1 !== undefined ? [["Load (1/5/15m)", `${s.vitals.cpu.load1} / ${s.vitals.cpu.load5} / ${s.vitals.cpu.load15}`]] : []), ["Memory", capacityText(s.vitals.memory.totalBytes, s.vitals.memory.availableBytes)], ["System uptime", uptimeText(s.vitals.uptimeSeconds)], ...s.vitals.filesystems.map(fs => [fs.mount, capacityText(fs.totalBytes, fs.freeBytes)])] as [string, string][] }] }] : []),
     ...(s.vitalsError ? [{ title: "Computer vitals error", blocks: [{ kind: "lines" as const, lines: [s.vitalsError] }] }] : []),
     ...(s.update ? [{ title: "Updates", blocks: [{ kind: "fields" as const, rows: [["Current", s.update.current], ["Latest seen", s.update.latest ?? "unknown"], ["Last check", s.update.lastCheck ?? "not checked"], ["Automatic updates", s.update.automatic ? "on" : "off"], ["Last result", s.update.lastResult], ["Failures", String(s.update.failures)], ["Next attempt", s.update.nextAttempt ?? "none"]] as [string, string][] }] }] : []),
@@ -628,7 +628,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(otherRuntimeRefusal(e, paths, home), home);
   }
-  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) }, running.observeDiskFull);
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
     // The helper stays in this unit's cgroup. NotifyAccess=all permits its readiness
     // message, and the default notification barrier waits for systemd to consume it.
@@ -721,7 +721,10 @@ async function run(args: ParsedArgs): Promise<void> {
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
     catch (error) { throw asFailure(error, home); }
-    if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
+    if (!reply.ok) {
+      if (reply.error.code === "OPERATION_FAILED") throw new CommandFailure("failed", "OPERATION_FAILED", reply.error.message);
+      throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
+    }
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
     writeResult(presentationOf(args.values), { command: "daemon name", target: null, result }, () => ({ sections: [{ title: "Computer", blocks: [{ kind: "lines", lines: [result.computer] }] }] }));

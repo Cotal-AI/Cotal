@@ -19,10 +19,11 @@
 import { join } from "node:path";
 import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
-import { claimIdentityRecord, codeSpan, findMesh, findPreparedSpace, hasUserAuthState, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { claimIdentityRecord, codeSpan, findMesh, findPreparedSpace, hasUserAuthState, homeCotalDir, isDiskFull, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
+import { diskFullRefusal, type ObserveDiskFull } from "./disk-state.js";
 
 /** The service name the daemon proposes for itself. Single-label names are reserved for reference
  *  endpoints and a third-party name must be reverse-DNS, so this is the reverse-DNS of cotal.ai.
@@ -82,7 +83,7 @@ const SENTENCE = {
 
 /** Check readiness for `space`. `home` is the machine home where the stock session and the daemon's
  *  own state live. */
-export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<ConnectCheckResult> {
+export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal, observe?: ObserveDiskFull): Promise<ConnectCheckResult> {
   signal?.throwIfAborted();
   const entry = findMesh(space);
   if (!entry) {
@@ -139,7 +140,9 @@ export async function connectCheck(space: string, home: string = homeCotalDir(),
     identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({
       v: 1, kind: KIND, space, endpoint: DAEMON_ENDPOINT, instanceId: mintLifecycleUid(), accountPublicKey,
     }));
-  } catch {
+  } catch (error) {
+    observe?.(error, join(daemonIdentityFile(space, home), ".."));
+    if (observe && isDiskFull(error)) return { outcome: "local-state-error", space, message: diskFullRefusal("connect-check").message };
     return { outcome: "local-state-error", space,
       message: "the daemon could not read or create its local service identity; inspect service-identity.json and its permissions, and restore the original record if damaged" };
   }

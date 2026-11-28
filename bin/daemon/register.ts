@@ -22,10 +22,11 @@ import { join } from "node:path";
 import { readdirSync } from "node:fs";
 import { decodeJwt } from "jose";
 import { contractDigest, parseServiceRegistrationWitness, resolveAuthProvider, serviceWitnessDigest, ServiceAuthorityTransportError, singleDocumentClosure, VOID_SCHEMA_DIGEST, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { claimIdentityRecord, codeSpan, findMesh, FsSecretStore, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { claimIdentityRecord, codeSpan, findMesh, FsSecretStore, homeCotalDir, isDiskFull, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { ACCOUNT_MISMATCH_MESSAGE, connectCheck, DAEMON_ENDPOINT, readDaemonServiceIdentity } from "./connect.js";
 import type { RegisterResult } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
+import { diskFullRefusal, type ObserveDiskFull } from "./disk-state.js";
 
 /** The daemon's existing void liveness contract. It reports no machine metadata or vitals.
  *  It is ephemeral, untargeted and ungoverned, the shape the service door admits. */
@@ -85,8 +86,8 @@ const registerBody = (space: string, identity: { accountPublicKey: string; endpo
   registration: DAEMON_REGISTRATION, expected: { state: "unregistered" as const },
 });
 
-export async function registerDaemon(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<RegisterResult> {
-  const sent = await sendRegister(space, home, signal);
+export async function registerDaemon(space: string, home: string = homeCotalDir(), signal?: AbortSignal, observe?: ObserveDiskFull): Promise<RegisterResult> {
+  const sent = await sendRegister(space, home, signal, observe);
   return "outcome" in sent ? sent : registerAnswer(sent.result, sent.ids);
 }
 
@@ -131,7 +132,7 @@ async function renewalWitness(space: string, home: string): Promise<ServiceRegis
 
 /** Use a stored service proof before considering human sign-in. Without renewal material, replay
  *  the persisted register request unchanged. Neither path mints a new registration request. */
-export async function daemonWitness(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<{ witness: ServiceRegistrationWitness } | RegisterResult> {
+export async function daemonWitness(space: string, home: string = homeCotalDir(), signal?: AbortSignal, observe?: ObserveDiskFull): Promise<{ witness: ServiceRegistrationWitness } | RegisterResult> {
   let witness: ServiceRegistrationWitness | undefined;
   try { witness = await renewalWitness(space, home); } catch {
     return { outcome: "local-state-error", space, message: "the daemon could not use its local service records; restore the original identity, registration and renewal records before retrying" };
@@ -153,14 +154,14 @@ export async function daemonWitness(space: string, home: string = homeCotalDir()
     }
     return { witness };
   }
-  const sent = await sendRegister(space, home, signal);
+  const sent = await sendRegister(space, home, signal, observe);
   if ("outcome" in sent) return sent;
   if (sent.result.state === "registered") return { witness: sent.result.witness };
   return registerAnswer(sent.result, sent.ids);
 }
 
-async function sendRegister(space: string, home: string, signal?: AbortSignal): Promise<RegisterResult | { result: ServiceAuthorityResult; ids: Ids }> {
-  const ready = await connectCheck(space, home, signal);
+async function sendRegister(space: string, home: string, signal?: AbortSignal, observe?: ObserveDiskFull): Promise<RegisterResult | { result: ServiceAuthorityResult; ids: Ids }> {
+  const ready = await connectCheck(space, home, signal, observe);
   signal?.throwIfAborted();
   if (ready.outcome !== "ready-to-register") return ready;
   const entry = findMesh(space)!;
@@ -171,7 +172,9 @@ async function sendRegister(space: string, home: string, signal?: AbortSignal): 
     record = claimIdentityRecord(daemonRegisterFile(space, home), "daemon register request", parseRecord(space), () => ({
       v: 1, kind: KIND, space, instanceId: ready.instanceId, requestId: randomBytes(16).toString("hex"), bodyDigest,
     }));
-  } catch {
+  } catch (error) {
+    observe?.(error, join(daemonRegisterFile(space, home), ".."));
+    if (observe && isDiskFull(error)) return { outcome: "local-state-error", space, message: diskFullRefusal("register").message };
     return { outcome: "local-state-error", space,
       message: "the daemon could not read or create its local registration request; inspect register-request.json and its permissions, and restore the original record if damaged" };
   }
