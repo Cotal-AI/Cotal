@@ -329,13 +329,21 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       && String(f.remedy).startsWith("read the run with `cotal run show`, or list the runs with `cotal run`, before trying again"), { outcome: f.outcome, code: f.code, message: f.message });
   }
   // The describe before a read was answered on the same rail, so the rail and skew wording does not
-  // apply: the read failed, and running it again is safe.
-  for (const command of ["run-status", "run-ps"]) {
-    const read = unansweredHostFailure(command, "s", sent(command));
-    c(`${command} published and unanswered failed, exit 5, and names neither the rail nor a restart`,
+  // apply: one run failed, and reading it again is safe. A list that misses its budget misses it
+  // again, so the remedy names the page that bounds the read.
+  {
+    const read = unansweredHostFailure("run-status", "s", sent("run-status"));
+    c("run-status published and unanswered failed, exit 5, and names neither the rail nor a restart",
       read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
       && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
       && !read.message.includes("disjoint at the broker") && read.remedy === "a read changes nothing, so it is safe to run again", { outcome: read.outcome, code: read.code, message: read.message });
+  }
+  {
+    const read = unansweredHostFailure("run-ps", "s", sent("run-ps"));
+    c("run-ps published and unanswered failed, exit 5, and names a page instead of a retry",
+      read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
+      && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
+      && !read.message.includes("disjoint at the broker") && read.remedy === "a list that misses its budget misses it again; `cotal run --page --on <instance>` reads one page", { outcome: read.outcome, code: read.code, message: read.message });
   }
   const readDescribed = unansweredHostFailure("run-ps", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
     [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));

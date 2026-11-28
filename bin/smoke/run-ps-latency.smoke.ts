@@ -116,6 +116,15 @@ try {
     if (!started.ok) throw new Error(`run-start ${i}: ${JSON.stringify(started.error)}`);
     runIds.push((started.data as { runId: string }).runId);
   }
+  // A program record for a run that was never started has no spec, so the list does not name it.
+  const other = core.newIdentity().id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16) || "other";
+  const otherCreds = await core.mintCreds(auth, core.newIdentity(), "run-driver", {
+    runDriver: { endpoint: "manager", runId: `other-${other}`, takeoverId: core.newTakeoverId(), instanceId: "i".repeat(26), epoch: 1 },
+  });
+  const otherNc = await connect({ servers, ...core.standaloneConnectOpts({ creds: otherCreds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await core.recordRunProgram(await core.openRecordsBucket(otherNc, space), "manager", { v: 1, run: `other-${other}`, source: "log(1);\n", at: 1 });
+  } finally { await otherNc.close(); }
   for (const runId of runIds) {
     for (let attempt = 0; ; attempt++) {
       const view = await call("run-status", { runId });
@@ -126,7 +135,8 @@ try {
   }
   const unhurried = await call("run-ps", {});
   c(`with no delay the full list names all ${RUNS} runs`,
-    unhurried.ok && new Set((unhurried.data as RunListRow[]).map((row) => row.runId)).size === RUNS && runIds.every((id) => (unhurried.data as RunListRow[]).some((row) => row.runId === id)),
+    unhurried.ok && new Set((unhurried.data as RunListRow[]).map((row) => row.runId)).size === RUNS && runIds.every((id) => (unhurried.data as RunListRow[]).some((row) => row.runId === id))
+      && !(unhurried.data as RunListRow[]).some((row) => row.runId === `other-${other}`),
     unhurried.ok ? (unhurried.data as RunListRow[]).length : unhurried.error);
 
   console.log(`2. with ${DELAY_MS} ms each way on the manager's link, run-ps answers inside the ${BUDGET_MS} ms budget`);

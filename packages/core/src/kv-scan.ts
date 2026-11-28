@@ -362,12 +362,32 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
 /** Messages per batched Direct Get page in {@link lastKvEntries}. */
 const DIRECT_BATCH = 1024;
 
+/** A stored delete whose body is empty. Callers that drop DEL and PURGE never decode it, and a
+ *  caller that does gets a refusal naming the key rather than a syntax error from the empty body. */
+function markerEntry(entry: KvEntry): KvEntry {
+  return {
+    bucket: entry.bucket,
+    key: entry.key,
+    rawKey: entry.rawKey,
+    value: entry.value,
+    created: entry.created,
+    revision: entry.revision,
+    delta: entry.delta,
+    operation: entry.operation,
+    length: entry.length,
+    json: () => { throw new Error(`record ${entry.key} is a ${entry.operation} marker and has no value`); },
+    string: () => { throw new Error(`record ${entry.key} is a ${entry.operation} marker and has no value`); },
+  };
+}
+
 /**
- * The last entry of every key in `kv`, DEL and PURGE markers included, read WITHOUT a consumer.
+ * The last entry of every key `filter` matches, DEL and PURGE markers included, read WITHOUT a
+ * consumer. `filter` defaults to `>`, the whole bucket. A wildcard names one subject family, and
+ * keys it does not match are not read.
  *
- * Batched Direct Gets walk the bucket's subjects in sequence order (`next_by_subj` over the whole
- * bucket), {@link DIRECT_BATCH} messages a request, so a bucket of K keys costs ceil(K / 1024) round
- * trips and K messages. It exists for readers that must leave nothing on the broker: a watch's or a
+ * Batched Direct Gets walk the matching subjects in sequence order (`next_by_subj`),
+ * {@link DIRECT_BATCH} messages a request, so K matching keys cost ceil(K / 1024) round trips and
+ * K messages. It exists for readers that must leave nothing on the broker: a watch's or a
  * scan's consumer outlives its reader by the five-minute inactive threshold nats.js gives it whenever
  * the reader's profile holds no CONSUMER.DELETE (#691), and one per read piles up until the broker
  * refuses new consumers on the bucket (#4091). `multi_last` would answer in one request but refuses a
@@ -385,7 +405,7 @@ const DIRECT_BATCH = 1024;
  * `PermissionViolationError` as soon as the broker reports it. A read whose connection closes
  * before its page is answered fails at the close: the close cancels the page's native timeout.
  */
-export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
+export async function lastKvEntries(kv: KV, filter = ">"): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
     throw new Error(`lastKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`);
   const bucket: Bucket = kv;
@@ -410,7 +430,7 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
           // path keeps each completed reply subscription until the five-second timeout.
           await new Promise<void>((resolve, reject) => {
             bucket.jsm.direct.getBatch(bucket.stream, {
-              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>`,
+              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.${filter}`,
               callback: (done, sm) => {
                 if (done) {
                   done.err ? reject(done.err) : resolve();
@@ -418,8 +438,12 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
                 }
                 try {
                   const e = bucket.smToEntry(sm);
-                  const prior = latest.get(e.key);
-                  if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+                  // A delete stores an empty body under KV-Operation DEL. The client's entry reports
+                  // that operation, and decoding the empty body is a syntax error, so the marker is
+                  // what the caller sees. An empty PUT is the same shape and is kept the same way.
+                  const entry = e.length === 0 || e.operation === "DEL" || e.operation === "PURGE" ? markerEntry(e) : e;
+                  const prior = latest.get(entry.key);
+                  if (prior === undefined || entry.revision >= prior.revision) latest.set(entry.key, entry);
                   last = sm.seq;
                   pending = sm.pending;
                 } catch (e) {

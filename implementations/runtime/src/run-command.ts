@@ -740,8 +740,10 @@ const UNCONFIRMED_REMEDY = "read the run with `cotal run show`, or list the runs
  *  because the manager does not stop when the caller stops waiting, so it is unknown. */
 export function unansweredHostFailure(command: string, space: string, e: EpEnvelopeError): CommandFailure {
   const options = { target: { space }, native: { code: e.code } };
-  if (e.outcome === "unknown" && (command === "run-status" || command === "run-ps"))
+  if (e.outcome === "unknown" && command === "run-status")
     return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: "a read changes nothing, so it is safe to run again" });
+  if (e.outcome === "unknown" && command === "run-ps")
+    return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: "a list that misses its budget misses it again; `cotal run --page --on <instance>` reads one page" });
   if (e.outcome === "unknown")
     return new CommandFailure("unknown", "OPERATION_UNKNOWN", `${e.code}: ${e.message}; the manager may already have recorded it`, { ...options, remedy: UNCONFIRMED_REMEDY });
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { ...options, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
