@@ -110,7 +110,7 @@ function accountDesiredRefusal(space: string, summary: string, account: AccountC
     });
   }
   if (holding?.mode === "sign-in-required") {
-    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is enabled on this account computer, and its account requires sign-in before the background service can host its Manager. ${summary}`, {
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is turned on for this computer, and its account requires sign-in before the background service can host its Manager. ${summary}`, {
       target: { space },
       remedy: provider ? `Run ${codeSpan(daemonCommandCopy("login", home, [["--idp", provider]]))} to restore sign-in.` : `Inspect ${statusCommand} for the account's sign-in state.`,
       native: { code: "ACCOUNT_DESIRED" },
@@ -125,20 +125,20 @@ function accountDesiredRefusal(space: string, summary: string, account: AccountC
         : desired.custodyRecovery
           ? "Open the Cotal app and choose Use signed-in account to confirm moving this connection."
           : `Inspect ${statusCommand} for the account computer status. The background service retries automatically.`;
-    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is enabled on this account computer, but its Manager could not start. Reason: ${oneLine(desired.lastRefusal).replace(/\.$/, "")}. ${summary}`, {
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is turned on for this computer, but its Manager could not start. Reason: ${oneLine(desired.lastRefusal).replace(/\.$/, "")}. ${summary}`, {
       target: { space },
       remedy,
       native: { code: "ACCOUNT_DESIRED" },
     });
   }
   if (holding?.message) {
-    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is enabled on this account computer, but the background service could not update the account connection. Reason: ${oneLine(holding.message).replace(/\.$/, "")}. ${summary}`, {
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is turned on for this computer, but the background service could not update the account connection. Reason: ${oneLine(holding.message).replace(/\.$/, "")}. ${summary}`, {
       target: { space },
       remedy: `Inspect ${statusCommand} for the account computer status. The background service retries automatically.`,
       native: { code: "ACCOUNT_DESIRED" },
     });
   }
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is enabled on this account computer, and the background service has not started its Manager yet. ${summary}`, {
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Space ${space} is turned on for this computer, and the background service hasn't started its Manager yet. ${summary}`, {
     target: { space },
     remedy: `Nothing needs to be run. Check ${statusCommand} again shortly.`,
     native: { code: "ACCOUNT_DESIRED" },

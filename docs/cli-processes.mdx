@@ -1277,7 +1277,7 @@ the background service hosts, or says it hosts none, unless it could not read a 
 - For an unreadable registration or prepared-space file or folder, or unreadable user-auth state,
   `DEPENDENCY_UNAVAILABLE` (`UNAVAILABLE`) sets `target: { space, file }` and names the path and how to
   restore access, recover from backup, or forget a damaged record with `cotal space forget <s>`.
-- For a space enabled on this account computer, `LIFECYCLE_BLOCKED` (`ACCOUNT_DESIRED`) sets
+- For a space turned on for this computer, `LIFECYCLE_BLOCKED` (`ACCOUNT_DESIRED`) sets
   `target: { space }`. If the Manager has not started yet, there is nothing to run. If starting it is
   blocked, status gives the reason and the next step.
 - For a registered remote user-auth space not requested by the account, `TARGET_NOT_FOUND`

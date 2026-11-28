@@ -5023,7 +5023,7 @@ process.exit(result.status ?? 93);
           && failingJson.doc!.target?.space === failingSpace
           && failingJson.doc!.error?.code === "LIFECYCLE_BLOCKED"
           && failingJson.doc!.error?.cause?.code === "ACCOUNT_DESIRED"
-          && String(failingJson.doc!.error?.message).includes(`Space ${failingSpace} is enabled on this account computer, but its Manager could not start. Reason: account space is currently unavailable.`)
+          && String(failingJson.doc!.error?.message).includes(`Space ${failingSpace} is turned on for this computer, but its Manager could not start. Reason: account space is currently unavailable.`)
           && String(failingJson.doc!.error?.remedy).includes("cotal daemon status --daemon-home")
           && !String(failingJson.doc!.error?.remedy).includes("cotal daemon setup")
           && failingPlain.status === 2
@@ -5044,8 +5044,7 @@ process.exit(result.status ?? 93);
             && onItsWayJson.doc!.target?.space === startingNowSpace
             && onItsWayJson.doc!.error?.code === "LIFECYCLE_BLOCKED"
             && onItsWayJson.doc!.error?.cause?.code === "ACCOUNT_DESIRED"
-            && String(onItsWayJson.doc!.error?.message).includes(`Space ${startingNowSpace} is enabled on this account computer`)
-            && String(onItsWayJson.doc!.error?.message).includes("the background service has not started its Manager yet")
+            && String(onItsWayJson.doc!.error?.message).includes(`Space ${startingNowSpace} is turned on for this computer, and the background service hasn't started its Manager yet.`)
             && String(onItsWayJson.doc!.error?.remedy).startsWith("Nothing needs to be run. Check `cotal daemon status")
             && !String(onItsWayJson.doc!.error?.remedy).includes("cotal daemon setup")
             && onItsWayPlain.status === 2
