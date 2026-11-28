@@ -409,7 +409,8 @@ let listOpened = false;
 const providers = new Map<string, string>();
 const catalogIds = new Map<string, string>();
 const instances = new Map<string, string>();
-const applicationRefusals = new Set<string>();
+// After a connector refusal, a Manager alone cannot confirm the machine connection.
+const applicationRefusals = new Map<string, "missing" | "ready" | "approval-pending">();
 let applications: readonly string[] = [];
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
 const connected = () => !upgradeNeeded && connection?.space === selectedSpace() && connection?.state === "launch-ready";
@@ -538,8 +539,7 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem === "NOT_ANSWERING" ? problem : surface.word === "Disk full" ? "DISK_FULL" : serviceAvailability === "stopped" && !problem ? "SERVICE_STOPPED" : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
-  const surfaceRecovery = issue === "DISK_FULL" || issue === "SERVICE_STOPPED";
+  const issue = problem === "NOT_ANSWERING" ? problem : surface.word === "Disk full" ? "DISK_FULL" : serviceAvailability === "stopped" && !problem ? "SERVICE_STOPPED" : problem ?? (!setupActive && applicationRefusals.get(selectedSpace()) === "missing" ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const networkLoss = surface.title === CONNECTION_COPY.offline.title || surface.title === CONNECTION_COPY.unreachable.title;
   const recovery = issue && !networkLoss && !needsSignIn ? refusalView(issue, applications) : undefined;
   if (recovery) {
@@ -549,7 +549,6 @@ function showStage(next: Stage, focus = false): void {
   el("recovery-panel").hidden = !recovery || repairPlan !== undefined;
   // The recover button opens the installer, so its link stays hidden.
   el("setup-installer").hidden = true;
-  el("recover-apps").hidden = surfaceRecovery || issue !== "NO_AVAILABLE_CONNECTOR";
   if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
@@ -703,7 +702,7 @@ function buttons(): void {
   el<HTMLButtonElement>("other-host").disabled = busy;
   const offline = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], false)) === "offline";
   el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected() || selectionPending || addingSpace && connections.has(selectedSpace()) || offline;
-  text("connect", addingSpace ? `Add to ${shownSpaceLabel(accountSpaces.get(selectedSpace())?.label, selectedSpace() || "space")}` : applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
+  text("connect", addingSpace ? `Add to ${shownSpaceLabel(accountSpaces.get(selectedSpace())?.label, selectedSpace() || "space")}` : el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
   el<HTMLButtonElement>("dashboard").disabled = busy || !(connected() || computerAccount?.hostSupport === "supported");
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
@@ -949,14 +948,17 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
-  observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
-  const frameAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(selectedSpace()));
+  const space = selectedSpace();
+  const frameAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   const refusedSpaces = new Set((frameAccount ? computerSpaces(frameAccount) : []).filter(row => row.lastRefusal).map(row => row.space));
+  const recovered = ready && !upgradeNeeded && !setupActive && !loginActive && !refusedSpaces.has(space) && applicationRefusals.has(space) ? await checkConnectorRecovery(space, current) : undefined;
+  if (!current()) return;
+  observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)).filter(name => !applicationRefusals.has(name)) : [];
+  if (recovered && !observedReadySpaces.includes(space)) observedReadySpaces.push(space);
   observedReadySpaces = observedReadySpaces.filter(name => !refusedSpaces.has(name));
   managerReasons.clear();
   if (Array.isArray(status.managers)) for (const item of status.managers) if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
-  const space = selectedSpace();
-  computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
+  computerAccount = frameAccount;
   if (computerAccount?.hostSupport === "supported") {
     computerRows.clear(); connections.clear();
     for (const row of computerSpaces(computerAccount)) {
@@ -964,8 +966,10 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
       connections.set(row.space, !row.lastRefusal && row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
     }
     const manager = Array.isArray(status.managers) ? status.managers.find(item => item.space === space) : undefined;
-    if (launchReady(manager)) { instances.set(space, manager.instanceId); }
+    if (recovered && observedReadySpaces.includes(space)) { instances.set(space, recovered); }
+    else if (launchReady(manager) && observedReadySpaces.includes(space)) { instances.set(space, manager.instanceId); }
     else instances.delete(space);
+    if (applicationRefusals.get(space) === "approval-pending" && !refusedSpaces.has(space)) connections.set(space, "approval-pending");
     connection = { space, state: connections.get(space) ?? "ready" };
     if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
   }
@@ -986,21 +990,41 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   }
   if (space && !editing && !setupActive && !choosingSpace) {
     const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
-    if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
+    if (recovered || launchReady(manager) && !applicationRefusals.has(space)) { instances.set(space, recovered ?? manager.instanceId); state("launch-ready", space); buttons(); return; }
     instances.delete(space);
     if (manager?.connection) {
       state("connected", space);
       refusal(new DaemonRefusal(manager.connection.state === "offline" ? "OFFLINE" : "SPACE_UNREACHABLE", String(manager.connection.reason)), true);
       buttons(); return;
     }
-    const service = await request({ op: "service-status", space });
+    const recoveryState = applicationRefusals.get(space);
+    const service = recoveryState ? undefined : await request({ op: "service-status", space });
     if (!current()) return;
-    state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
+    state(recoveryState === "missing" ? "no-application" : recoveryState ?? (service?.state === "connected" ? "ready" : String(service?.state)), space);
     // A Manager's reason and next step are written for a terminal: Details keeps the reason, the card says it plainly (rule 0).
     // It comes from this status read, so the next read that no longer reports it clears it.
     if (manager?.reason) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped." : `The agent host for this space stopped. The background service said: ${manager.reason}`), true);
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
+}
+/** Only scoped service and Manager evidence clears a connector refusal. This never repeats Setup. */
+async function checkConnectorRecovery(space: string, current: () => boolean): Promise<string | undefined> {
+  const service = await request({ op: "service-status", space }).catch(() => undefined);
+  if (!current() || service?.space !== space) return;
+  const manager = service.manager as { space?: string; instanceId: string; state?: string; connectors?: unknown[] } | undefined;
+  const previous = applicationRefusals.get(space);
+  if (service.state === "approval-pending") applicationRefusals.set(space, "approval-pending");
+  else if (manager?.space === space && launchReady(manager) && ["connected", "connecting", "disconnected", "not-requested"].includes(String(service.state))) {
+    if (service.state === "connected") applicationRefusals.delete(space);
+    else applicationRefusals.set(space, "ready");
+  } else if (manager?.space === space && manager.state === "answering" && Array.isArray(manager.connectors) && !manager.connectors.some(item => (item as { state?: string } | null)?.state === "available")) {
+    applicationRefusals.set(space, "missing");
+    return;
+  } else return;
+  if (problem === "NO_AVAILABLE_CONNECTOR" || (!problem && previous !== applicationRefusals.get(space))) {
+    clearDetails(); notice(""); progress = progressNames.map(() => "waiting"); renderProgress();
+  }
+  if (!applicationRefusals.has(space)) return manager?.instanceId;
 }
 /** Before the first sign-in no service is set up, which is not a problem; a stopped one is. */
 function notSetUpYet(error: unknown): boolean {
@@ -1183,6 +1207,7 @@ el("recover").addEventListener("click", () => {
   if (el("recover").dataset.action === "none") return;
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
   const recovery = el("recover").dataset.action;
+  if (recovery === "apps") { openApps(); return; }
   const keepNotAnswering = problem === "NOT_ANSWERING" && recovery === "refresh";
   if (!keepNotAnswering) problem = undefined;
   notice("");
@@ -1245,7 +1270,7 @@ el("sign-in-again").addEventListener("click", () => {
   if (recoverSignIn) el<HTMLFormElement>("login-form").requestSubmit();
 });
 el("connect").addEventListener("click", () => void action(async () => {
-  if (connected() || selectionPending || addingSpace && connections.has(selectedSpace()) || !ready || !selectedSpace()) return;
+  if (connected() || selectionPending || applicationRefusals.get(selectedSpace()) === "missing" || addingSpace && connections.has(selectedSpace()) || !ready || !selectedSpace()) return;
   if (networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], false))) return;
   const space = selectedSpace(); const idp = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   setupActive = true; editing = false; applications = []; clearDetails(); notice("");
@@ -1270,7 +1295,7 @@ el("connect").addEventListener("click", () => void action(async () => {
       waitForAgents(runningAgentNames() ?? [], Math.max(1, Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? runningAgents() ?? 1)));
       return;
     }
-    if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") { applicationRefusals.add(space); state("no-application", space); }
+    if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") { applicationRefusals.set(space, "missing"); state("no-application", space); }
     else if (error instanceof DaemonRefusal && (error.code === "APPROVAL_PENDING" || error.native === "APPROVAL_PENDING")) {
       addingSpace = false; choosingSpace = false; listOpened = true; problem = undefined; state("approval-pending", space); showStage("finished"); return;
     } else state("unavailable", space);
@@ -1366,6 +1391,7 @@ function selectView(id: typeof viewTabs[number]): void {
   renderSettings();
   if (changed) document.querySelector("main")!.scrollTop = 0;
   if (appsOpen && !agentApps.busy) void agentApps.load();
+  if (changed && id === "view-connection" && !busy && (problem === "NO_AVAILABLE_CONNECTOR" || applicationRefusals.has(selectedSpace()))) void refresh();
   if (settingsOpen && appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
 }
 for (const [index, id] of viewTabs.entries()) {
@@ -1414,7 +1440,6 @@ el("setup-installer").addEventListener("click", event => { event.preventDefault(
 el("settings-download").addEventListener("click", () => void openInstaller());
 el("apps-fix-connection").addEventListener("click", () => { selectView("view-connection"); el("connection-title").focus(); });
 el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
-el("recover-apps").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && !agentApps.busy && (appsOpen || agentApps.apps && Date.now() - appsLoadedAt > 30_000)) void agentApps.load(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));

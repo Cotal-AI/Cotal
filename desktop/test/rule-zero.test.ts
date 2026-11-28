@@ -6,13 +6,14 @@ import { COMMAND_TEXT, REFUSAL_CODES } from "./rule-zero-cases.ts";
 /** Rule 0: every error screen offers one button that fixes the cause from inside the app, and a
  *  command line is never the only next step nor shown in Details. The table is shared with the render
  *  sweep; the window shows `native ?? code`. */
-const expected = REFUSAL_CODES;
+const expected = { ...REFUSAL_CODES, NO_AVAILABLE_CONNECTOR: "apps" };
 const commandText = COMMAND_TEXT;
 
 for (const [code, action] of Object.entries(expected)) {
   test(`rule 0: ${code} offers one ${action} action and no command line`, () => {
     const view = refusalView(code, ["Claude Code"]);
     assert.equal(view.action, action);
+    if (action === "apps") assert.equal(view.label, "Set up agent apps");
     if (action === "none") assert.equal(view.label, "", "no button that cannot work");
     else assert.ok(view.label.trim(), "the screen has one labelled button");
     assert.doesNotMatch(view.title, commandText);

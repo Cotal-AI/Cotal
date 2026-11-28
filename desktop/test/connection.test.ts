@@ -8,7 +8,7 @@ import type { Frame, Request } from "../src/model.ts";
 
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
 
-test("launch readiness, application retry and polling follow the selected space", async () => {
+test("launch readiness, connector recovery and polling follow the selected space", async () => {
   const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
   assert.ok(!Array.isArray(output) && "output" in output);
   const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
@@ -60,15 +60,19 @@ test("launch readiness, application retry and polling follow the selected space"
         case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, catalogId: `sp_${space}`, mode: "user", idp: "https://example.com/auth" })) }; break;
         case "setup": {
           callbacks.get(args.onEvent!.id)!({ index: 0, message: { v: 1, event: "setup-progress", line: "connectors: 0 available", progress: { step: "applications", outcome: approved ? "available" : "unavailable", detail: "inventory", applications: ["Claude Code", "Codex"] } } satisfies Frame });
-          if (!approved) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "no available connector in the hosted Manager's environment", native: { code: "NO_AVAILABLE_CONNECTOR" }, remedy: "install Claude Code or Codex and choose Check again" } };
+          if (!approved) {
+            states.set(req.space!, "disconnected");
+            return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "no available connector in the hosted Manager's environment", native: { code: "NO_AVAILABLE_CONNECTOR" }, remedy: "install Claude Code or Codex" } };
+          }
           const manager = { space: req.space, state: "answering", instanceId: "test-manager", connectors: [{ state: "available" }] };
           managers.set(req.space!, manager); states.set(req.space!, "connected"); result = { launchReady: true, manager, state: "approval-pending" }; break;
         }
         case "service-disconnect": managers.delete(req.space!); states.set(req.space!, "disconnected"); result = { state: "disconnected" }; break;
         case "service-status": {
-          result = { state: states.get(req.space!) };
+          result = { space: req.space, state: states.get(req.space!), manager: managers.get(req.space!) };
           break;
         }
+        case "agent-apps": result = { management: "service", apps: [] }; break;
         // Repair reads a plan; nothing here needs fixing once the agent host answers.
         case "repair-plan": result = { digest: "0".repeat(64), steps: [] }; break;
         default: throw new Error(`Unexpected request ${req.op}`);
@@ -112,19 +116,26 @@ test("launch readiness, application retry and polling follow the selected space"
     button("connect").click();
     await settle();
     assert.equal(title(), "No agent app is installed");
-    assert.equal(button("connect").disabled, false, "application discovery can be retried");
-    assert.equal(button("connect").textContent, "Check again");
+    assert.equal(button("recover").textContent, "Set up agent apps");
     assert.match(doc.getElementById("refusal-detail")!.textContent!, /Claude Code or Codex/);
     await tick!();
     assert.equal(title(), "No agent app is installed");
     await select("second");
     assert.equal(title(), disconnectedTitle());
     await select("first");
+    states.set("first", "disconnected");
+    managers.set("first", { space: "first", state: "answering", instanceId: "test-manager", connectors: [] });
+    await tick!();
     assert.equal(title(), "No agent app is installed");
+    button("recover").click(); await settle();
+    assert.equal(doc.getElementById("apps-panel")!.hidden, false);
     approved = true;
-    button("connect").click();
+    managers.set("first", { space: "first", state: "answering", instanceId: "test-manager", connectors: [{ state: "available" }] });
+    states.set("first", "connected");
+    button("view-connection").click();
     await settle();
     assert.equal(title(), "This computer is connected");
+    assert.equal(calls.filter(call => call.op === "setup").length, 1, "return observes recovery without replaying setup");
     button("dashboard").click(); await settle();
     assert.equal(browserUrls.at(-1), "https://example.com/machines?space=sp_first&machine=test-manager");
     assert.equal(button("connect").disabled, true);
