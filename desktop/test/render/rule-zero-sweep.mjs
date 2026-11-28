@@ -27,6 +27,10 @@ const noTerminalOrAddress = (name, text) => {
   }
 };
 
+// Codes whose single button the owner has named. NO_AVAILABLE_CONNECTOR (decided 2026-11-28): the
+// window re-reads by itself when the person comes back from Agent apps, so there is no Check again.
+const DECIDED_LABEL = { NO_AVAILABLE_CONNECTOR: "Set up agent apps" };
+
 const refusalCases = Object.entries(REFUSAL_CODES).map(([code, action]) => ({
   name: `rule0-code-${code}`,
   // A bare NOT_RUNNING means nothing is set up yet, and the welcome steps show by design; its error
@@ -37,6 +41,7 @@ const refusalCases = Object.entries(REFUSAL_CODES).map(([code, action]) => ({
     assert.ok(text.title.trim(), `${code}: the screen has a title`);
     const actions = await enabledActions(page);
     if (action === "none") assert.deepEqual(actions, [], `${code}: no button is offered`);
+    else if (DECIDED_LABEL[code]) assert.deepEqual(actions, [DECIDED_LABEL[code]], `${code}: the one action`);
     else assert.equal(actions.length, 1, `${code}: exactly one enabled action, got ${JSON.stringify(actions)}`);
     noTerminalOrAddress(code, text);
   },
