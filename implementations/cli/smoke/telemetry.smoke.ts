@@ -215,6 +215,21 @@ for (const level of ["regular", "minimal"]) {
   }
 }
 
+{
+  const s = sandbox(), marker = "fixture-service-reference", ref = join(s.home, `sample ${marker}`);
+  const executable = join(s.home, "unused.exe"), spec = join(s.project, "service.json");
+  writeFileSync(executable, "fixture", { mode: 0o700 });
+  writeFileSync(ref, "fixture", { mode: 0o600 });
+  writeFileSync(spec, JSON.stringify({ schemaVersion: 1, space: "refcheck", launch: { type: "process", executable, args: [], cwd: s.project },
+    readiness: { type: "process", timeoutMs: 10000 }, credentialRef: { kind: "file", path: ref } }));
+  const created = await s.run(["space", "create", "refcheck", "--root", s.project, "--json"]);
+  const added = await s.run(["service", "add", "idle", "--file", spec, "--space", "refcheck", "--json"]);
+  renameSync(ref, `${ref}.saved`);
+  const r = await s.run(["service", "start", "idle", "--space", "refcheck", "--json"]), event = r.sent.find(row => row.event === "command");
+  check("a missing saved service credential reference names its file only locally", created.status === 0 && added.status === 0 && r.status === 2 &&
+    r.stdout.includes(marker) && event?.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
