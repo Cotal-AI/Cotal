@@ -206,6 +206,11 @@ const offlineExplicit = run(["history", "clear", "--dry-run", "--space", "hcoffl
 check("an unregistered explicit target previews both streams without a reachable broker", offlineExplicit.status === 0
   && offlineExplicit.envelope?.result?.streams?.join(",") === [chatStream("hcoffline"), dmStream("hcoffline")].join(",")
   && offlineExplicit.envelope.result.purged === false, shown(offlineExplicit));
+for (const flags of [["--yes", "--dry-run"], ["--dry-run", "--yes"]]) {
+  const both = run(["history", "clear", ...flags, "--space", "hcoffline", "--server", `nats://127.0.0.1:${port}`, "--dms", "--json"]);
+  check(`${flags.join(" ")} gives the same offline preview as --dry-run`, both.status === 0
+    && both.stderr === "" && both.stdout === offlineExplicit.stdout, shown(both));
+}
 
 for (const [args, guidance] of [
   [["general"], "Omit --force"],

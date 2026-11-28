@@ -938,6 +938,8 @@ options. For a preview, omit `--force` and keep `--dry-run`.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
 caller credential, connects nowhere and does not check authorization or retained message counts.
+If you pass both `--dry-run` and `--yes`, the command previews and does not purge.
+To confirm a purge, remove `--dry-run` and keep `--yes`.
 For an open broker, pass both `--space` and `--server` to preview a target without a local registration.
 A local controller stack stopped by a completed `down` previews using its saved broker address.
 So does a space started directly with `cotal up --foreground` and then stopped, from the broker address its project retains.
