@@ -59,6 +59,8 @@ if (args.includes("--cold-reconcile") || args.includes("--cold-reconcile-quota")
 } else {
   const cases = args.includes("--manual-admission-repros")
     ? [["--update-repro", "--manual-admission-race-repro"], ["--update-repro", "--manual-admission-empty-repro"]]
+    : args.includes("--finish-connector-update")
+    ? [["--update-repro", "--finish-connector-update"], ["--update-repro", "--finish-connector-update", "--finish-connector-update-manual"]]
     : [args.length ? args : ["--upgrade-active-repro", "--watcher-seat-repro"]];
   for (const flags of cases) {
     await run([join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "bin/smoke/daemon-service-connect.smoke.ts"), "--hosting-only", ...(flags.includes("--update-repro") ? [] : ["--upgrade-repro"]), ...flags], { ...env, COTAL_DAEMON_UPGRADE_FIXTURE: fixture });

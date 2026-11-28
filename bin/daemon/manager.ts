@@ -15,7 +15,7 @@ import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFailure, managerFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
-import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
+import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration, UnprotectedConnectorConfig } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager, HostedAgents, ManagerConnection } from "./protocol.js";
@@ -193,9 +193,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     mkSecretDir(join(refusalFile(l.view.space), ".."));
     writeSecretFileAtomic(refusalFile(l.view.space), JSON.stringify(l.view));
   };
-  const refuse = (l: Live, reason: string, next: string) => {
+  const refuse = (l: Live, reason: string, next: string, reasonDetail?: HostedManager["reasonDetail"]) => {
     reason = safeDiagnostic(reason).slice(0, 1500);
-    l.view = { ...l.view, state: "refused", reason, lastRefusal: reason, next };
+    l.view = { ...l.view, state: "refused", reason, reasonCode: reasonDetail ? "CONNECTOR_CONFIG_UNPROTECTED" : undefined, reasonDetail, lastRefusal: reason, next };
     persistRefusal(l);
     notify();
     return l.view;
@@ -482,7 +482,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
         return refuse(l, reason, next);
       }
-      refuse(l, reason, "correct the connector cause, run \`cotal ext seed --repair\` with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
+      if (error instanceof UnprotectedConnectorConfig) refuse(l, error.message, error.remedy, error.detail);
+      else refuse(l, reason, "correct the connector cause, run \`cotal ext seed --repair\` with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
       if (!closed && !l.stopping && !generationPending) {
         const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
         l.timer = setTimeout(() => {
@@ -527,7 +528,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     closeProbeSession(l);
     l.exchangeFailedUntil = undefined;
     l.lastExchangeError = undefined;
-    l.view = { ...l.view, state: "starting", reason: "waiting for the hosted Manager to initialize and register", next: undefined, observedAt: undefined };
+    l.view = { ...l.view, state: "starting", reason: "waiting for the hosted Manager to initialize and register", reasonCode: undefined, reasonDetail: undefined, next: undefined, observedAt: undefined };
     let nativeReason: string | undefined;
     let authorityTerminal = false;
     let authorityStatus: number | undefined;
@@ -943,7 +944,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         rmSync(managerCleanupFile(home, space), { force: true });
         held.view = { ...held.view, registrationCleanup: undefined };
       }
-      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
+      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, reasonCode: undefined, reasonDetail: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
       held.agents = undefined;
       rmSync(refusalFile(space), { force: true });
       notify();

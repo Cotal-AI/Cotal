@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
-import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, clearConnectorActivationDeferral, connectorConfigModeProblem, deferredConnectorReconciliation } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
@@ -156,10 +156,10 @@ function refreshPinnedLauncher(): void {
   } catch { /* Refresh is optional after successful reconciliation. */ }
 }
 
-function preflightExecutionWithCleanup(): boolean {
+function preflightExecutionWithCleanup(skipConfigCleanup = false): boolean {
   const repaired = preflightExecutionUpdate();
   if (!process.env.COTAL_UPDATE_PARENT) {
-    reclaimInterruptedUpdateSnapshots(() => dirname(executionInstallRoot()));
+    if (!skipConfigCleanup) reclaimInterruptedUpdateSnapshots(() => dirname(executionInstallRoot()));
     cleanupExecutionStore(executionInstallRoot());
   }
   return repaired;
@@ -185,6 +185,8 @@ const composed: Command = { ...command, async run(args) {
   let legacyRepair = false;
   let admission: UpdateAdmission | undefined;
   const staged = Boolean(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
+  const modeProblem = args.values.check !== true && !args.values.auto && !args.values.notify ? connectorConfigModeProblem() : undefined;
+  const blockedConfig = modeProblem !== undefined;
   const standaloneReconcile = args.values.self !== true && !process.env.COTAL_UPDATE_PARENT;
   const recoveryAdmission = readUpdateRecovery();
   if (recoveryAdmission?.admission && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && recoveryAdmission.owner?.pid === process.ppid && recoveryAdmission.phase !== "restoring" && recoveryAdmission.target === updateRuntime.version()) {
@@ -245,7 +247,7 @@ const composed: Command = { ...command, async run(args) {
     }
   };
   try {
-  if (args.values.self === true && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_AUTO_UPDATE && !process.env.COTAL_UPDATE_PARENT && (process.platform === "darwin" || process.platform === "linux")) {
+  if (!blockedConfig && args.values.self === true && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_AUTO_UPDATE && !process.env.COTAL_UPDATE_PARENT && (process.platform === "darwin" || process.platform === "linux")) {
     let paths: DaemonPaths | undefined;
     try { paths = daemonPaths(); }
     catch (error) {
@@ -278,7 +280,7 @@ const composed: Command = { ...command, async run(args) {
       }
     }
   }
-  const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
+  const runtime = { ...updateRuntime, connectorConfigDeferred: false, automaticGenerationWait: process.platform === "linux",
     claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait, ...(legacyRepair && root === interruptedChildRoot ? { repairAmbiguous: () => {
       const ancestors = new Set<number>();
       const unavailable = () => new CommandFailure("refused", "LIFECYCLE_BLOCKED", "The interrupted update cannot be recovered until the systemd user manager answers on the user bus. Run `cotal update --self` again when it is available.", {
@@ -326,7 +328,7 @@ const composed: Command = { ...command, async run(args) {
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
     } } : {}) }),
     ...(staged ? {
-      preflightExecution: preflightExecutionWithCleanup,
+      preflightExecution: () => preflightExecutionWithCleanup(blockedConfig),
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       globalVersion: () => observeExecutionVersion(executionInstallRoot()),
@@ -339,14 +341,14 @@ const composed: Command = { ...command, async run(args) {
         if (!packageVersion) throw new Error("the installed global package is missing");
         return verifyGlobalEntry(root, packageVersion);
       },
-      prepareExecution: async (version: string, root: string) => {
-        const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = receipt.admission; hostedSpaces = [...receipt.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; });
+      prepareExecution: async (version: string, root: string, deferConnectors?: string) => {
+        const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = deferConnectors ? { disposition: "deferred", occupied: null, hostedSpaces: [], reason: deferConnectors } : receipt.admission; hostedSpaces = [...receipt.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; }, Boolean(deferConnectors));
         replacementVersion = version;
         return { entry: execution.entry, get journal() { return execution.journal; }, preflight: execution.preflight, restore: execution.restore, verify: execution.verify, complete: execution.complete, discard: execution.discard, publish() {
           const recovery = readUpdateRecovery();
           if (!recovery || !admission) throw new Error("target admission has no bound update transaction");
           writeUpdateRecovery({ ...recovery, admission });
-          recordUpdateActivation(logicalExecutionEntry()!, version, admission.disposition === "deferred" ? admission.reason : undefined);
+          recordUpdateActivation(logicalExecutionEntry()!, version, admission.disposition === "deferred" ? admission.reason : undefined, Boolean(deferConnectors));
           execution.publish();
         } };
       },
@@ -645,9 +647,11 @@ const composed: Command = { ...command, async run(args) {
   }
   if (!(staged && args.values.self === true) && logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
+  if (runtime.connectorConfigDeferred) { refreshPinnedLauncher(); return; }
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
   reconcileInstalledLinuxPolicy();
   if (packageCheck !== "current") await collectConnectorSets();
+  if (staged && standaloneReconcile && deferredConnectorReconciliation(logicalExecutionEntry()!, updateRuntime.version())) clearConnectorActivationDeferral(logicalExecutionEntry()!, updateRuntime.version());
   if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) refreshPinnedLauncher();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.

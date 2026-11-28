@@ -29,7 +29,7 @@
  * Run: tsx bin/smoke/daemon-endpoint.smoke.ts   (Linux only; daemon-transport.smoke.ts covers the
  * platform defaults every OS uses)
  */
-import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, symlinkSync, lstatSync, readdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, symlinkSync, lstatSync, readdirSync, rmSync, existsSync, chownSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createServer, type Socket } from "node:net";
@@ -39,6 +39,8 @@ import { peerCredentials } from "@cotal-ai/seat";
 import { EndpointRefusal, MAX_LINE_BYTES, daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { queryDaemon, type ClientCounters } from "../daemon/client.js";
+import { exchangeDesktopRequest } from "../daemon/desktop.js";
+import { connectorConfigModeProblem } from "@cotal-ai/workspace";
 
 if (process.platform !== "linux") {
   console.log("daemon-endpoint smoke: Linux only; skipped on " + process.platform);
@@ -58,6 +60,51 @@ const refusalCode = async (p: Promise<unknown>): Promise<string> => {
 };
 const mode = (p: string) => (lstatSync(p).mode & 0o777).toString(8).padStart(4, "0");
 
+async function foreignConnectorRepair(base: string): Promise<void> {
+  const folder = join(base, "other-account");
+  if (uid === 0) { mkdirSync(folder); chownSync(folder, 65534, 65534); chmodSync(folder, 0o755); }
+  else {
+    chmodSync(base, 0o777);
+    try {
+      const create = spawnSync("unshare", ["--user", "--map-auto", "--setuid", "0", "--setgid", "0", "--", "/bin/sh", "-c", 'mkdir -m 755 "$1"', "sh", folder], { encoding: "utf8", timeout: 15_000 });
+      if (create.status !== 0) { untested++; console.log("  ○ UNTESTED foreign connector folder: no usable subordinate UID namespace"); return; }
+    } finally { chmodSync(base, 0o700); }
+  }
+  const before = lstatSync(folder);
+  check("foreign connector folder fixture has mode 0755 and belongs to another account", before.uid !== uid && (before.mode & 0o777) === 0o755);
+  const config = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = folder;
+  const rt = runtime("foreign-config");
+  const home = join(rt, "home");
+  mkdirSync(home, { mode: 0o700 });
+  const d = await serveDaemon({ paths: daemonPaths({ XDG_RUNTIME_DIR: rt }, home), sessionDir: home, version: "x", peerUid });
+  try {
+    const problem = connectorConfigModeProblem();
+    check("config protection diagnoses ownership and gives an actionable ownership remedy", problem?.owned === false && problem.failure.message.endsWith(`${folder} is owned by another account`) && problem.remedy === `ask an administrator to make ${folder} owned by your account or root`, problem);
+    const update = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "update", "--json"], { env: { ...process.env, COTAL_HOME: home, COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, cwd: rt, encoding: "utf8", timeout: 30_000 });
+    const deferred = JSON.parse(update.stdout);
+    check("update names foreign ownership in the partial outcome", update.status === 4 && deferred.error?.message?.includes(`${folder} is owned by another account`) && deferred.error.message.includes(`make ${folder} owned by your account or root`), deferred);
+    const reply = await exchangeDesktopRequest({ paths: d.paths, peerUid }, { op: "connector-config-repair" });
+    const after = lstatSync(folder);
+    check("daemon refuses to repair a folder another account owns", !reply.ok && reply.error.code === "PERMISSION_DENIED" && reply.error.message.includes("owned by another account") && after.mode === before.mode && after.uid === before.uid && readdirSync(folder).length === 0, reply);
+    if (uid === 0) chownSync(folder, uid, process.getgid!());
+    else {
+      // Map the caller and the same subordinate UID into one namespace, then return the fixture to the caller.
+      chmodSync(base, 0o755);
+      try {
+        const repairedOwner = spawnSync("unshare", ["--user", "--map-auto", `--map-user=${uid}:0`, `--map-group=${process.getgid!()}:0`, "--setuid", "0", "--setgid", "0", "--", "chown", "0:0", folder], { encoding: "utf8", timeout: 15_000 });
+        if (repairedOwner.status !== 0) { rmSync(folder, { recursive: true }); mkdirSync(folder, { mode: 0o755 }); }
+      } finally { chmodSync(base, 0o700); }
+    }
+    check("the same mode is accepted once the config folder is owned by this account", connectorConfigModeProblem() === undefined);
+    const repaired = await exchangeDesktopRequest({ paths: d.paths, peerUid }, { op: "connector-config-repair" });
+    check("repair is a no-op after the ownership requirement is met", repaired.ok && "result" in repaired && JSON.stringify(repaired.result) === '{"path":null,"mode":null}', repaired);
+  } finally {
+    await d.close();
+    if (config === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = config;
+  }
+}
+
 // COTAL_DAEMON_SMOKE_TMP chooses the scratch parent; the cross-uid cells need every ancestor
 // directory to be searchable by the subordinate uid, which a private home directory is not.
 const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cotal-daemon-smoke-"));
@@ -69,6 +116,9 @@ const runtime = (name: string) => { const r = join(root, name); mkdirSync(r, { m
 const paths = (rt: string) => { const p = daemonPaths({ XDG_RUNTIME_DIR: rt }); return { ...p, dir: p.dir! }; };
 
 try {
+  const foreignBase = mkdtempSync(join("/tmp", "cotal-foreign-config-"));
+  try { await foreignConnectorRepair(foreignBase); }
+  finally { rmSync(foreignBase, { recursive: true, force: true }); }
   // ---- E1: through the real composition root ----
   {
     const rt = runtime("e1");

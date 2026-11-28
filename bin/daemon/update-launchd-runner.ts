@@ -4,7 +4,7 @@ import { closeSync, ftruncateSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { homeCotalDir, readUpdateSettings, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { exitCode, homeCotalDir, readUpdateSettings, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import { admitLaunchUpdate, launchUpdateResultPath, readLaunchUpdateResult } from "./update-launchd.js";
 
 admitLaunchUpdate(process.argv[2] ?? "");
@@ -26,7 +26,8 @@ try {
         child.once("close", resolve);
       });
     } finally { closeSync(log); }
-    if (code !== 0) throw new Error(`updater exited with ${code ?? "a signal"}; inspect update-attempt.log`);
+    if (code !== 0 && !(code === exitCode("partial", "OPERATION_PARTIAL") && JSON.parse(readFileSync(attemptPath, "utf8")).connectorReconciliationPending === true))
+      throw new Error(`updater exited with ${code ?? "a signal"}; inspect update-attempt.log`);
   }
 } catch (error) {
   const attempt = JSON.parse(readFileSync(attemptPath, "utf8"));

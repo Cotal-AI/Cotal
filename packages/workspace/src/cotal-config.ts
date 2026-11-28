@@ -1,8 +1,40 @@
 import { randomBytes } from "node:crypto";
-import { renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { globalConfigDir, globalConfigPath, readCotalConfigFile, type McpServerSpec } from "@cotal-ai/core";
 import { acquireLock } from "./advisory-lock.js";
+import { isCommandFailure, type CommandFailure } from "./output.js";
+import { shellPath } from "./local-record-source.js";
+import { protectedResolvedDirectory } from "./protected-records.js";
+
+/** A single config ancestor whose owner or write permissions prevent connector use. */
+export function connectorConfigModeProblem(requireRepairable = false): { failure: CommandFailure; path: string; mode: number; owned: boolean; remove: number; remedy: string } | undefined {
+  if (process.platform !== "linux" && process.platform !== "darwin") return;
+  let path = dirname(resolve(globalConfigDir()));
+  try {
+    while (!lstatSync(path, { throwIfNoEntry: false })) path = dirname(path);
+    protectedResolvedDirectory(path, "the connector config folder");
+  } catch (failure) {
+    if (!isCommandFailure(failure) || failure.code !== "PERMISSION_DENIED") {
+      if (requireRepairable) throw failure;
+      return;
+    }
+    const target = failure.target as { path?: unknown; paths?: unknown } | undefined;
+    if (typeof target?.path === "string" && target.paths === undefined) {
+      const path = target.path;
+      const stat = lstatSync(path, { throwIfNoEntry: false });
+      if (!stat?.isDirectory()) { if (requireRepairable) throw failure; return; }
+      const mode = stat.mode & 0o7777;
+      const owned = stat.uid === process.getuid?.();
+      if (!owned) return { failure, path, mode, owned, remove: 0, remedy: stat.uid === 0
+        ? `ask an administrator to remove the unsafe write permissions from ${shellPath(path)}`
+        : `ask an administrator to make ${shellPath(path)} owned by your account or root` };
+      for (const [word, remove] of [["o-w", 0o002], ["go-w", 0o022], ["g-w", 0o020]] as const)
+        if (failure.remedy === `chmod ${word} ${shellPath(path)}`) return { failure, path, mode, owned, remove, remedy: failure.remedy };
+    }
+    if (requireRepairable) throw failure;
+  }
+}
 
 /** Why the operator config folder can hold nothing, or undefined when it is a folder or not made yet.
  *  A file at it, or at a folder above it, fails every read and write of the preferences, the config

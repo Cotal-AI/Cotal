@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -35,8 +36,19 @@ if (!["linux", "darwin"].includes(process.platform)) {
   Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
     value: Object.freeze({ logicalEntry: entry, launchEntry: entry, loadedEntry: entry }),
   });
-  const { installedGenerationVersion, watchDaemonGeneration, reconcileHostedConnectors } = await import(pathToFileURL(join(root, "dist/daemon/generation.js")).href) as typeof import("../daemon/generation.js");
+  const { installedGenerationVersion, watchDaemonGeneration, reconcileHostedConnectors, UnprotectedConnectorConfig, ReplacedDaemonGeneration } = await import(pathToFileURL(join(root, "dist/daemon/generation.js")).href) as typeof import("../daemon/generation.js");
   assert.equal(installedGenerationVersion(), "0.2.0");
+  const config = process.env.XDG_CONFIG_HOME;
+  fs.mkdirSync(config, { mode: 0o700 });
+  fs.chmodSync(config, 0o777);
+  try {
+    await assert.rejects(reconcileHostedConnectors("0.1.0"), error => {
+      assert.ok(error instanceof UnprotectedConnectorConfig);
+      assert.deepEqual(error.detail, { path: fs.realpathSync(config), mode: 0o777, owned: true });
+      return true;
+    });
+  } finally { fs.chmodSync(config, 0o700); }
+  await assert.rejects(reconcileHostedConnectors("0.1.0"), ReplacedDaemonGeneration);
   const read = fs.readFileSync, readdir = fs.readdirSync, open = fs.openSync;
   const reads: string[] = [], walks: string[] = [], opens: string[] = [];
   fs.readFileSync = ((path: Parameters<typeof read>[0], ...args: unknown[]) => {
@@ -126,6 +138,43 @@ if (!["linux", "darwin"].includes(process.platform)) {
       await assert.rejects(reconcileHostedConnectors("0.1.0"), /timed out after 600000ms, signal SIGKILL/);
     }
     console.log("daemon generation poll: idle metadata reads, corrupt refusal, unmarked observation, slow entry retry and one-line child failure causes passed");
+    if (process.argv.includes("--repaired-config")) {
+      const { recordUpdateActivation, deferredUpdateActivation } = await import("@cotal-ai/workspace");
+      packageAt(source, "0.5.0");
+      const reconciliation = join(home, "reconciled");
+      const workspace = pathToFileURL(join(repo, "packages/workspace/dist/index.js")).href;
+      fs.writeFileSync(join(source, "dist/cotal-program.js"), `
+        import { writeFileSync } from "node:fs";
+        import { clearConnectorActivationDeferral, connectorConfigModeProblem } from ${JSON.stringify(workspace)};
+        if (process.argv[2] === "update") {
+          if (connectorConfigModeProblem(true)) process.exit(4);
+          writeFileSync(${JSON.stringify(reconciliation)}, "0.5.0");
+          clearConnectorActivationDeferral(${JSON.stringify(entry)}, "0.5.0");
+        } else console.log("cotal-ai 0.5.0");
+      `);
+      writeExecutionDescriptor(root, describeExecutionGeneration(root, retainExecutionGeneration(root, source)));
+      for (const manual of [false, true]) {
+        fs.rmSync(reconciliation, { force: true });
+        fs.chmodSync(config, 0o777);
+        const activated: string[] = [], messages: string[] = [];
+        recordUpdateActivation(entry, "0.5.0", "Connector reconciliation and daemon activation are waiting: fixture config protection", true);
+        stop = watchDaemonGeneration("0.1.0", async version => {
+          assert.equal(fs.readFileSync(reconciliation, "utf8"), version);
+          activated.push(version);
+        }, message => { messages.push(message); });
+        await until(() => messages.some(message => message.includes("activation deferred")));
+        assert.equal(fs.existsSync(reconciliation), false);
+        fs.chmodSync(config, 0o755);
+        if (manual) {
+          const result = spawnSync(process.execPath, [entry, "update"], { encoding: "utf8", timeout: 15_000 });
+          assert.equal(result.status, 0, result.stderr);
+        }
+        await until(() => activated.includes("0.5.0"));
+        assert.equal(deferredUpdateActivation(entry, "0.5.0"), undefined);
+        stop();
+        console.log(`daemon generation poll: ${manual ? "chmod and update" : "chmod alone"} reconciled before releasing activation`);
+      }
+    }
   } finally {
     stop();
     fs.readFileSync = read;

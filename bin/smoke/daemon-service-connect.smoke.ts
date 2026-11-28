@@ -126,6 +126,7 @@ const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
+const finishConnectorUpdate = process.argv.includes("--finish-connector-update");
 const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
 const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
 if (manualAdmissionRace && (!process.argv.includes("--hosting-only") || !process.argv.includes("--update-repro"))) throw new Error("manual admission repro requires --hosting-only --update-repro");
@@ -591,8 +592,8 @@ try {
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
   /** A real unit and receipt in the fixture manager's reported directory. Operational native
    *  calls reach only an owned recorder; the default fixture admits directory reads only. */
-  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false, node = process.execPath): string => {
-    const native = join(root, "native"), config = join(root, "config");
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false, node = process.execPath, config = join(root, "config")): string => {
+    const native = join(root, "native");
     mkdirSync(native, { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
     writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") !== "--user show-environment") process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
@@ -1970,7 +1971,7 @@ try {
     });
 
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
-      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true);
+      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true, process.execPath, join(root, process.argv.includes("--hosted-refusal-repro") ? "native-config" : "config"));
       await d.close();
       // D0 already activated this interactive actor. Extend its grant without replacing its lifecycle.
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: fixture.cliUid, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
@@ -2106,6 +2107,9 @@ process.stdin.once('data', () => {
             response.end(JSON.stringify({ name: metadata.name, "dist-tags": { latest: metadata.version }, versions: { [metadata.version]: { ...metadata, dist: { tarball: `${npmRegistryUrl}/jcode-sdk.tgz` } } } })); return;
           }
           const externalName = decodeURIComponent((request.url ?? "").slice(1).split("?")[0]!);
+          if (finishConnectorUpdate && request.method !== "GET" && request.method !== "HEAD") {
+            response.writeHead(404).end(); return;
+          }
           if (closureRollback && (externalName.startsWith("fixture-external/") || !externalName.startsWith("@cotal-ai/") && externalName !== "cotal-ai" && !externalName.endsWith(".tgz") && externalName !== "unavailable-closure-fixture")) {
             const name = externalName.replace(/^fixture-external\//, "").replace(/\.tgz$/, "");
             const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -2180,15 +2184,19 @@ process.stdin.once('data', () => {
             const name = decodeURIComponent((request.url ?? "/cotal-ai").slice(1).split("?")[0]!);
             const packageName = name.startsWith("@cotal-ai/") ? name : "cotal-ai";
             const packageRoot = join(upgradeFixture!, `hoisted-fix2-${version}`);
-            const metadata = JSON.parse(readFileSync(join(packageRoot, ...(packageName === "cotal-ai" ? [] : ["node_modules", packageName]), "package.json"), "utf8"));
+            const manifest = join(packageRoot, ...(packageName === "cotal-ai" ? [] : ["node_modules", packageName]), "package.json");
+            if (finishConnectorUpdate && !existsSync(manifest)) return [version, undefined];
+            const metadata = JSON.parse(readFileSync(manifest, "utf8"));
             const bytes = readFileSync(join(upgradeFixture!, `cotal-ai-${version}.tgz`));
             return [version, { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } }];
           }));
           response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions }));
         });
         await new Promise<void>((resolve) => npmRegistry!.listen(0, "127.0.0.1", resolve));
+        if (finishConnectorUpdate) npmRegistry.unref();
         npmRegistryUrl = `http://127.0.0.1:${(npmRegistry.address() as AddressInfo).port}`;
         env.npm_config_registry = npmRegistryUrl;
+        if (finishConnectorUpdate) Object.assign(env, { npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "15000" });
         if (process.argv.includes("--auto-update-repro")) {
           writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: false, notify: true }));
           writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "0.151.3", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() - 3601_000 }));
@@ -2218,7 +2226,7 @@ process.stdin.once('data', () => {
           writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart') && (${!process.argv.includes("--rollback-busy-repro")} || (fs.existsSync(${JSON.stringify(join(home, "update-recovery.json"))}) && JSON.parse(fs.readFileSync(${JSON.stringify(join(home, "update-recovery.json"))}, 'utf8'))?.phase === 'restoring'))) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
           Object.assign(env, { NODE_OPTIONS: `--require=${gate}` });
         }
-        seedUnitReceipt(cliEntry, true);
+        seedUnitReceipt(cliEntry, true, cliNode, join(root, finishConnectorUpdate ? "native-config" : "config"));
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
       if (retiredAppRuntime) {
@@ -2239,25 +2247,46 @@ process.stdin.once('data', () => {
         }
         saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
       }
+      const assertSeededInventory = (version: string) => {
+        const inventory = spawnSync(cliNode, [cliEntry, "ext", "list", "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+        assert.equal(inventory.status, 0, inventory.stderr);
+        const rows = JSON.parse(inventory.stdout).result.items as { pkg: string; seeded: boolean; version: string }[];
+        const builtins = rows.filter(e => e.seeded);
+        assert.deepEqual(builtins.map(e => e.pkg), ["@cotal-ai/connector-claude-code"], inventory.stdout);
+        assert.ok(builtins.every(e => e.version === version), inventory.stdout);
+      };
       if (upgrading) {
         const fixturePackage = join(root, "daemon-smoke-connector");
         renameSync(pkg, fixturePackage);
-        const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        if (finishConnectorUpdate) {
+          const entry = join(fixturePackage, "index.js");
+          writeFileSync(entry, readFileSync(entry, "utf8").replace(JSON.stringify(coreUrl), '"@cotal-ai/core"'));
+        }
+        const bounded = finishConnectorUpdate ? { timeout: 120_000, killSignal: "SIGKILL" as const } : {};
+        const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], ...bounded });
         let addingOutput = "";
         adding.stdout.on("data", (b) => { addingOutput += String(b); }); adding.stderr.on("data", (b) => { addingOutput += String(b); });
-        const added = await new Promise<number | null>((resolve) => adding.once("exit", resolve));
+        const added = await new Promise<number | null>((resolve, reject) => { adding.once("error", reject); adding.once("close", resolve); });
         if (added !== 0) throw new Error(`owned stand-in ext add failed: ${addingOutput}`);
-        const seed = join(root, "config", "cotal", "seed");
-        mkdirSync(seed, { recursive: true, mode: 0o700 });
-        for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
-        writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
-        writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
-        if (connectorUpgrade) {
-        const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-        let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
-        const code = await new Promise<number | null>((resolve) => seedChild.once("exit", resolve));
-        const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
-        check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+        {
+          const seed = join(root, "config", "cotal", "seed");
+          mkdirSync(seed, { recursive: true, mode: 0o700 });
+          for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade || finishConnectorUpdate ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+          writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
+          writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
+          if (connectorUpgrade || finishConnectorUpdate) {
+            const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], ...bounded });
+            let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
+            const code = await new Promise<number | null>((resolve, reject) => { seedChild.once("error", reject); seedChild.once("close", resolve); });
+            if (finishConnectorUpdate) {
+              assert.equal(code, 0, output);
+              assertSeededInventory("0.151.2");
+              console.log("  ✓ old CLI reports the seeded stock connector at 0.151.2");
+            } else {
+              const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+              check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+            }
+          }
         }
       }
       const cli = async (...args: string[]) => {
@@ -2380,7 +2409,7 @@ process.stdin.once('data', () => {
         });
         await new Promise<void>((resolve) => upgradeControl!.listen(0, "127.0.0.1", resolve));
         const controlPort = (upgradeControl.address() as AddressInfo).port;
-        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
+        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, finishConnectorUpdate ? "native-config" : "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
         env.PATH = `${recorder}:${env.PATH}`;
       }
       if (pathRecording) {
@@ -3065,11 +3094,44 @@ process.stdin.once('data', () => {
           }
           return;
         }
+        let firstSetup: Awaited<ReturnType<typeof cli>> | undefined;
         if (process.argv.includes("--hosted-refusal-repro")) {
           const refused = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000));
           assert.equal(refused.state, "refused");
           assert.match(refused.lastRefusal, /no longer registered/);
           console.log("HOSTED_REFUSAL before setup", JSON.stringify(refused));
+          const config = join(root, "config");
+          const remedy = `chmod go-w ${config}`;
+          const descendantMode = statSync(prefix).mode;
+          chmodSync(config, 0o777);
+          try {
+            const unsafe = await cli("setup", "--space", ON, "--idp", idpUrl);
+            firstSetup = unsafe;
+            console.log("  H1 unprotected config setup", JSON.stringify(unsafe));
+            assert.equal(unsafe.code, 2, unsafe.err);
+            assert.match(unsafe.doc.error.message, /writable by every local account/);
+            assert.equal(unsafe.doc.error.cause?.code, "CONNECTOR_CONFIG_UNPROTECTED");
+            assert.deepEqual(unsafe.doc.error.cause?.detail, { path: config, mode: 0o777, owned: true });
+            assert.equal(unsafe.doc.error.remedy, remedy);
+            const observed = await cli("status", "--space", ON);
+            const row = observed.doc.result.managers.find((m: { space: string }) => m.space === ON);
+            assert.equal(row.reasonCode, "CONNECTOR_CONFIG_UNPROTECTED");
+            assert.deepEqual(row.reasonDetail, { path: config, mode: 0o777, owned: true });
+            assert.equal(row.next, remedy);
+            const bad = await ask(paths.socket, { op: "connector-config-repair", path: home });
+            assert.equal(bad.ok, false);
+            assert.deepEqual(bad.error, { code: "UNKNOWN_FIELD", message: 'unknown request field "path"' });
+            assert.equal(statSync(config).mode & 0o777, 0o777);
+            const applied = resultOf(await ask(paths.socket, { op: "connector-config-repair" }));
+            assert.deepEqual(applied, { path: config, mode: 0o755 });
+            assert.equal(statSync(config).mode & 0o777, 0o755);
+            assert.equal(statSync(prefix).mode, descendantMode);
+            assert.deepEqual(resultOf(await ask(paths.socket, { op: "connector-config-repair" })), { path: null, mode: null });
+            chmodSync(config, 0o777);
+            const paste = spawnSync("/bin/sh", ["-c", remedy], { env });
+            assert.equal(paste.status, 0);
+            assert.equal(statSync(config).mode & 0o777, 0o755);
+          } catch (error) { chmodSync(config, 0o700); throw error; }
         }
         const stopStatusPoll = retiredAppRuntime && !explicitHome ? pollStartupStatus(paths.socket) : undefined;
         const setup = explicitHome
@@ -3142,8 +3204,9 @@ process.stdin.once('data', () => {
         }
         if (!claudeWakeOnly) check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
         if (!explicitHome && !claudeWakeOnly && !retiredAppRuntime) {
-          check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
-          check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+          const initial = firstSetup ?? setup;
+          check("H0 fresh setup prints device URL and code on stderr", initial.err.includes(`${idpOrigin}/approve?code=DAEMON`) && initial.err.includes("Approval code") && initial.err.includes("DAEMON"));
+          check("H0 fresh discovery preserves the signed-in step", (!firstSetup || firstSetup.err.includes("sign-in: signed in as")) && setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === (firstSetup ? "already-signed-in" : "signed-in")));
         }
         if (claudeWakeOnly) {
           const run = async (...args: string[]) => {
@@ -4226,6 +4289,61 @@ process.exit(result.status ?? 93);
           return;
         }
         if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) {
+          if (finishConnectorUpdate) {
+            const config = join(root, "config");
+            const runUpdate = async (...flags: string[]) => {
+              const updater = spawn(cliNode, [cliEntry, "update", ...flags], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 240_000, killSignal: "SIGKILL" });
+              let out = "", err = "";
+              updater.stdout.on("data", b => { out += String(b); }); updater.stderr.on("data", b => { err += String(b); });
+              const code = await new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("close", resolve); });
+              return { code, out, output: out + err };
+            };
+            type Service = { version: string; pid: number; generation?: { waiting: string }; managers?: { state: string; space: string }[] };
+            const observeService = async () => resultOf(await ask(paths.socket, { op: "status" }, 5000)) as Service;
+            const oldPid = child.pid;
+            chmodSync(config, 0o777);
+            try {
+              const deferred = await runUpdate("--self", "--json");
+              assert.equal(deferred.code, 4, deferred.output);
+              const doc = JSON.parse(deferred.out);
+              assert.equal(doc.outcome, "partial");
+              assert.equal(doc.completeness, "partial");
+              assert.equal(doc.error.code, "OPERATION_PARTIAL");
+              assert.deepEqual(doc.result, { version: "0.151.3", releaseInstalled: true, reconciliation: "deferred" });
+              let waiting = await observeService();
+              for (let i = 0; i < 30 && !waiting.generation?.waiting; i++) {
+                await sleep(200);
+                waiting = await observeService();
+              }
+              assert.equal(waiting.version, "0.151.2");
+              assert.match(waiting.generation?.waiting ?? "", /Connector reconciliation and daemon activation are waiting:/);
+              assert.equal(child.pid, oldPid);
+            } finally { chmodSync(config, 0o755); }
+            if (process.argv.includes("--finish-connector-update-manual")) {
+              const finished = await runUpdate();
+              assert.equal(finished.code, 0, finished.output);
+            }
+            let after: Service | undefined;
+            const answering = (service?: Service) => service?.managers?.some(row => row.space === ON && row.state === "answering");
+            const deadline = Date.now() + 180_000;
+            while (Date.now() < deadline) {
+              after = await observeService().catch(() => undefined);
+              if (after?.version === "0.151.3" && answering(after)) break;
+              await sleep(500);
+            }
+            assert.equal(after?.version, "0.151.3", JSON.stringify(after));
+            assert.equal(answering(after), true, JSON.stringify(after));
+            assert.notEqual(after?.pid, oldPid);
+            const { deferredUpdateActivation } = await import("@cotal-ai/workspace");
+            assert.equal(deferredUpdateActivation(cliEntry, "0.151.3"), undefined);
+            assertSeededInventory("0.151.3");
+            const attempt = JSON.parse(readFileSync(join(home, "update-attempt.json"), "utf8"));
+            assert.equal(attempt.version, "0.151.3");
+            assert.notEqual(attempt.connectorReconciliationPending, true);
+            const route = process.argv.includes("--finish-connector-update-manual") ? "chmod and explicit update" : "chmod alone";
+            console.log(`  ✓ ${route}: the seeded connector reconciled and the new service answers without a deferral`);
+            return;
+          }
           if (process.argv.includes("--prepare-abort-repro")) {
             const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
             const aborted = await ask(paths.socket, { op: "managers-abort-restart" });

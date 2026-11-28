@@ -509,7 +509,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     if (inspectedExisting || refreshed) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
     opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`, steps.at(-1));
-    if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read ${codeSpan(daemonCommandCopy("status", opts.daemonHome, [["--space", opts.space]]))}`, native: { code: manager.state.toUpperCase() } });
+    if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read ${codeSpan(daemonCommandCopy("status", opts.daemonHome, [["--space", opts.space]]))}`, native: { code: manager.reasonCode ?? manager.state.toUpperCase(), ...(manager.reasonDetail ? { detail: manager.reasonDetail } : {}) } });
     const available = manager.connectors?.filter(connector => connector.state === "available") ?? [];
     const names: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
     const applications = [...new Set((manager.connectors ?? []).flatMap(connector => {

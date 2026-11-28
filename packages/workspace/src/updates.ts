@@ -131,6 +131,12 @@ export function recordUpdateCompletion(version: string, result: string, success:
   save("update-attempt.json", { version, failures: success || !automatic ? 0 : previous?.failures ?? 1, result, next: Date.now() + (success ? 86400_000 : 3600_000) });
 }
 
+/** Record installed software whose connectors have not been reconciled. */
+export function recordConnectorReconciliationDeferred(version: string, releaseInstalled: boolean): void {
+  const result = releaseInstalled ? `installed ${version}; connector reconciliation is waiting for folder repair` : `CLI ${version} remains installed; connector reconciliation is waiting for folder repair`;
+  save("update-attempt.json", { version, failures: 0, connectorReconciliationPending: true, deferred: result, result, next: Date.now() + 60_000 });
+}
+
 /** Count an automatic attempt only after replacement begins. */
 export function recordUpdateReplacement(version: string): void {
   if (process.env.COTAL_AUTO_UPDATE !== "1") return;

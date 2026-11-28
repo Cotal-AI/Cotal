@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, basename } from "node:path";
 import { logicalExecutionEntry, executionIdentity } from "@cotal-ai/workspace";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
@@ -24,10 +25,14 @@ export function preflightExecutionUpdate(): boolean {
   return repaired;
 }
 
-function verifySelected(root: string, version: string): void {
+function verifySelected(root: string, version: string, withoutConnectors = false): void {
   const entry = join(root, "dist/cotal.js");
   const timeout = 300_000;
-  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout, windowsHide: true });
+  const config = withoutConnectors ? mkdtempSync(join(tmpdir(), "cotal-update-version-")) : undefined;
+  const result = (() => {
+    try { return spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, ...(config ? { XDG_CONFIG_HOME: config } : {}), COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout, windowsHide: true }); }
+    finally { if (config) rmSync(config, { recursive: true, force: true }); }
+  })();
   if (result.error) {
     const detail = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
       ? `entry verification timed out after ${timeout / 1000} seconds`
@@ -39,7 +44,7 @@ function verifySelected(root: string, version: string): void {
 }
 
 /** Prepare one complete real npm package. No live package file is passed to npm for reification. */
-export async function prepareExecutionUpdate(version: string, globalRoot: string, checked: (receipt: ExecutionPreinstallReceipt) => void): Promise<ExecutionReplacement> {
+export async function prepareExecutionUpdate(version: string, globalRoot: string, checked: (receipt: ExecutionPreinstallReceipt) => void, withoutConnectors = false): Promise<ExecutionReplacement> {
   const installed = executionInstallRoot();
   if (realpathSync.native(join(globalRoot, "cotal-ai")) !== installed) throw new Error("staged update global root differs from logical installation");
   const staging = executionStagingPrefix(installed);
@@ -53,7 +58,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     }
     const source = join(staging, "lib/node_modules/cotal-ai");
     verifyGlobalEntry(join(staging, "lib/node_modules"), version);
-    verifySelected(source, version);
+    verifySelected(source, version, withoutConnectors);
     generation = retainExecutionGeneration(installed, source);
   } finally { rmSync(staging, { recursive: true, force: true }); }
   let journal: string | undefined;
@@ -84,7 +89,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
       publishExecutionTransaction(installed, getJournal());
     },
     restore() { if (!journal) throw new Error("execution transaction has no rollback journal"); publishExecutionTransaction(installed, journal, true); },
-    verify(expected) { verifySelected(installed, expected); },
+    verify(expected) { verifySelected(installed, expected, withoutConnectors); },
     complete() {
       try { if (journal) completeExecutionTransaction(installed, journal); }
       catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish publication journal"}\n`); return; }
@@ -94,7 +99,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   };
 }
 
-export function recoverExecutionUpdate(path: string): ExecutionReplacement {
+export function recoverExecutionUpdate(path: string, withoutConnectors = false): ExecutionReplacement {
   const installed = executionInstallRoot();
   const record = readExecutionTransaction(installed, path);
   const previous = record.previous.descriptor?.generation.version ?? (JSON.parse(record.previous.manifest) as { version: string }).version;
@@ -110,13 +115,13 @@ export function recoverExecutionUpdate(path: string): ExecutionReplacement {
     },
     verify(version) {
       if (version !== previous) throw new Error("execution recovery previous version differs");
-      verifySelected(installed, version);
+      verifySelected(installed, version, withoutConnectors);
     },
     verifyPublished(version) {
       if (version !== record.target.version || selectExecutionProgram(installed).root !== record.target.root) return false;
       const { generation } = executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor;
       if (generation.id !== record.target.id || generation.inventorySha256 !== record.target.inventorySha256) return false;
-      verifySelected(installed, version);
+      verifySelected(installed, version, withoutConnectors);
       return true;
     },
   };

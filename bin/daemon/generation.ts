@@ -2,9 +2,10 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
+import { clearConnectorActivationDeferral, connectorConfigDir, connectorConfigModeProblem, deferredConnectorReconciliation, deferredUpdateActivation, installationWriter, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
+import type { HostedManager } from "./protocol.js";
 
 export function installedGenerationVersion(): string {
   const selected = selectExecutionProgram(dirname(packageFile()));
@@ -22,6 +23,8 @@ export class ReplacedDaemonGeneration extends Error {
 
 export async function reconcileHostedConnectors(version: string): Promise<void> {
   if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
+  const configMode = connectorConfigModeProblem();
+  if (configMode) throw new UnprotectedConnectorConfig(configMode.failure.message, configMode.remedy, { path: configMode.path, mode: configMode.mode, owned: configMode.owned });
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
@@ -32,6 +35,10 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await reconcileInstalledGeneration();
+}
+
+export class UnprotectedConnectorConfig extends Error {
+  constructor(message: string, readonly remedy: string, readonly detail: NonNullable<HostedManager["reasonDetail"]>) { super(message); }
 }
 
 function packageFile(): string {
@@ -46,10 +53,12 @@ function packageFile(): string {
   throw new Error("the daemon's CLI package is not identifiable");
 }
 
-async function reconcileInstalledGeneration(): Promise<void> {
+async function reconcileInstalledGeneration(activation = false): Promise<void> {
   const file = packageFile();
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    const args = activation ? ["update"] : ["ext", "seed"];
+    const env = { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(activation ? { COTAL_AUTO_UPDATE: "1", COTAL_NO_UPDATE_CHECK: "1" } : {}) };
+    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), ...args], { env, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     let error = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
@@ -64,10 +73,17 @@ async function reconcileInstalledGeneration(): Promise<void> {
       else {
         const cause = timedOut ? `timed out after ${timeoutMs}ms, signal ${signal ?? "unknown"}` : signal ? `signal ${signal}` : `exit ${code}`;
         const detail = error.trim().split(/\r?\n/).at(-1)?.replace(/\s+/g, " ").trim();
-        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}; run \`cotal ext seed --repair\` with the installed CLI`));
+        const remedy = activation ? "cotal update" : "cotal ext seed --repair";
+        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}; run \`${remedy}\` with the installed CLI`));
       }
     });
   });
+}
+
+function resumeConnectorActivation(entry: string, next: string): boolean {
+  if (!deferredConnectorReconciliation(entry, next) || installationWriter()) return false;
+  try { return !connectorConfigModeProblem(true); }
+  catch { return false; }
 }
 
 /** Poll cheap package metadata. Expensive validation and activation attempts back off on failure. */
@@ -93,11 +109,23 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     try {
       next = observeExecutionVersion(dirname(file));
     } catch { return; }
-    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; probeMs = initialProbeMs; pending(undefined); return; }
     try {
       const deferred = deferredUpdateActivation(entry, next);
-      if (deferred) { pending(next, deferred); announce(`daemon: installed CLI ${next} activation deferred: ${deferred}; current generation remains loaded`); return; }
+      if (deferred && (next !== version || deferredConnectorReconciliation(entry, next))) {
+        pending(next, deferred);
+        announce(`daemon: installed CLI ${next} activation deferred: ${deferred}; current generation remains loaded`);
+        if (activate && Date.now() >= retryAt && resumeConnectorActivation(entry, next)) {
+          busy = true;
+          void reconcileInstalledGeneration(true).then(() => {
+            if (installedGenerationVersion() !== next || connectorConfigModeProblem(true)) throw new Error("the installation or connector configuration changed during reconciliation");
+            clearConnectorActivationDeferral(entry, next);
+            busy = false;
+          }).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : String(error)); });
+        }
+        return;
+      }
     } catch { pending(next, "activation authority is unreadable; current generation remains loaded"); return; }
+    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; probeMs = initialProbeMs; pending(undefined); return; }
     if (candidate !== next) {
       candidate = next; retryAt = 0; delay = 5000; probeMs = initialProbeMs;
       const reason = activate ? "verifying the installed entry" : "no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon";
@@ -125,7 +153,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
         return;
       }
       if (code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { failed(next, `entry verification did not confirm its version (exit ${code})`); return; }
-      try { if (updateActivationBlocked()) { busy = false; return; } } catch { busy = false; return; }
+      try { if (updateActivationBlocked() || installationWriter()) { busy = false; return; } } catch { busy = false; return; }
       try { if (deferredUpdateActivation(entry, next)) { busy = false; return; } } catch { busy = false; return; }
       void changed(next).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : "the replacement could not be activated"); });
     });

@@ -24,6 +24,7 @@ export type DesktopRequest =
   | { readonly op: "update-policy"; readonly auto?: boolean }
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
+  | { readonly op: "connector-config-repair" }
   | { readonly op: "update-release"; readonly version: string }
   | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
   | { readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
@@ -44,7 +45,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     if (Object.keys(o).some(key => !["op", "space", "lifecycleUid"].includes(key)) || !isDaemonSpaceName(o.space) || !isAgentLifecycleUid(o.lifecycleUid)) throw new Error("invalid local agent selection");
     return { op: o.op, space: o.space, lifecycleUid: o.lifecycleUid };
   }
-  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check", "connector-config-repair"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -77,7 +78,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     if (typeof o.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(o.name)) throw new Error("invalid application name");
     return { op: o.op, name: o.name };
   }
-  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" | "connector-config-repair" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -482,7 +483,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
 /** Shared by the app adapter and the ordinary daemon CLI commands. */
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
-  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "spaces" } | { readonly op: "logout" } | { readonly space: string }>, { readonly op: "setup" }>,
+  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "connector-config-repair" } | { readonly op: "spaces" } | { readonly op: "logout" } | { readonly space: string }>, { readonly op: "setup" }>,
 ): Promise<DaemonResponse> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
