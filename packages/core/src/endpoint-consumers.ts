@@ -177,9 +177,13 @@ export class EndpointConsumers {
     let receipts = this.pluginReceipts.get(channel);
     if (!receipts) this.pluginReceipts.set(channel, receipts = new Set());
     if (receipts.has(key)) return false;
+    let first = true;
+    for (const other of this.pluginReceipts.values()) {
+      if (other !== receipts && other.has(key)) { first = false; break; }
+    }
     receipts.add(key);
     if (receipts.size > PLUGIN_RECENT_RECEIPTS) receipts.delete(receipts.values().next().value!);
-    return true;
+    return first;
   }
 
   /** Pin the recent live receipts during replay, so replay itself cannot evict a live overlap. */

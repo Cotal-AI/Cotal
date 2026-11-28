@@ -10,7 +10,7 @@ import { aclRetired, readAcl } from "./acls.js";
 import { ANYCAST_CANCEL_OP, ANYCAST_STATUS_OP, ANYCAST_TAKES_OP } from "./anycast-requests.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT } from "./backup-config.js";
-import { isRestoredConsumer } from "./backup.js";
+import { isRestoredConsumer, validatePersistentConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { channelSubjectInSpace, isRoutedPluginChannel, PLUGIN_CHANNEL_CATCHUP_AGE_MS } from "./endpoint-channel-route.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
@@ -513,7 +513,8 @@ export class EndpointDeliveryPlane {
       // otherwise reach the caller as an empty page and render as "no history".
       return { ok: false, error: `readHistory: ${(e as Error).message}` };
     }
-    if (!mayAct()) return { ok: false, error: "readHistory: delivery binding could not be verified" };
+    if (isRoutedPluginChannel(true, channel) && !mayAct())
+      return { ok: false, error: "readHistory: delivery binding could not be verified" };
     const reachedStart = page.length <= limit;
     const wanted = reachedStart ? page : page.slice(-limit);
 
@@ -911,14 +912,18 @@ export class EndpointDeliveryPlane {
     }
   }
 
-  /** Create one of the daemon's Plane-3 durables. A named create is idempotent for the same config,
-   *  and a denial is never taken for existence. The one conflict accepted is this durable as a full
-   *  restore recreated it, starting after its recorded ACK floor ({@link isRestoredConsumer}); every
-   *  other failure propagates. */
+  /** A config match is idempotent. On an explicit conflict, adopt only a validated restored cursor
+   *  or the canonical EXT durable if it was already initialized at the live frontier. */
   private async addPlane3Durable(stream: string, config: Partial<ConsumerConfig>): Promise<void> {
     try { await this.conn.jsm!.consumers.add(stream, config); }
     catch (e) {
-      if (!isConsumerAlreadyExists(e) || !isRestoredConsumer(this.identity.space, stream, await this.conn.jsm!.consumers.info(stream, config.durable_name!), config)) throw e;
+      if (!isConsumerAlreadyExists(e)) throw e;
+      const space = this.identity.space;
+      const info = await this.conn.jsm!.consumers.info(stream, config.durable_name!);
+      if (isRestoredConsumer(space, stream, info, config)) return;
+      if (stream !== pluginChannelStream(space) || info.name !== PLUGIN_FANOUT_DURABLE ||
+          info.config.deliver_policy !== DeliverPolicy.New) throw e;
+      validatePersistentConsumer(space, stream, info);
     }
   }
 
