@@ -10,7 +10,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
-import { consents, readPlan, renderRepair, signInNeeded, type RepairPlanView, type RepairStepView } from "./repair";
+import { consents, readPlan, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
 import "./components.css";
@@ -356,8 +356,6 @@ let customHost = false;
 let editing = false;
 let completedSetup = false;
 let observedReadySpaces: string[] = [];
-/** Why each space's hosted Manager is not answering, as the daemon reports it. */
-const managerReasons = new Map<string, string>();
 let poll: ReturnType<typeof setTimeout> | undefined;
 let watchReconnect: ReturnType<typeof setTimeout> | undefined;
 let windowHidden = false;
@@ -727,7 +725,7 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -738,7 +736,7 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const recovery = accountRow?.custodyRecovery;
@@ -850,6 +848,8 @@ async function request(body: Request): Promise<Record<string, unknown>> {
 }
 let repairPlan: RepairPlanView | undefined;
 let repairDone = false;
+/** The plan whose apply stopped at a failed step, so opening the same plan again says so. */
+let repairFailedDigest: string | undefined;
 /** Open the Repair panel with a fresh plan. Nothing changes until the person chooses its button. */
 async function openRepair(): Promise<void> {
   repairDone = false;
@@ -857,6 +857,8 @@ async function openRepair(): Promise<void> {
   renderRepair(el("repair-panel"), repairPlan);
   el("repair-panel").hidden = false; el("recovery-panel").hidden = true;
   el("repair-title").focus();
+  // The same plan already stopped at a step: say so rather than offer it as if it were new.
+  if (repairFailedDigest === repairPlan.digest) notice("Repair tried this and could not finish. Details shows what the background service said.");
 }
 function closeRepair(): void {
   repairPlan = undefined; el("repair-panel").hidden = true;
@@ -868,18 +870,26 @@ el("repair-apply").addEventListener("click", () => {
   if (!plan || busy) return;
   if (repairDone || !plan.steps.some(step => step.outcome === "fix")) {
     const signIn = !repairDone && signInNeeded(plan);
+    const update = !repairDone && updateNeeded(plan);
     closeRepair();
     if (signIn) { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+    else if (update) { openSettings(); void settingsAction({ op: "update-check" }); }
     else void action(refresh);
     return;
   }
   void action(async () => {
     try {
-      const result = await request({ op: "repair-apply", digest: plan.digest, consent: consents(plan) });
+      const raw = await request({ op: "repair-apply", digest: plan.digest, consent: consents(plan) });
+      const result: RepairResultView = { steps: Array.isArray(raw.steps) ? raw.steps : [], repaired: raw.repaired === true, ...(Array.isArray(raw.remaining) ? { remaining: raw.remaining } : {}) };
       repairDone = true;
-      renderRepair(el("repair-panel"), plan, Array.isArray(result.steps) ? result.steps as RepairStepView[] : []);
-      problem = undefined; clearDetails(); notice(result.repaired === true ? "This computer is repaired." : "Repair fixed what it could. The list shows what is left.");
+      const failed = result.steps.find(step => step.failed);
+      repairFailedDigest = failed ? plan.digest : undefined;
+      renderRepair(el("repair-panel"), plan, resultSteps(result));
+      problem = undefined; clearDetails();
       await refresh();
+      // What the service said about a failed step goes to Details only.
+      if (failed?.detail) showRefusalDetail(new DaemonRefusal("OPERATION_FAILED", failed.detail));
+      notice(resultNotice(result));
       el("repair-panel").hidden = false; el("recovery-panel").hidden = true;
     } catch (error) {
       // A plan that went stale is read again, so the person approves what is true now.
@@ -992,8 +1002,6 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
-  managerReasons.clear();
-  if (Array.isArray(status.managers)) for (const item of status.managers) if (item.state !== "answering" && typeof item.reason === "string" && !forTerminal(item.reason)) managerReasons.set(String(item.space), item.reason);
   const space = selectedSpace();
   computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   if (computerAccount?.hostSupport === "supported") {
@@ -1029,8 +1037,8 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     const service = await request({ op: "service-status", space });
     if (!current()) return;
     state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
-    // A Manager's next step is written for a terminal; the window offers Repair instead (rule 0).
-    if (manager?.reason) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped. Repair starts it again." : manager.reason));
+    // A Manager's reason and next step are written for a terminal: Details keeps the reason, the card says it plainly (rule 0).
+    if (manager?.reason) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped." : `The agent host for this space stopped. The background service said: ${manager.reason}`));
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
 }

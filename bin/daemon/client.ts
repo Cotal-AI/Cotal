@@ -76,7 +76,10 @@ export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
     // A start may reconcile connectors for up to ten minutes, then wait for Manager readiness.
     const reply = JSON.parse(await readLine(sock, request.op === "manager-start" || request.op === "manager-repair-cleanup" ? 730_000 : 130_000)) as DaemonResponse;
-    if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : "inspect the daemon's hosting records and retry the operation") });
+    if (!reply.ok) {
+      const cleanup = request.op === "manager-repair-cleanup";
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", cleanup ? `the old registration was not removed: ${reply.error.code} ${reply.error.message}` : `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : cleanup ? "run `cotal daemon repair` to check this computer again" : "inspect the daemon's hosting records and retry the operation") });
+    }
     if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
     return reply.result as HostedManager | DaemonStatus;
   } finally { sock.destroy(); }

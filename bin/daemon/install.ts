@@ -1232,8 +1232,11 @@ async function stopAndDeregister<T>(paths: DaemonPaths, daemonHome: string | und
  * service through the same verified path as uninstall, but keeps every record in the daemon home:
  * sign-in sessions, this computer's identity and every space's service records. Then it installs
  * this installation's unit and waits for it to answer at `version`. If this installation's service
- * cannot be published or does not answer, the previous unit is restored and started again, so the
- * computer never ends up with no service.
+ * cannot be published or does not answer, the previous unit is restored and started again.
+ *
+ * The restore covers a failure this process sees. A process that dies after the previous unit is
+ * removed and before this one is published leaves no unit; the next Repair finds the service not
+ * set up and offers to set it up.
  */
 export async function applyMove(paths: DaemonPaths, daemonHome: string | undefined, expected: { from: string; version: string }, report?: (detail: string) => void): Promise<MoveResult> {
   const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
@@ -1262,13 +1265,13 @@ export async function applyMove(paths: DaemonPaths, daemonHome: string | undefin
     } catch (error) {
       report?.("this installation's service did not start; restoring the previous one");
       await restoreMovedUnit(paths, daemonHome, previous);
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}); the previous service was restored and nothing else changed`, { native: { code: "MOVE_ROLLED_BACK" } });
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}); the previous service was restored and started again, and the agents it ran were stopped and do not start again by themselves`, { native: { code: "MOVE_ROLLED_BACK" } });
     }
     return { state: "moved", unit, from: identity.installed, spaces };
   } finally { lock?.release(); }
 }
 
-async function answeringAt(paths: DaemonPaths, version: string | undefined, timeoutMs: number): Promise<void> {
+export async function answeringAt(paths: DaemonPaths, version: string | undefined, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {

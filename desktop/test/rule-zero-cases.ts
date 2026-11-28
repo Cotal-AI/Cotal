@@ -5,9 +5,9 @@ export type RuleZeroAction = "repair" | "login" | "install" | "connect" | "space
 
 export const REFUSAL_CODES: Readonly<Record<string, RuleZeroAction>> = {
   // The service belongs to another installation, answers without a unit, or cannot be verified.
-  ANOTHER_INSTALLATION: "repair", CONFLICT: "repair", RUNNING_WITHOUT_UNIT: "repair", LOCK_HELD: "repair", PEER_NOT_LOCK_OWNER: "repair",
-  // Another OS account's service: nothing in this app can fix it, so no button is offered.
-  PEER_UID_MISMATCH: "none",
+  ANOTHER_INSTALLATION: "repair", CONFLICT: "repair", LOCK_HELD: "repair", PEER_NOT_LOCK_OWNER: "repair",
+  // Another OS account's service, or one started by hand with no unit: nothing in this app can fix it, so no button is offered.
+  PEER_UID_MISMATCH: "none", RUNNING_WITHOUT_UNIT: "none",
   // The service was started and does not answer, stopped mid-operation, or its native state is unknown.
   NOT_ANSWERING: "repair", DAEMON_LOST: "repair", OPERATION_UNKNOWN: "repair", TARGET_UNAVAILABLE: "repair", TARGET_NOT_FOUND: "repair",
   // Generic computer-side failures the catch-all used to answer with a status re-read.

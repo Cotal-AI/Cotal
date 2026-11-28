@@ -800,7 +800,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     abortGenerationRestart,
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     /** Remove this computer's own stale Manager registration that disconnect refuses ("cleanup
-     *  identity differs"), then rebind the record to the current instance and start the Manager. */
+     *  identity differs"), then rebind the record to the current instance. A space with a hosting
+     *  intent starts its Manager again; a disconnected space finishes its disconnect. */
     async repairCleanup(space: string): Promise<HostedManager & { readonly repair: StaleCleanupOutcome }> {
       const { remoteManagerClient } = await import("@cotal-ai/manager");
       const read = (): StaleCleanup | undefined => {
@@ -814,6 +815,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       };
       const cleanup = readManagerCleanup(home, space);
       const outcome = await repairStaleCleanup({
+        intended: () => existsSync(daemonManagerIntentFile(space, home)),
         read,
         verifyAuthority: () => {
           if (!cleanup) throw new Error("the Manager cleanup record is gone; nothing was changed");
@@ -836,6 +838,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           live.delete(space);
         },
         start: async () => { await start(space); },
+        finishDisconnect: async () => { await this.disconnect(space); },
       });
       notify();
       return { ...status(space), repair: outcome };

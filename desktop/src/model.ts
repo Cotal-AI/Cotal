@@ -168,7 +168,10 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "DAEMON_LOST": return repair("The background service stopped", "The background service stopped before Cotal could confirm the result. Repair checks what changed and starts the service again if needed.");
     case "NOT_ANSWERING": return repair("The background service has not started", "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.");
-    case "ANOTHER_INSTALLATION": case "CONFLICT": case "RUNNING_WITHOUT_UNIT": return repair("Another copy of Cotal runs the background service", "Repair can move it to this app. Your spaces and sign-in stay as they are.");
+    case "ANOTHER_INSTALLATION": return repair("Another copy of Cotal runs the background service", "Repair can move it to this app. Your spaces and sign-in stay as they are.");
+    // A service started by hand or by a container has no unit Cotal can stop, so no button here can fix it.
+    case "RUNNING_WITHOUT_UNIT": return { title: "A background service is already running", description: "Cotal did not set it up, so this app can't use it or stop it. Restarting this computer stops it.", action: "none", label: "" };
+    case "MANAGER_UNAVAILABLE": return repair("The agent host for this space stopped", "Repair checks it and starts it again if it can.");
     case "LOCK_HELD": case "PEER_NOT_LOCK_OWNER": return repair("The background service can't be checked", "Another program holds it, so this app cannot confirm it is Cotal's. Repair checks it and tells you what it found.");
     // Repair cannot act on another account's service, so no button that cannot work is offered.
     case "PEER_UID_MISMATCH": return { title: "The background service can't be used", description: "The background service on this computer belongs to another user account, so this app can't use it.", action: "none", label: "" };
