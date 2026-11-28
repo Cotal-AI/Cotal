@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { isMainEntry } from './main-entry.mjs';
+import { connectorInventory as inventory, hasPluginContract, retiredBuiltin } from './plugin-cut.mjs';
 
 export function verifySelectedGraphs(graph, version) {
   assert(graph && typeof graph.logicalEntry === 'string' && graph.logicalEntry.startsWith('/'), 'selected root identity missing');
@@ -33,26 +34,33 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
   assert(Array.isArray(report.checks) && report.checks.length >= 60 && report.checks.every(check => check.passed === true), 'all two-home checks must be present and passing');
   assert(report.old?.version && report.target?.version && report.old.version !== report.target.version, 'distinct old and target releases required');
   assert.equal(new Set(report.checks.map(check => check.name)).size, report.checks.length, 'duplicate two-home assertion');
-  assert(report.calls.every(call => call.code === 0 && call.signal === null), 'every recorded two-home command must succeed');
+  const crossesCut = !hasPluginContract(report.old.version) && hasPluginContract(report.target.version);
+  const refusalCalls = report.calls.filter(call => call.label === 'refuse retained pre-cut fixture');
+  assert.equal(refusalCalls.length, crossesCut ? 1 : 0, 'one legacy refusal is required across the plugin cut');
+  assert(refusalCalls.every(call => call.route === 'launch' && call.home === 'B' && Number.isInteger(call.code) && call.code > 0 && call.signal === null && /ext add cotal-two-home-seat@latest/.test(call.stdout + call.stderr)), 'legacy refusal must name the update remedy');
+  assert(report.calls.filter(call => !refusalCalls.includes(call)).every(call => call.code === 0 && call.signal === null), 'every recorded two-home command must succeed');
   const identities = report.calls.map(call => `${call.route}/${call.home}/${call.label}`);
   assert.equal(new Set(identities).size, identities.length, 'duplicate two-home command receipt');
   for (const route of ['up', 'launch', 'old-manager']) {
     const calls = report.calls.filter(call => call.route === route);
+    if (crossesCut && route === 'launch') {
+      const replacement = calls.findIndex(call => call.home === 'B' && call.label === 'install replacement contract-1 fixture');
+      assert(replacement > calls.indexOf(refusalCalls[0]) && replacement < calls.findIndex(call => call.label === 'ordinary next agent launch'), 'legacy refusal must precede replacement and launch');
+    }
     for (const [home, label] of [['A', 'install old closure'], ['A', route === 'old-manager' ? 'old Manager candidate install setup' : 'self update shared installation'], ['A', 'updated home version'], ['B', 'stale home version before command'], ['B', 'home status after command'], ['B', 'final owned stack down']])
       assert(calls.some(call => call.home === home && call.label === label && call.code === 0 && call.signal === null), `${route}/${home}: missing successful ${label}`);
     const stale = calls.find(call => call.home === 'B' && call.label === 'stale home version before command');
     assert(report.checks.some(check => check.name === `${route} home has no recovery obligation` && check.passed === true), `${route}: recovery obligation check missing`);
     assert(stale.stdout.startsWith(`cotal-ai ${report.target.version}\n`) && !stale.stdout.includes('update --self'), `${route}: wrong stale-home version or remedy`);
-    const inventory = (output, version) => ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
     const readOnly = report.readOnly?.[route];
     assert(readOnly?.targetSelectionAbsent === true && readOnly.oldRoot === report.graphs?.[route]?.oldRoot, `${route}: read-only old selection evidence missing`);
     assert(typeof readOnly.oldManifestRaw === 'string', `${route}: old manifest raw bytes missing`);
     assert.equal(createHash('sha256').update(readOnly.oldManifestRaw).digest('hex'), readOnly.oldManifestSha256, `${route}: old manifest raw hash differs`);
     assert.deepEqual(JSON.parse(readOnly.oldManifestRaw), readOnly.oldManifest, `${route}: parsed old manifest differs from raw bytes`);
     const oldEntries = readOnly.oldManifest?.extensions;
-    const builtins = ['@cotal-ai/connector-claude-code', '@cotal-ai/connector-opencode', '@cotal-ai/connector-codex', '@cotal-ai/connector-hermes', '@cotal-ai/connector-jcode', '@cotal-ai/pi', '@cotal-ai/web'];
+    const builtins = ['@cotal-ai/connector-claude-code', '@cotal-ai/connector-opencode', '@cotal-ai/connector-codex', '@cotal-ai/connector-hermes', '@cotal-ai/connector-jcode', '@cotal-ai/pi', '@cotal-ai/web'].filter(pkg => !retiredBuiltin(pkg, report.old.version));
     assert(Array.isArray(oldEntries) && builtins.every(pkg => oldEntries.some(entry => entry.pkg === pkg && entry.version === report.old.version)), `${route}: old selected inventory must carry every old built-in`);
-    assert(inventory(stale.stdout, report.old.version) || readOnly.oldRoot !== report.graphs[route].canonical && stale.stdout === `cotal-ai ${report.target.version}\n`, `${route}: wrong read-only version output`);
+    assert(inventory(stale.stdout, report.old.version, report.target.version) || readOnly.oldRoot !== report.graphs[route].canonical && stale.stdout === `cotal-ai ${report.target.version}\n`, `${route}: wrong read-only version output`);
     assert.equal(readOnly.oldManifestSha256, report.graphs[route].old.find(row => row.path === readOnly.oldRoot)?.before.find(row => row[0] === 'extensions/extensions.json')?.[2], `${route}: old manifest raw inventory differs`);
     const updatedHome = calls.find(call => call.home === 'A' && call.label === 'updated home version');
     assert(inventory(updatedHome.stdout, report.target.version) && !updatedHome.stdout.includes('Reconciliation pending'), `${route}: updated A home is not reconciled`);

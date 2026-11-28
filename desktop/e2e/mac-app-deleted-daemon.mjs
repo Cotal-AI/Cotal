@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { writePluginFixture } from '../../scripts/plugin-fixture.mjs';
 
 assert.equal(process.platform, 'darwin');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
@@ -272,7 +273,6 @@ try {
   writeFileSync(join(output, 'service.plist'), source);
   const connector = join(root, 'connector');
   mkdirSync(connector, { mode: 0o700 });
-  writeFileSync(join(connector, 'package.json'), JSON.stringify({ name: 'deleted-app-fixture', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
   if (['occupied-manager', 'unreadable-manager'].includes(repairCommand)) {
     const core = pathToFileURL(join(oldPrefix, 'lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js')).href;
     const seat = join(connector, 'seat.mjs');
@@ -282,6 +282,7 @@ try {
   } else {
     writeFileSync(join(connector, 'index.js'), "import {registry} from '@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch(){throw Error('this measurement launches no seats')}});\n");
   }
+  writePluginFixture(connector, { name: 'deleted-app-fixture', version: '1.0.0', contract: 0, provides: [], factorySource: readFileSync(join(connector, 'index.js'), 'utf8') });
   ok(await bundled('register local available connector', ['ext', 'add', connector]));
   const setup = body(await bundled('host real Manager through app runtime', ['daemon', 'setup', '--space', report.participant.space, '--json']));
   assert.equal(setup.manager.state, 'answering');

@@ -1,12 +1,8 @@
 /**
- * DOGFOOD LIVE e2e: the REAL `@cotal-ai/web` package installed through the REAL `cotal ext`
- * mechanism and exercised against a REAL mesh — the full operator journey:
+ * DOGFOOD LIVE e2e: the built-in dashboard exercised against a real mesh.
  *
- *  A. The dashboard is not part of the core surface: `cotal web` is an unknown command, and the
- *     `web` service preset refuses until its provider is installed, naming `cotal ext add`.
- *  B. `cotal ext add ./implementations/web` — the first real MULTI-PEER extension: BOTH
- *     @cotal-ai/core and @cotal-ai/workspace get linked to this binary's copies (provenance
- *     proves it), and the add names the `web` service preset it contributes.
+ *  A. `cotal web` is not a command, but status reports the built-in dashboard without a prefix.
+ *  B. `ext add @cotal-ai/web` reports that the dashboard is built in.
  *  C. `cotal up --detach` (JWT auth), a message sent through the CLI, then the dashboard as an owned
  *     service with a protected admin credential and read-only intent:
  *     - a root that is not the registered one is refused before any child launches;
@@ -16,10 +12,10 @@
  *       link (read from the private bootstrap file its log names) for a session, serves / and
  *       the page's script under /assets/, reads the sent message back through its broker-backed history and activity
  *       routes, and refuses channel delete as read-only;
- *     - a second start is a no-op, `ext remove` refuses while it runs, and `service stop` ends it;
+ *     - a second start is a no-op, and `service stop` ends it;
  *     - the private bootstrap record preserves the listener's bound host and port;
  *     - started again, it blocks bare `down` until explicitly stopped; the broker stays alive.
- *  D. `ext remove @cotal-ai/web`; the `web` preset refuses again.
+ *  D. `ext remove @cotal-ai/web` reports that the dashboard is built in.
  *
  * Needs dist built (the packages install per their `files: ["dist"]`), `nats-server` + npm on
  * PATH. Sandboxes COTAL_HOME/XDG_CONFIG_HOME + a temp root; kills only its own pids.
@@ -192,24 +188,21 @@ async function checkForegroundRepeat() {
 }
 
 try {
-  // -- A: the dashboard is not core ----------------------------------------------------------------
+  // -- A: status reports the built-in dashboard ---------------------------------------------------
   const creds = join(sandbox, "dashboard.creds");
   const flags = ["--preset", "web", "--space", SPACE, "--creds", creds, "--read-only"];
   const definition = ["service", "add", "web", ...flags, "--root", root, "--port", String(WEB_PORT)];
   {
     const r = cotal(["web", "--help"]);
     ok("`cotal web` is an unknown command", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
-    const preset = cotal(definition);
-    ok("the web preset refuses before its provider is installed, naming ext add", preset.status === 2 && /no registered or installed service preset is named "web"/.test(out(preset)) && /cotal ext add @cotal-ai\/web/.test(out(preset)), out(preset).slice(-500));
+    const status = cotal(["status", "--json"]);
+    ok("status reports the built-in dashboard before starting it", status.status === 0 && JSON.parse(status.stdout).result?.machine?.web?.installed === true, out(status).slice(-500));
   }
 
-  // -- B: install the REAL @cotal-ai/web package (multi-peer link) --------------------------------------
+  // -- B: adding a built-in needs no installed extension -------------------------------------------
   {
-    const r = cotal(["ext", "add", join(REPO, "implementations", "web")]);
-    ok("ext add @cotal-ai/web exits 0", r.status === 0, out(r).slice(-500));
-    ok("core peer linked to this binary's copy", /→ wrote @cotal-ai\/core link/.test(r.stderr), r.stderr.slice(-400));
-    ok("workspace peer linked to this binary's copy", /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
-    ok("the add names the contributed `web` service preset", /service-preset:web/.test(r.stdout), r.stdout);
+    const r = cotal(["ext", "add", "@cotal-ai/web"]);
+    ok("ext add identifies web as built in", r.status === 0 && /built into/.test(out(r)), out(r).slice(-500));
   }
 
   // -- C: the dashboard runs as an owned service against a real JWT-authed mesh ---------------------
@@ -370,7 +363,7 @@ try {
     ok("a second start is a no-op on the running instance", again.status === 0 && /Already running; nothing was started/.test(again.stdout) && pidOf(again) === webPid, out(again).slice(-500));
     ok("a repeated background start still points to the startup log", again.stdout.includes(`cotal service logs web --space ${SPACE} --instance ${log.instanceId}`));
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
-    ok("ext remove refuses to orphan the running dashboard", removeLive.status === 2 && /LIFECYCLE_BLOCKED/.test(out(removeLive)) && alive(webPid), out(removeLive).slice(-500));
+    ok("ext remove leaves the running built-in dashboard alone", removeLive.status === 0 && /built in/.test(out(removeLive)) && alive(webPid), out(removeLive).slice(-500));
     const stop = cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(webPid); i++) await sleep(100);
     ok("service stop web ends the dashboard process", stop.status === 0 && /Service stopped/.test(stop.stdout) && !alive(webPid), out(stop).slice(-500));
@@ -396,11 +389,12 @@ try {
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }
 
-  // -- D: remove the extension; the preset's provider is gone again ----------------------------------
+  // -- D: a removal request does not change the built-in preset -----------------------------------
   {
-    ok("ext remove @cotal-ai/web exits 0", cotal(["ext", "remove", "@cotal-ai/web"]).status === 0);
-    const r = cotal(definition);
-    ok("the web preset refuses again once its provider is removed", r.status === 2 && /no registered or installed service preset is named "web"/.test(out(r)), out(r).slice(-500));
+    const r = cotal(["ext", "remove", "@cotal-ai/web"]);
+    ok("ext remove identifies web as built in", r.status === 0 && /built in/.test(out(r)), out(r).slice(-500));
+    const status = cotal(["status", "--json"]);
+    ok("the dashboard remains installed", status.status === 0 && JSON.parse(status.stdout).result?.machine?.web?.installed === true, out(status).slice(-500));
   }
 
   console.log(`\nDOGFOOD LIVE SMOKE OK ✅ (${pass} checks)`);

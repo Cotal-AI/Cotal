@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitSentinel } from './sentinel.mjs';
+import { writePluginFixture } from '../../scripts/plugin-fixture.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
@@ -69,15 +70,17 @@ function lifecycleRuntime(root, payload) {
 
 async function assertLifecycleExtension(run, { node }, entry, root) {
   const source = join(root, 'lifecycle-extension');
-  mkdirSync(source);
-  writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'lifecycle-extension', version: '1.0.0',
-    main: 'index.mjs', peerDependencies: { '@cotal-ai/core': '*' }, scripts: { postinstall: 'node install.cjs' } }));
-  writeFileSync(join(source, 'index.mjs'), `import { registry } from '@cotal-ai/core';\nregistry.register({ kind: 'command', name: 'lifecycle-test', group: 'Extensions', summary: 'Lifecycle fixture', flags: [], run: async () => {} });\n`);
+  const provider = { kind: 'command', name: 'lifecycle-test', group: 'Extensions', summary: 'Lifecycle fixture', flags: [] };
+  writePluginFixture(source, { name: 'lifecycle-extension', version: '1.0.0', entry: 'index.mjs', provides: [provider],
+    packageFields: { scripts: { postinstall: 'node install.cjs' } },
+    factorySource: `export default host => host.register({ ...${JSON.stringify(provider)}, run: async () => {} });\n` });
   writeFileSync(join(source, 'install.cjs'), `require('node:fs').writeFileSync('node-path', process.execPath);\n`);
   const result = await run(node, [entry, 'ext', 'add', source], 60000);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /lifecycle-test/);
-  assert.equal(readFileSync(join(root, 'config/cotal/extensions/node_modules/lifecycle-extension/node-path'), 'utf8'), node);
+  const installed = join(root, 'config/cotal/extensions/node_modules/lifecycle-extension');
+  assert(existsSync(join(installed, 'install.cjs')), 'lifecycle script must be present in the installed fixture');
+  assert(!existsSync(join(installed, 'node-path')), 'extension installation must not run postinstall');
 }
 
 /** Runs real npm and the built public entry against a loopback registry. */

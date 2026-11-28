@@ -68,9 +68,9 @@ try {
     'seeded-connectors/opencode/dist/serve.js',
     'seeded-connectors/opencode/dist/launch.js',
     'seeded-connectors/pi/dist/standalone.js',
-    'seeded-connectors/web/dist/web/index.html',
-    'seeded-connectors/web/dist/web/theme-boot.js',
-    'seeded-connectors/web/dist/web/bundle-licenses.json',
+    'node_modules/@cotal-ai/web/dist/web/index.html',
+    'node_modules/@cotal-ai/web/dist/web/theme-boot.js',
+    'node_modules/@cotal-ai/web/dist/web/bundle-licenses.json',
     'seeded-connectors/claude/skills-plugin/.claude-plugin/plugin.json',
     'node_modules/@cotal-ai/cli/cotal-skills/skills/team-topology/SKILL.md',
     'node_modules/@cotal-ai/connector-core/dist/docs-bundle.bin',
@@ -89,6 +89,10 @@ try {
   ];
   for (const rel of lazyRuntimeFiles) {
     assert.equal(existsSync(join(relocated, rel)), true, `missing lazily read runtime file: ${rel}`);
+  }
+  for (const runtime of ['cmux', 'tmux', 'orca', 'herdr']) {
+    assert.equal(existsSync(join(relocated, 'seeded-connectors', runtime)), false, `optional runtime must not be seeded: ${runtime}`);
+    assert.equal(existsSync(join(relocated, 'node_modules', '@cotal-ai', runtime)), false, `optional runtime must not be deployed: ${runtime}`);
   }
   const docsSpec = run(['docs', 'spec']); assert.equal(docsSpec.status, 0, `cotal docs spec failed: ${docsSpec.stderr}`); assert.ok(docsSpec.stdout.length > 1000);
   const docsSchema = run(['docs', 'schema']); assert.equal(docsSchema.status, 0, `cotal docs schema failed: ${docsSchema.stderr}`); assert.ok(docsSchema.stdout.includes('"$schema"'));

@@ -2,17 +2,14 @@
  * LIVE e2e for `cotal ext` (CLI rework stage 3): fixture extension packages are built on the fly
  * and driven through the REAL binary as subprocesses (sandboxed XDG_CONFIG_HOME/COTAL_HOME):
  *
- *  A. add: installs into the cotal-owned prefix, links OUR core, imports once, verifies the
- *     registration LANDED, caches the command surface (+ provenance lines).
+ *  A. add: installs into the cotal-owned prefix and caches declared providers without an import.
  *  B. cache-only surface: with the installed package's code made to THROW, `--help` and
  *     `__complete` still work (they never import); running the command fails LOUD.
  *  C. run: the real command executes with LIVE specs (flag + positional through the kernel);
  *     re-add is a clean refresh; a corrupt manifest is ONE red line, not a stack dump.
  *  D. version-skew: on-disk version ≠ manifest pin → loud error prescribing re-add.
  *  E. failed adds are loud AND rolled back: builtin name collision, ext-vs-ext name collision
- *     (checked against the manifest cache — the sibling is never imported), @cotal-ai/* as a
- *     regular dependency, missing core peerDep, an @cotal-ai/* peer the binary doesn't carry,
- *     zero registrations. A multi-peer extension gets BOTH core and workspace linked (E2).
+ *     (checked against the manifest cache), unsupported core versions, and missing declarations.
  *  F. non-command providers: runtime-only install + lazy supervise resolution; a contributed
  *     local process is not a named `down` target, and only bare `down` stops it, with the stack.
  *  E3. aliases: an extension's alias runs its command; an alias or name a built-in or another
@@ -22,13 +19,14 @@
  */
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { hostPackageDir, recordMesh } from "@cotal-ai/workspace";
+import { recordMesh } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { writePluginFixture, type FixtureProvider } from "../../scripts/plugin-fixture.mjs";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
 // alias). The CLI canonicalizes cwd, so register the same physical root or extension removal sees
@@ -65,67 +63,25 @@ const cotal = (args: string[], { timeout = 180_000, extraEnv = {} }: { timeout?:
 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** `cotal ext add` installs the fixture from the real registry, so every refusal assertion below is
- *  also satisfiable by npm failing to RESOLVE a `@cotal-ai/*` package at the workspace version. The
- *  exit status is 1 either way, and only stderr tells the two apart.
- *
- *  That is not hypothetical. On 2026-10-01 the `live` job ran between the `chore(release): version
- *  packages` merge and the publish finishing, npm answered ETARGET for `@cotal-ai/core@0.58.0`, and
- *  the cell reddened against a refusal path the command never reached. 0.58.0 was on the registry as
- *  `latest` within the hour and a re-run was green, so the product was never in question; what cost
- *  time was a failure message pointing at `ext add`.
- *
- *  So name it. This still FAILS rather than passing, because the assertion genuinely was not
- *  measured and a green here would be a lie, but it fails saying which package could not be resolved
- *  and that the fix is to re-run after the release publishes.
- *
- *  ETARGET only, and the wording is measured off npm rather than recalled: `npm error notarget No
- *  matching version found for <pkg>@<version>.` A missing PACKAGE answers E404 instead, and that is
- *  deliberately NOT matched here. The versions under test belong to published packages, so an E404
- *  for one of them would mean it had been unpublished, which is a real finding and has to stay a
- *  plain loud failure. */
-const UNPUBLISHED = /[Nn]o matching version found for (@cotal-ai\/[^@\s]+@[^\s"\\]+)/;
-const refusedBecause = (name: string, r: { status: number | null; stderr: string }, reason: RegExp) => {
-  const stderr = r.stderr ?? "";
-  const miss = UNPUBLISHED.exec(stderr);
-  if (miss !== null && !reason.test(stderr))
-    throw new Error(
-      `UNMEASURED: ${name}: npm could not resolve ${miss[1].replace(/\.$/, "")}, so the refusal `
-      + `under test was never reached. That is the publish window after a version commit rather `
-      + `than a product failure: re-run this job once the release has published. `
-      + `stderr tail: ${stderr.slice(-200)}`,
-    );
-  ok(name, r.status === 1 && reason.test(stderr), stderr.slice(-300));
-};
-
 const target = cotal(["meshes", "add", "main", "--server", "nats://127.0.0.1:1", "--root", sandbox, "--mode", "open", "--force"]);
 ok("fixture mesh target is registered", target.status === 0, target.stderr);
 
 /** Build a fixture extension package on disk. `index` is its module body. */
-function fixture(name: string, index: string, pkgJson: Record<string, unknown> = {}): string {
+function fixture(name: string, index: string, options: { name?: string; version?: string; core?: string; legacy?: boolean; provides?: FixtureProvider[]; packageFields?: Record<string, unknown> } = {}): string {
   const dir = join(sandbox, name);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, "package.json"),
-    JSON.stringify(
-      {
-        name,
-        version: "1.0.0",
-        type: "module",
-        main: "index.js",
-        peerDependencies: { "@cotal-ai/core": "*" },
-        ...pkgJson,
-      },
-      null,
-      2,
-    ),
-  );
-  writeFileSync(join(dir, "index.js"), index);
+  const command = /kind: "command",\s*name: "([^"]+)"/.exec(index)?.[1];
+  const provides = options.provides ?? (command ? [{ ...GOOD_COMMAND, name: command }] : []);
+  writePluginFixture(dir, { name: options.name ?? name, version: options.version ?? "1.0.0", provides, factorySource: index,
+    ...(options.core ? { core: options.core } : {}), ...(options.legacy ? { contract: 0 } : {}),
+    ...(options.packageFields ? { packageFields: options.packageFields } : {}) });
   return dir;
 }
 
-const GOOD = `import { registry } from "@cotal-ai/core";
-registry.register({
+const GOOD_COMMAND = {
+  kind: "command", name: "hello-ext", group: "Extensions", summary: "fixture extension command",
+  flags: [{ name: "shout", type: "boolean", description: "upper-case it" }], positionals: "[<who>]",
+};
+const GOOD = `export default host => host.register({
   kind: "command",
   name: "hello-ext",
   group: "Extensions",
@@ -144,119 +100,81 @@ const extDir = join(configDir, "cotal", "extensions");
 const manifestPath = join(extDir, "extensions.json");
 const installedIndex = join(extDir, "node_modules", "cotal-ext-fixture", "index.js");
 const installedPkg = join(extDir, "node_modules", "cotal-ext-fixture", "package.json");
-const goodFixture = fixture("local extension", GOOD, { name: "cotal-ext-fixture", main: "./index", bin: { "fixture-bin": "bin.js" } });
+const goodFixture = fixture("local extension", GOOD, { name: "cotal-ext-fixture", packageFields: { bin: { "fixture-bin": "bin.js" } } });
+const goodMetadata = join(goodFixture, "package.json");
+writeFileSync(goodMetadata, JSON.stringify({ ...JSON.parse(readFileSync(goodMetadata, "utf8")), main: "./index" }));
 
 // -- empty state ---------------------------------------------------------------------------------
 ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
 
 {
-  const core = "@cotal-ai/core";
-  const { version } = JSON.parse(readFileSync(join(hostPackageDir(core), "package.json"), "utf8")) as { version: string };
-  const name = "demo-wrong-peer";
-  const pkg = "cotal-wrong-peer-demo";
-  const marker = join(sandbox, "wrong-peer-imported");
-  const body = `import { writeFileSync } from "node:fs";
-import { registry } from "@cotal-ai/core";
-writeFileSync(${JSON.stringify(marker)}, "imported");
-registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Print a greeting", run() { console.log("peer ran"); } });`;
-  const incompatible = fixture(pkg, body, { peerDependencies: { [core]: ">=99.0.0" } });
-  const operand = `./${pkg}`;
-  const list = () => cotal(["ext", "list", "--json"]);
-  const inventory = list().stdout;
-  const wrong = cotal(["ext", "add", operand]);
-  ok("a cleanly importing package with an incompatible core range is refused",
-    wrong.status === 1 && wrong.stdout === "" && wrong.stderr.startsWith(`✗ ${pkg} declares ${core} ">=99.0.0"`)
-      && wrong.stderr.includes(`${core} ${version}`) && wrong.stderr.includes("`npm view cotal-ai versions --json`"), wrong);
-  ok("a fresh refusal does not create the extension root or expose or import the command",
-    !existsSync(extDir) && !existsSync(marker) && list().stdout === inventory && cotal([name]).status !== 0);
-  ok("a fresh refusal leaves no staging or rollback files",
-    readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
-
-  const compatible = fixture("cotal-ext-compatible-core", body, { peerDependencies: { [core]: version } });
+  const marker = join(sandbox, "fixture-imported");
+  const body = `import {writeFileSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'imported');\n${GOOD.replaceAll('hello-ext', 'core-window')}`;
+  const bad = fixture("cotal-ext-newer-core", body, { core: "99.0.0" });
+  const refusal = cotal(["ext", "add", bad]);
+  ok("newer bundled core is refused without importing the package", refusal.status === 1 && /uses newer core 99\.0\.0/.test(refusal.stderr) && !existsSync(marker), refusal.stderr);
+  const compatible = fixture("cotal-ext-compatible-core", body);
   const added = cotal(["ext", "add", compatible]);
-  ok("an exact compatible peer installs and its command runs",
-    added.status === 0 && added.stdout.includes("added cotal-ext-compatible-core@1.0.0") && cotal([name]).stdout.trim() === "peer ran", added);
-  const prior = list().stdout;
-  const files = ["package.json", "package-lock.json", "extensions.json"].map((file) => join(extDir, file));
-  const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
-  const before = files.map(hash);
-  const inode = statSync(extDir).ino;
-  rmSync(marker);
-  const metadata = join(incompatible, "package.json");
-  const manifest = JSON.parse(readFileSync(metadata, "utf8"));
-  writeFileSync(metadata, JSON.stringify({ ...manifest, name: "cotal-ext-compatible-core", peerDependenciesMeta: { [core]: { optional: true } } }));
-  const retry = cotal(["ext", "add", operand]);
-  ok("an optional incompatible core is refused on re-add",
-    retry.status === 1 && retry.stdout === "" && retry.stderr.startsWith(`✗ cotal-ext-compatible-core declares ${core} ">=99.0.0"`)
-      && retry.stderr.includes(`${core} ${version}`) && retry.stderr.includes("`npm view cotal-ai versions --json`"), retry);
-  ok("the refused re-add preserves the live root, manifest and npm metadata and discards its stage",
-    statSync(extDir).ino === inode && files.every((file, i) => hash(file) === before[i]) && list().stdout === prior
-      && !existsSync(marker) && !existsSync(join(extDir, "node_modules", pkg))
-      && readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
-  const invalid = cotal(["ext", "add", fixture("cotal-ext-invalid-core", body, { peerDependencies: { [core]: "nightly" } })]);
-  ok("an unparseable core range is refused with its declaration",
-    invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes('"nightly", which is not a valid version range') && invalid.stderr.includes(version), invalid);
+  ok("regular fixture installs without executing its module", added.status === 0 && !existsSync(marker), added.stderr);
+  const ran = cotal(["core-window"]);
+  ok("first dispatch imports and runs the installed factory", ran.status === 0 && ran.stdout.trim() === "hello world" && existsSync(marker), ran.stderr);
   ok("the compatible install still removes", cotal(["ext", "remove", "cotal-ext-compatible-core"]).status === 0);
 }
 
-{
-  const pinned = "0.1.0";
-  const official = "@cotal-ai/tmux";
-  const thirdParty = "cotal-ext-registry-peer";
-  const command = "registry-peer";
-  const body = GOOD.replace('name: "hello-ext"', `name: "${command}"`);
-  const packages = [official, thirdParty].map((name, i) => {
-    const base = fixture(`registry-peer-${i}/package`, body, {
-      name, version: pinned, peerDependencies: { "@cotal-ai/core": pinned },
-    });
-    const archive = execFileSync("tar", ["-czf", "-", "-C", join(base, ".."), "package"]);
-    const meta = JSON.parse(readFileSync(join(base, "package.json"), "utf8"));
-    return { name, base, meta, archive, integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}` };
+async function explicitOlderRegistryPin() {
+  const version = "0.1.0", official = "@cotal-ai/tmux", thirdParty = "cotal-ext-registry-core";
+  const command = "registry-core-probe";
+  const provider = { ...GOOD_COMMAND, name: command, reads: true };
+  const body = `export default host => host.register({ ...${JSON.stringify(provider)}, run() { throw new Error("incompatible registry fixture ran"); } });`;
+  const rows = [official, thirdParty].map((name, i) => {
+    const dir = fixture(`registry-core-${i}/package`, body, { name, version, core: i === 0 ? version : "99.0.0", provides: [provider] });
+    const archive = execFileSync("tar", ["-czf", "-", "-C", join(dir, ".."), "package"]);
+    return { name, dir, archive, metadata: JSON.parse(readFileSync(join(dir, "package.json"), "utf8")), integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}` };
   });
-  let origin: string;
-  const requests = new Set<string>();
-  const server = createServer((req, res) => {
+  const paths = new Set<string>();
+  let origin = "";
+  const registry = createServer((req, res) => {
     const path = decodeURIComponent(req.url ?? "");
-    requests.add(path);
-    const index = packages.findIndex(({ name }, i) => path === `/${name}` || path === `/package-${i}.tgz`);
-    const pkg = packages[index];
-    if (!pkg) { res.writeHead(404).end(); return; }
-    if (path.endsWith(".tgz")) { res.end(pkg.archive); return; }
-    const dist = { tarball: `${origin}/package-${index}.tgz`, integrity: pkg.integrity };
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ name: pkg.name, versions: { [pinned]: { ...pkg.meta, dist } } }));
+    paths.add(path);
+    const i = rows.findIndex((row, index) => path === `/${row.name}` || path === `/package-${index}.tgz`);
+    const row = rows[i];
+    if (!row) { res.writeHead(404).end(); return; }
+    if (path.endsWith(".tgz")) { res.end(row.archive); return; }
+    const dist = { tarball: `${origin}/package-${i}.tgz`, integrity: row.integrity };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ name: row.name, versions: { [version]: { ...row.metadata, dist } } }));
   });
   try {
-    await new Promise<void>((ready, reject) => server.once("error", reject).listen(0, "127.0.0.1", ready));
-    const address = server.address();
+    await new Promise<void>((ready, reject) => registry.once("error", reject).listen(0, "127.0.0.1", ready));
+    const address = registry.address();
     if (!address || typeof address === "string") throw new Error("loopback registry has no TCP port");
     origin = `http://127.0.0.1:${address.port}`;
-    const npmrc = join(sandbox, "peer-registry.npmrc");
+    const npmrc = join(sandbox, "fixture-registry.npmrc");
     writeFileSync(npmrc, `@cotal-ai:registry=${origin}\n`);
-    const addRegistry = (name: string) => promisify(execFile)(realNode, [tsxCli, binCotal, "ext", "add", `${name}@${pinned}`], {
+    const add = (name: string) => promisify(execFile)(realNode, [tsxCli, binCotal, "ext", "add", `${name}@${version}`], {
       cwd: sandbox, timeout: 180_000,
       env: { ...env, npm_config_userconfig: npmrc, npm_config_registry: origin, npm_config_fetch_retries: "0" },
     });
-    const added = await addRegistry(official);
+    const result = await add(official);
     const manifest = readFileSync(manifestPath, "utf8");
     const pin = JSON.parse(manifest).extensions.find((entry: { pkg: string }) => entry.pkg === official);
     const peer = join(extDir, "node_modules", official, "node_modules", "@cotal-ai", "core");
-    ok("an explicit older first-party registry pin installs and links the bundled core",
-      requests.has("/package-0.tgz") && added.stdout.includes(`added ${official}@${pinned}`)
-        && pin?.version === pinned && pin.provides.some((entry: { name: string }) => entry.name === command)
-        && realpathSync(peer) === realpathSync(hostPackageDir("@cotal-ai/core")), added);
-    const refused = await addRegistry(thirdParty).then(() => undefined, (error: { code?: number; stderr?: string }) => error);
-    ok("an incompatible third-party registry package is refused before replacing the inventory",
-      requests.has("/package-1.tgz") && refused?.code === 1 && refused.stderr?.includes(`${thirdParty} declares @cotal-ai/core "${pinned}"`) === true
-        && readFileSync(manifestPath, "utf8") === manifest, refused);
-    const local = cotal(["ext", "add", packages[0]!.base]);
-    ok("a local build is checked even when its name matches an official package",
-      local.status === 1 && local.stderr.includes(`${official} declares @cotal-ai/core "${pinned}"`)
-        && readFileSync(manifestPath, "utf8") === manifest, local);
-    ok("the pinned registry package still removes", cotal(["ext", "remove", official]).status === 0);
+    ok("an explicit older first-party registry pin installs without a host-core link",
+      paths.has("/package-0.tgz") && result.stdout.includes(`added ${official}@${version}`) && pin?.version === version && !existsSync(peer), result.stdout + result.stderr);
+    const run = cotal([command]);
+    ok("loading the out-of-lockstep official pin names self-update without reconciling it",
+      run.status === 1 && /update --self/.test(run.stderr) && readFileSync(manifestPath, "utf8") === manifest, run.stderr);
+    const refused = await add(thirdParty).then(() => undefined, (error: { code?: number; stderr?: string }) => error);
+    ok("newer third-party core is refused without replacing the pinned inventory",
+      paths.has("/package-1.tgz") && refused?.code === 1 && /uses newer core 99\.0\.0/.test(refused.stderr ?? "") && readFileSync(manifestPath, "utf8") === manifest, refused);
+    const local = cotal(["ext", "add", rows[0]!.dir]);
+    ok("the same out-of-lockstep package is refused as a local add", local.status === 1 && /update --self/.test(local.stderr) && readFileSync(manifestPath, "utf8") === manifest, local.stderr);
+    ok("the registry pin still removes", cotal(["ext", "remove", official]).status === 0);
   } finally {
-    await new Promise<void>((done) => server.close(() => done()));
+    await new Promise<void>(done => registry.close(() => done()));
   }
 }
+
+await explicitOlderRegistryPin();
 
 // -- A: add --------------------------------------------------------------------------------------
 {
@@ -265,7 +183,7 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
   ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
   ok("add names the contributed command", /hello-ext/.test(r.stdout), r.stdout);
   ok("manifest written + announced", existsSync(manifestPath) && /→ wrote extensions manifest/.test(r.stderr), r.stderr.slice(-300));
-  ok("core is linked to OUR copy", /→ wrote @cotal-ai\/core link/.test(r.stderr));
+  ok("installed fixture has no link to host core", !existsSync(join(installedPkg, "..", "node_modules", "@cotal-ai", "core")));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
   const run = cotal(["hello-ext"]);
@@ -277,17 +195,13 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
   const name = "hello-ext-typo";
   const path = fixture(pkg, GOOD.replace('kind: "command"', 'kind: "commands"').replace('name: "hello-ext"', `name: "${name}"`));
   const add = cotal(["ext", "add", path]);
-  ok("add reports a plural kind as a registry entry and explains how to register a command",
-    add.status === 0 && add.stdout.includes(`added ${pkg}@1.0.0`) && !add.stdout.includes(`provides: commands:${name}`)
-      && add.stdout.includes(`Registered commands:${name} in the registry only.`) && add.stdout.includes("Use kind `command`"), add);
+  ok("add refuses a package that declares no valid providers", add.status === 1 && add.stderr.includes(pkg), add);
   const list = cotal(["ext", "list"]);
-  ok("list retains the extension and its original registry contribution",
-    list.status === 0 && list.stdout.includes(pkg) && list.stdout.includes(`commands:${name}`), list);
+  ok("list does not expose the refused package", list.status === 0 && !list.stdout.includes(pkg), list);
   const help = cotal(["help"]);
   const run = cotal([name]);
   ok("a plural kind does not add a CLI command", help.status === 0 && !help.stdout.includes(name)
     && run.status === 1 && run.stderr.includes(`unknown command: ${name}`) && run.stdout === "", run);
-  ok("the extension with the plural kind still removes cleanly", cotal(["ext", "remove", pkg]).status === 0);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
@@ -314,38 +228,18 @@ registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Pr
   }
 }
 
-// -- B2: a peer link left by another Cotal host is rebound before lazy import -----------------------
-{
-  const peer = join(extDir, "node_modules", "cotal-ext-fixture", "node_modules", "@cotal-ai", "core");
-  const foreign = join(sandbox, "foreign-core");
-  mkdirSync(foreign, { recursive: true });
-  writeFileSync(join(foreign, "package.json"), JSON.stringify({ name: "@cotal-ai/core", version: "1.0.0", type: "module", exports: "./index.js" }));
-  writeFileSync(join(foreign, "index.js"), "export const registry = { register() {} };\n");
-  rmSync(peer, { recursive: true, force: true });
-  symlinkSync(foreign, peer, "junction");
-  const rebound = cotal(["hello-ext", "host-switch"]);
-  const hostCore = realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core"));
-  ok(
-    "lazy load rebinds a peer link left by another Cotal host",
-    rebound.status === 0 && /hello host-switch/.test(rebound.stdout) && realpathSync(peer) === hostCore,
-    rebound.stdout + rebound.stderr,
-  );
-}
-
-// -- B3: a competing load waits on the closure through rebind + complete module evaluation ----------
+// -- B3: a competing load waits for the module evaluation under the installation lock ---------------
 {
   const ready = join(sandbox, "materialize-ready");
   const release = join(sandbox, "materialize-release");
-  const peer = join(extDir, "node_modules", "cotal-ext-fixture", "node_modules", "@cotal-ai", "core");
   const good = readFileSync(installedIndex, "utf8");
   writeFileSync(
     installedIndex,
     `import { existsSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { registry } from "@cotal-ai/core";
 writeFileSync(${JSON.stringify(ready)}, String(process.pid));
 while (!existsSync(${JSON.stringify(release)})) await sleep(10);
-registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run: async () => console.log("barrier-ok") });
+export default host => host.register({ ...${JSON.stringify(GOOD_COMMAND)}, run: async () => console.log("barrier-ok") });
 `,
   );
   let stdout = "";
@@ -364,7 +258,6 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
     while (!existsSync(ready) && Date.now() < deadline) await sleep(20);
     ok("first materializer reaches top-level await while holding the prefix lock", existsSync(ready), stderr);
     const owner = readFileSync(ready, "utf8");
-    const peerBefore = lstatSync(peer);
     const second = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox, timeout: 30_000 });
     second.stdout.on("data", (data) => (secondStdout += data.toString()));
     second.stderr.on("data", (data) => (secondStderr += data.toString()));
@@ -375,10 +268,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
     while (!secondClosed && !secondStderr.includes(notice) && Date.now() < waitDeadline) await sleep(20);
     ok("a competing materializer announces the closure holder and stays waiting",
       !secondClosed && secondStderr.includes(notice) && secondStdout === "", secondStdout + secondStderr);
-    ok("the waiting materializer neither rebinds the peer nor evaluates the module",
-      lstatSync(peer).ino === peerBefore.ino && lstatSync(peer).mtimeMs === peerBefore.mtimeMs
-        && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core"))
-        && readFileSync(ready, "utf8") === owner, secondStderr);
+    ok("the waiting materializer does not evaluate the module", readFileSync(ready, "utf8") === owner, secondStderr);
   } finally {
     writeFileSync(release, "release");
     firstStatus = await firstDone;
@@ -489,8 +379,7 @@ process.on("exit", () => {
   const priorManifest = readFileSync(manifestPath, "utf8");
   const badUpdate = fixture("cotal-ext-bad-update", GOOD, {
     name: "cotal-ext-fixture",
-    dependencies: { "@cotal-ai/core": "*" },
-    peerDependencies: undefined,
+    core: "99.0.0",
   });
   const update = cotal(["ext", "add", badUpdate]);
   const stillRuns = cotal(["hello-ext", "rollback"]);
@@ -502,30 +391,6 @@ process.on("exit", () => {
   ok("builtin-name collision fails the add", r1.status === 1 && /cotal-ext-collide/.test(r1.stderr), r1.stderr.slice(-300));
   const r1b = cotal(["ext", "list"]);
   ok("collision add rolled back (not listed)", !/collide/.test(r1b.stdout), r1b.stdout);
-
-  const dep = fixture("cotal-ext-dep", GOOD, { dependencies: { "@cotal-ai/core": "*" }, peerDependencies: undefined });
-  const r2 = cotal(["ext", "add", dep]);
-  refusedBecause("core-as-dependency fails with the exact reason", r2, /regular dependency/);
-
-  const nopeer = fixture("cotal-ext-nopeer", GOOD, { peerDependencies: undefined });
-  const r3 = cotal(["ext", "add", nopeer]);
-  refusedBecause("missing core peerDep fails with the exact reason", r3, /peerDependency/);
-
-  const empty = fixture("cotal-ext-empty", "export {};\n");
-  const r4 = cotal(["ext", "add", empty]);
-  ok("zero registrations fails the add", r4.status === 1 && /registered no extensions/.test(r4.stderr), r4.stderr.slice(-300));
-
-  // ext-vs-ext: another package contributing the installed fixture's command name. The registry
-  // can't see the installed (unimported) sibling, so add() must check the manifest cache.
-  // Peer generalization (stage 4): ANY @cotal-ai/* regular dep fails; an @cotal-ai/* peer the
-  // binary doesn't carry fails; a workspace peer is LINKED and importable.
-  const wsdep = fixture("cotal-ext-wsdep", GOOD, { dependencies: { "@cotal-ai/workspace": "*" } });
-  const r6 = cotal(["ext", "add", wsdep]);
-  refusedBecause("@cotal-ai/* as a regular dependency fails with the exact reason", r6, /must be peerDependencies/);
-
-  const alien = fixture("cotal-ext-alien", GOOD, { peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/nonexistent": "*" } });
-  const r7 = cotal(["ext", "add", alien]);
-  ok("an @cotal-ai/* peer the binary doesn't carry fails loud", r7.status === 1 && /@cotal-ai\/nonexistent/.test(r7.stderr) && /does not carry/.test(r7.stderr), r7.stderr.slice(-300));
 
   const sibling = fixture("cotal-ext-sibling", GOOD);
   const r5 = cotal(["ext", "add", sibling]);
@@ -541,8 +406,7 @@ process.on("exit", () => {
 // -- E3: aliases. An extension's alias runs its command, and a word another provider claims fails the
 // add, whether a built-in or an installed extension (read from its manifest cache) holds it --------
 {
-  const aliased = (name: string, aliases: string[]) => `import { registry } from "@cotal-ai/core";
-registry.register({
+  const aliased = (name: string, aliases: string[]) => `export default host => host.register({
   kind: "command",
   name: "${name}",
   aliases: ${JSON.stringify(aliases)},
@@ -552,21 +416,24 @@ registry.register({
   run: async (args) => { console.log("${name} " + (args.positionals[0] ?? "world")); },
 });
 `;
-  const added = cotal(["ext", "add", fixture("cotal-ext-aliased", aliased("alias-ext", ["ax"]))]);
+  const aliasFixture = (pkg: string, name: string, aliases: string[]) => fixture(pkg, aliased(name, aliases), {
+    provides: [{ kind: "command", name, aliases, group: "Extensions", summary: "fixture with an alias", positionals: "[<who>]" }],
+  });
+  const added = cotal(["ext", "add", aliasFixture("cotal-ext-aliased", "alias-ext", ["ax"])]);
   ok("an extension that declares an alias installs", added.status === 0, added.stderr.slice(-400));
   const viaAlias = cotal(["ax", "there"]);
   ok("the alias runs the extension's command", viaAlias.status === 0 && viaAlias.stdout.includes("alias-ext there"), viaAlias.stdout + viaAlias.stderr.slice(-200));
   const help = cotal(["help"]);
   ok("help lists the alias beside its command", /alias-ext, ax/.test(help.stdout), help.stdout.slice(-600));
-  const builtin = cotal(["ext", "add", fixture("cotal-ext-claims-sp", aliased("other-ext", ["sp"]))]);
-  ok("an alias a built-in claims fails the add", builtin.status === 1 && /cotal-ext-claims-sp/.test(builtin.stderr) && /command:sp/.test(builtin.stderr), builtin.stderr.slice(-300));
-  const sibling = cotal(["ext", "add", fixture("cotal-ext-claims-ax", aliased("third-ext", ["ax"]))]);
+  const builtin = cotal(["ext", "add", aliasFixture("cotal-ext-claims-sp", "other-ext", ["sp"])]);
+  ok("an alias a built-in claims fails the add", builtin.status === 1 && /cotal-ext-claims-sp/.test(builtin.stderr) && /command "sp"/.test(builtin.stderr), builtin.stderr.slice(-300));
+  const sibling = cotal(["ext", "add", aliasFixture("cotal-ext-claims-ax", "third-ext", ["ax"])]);
   ok(
     "an alias an installed extension claims fails the add, naming both",
     sibling.status === 1 && /cotal-ext-claims-ax/.test(sibling.stderr) && /cotal-ext-aliased/.test(sibling.stderr) && /"ax"/.test(sibling.stderr),
     sibling.stderr.slice(-400),
   );
-  const nameOnAlias = cotal(["ext", "add", fixture("cotal-ext-name-ax", aliased("ax", []))]);
+  const nameOnAlias = cotal(["ext", "add", aliasFixture("cotal-ext-name-ax", "ax", [])]);
   ok("a name an installed extension claims as its alias fails the add", nameOnAlias.status === 1 && /cotal-ext-name-ax/.test(nameOnAlias.stderr) && /cotal-ext-aliased/.test(nameOnAlias.stderr), nameOnAlias.stderr.slice(-400));
   const listed = cotal(["ext", "list"]).stdout;
   ok("the refused adds rolled back", !/claims-sp|claims-ax|name-ax/.test(listed), listed);
@@ -593,14 +460,14 @@ registry.register({
       return stat.isDirectory() ? links(path) : [];
     });
   const linksBefore = links(join(extDir, "node_modules"));
-  ok("the refusal identity census includes pre-existing peer links", linksBefore.length > 0);
+  ok("the refusal identity census includes pre-existing npm launcher links", linksBefore.length > 0 || process.platform === "win32");
   const filesBefore = files.map((path) => ({ path, ino: statSync(path).ino, dev: statSync(path).dev, sha: createHash("sha256").update(readFileSync(path)).digest("hex") }));
-  const refused = fixture("cotal-ext-refused-new", GOOD, { peerDependencies: undefined });
+  const refused = fixture("cotal-ext-refused-new", GOOD, { legacy: true });
   const add = cotal(["ext", "add", refused]);
 
   ok(
-    "a new package without the core peer exits 1 with that reason",
-    add.status === 1 && /cotal-ext-refused-new does not declare @cotal-ai\/core as a peerDependency/.test(add.stderr),
+    "a new package without a plugin declaration exits 1 with the upgrade remedy",
+    add.status === 1 && /ext add cotal-ext-refused-new@latest/.test(add.stderr),
     add.stderr.slice(-400),
   );
   const linkAfter = statSync(link);
@@ -620,38 +487,12 @@ registry.register({
   ok("the pre-existing package still removes after the refusal", removed.status === 0, removed.stderr.slice(-200));
 }
 
-// -- E2: a multi-peer extension — the linked workspace peer is importable at run time -------------
-{
-  const GOODWS = `import { registry } from "@cotal-ai/core";
-import { c } from "@cotal-ai/workspace";
-registry.register({
-  kind: "command",
-  name: "ws-ext",
-  group: "Extensions",
-  summary: "fixture using a linked workspace peer",
-  run: async () => { console.log(c.bold("WS-OK")); },
-});
-`;
-  const wspeer = fixture("cotal-ext-wspeer", GOODWS, {
-    peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/workspace": "*" },
-  });
-  const r = cotal(["ext", "add", wspeer]);
-  ok("multi-peer add exits 0 (core + workspace linked)", r.status === 0 && /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
-  const run = cotal(["ws-ext"]);
-  ok("the extension imports the LINKED workspace peer at run time", run.status === 0 && run.stdout.includes("WS-OK"), run.stdout + run.stderr.slice(-200));
-  const failedSibling = cotal(["ext", "add", fixture("cotal-ext-peer-rollback", "export {};\n")]);
-  ok("a failed sibling add rolls back", failedSibling.status === 1 && /registered no extensions/.test(failedSibling.stderr), failedSibling.stderr);
-  const afterRollback = cotal(["ws-ext"]);
-  ok("failed add rollback preserves older private peer links", afterRollback.status === 0 && afterRollback.stdout.includes("WS-OK"), afterRollback.stdout + afterRollback.stderr);
-}
-
 // -- F: non-command providers + whole-stack process shutdown ---------------------------------------
 {
   const loaded = join(sandbox, "runtime-loaded");
   const PROVIDERS = `import { writeFileSync } from "node:fs";
-import { registry } from "@cotal-ai/core";
 writeFileSync(${JSON.stringify(loaded)}, "loaded");
-registry.register(
+export default host => host.register(
   {
     kind: "runtime",
     name: "fixture-runtime",
@@ -674,12 +515,14 @@ registry.register(
   },
 );
 `;
-  const providers = fixture("cotal-ext-providers", PROVIDERS);
+  const providers = fixture("cotal-ext-providers", PROVIDERS, { provides: [
+    { kind: "runtime", name: "fixture-runtime" },
+    { kind: "runtime", name: "fixture-unavailable" },
+    { kind: "local-process", name: "fixture-worker", label: "fixture worker", order: 35, pidFile: "fixture.pid", artifacts: ["fixture.secret"] },
+  ] });
   const added = cotal(["ext", "add", providers]);
   ok("runtime-only extension add exits 0", added.status === 0, added.stderr.slice(-400));
-  const retainedPeer = cotal(["ws-ext"]);
-  ok("adding a core-only extension preserves older workspace peer links", retainedPeer.status === 0 && retainedPeer.stdout.includes("WS-OK"), retainedPeer.stdout + retainedPeer.stderr);
-  ok("multi-peer extension still removes cleanly", cotal(["ext", "remove", "cotal-ext-wspeer"]).status === 0);
+  ok("add reads provider declarations without evaluating the entry", !existsSync(loaded));
   ok("add reports every provider kind", /runtime:fixture-runtime/.test(added.stdout) && /local-process:fixture-worker/.test(added.stdout), added.stdout);
   const providerManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const providerEntry = providerManifest.extensions.find((entry: { pkg: string }) => entry.pkg === "cotal-ext-providers");
@@ -771,9 +614,8 @@ registry.register(
 
   // A provider whose records sit in a folder of their own: remove reserves that folder before the
   // process has ever run, and under a group-writable umask, which the binary inherits, it is 0700.
-  const nested = fixture("cotal-ext-nested", `import { registry } from "@cotal-ai/core";
-registry.register({ kind: "local-process", name: "nested-worker", label: "nested worker", order: 36, pidFile: "nested-worker/{space}.pid" });
-`);
+  const processProvider = { kind: "local-process", name: "nested-worker", label: "nested worker", order: 36, pidFile: "nested-worker/{space}.pid" };
+  const nested = fixture("cotal-ext-nested", `export default host => host.register(${JSON.stringify(processProvider)});\n`, { provides: [processProvider] });
   ok("an extension with a nested process record adds", cotal(["ext", "add", nested]).status === 0);
   const previousUmask = process.umask(0o002);
   const nestedRemoved = cotal(["ext", "remove", "cotal-ext-nested"]);

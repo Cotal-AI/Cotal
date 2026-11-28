@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 function inventory(root: string): { path: string; hash?: string; link?: string }[] {
   const rows: { path: string; hash?: string; link?: string }[] = [];
@@ -164,7 +165,7 @@ async function interruptedExecutionUpdate(input: Parameters<typeof installedExec
     }
     const after = await run(["--version"]).done;
     const extensions = after.output.split("\n").slice(1).filter(line => /^\s+\S.*\s+\d+\.\d+\.\d+\s*$/.test(line));
-    assert.equal(extensions.length, 7, after.output);
+    assert.equal(extensions.length, Object.keys(SEEDED_EXTENSIONS).length, after.output);
     assert(extensions.every(line => line.trim().split(/\s+/).at(-1) === input.target), after.output);
     assert.doesNotMatch(after.output, /Reconciliation pending/);
   } finally { await new Promise<void>((resolve, reject) => offline.close(error => error ? reject(error) : resolve())); }
@@ -172,7 +173,7 @@ async function interruptedExecutionUpdate(input: Parameters<typeof installedExec
   const plain = await run(["update"]).done;
   assert.equal(plain.code, 0, plain.output);
   assert.match(plain.output, /Registry latest:/);
-  console.log(`installed execution update: interrupted ${input.current} to ${input.target} reconciled all seven connectors ${foreignConfig ? "in a different config folder" : "offline"}`);
+  console.log(`installed execution update: interrupted ${input.current} to ${input.target} reconciled all seeded connectors ${foreignConfig ? "in a different config folder" : "offline"}`);
 }
 
 /** Kill only the actual installed snapshot writer, after its first bytes reach disk. */

@@ -42,13 +42,25 @@
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { approveDevice } from "../../implementations/auth/smoke/_device-approval.js";
+import { writePluginFixture } from "../../scripts/plugin-fixture.mjs";
+
+function writeConnectorFixture(prefix: string, pkg: string, name: string, launch: string, readiness?: number) {
+  const dir = join(prefix, "node_modules", pkg);
+  const core = JSON.parse(readFileSync(new URL(import.meta.resolve("@cotal-ai/core/package.json")), "utf8")).version;
+  const entry = { kind: "connector", name, requires: ["node"] };
+  writePluginFixture(dir, { name: pkg, version: "1.0.0", core, provides: [{ ...entry, eventChannel: true }],
+    factorySource: `import { eventChannel } from ${JSON.stringify(import.meta.resolve("@cotal-ai/core"))};\nexport default host => host.register({ ...${JSON.stringify(entry)}, eventChannel, readinessTimeoutMs: ${JSON.stringify(readiness)}, buildLaunch: ${launch} });\n` });
+  const { cotal } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  const { contract: _contract, core: _core, ...cached } = cotal;
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ ...cached, pkg, version: "1.0.0", spec: ".", installId: randomUUID() }] }));
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> =>
@@ -593,11 +605,7 @@ try {
   // connector so the terminal exits without input and without a real harness dependency.
   recordMesh({ space, server: trustServer, root: hostRoot, mode: "user", userAuth: { provider: trustUserAuth.provider, idp: trustUserAuth.idp, endpoints: trustUserAuth.endpoints }, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
   const nativeExt = join(trustHome, "xdg", "cotal", "extensions");
-  const nativePkg = join(nativeExt, "node_modules", "@fixture", "terminal-connector");
-  mkdirSync(nativePkg, { recursive: true });
-  writeFileSync(join(nativePkg, "package.json"), JSON.stringify({ name: "@fixture/terminal-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-  writeFileSync(join(nativePkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "terminal-probe", requires: ["node"], eventChannel, buildLaunch: () => ({ command: process.execPath, args: ["-e", "console.log(\'LOCAL_TERMINAL_CHILD\')"], env: {} }) });\n');
-  writeFileSync(join(nativeExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/terminal-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "terminal-probe" }], commands: [], connectors: [{ name: "terminal-probe", requires: ["node"] }] }] }));
+  writeConnectorFixture(nativeExt, "@fixture/terminal-connector", "terminal-probe", `() => ({ command: process.execPath, args: ["-e", "console.log('LOCAL_TERMINAL_CHILD')"], env: {} })`);
   mkdirSync(join(hostRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(hostRoot, ".cotal", "agents", "default.md"), "---\nname: terminal_probe\nagent: terminal-probe\n---\n");
   const place = await inTerminal(["spawn", "--space", space], undefined, undefined, childHomeEnv(trustHome), hostRoot);
@@ -615,11 +623,7 @@ try {
   // `cotal ext add` would; they never join, and J2 keeps them running. The earlier cells'
   // registrations are counted live and do not answer.
   const idlerExt = join(j2Home, "xdg", "cotal", "extensions");
-  const idlerPkg = join(idlerExt, "node_modules", "@fixture", "idler-connector");
-  mkdirSync(idlerPkg, { recursive: true });
-  writeFileSync(join(idlerPkg, "package.json"), JSON.stringify({ name: "@fixture/idler-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-  writeFileSync(join(idlerPkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "idler", requires: ["node"], eventChannel, readinessTimeoutMs: 1500, buildLaunch: () => ({ command: "node", args: ["-e", "setInterval(() => {}, 1 << 30)"], env: { PATH: process.env.PATH ?? "" } }) });\n');
-  writeFileSync(join(idlerExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/idler-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "idler" }], commands: [], connectors: [{ name: "idler", requires: ["node"] }] }] }));
+  writeConnectorFixture(idlerExt, "@fixture/idler-connector", "idler", `() => ({ command: "node", args: ["-e", "setInterval(() => {}, 1 << 30)"], env: { PATH: process.env.PATH ?? "" } })`, 1500);
   mkdirSync(join(j2Root, ".cotal", "agents"), { recursive: true });
   for (const seat of ["held", "held2"]) {
     writeFileSync(join(j2Root, ".cotal", "agents", `${seat}.md`), `---\nname: ${seat}\nagent: idler\n---\nAn idle process.\n`);
@@ -831,11 +835,7 @@ try {
   // the manager imports it at the spawn, and it is never launched.
   grantActor(hostDir, { owner, actor: "cli", lifecycleUid: jGrant.lifecycleUid, scope: ["spawn", "supervise"], allowSubscribe: ["general"], allowPublish: ["general"] });
   const probeExt = join(j1Home, "xdg", "cotal", "extensions");
-  const probePkg = join(probeExt, "node_modules", "@fixture", "probe-connector");
-  mkdirSync(probePkg, { recursive: true });
-  writeFileSync(join(probePkg, "package.json"), JSON.stringify({ name: "@fixture/probe-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-  writeFileSync(join(probePkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "probe", requires: ["node"], eventChannel, buildLaunch: () => { throw new Error("the probe connector is never launched"); } });\n');
-  writeFileSync(join(probeExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/probe-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "probe" }], commands: [], connectors: [{ name: "probe", requires: ["node"] }] }] }));
+  writeConnectorFixture(probeExt, "@fixture/probe-connector", "probe", `() => { throw new Error("the probe connector is never launched"); }`);
   mkdirSync(join(j1Root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(j1Root, ".cotal", "agents", "roled.md"), "---\nname: roled\nagent: probe\nrole: secretrole\n---\nNever launched: its role is outside the grant.\n");
   const refused = await caller("spawn", "roled", "--detach", "--space", space, "--on", "j-one");

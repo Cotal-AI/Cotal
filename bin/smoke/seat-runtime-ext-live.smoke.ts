@@ -23,11 +23,13 @@
  * Run: pnpm smoke:seat-runtime-ext:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
+import { writePluginFixture, type FixtureProvider } from "../../scripts/plugin-fixture.mjs";
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -68,11 +70,9 @@ const envelope = (stdout: string): { outcome?: string; result?: Record<string, u
 };
 
 /** A fixture extension package on disk; `index` is its module body. */
-function fixture(name: string, index: string): string {
+function fixture(name: string, index: string, provides: FixtureProvider[], core?: string): string {
   const dir = join(sandbox, name);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }, null, 2));
-  writeFileSync(join(dir, "index.js"), index);
+  writePluginFixture(dir, { name, version: "1.0.0", provides, factorySource: index, ...(core === undefined ? {} : { core }) });
   return dir;
 }
 
@@ -82,7 +82,6 @@ function fixture(name: string, index: string): string {
 const mark = join(out, "spawned.json");
 const RUNTIME = `import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { registry } from "@cotal-ai/core";
 const handle = (name, child) => ({
   name, kind: "seat-fixture", pid: child.pid,
   status: () => (child.exitCode === null && child.signalCode === null ? "running" : "exited"),
@@ -91,7 +90,7 @@ const handle = (name, child) => ({
   interrupt: () => { child.kill("SIGINT"); },
   attach: () => { throw new Error("seat-fixture runtime: watch this agent where it runs; it has no terminal here"); },
 });
-registry.register(
+export default host => host.register(
   {
     kind: "runtime", name: "seat-fixture", available: () => true,
     create: ({ session }) => ({
@@ -108,9 +107,9 @@ registry.register(
 `;
 // The connector: a real mesh endpoint as the seat, joining presence under the manager-minted
 // identity and creds, so a detached launch resolves "joined" through either runtime.
-const CONNECTOR = `import { fileURLToPath } from "node:url";
-import { registry } from "@cotal-ai/core";
 const coreDist = fileURLToPath(import.meta.resolve("@cotal-ai/core"));
+const coreVersion = JSON.parse(readFileSync(fileURLToPath(import.meta.resolve("@cotal-ai/core/package.json")), "utf8")).version;
+const CONNECTOR = `const coreDist = ${JSON.stringify(coreDist)};
 const CHILD = [
   "const fs=require('node:fs');const{pathToFileURL}=require('node:url');",
   "import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
@@ -120,7 +119,7 @@ const CHILD = [
   "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
 ].join("");
-registry.register({
+export default host => host.register({
   kind: "connector", name: "e2e", requires: ["node"],
   buildLaunch: (o) => ({
     command: "node", args: ["-e", CHILD],
@@ -131,9 +130,11 @@ registry.register({
 
 let up = false;
 try {
-  const addRuntime = cli("ext", "add", fixture("cotal-ext-seat-runtime", RUNTIME));
+  const addRuntime = cli("ext", "add", fixture("cotal-ext-seat-runtime", RUNTIME, [
+    { kind: "runtime", name: "seat-fixture" }, { kind: "runtime", name: "seat-fixture-unreachable" },
+  ]));
   ok("the fixture runtime extension is added", addRuntime.status === 0 && /runtime:seat-fixture\b/.test(addRuntime.stdout), addRuntime.stdout + addRuntime.stderr.slice(-400));
-  const addConnector = cli("ext", "add", fixture("cotal-ext-seat-connector", CONNECTOR));
+  const addConnector = cli("ext", "add", fixture("cotal-ext-seat-connector", CONNECTOR, [{ kind: "connector", name: "e2e", requires: ["node"] }], coreVersion));
   ok("the fixture connector extension is added", addConnector.status === 0 && /connector:e2e/.test(addConnector.stdout), addConnector.stdout + addConnector.stderr.slice(-400));
   const runtimes = cli("runtimes", "--plain");
   ok("cotal runtimes lists the installed provider as reachable before any manager runs", runtimes.status === 0 && /seat-fixture\s+installed - reachable/.test(plain(runtimes.stdout)), runtimes.stdout);

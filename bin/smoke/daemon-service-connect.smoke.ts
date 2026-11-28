@@ -93,7 +93,8 @@ import { join, dirname } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { writePluginFixture } from "../../scripts/plugin-fixture.mjs";
 import { Transform } from "node:stream";
 import { peerCredentials } from "@cotal-ai/seat";
 import { connect as connectNats } from "@nats-io/transport-node";
@@ -1995,14 +1996,24 @@ try {
       const prefix = join(root, "config", "cotal", "extensions");
       const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
       mkdirSync(pkg, { recursive: true });
-      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
       const coreUrl = pathToFileURL(upgrading ? join(root, "global-cli/lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js") : join(repo, "packages/core/dist/index.js")).href;
+      const coreVersion = upgrading ? undefined : JSON.parse(readFileSync(new URL("../package.json", coreUrl), "utf8")).version;
+      const registration = upgrading ? `import {registry} from ${JSON.stringify(coreUrl)}; registry.register` : "export default host => host.register";
+      const events = process.argv.includes("--dashboard-shape-repro");
       const seatScript = join(root, "seat.mjs");
       writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
 const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(e,out)=>e?reject(e):resolve(out.trim())));
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
-      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
-      writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
+      const daemonConnectorSource = `${registration}({kind:"connector",name:"daemon-smoke",requires:["node"],${events ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`;
+      const writeDaemonConnector = (dir: string, name: string, connector: string, version: string, requires: string[], channel: boolean, factorySource: string) => {
+        writePluginFixture(dir, { name, version, contract: upgrading ? 0 : 1, ...(coreVersion ? { core: coreVersion } : {}),
+          provides: [{ kind: "connector", name: connector, requires, ...(channel ? { eventChannel: true } : {}) }], factorySource });
+        const { cotal } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+        return { pkg: name, version, spec: `${name}@${version}`, installId: randomUUID(), provides: [{ kind: "connector", name: connector }], commands: [],
+          connectors: cotal?.connectors ?? [{ name: connector, requires, eventPlane: channel }], localProcesses: [], servicePresets: [] };
+      };
+      const daemonConnector = writeDaemonConnector(pkg, "daemon-smoke-connector", "daemon-smoke", "1.0.0", ["node"], events, daemonConnectorSource);
+      writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [daemonConnector] }));
       const cleanSeed = claudeWakeOnly || process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
       else if (!upgrading) {
@@ -2327,10 +2338,9 @@ process.stdin.once('data', () => {
         throw new Error("shipped daemon did not answer");
       };
       if (process.argv.includes("--setup-no-connectors-repro")) {
-        writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["cotal-owned-missing-harness"],buildLaunch:()=>{throw new Error("unavailable connector must not launch")}});`);
-        const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8"));
-        manifest.extensions[0].connectors[0].requires = ["cotal-owned-missing-harness"];
-        writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
+        const unavailable = writeDaemonConnector(pkg, "daemon-smoke-connector", "daemon-smoke", "1.0.0", ["cotal-owned-missing-harness"], false,
+          `${registration}({kind:"connector",name:"daemon-smoke",requires:["cotal-owned-missing-harness"],buildLaunch:()=>{throw new Error("unavailable connector must not launch")}});`);
+        writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [unavailable] }));
       }
       const pathRecovery = process.argv.includes("--setup-path-repro");
       const pathRecording = pathRecovery || process.argv.includes("--setup-no-connectors-repro");
@@ -3679,10 +3689,8 @@ process.exit(result.status ?? 93);
           const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
           const installSeeded = (packageName: string, connector: string, version: string) => {
             const dir = join(prefix, "node_modules", packageName);
-            mkdirSync(dir, { recursive: true });
-            writeFileSync(join(dir, "package.json"), JSON.stringify({ name: packageName, version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
-            writeFileSync(join(dir, "index.js"), readFileSync(join(pkg, "index.js"), "utf8").replace('name:"daemon-smoke"', `name:${JSON.stringify(connector)}`));
-            const entry = { pkg: packageName, version, spec: `${packageName}@${version}`, source: "seeded", provides: [{ kind: "connector", name: connector }], commands: [], connectors: [{ name: connector, requires: ["node"], eventPlane: false }] };
+            const entry = { ...writeDaemonConnector(dir, packageName, connector, version, ["node"], events,
+              daemonConnectorSource.replace('name:"daemon-smoke"', `name:${JSON.stringify(connector)}`)), source: "seeded" };
             const existing = manifest.extensions.findIndex((candidate: { pkg: string }) => candidate.pkg === packageName);
             if (existing < 0) manifest.extensions.push(entry); else manifest.extensions[existing] = entry;
             writeFileSync(manifestFile, JSON.stringify(manifest));

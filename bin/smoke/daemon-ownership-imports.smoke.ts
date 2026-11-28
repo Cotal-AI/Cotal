@@ -23,4 +23,22 @@ try {
   assert.ok(modules.length <= limit, `Windows ownership worker imported ${modules.length} modules, limit ${limit}: ${modules.join(", ")}`);
   assert.ok(!modules.some(url => /\/(?:implementations\/(?:cli|manager)|@cotal-ai\/(?:cli|manager))\//.test(url)), "ownership worker must not import CLI or Manager commands");
   console.log(`PASS Windows ownership import graph: ${modules.length}/${limit} modules, no CLI or Manager graph`);
+
+  writeFileSync(log, "");
+  const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+  const status = spawnSync(process.execPath, ["--import", pathToFileURL(hook).href, cli, "status", "--json"], {
+    cwd: root, encoding: "utf8", timeout: 30_000,
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^cotal_/i.test(key))),
+      HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: join(root, "config"), COTAL_HOME: join(root, "cotal"),
+      TMPDIR: root, TMP: root, TEMP: root, DO_NOT_TRACK: "1", COTAL_NO_UPDATE_CHECK: "1" },
+  });
+  assert.equal(status.error, undefined, "status import observation completed");
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).result?.machine?.web?.installed, true, "status recognizes the built-in dashboard without a space");
+  const statusModules = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string);
+  const heavyBuiltins = statusModules.filter(url =>
+    /\/(?:implementations\/|@cotal-ai\/)(?:acp|linear|web)\/dist\/(?:cli|serve|web|upstream)\.js$/.test(url) ||
+    /\/@(?:agentclientprotocol|modelcontextprotocol)\+sdk@/.test(url));
+  assert.deepEqual(heavyBuiltins, [], "status must not eagerly load the built-in command and service implementations");
+  console.log("PASS status detects built-in web without loading command or service implementations");
 } finally { rmSync(root, { recursive: true, force: true }); }

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statfsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { writePluginFixture } from './plugin-fixture.mjs';
 import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
@@ -82,10 +83,9 @@ export async function sameInstallReconcileCell({ root, candidate, nextCandidate,
     ok(await run('bootstrap-installer', 'sh', [installer, '--version', '0.162.0', '--no-setup'], bootstrap));
     assert.match(ok(await publicCall('source-version', ['--version'])).stdout, /cotal-ai 0\.162\.0/);
     const fixture = join(root, 'fixture'), core = pathToFileURL(join(prefix, 'lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js')).href;
-    writeFileSync(join(fixture, 'package.json'), JSON.stringify({ name: 'cotal-reconcile-seat-fixture', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
     const seat = join(fixture, 'seat.mjs'), readyPath = join(root, 'seat-ready.json');
     writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';import{createServer}from'node:http';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,creds:readFileSync(e.COTAL_CREDS,'utf8'),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();const http=createServer((q,r)=>r.end(q.url));await new Promise(done=>http.listen(0,'127.0.0.1',done));writeFileSync(${JSON.stringify(readyPath)},JSON.stringify({pid:process.pid,port:http.address().port,lifecycleUid:e.COTAL_LIFECYCLE_UID}));for(const signal of['SIGINT','SIGTERM'])process.on(signal,()=>{http.close();ep.stop().finally(()=>process.exit(0));});`);
-    writeFileSync(join(fixture, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'reconcile-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+    writePluginFixture(fixture, { name: 'cotal-reconcile-seat-fixture', version: '1.0.0', contract: 0, provides: [], factorySource: `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'reconcile-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});` });
     ok(await publicCall('fixture-add', ['ext', 'add', fixture], bootstrap));
     ok(await publicCall('setup', ['setup', '--destination', 'local', '--harness', 'reconcile-seat', '--project', join(root, 'project'), '--space', 'reconcile-proof', '--no-input', '--configure-only'], bootstrap));
     ok(await publicCall('up', ['up', '--space', 'reconcile-proof', '--server', `nats://127.0.0.1:${await unusedPort()}`], bootstrap)); started = true;

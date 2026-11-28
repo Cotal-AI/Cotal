@@ -17,6 +17,8 @@ import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-cons
 import { captureDaemonDiagnostics, inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
+import { writePluginFixture } from './plugin-fixture.mjs';
+import { expectedRecorded, hasPluginContract, retiredBuiltin } from './plugin-cut.mjs';
 import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter, intermediateWholeMachine } from './candidate-next-evidence.mjs';
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
@@ -711,7 +713,6 @@ export async function matrixCell(options) {
       const fixture = join(root, 'native-fixture');
       mkdirSync(fixture, { mode: 0o700 });
       const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
-      save(join(fixture, 'package.json'), { name: 'cotal-upgrade-native-fixture', version: report.target, type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } });
       const seat = join(fixture, 'seat.mjs');
       writeFileSync(seat, daemonHostedManager
         ? `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';import {execFile} from 'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`
@@ -721,7 +722,12 @@ export async function matrixCell(options) {
       const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
       const ready = join(root, 'writer-ready'), release = join(root, 'writer-release');
       releaseHolder = () => writeFileSync(release, 'release');
-      writeFileSync(join(fixture, 'index.js'), `import {registry} from '@cotal-ai/core';import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
+      const coreVersion = json(join(pkg, 'node_modules/@cotal-ai/core/package.json')).version;
+      const contract = hasPluginContract(report.source, layout === 'checkout' || json(join(pkg, 'package.json')).dependencies?.['@cotal-ai/web'] !== undefined) ? 1 : 0;
+      const provider = {kind: 'connector', name: 'upgrade-standin', requires: ['node']};
+      const registration = contract === 1 ? 'export default host => host.register' : "import {registry} from '@cotal-ai/core'; registry.register";
+      writePluginFixture(fixture, { name: 'cotal-upgrade-native-fixture', version: report.target, contract, core: coreVersion, provides: [provider],
+        factorySource: `import {writeFileSync} from 'node:fs';${registration}({...${JSON.stringify(provider)},buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});` });
       if (state === 'agent' && daemonHostedManager) {
         assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'daemon-hosted Manager requires prepared remote user-auth participant without a local Manager');
         const space = report.participant.space;
@@ -785,13 +791,41 @@ export async function matrixCell(options) {
         ok(await cotal('spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', 'upgrade-proof']), 'stand-in spawn');
         report.agentBefore = ok(await cotal('confirm native stand-in seat', ['ps', '--space', 'upgrade-proof', '--json']), 'stand-in ps').stdout;
       } else {
-        env.MATRIX_HOLD = '1';
-        holderPromise = cotal('concurrent real extension writer', ['ext', 'add', fixture]);
-        delete env.MATRIX_HOLD;
+        const hold = join(root, 'hold-promotion.cjs');
+        const originalOptions = env.NODE_OPTIONS;
+        writeFileSync(hold, `
+const fs = require('node:fs');
+const path = require('node:path');
+const { syncBuiltinESMExports } = require('node:module');
+${originalOptions === undefined ? 'delete process.env.NODE_OPTIONS;' : `process.env.NODE_OPTIONS = ${JSON.stringify(originalOptions)};`}
+const rename = fs.renameSync;
+let held = false;
+fs.renameSync = function(from, to) {
+  if (!held && /^\\.extensions\\.stage-.+\\.ready$/.test(path.basename(to))
+      && from === path.join(to.slice(0, -'.ready'.length), 'config', 'cotal', 'extensions')) {
+    held = true;
+    fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+    const deadline = Date.now() + 30000;
+    const timer = new Int32Array(new SharedArrayBuffer(4));
+    while (!fs.existsSync(${JSON.stringify(release)})) {
+      if (Date.now() >= deadline) throw Error('fixture writer deadline');
+      Atomics.wait(timer, 0, 0, 50);
+    }
+  }
+  return rename.apply(this, arguments);
+};
+syncBuiltinESMExports();
+`);
+        env.NODE_OPTIONS = [originalOptions, `--require=${JSON.stringify(hold.replaceAll('\\', '/'))}`].filter(Boolean).join(' ');
+        try {
+          holderPromise = cotal('concurrent real extension writer', ['ext', 'add', fixture]);
+        } finally {
+          if (originalOptions === undefined) delete env.NODE_OPTIONS;
+          else env.NODE_OPTIONS = originalOptions;
+        }
         for (let i = 0; i < 300 && !existsSync(ready); i++) await delay(50);
-        assert(existsSync(ready), 'real CLI writer reached import while holding installation');
-        report.contentionFixture = 'real ext add held during connector import by a fixture-only module gate';
-        setTimeout(releaseHolder, 2500);
+        assert(existsSync(ready), 'real CLI writer reached staged-prefix readiness while holding installation');
+        report.contentionFixture = 'real ext add held before the staged-prefix readiness rename, with the live prefix intact';
       }
     }
     if (windowsPolicy) {
@@ -850,6 +884,11 @@ export async function matrixCell(options) {
       }
     }
     const extensionsBefore = await observeExtensions('extension root before update');
+    if (holderPromise) {
+      assert(existsSync(extensionsBefore.manifest), 'live extension manifest is readable while the writer holds promotion');
+      assert(!extensionsBefore.extensions.some(entry => entry.pkg === 'cotal-upgrade-native-fixture'), 'held fixture is not yet in live inventory');
+      setTimeout(releaseHolder, 2500);
+    }
     report.extensionsBefore = extensionsBefore.extensions;
     const sourceInventory = root => [join(pkg, 'package.json'), cli].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null })).concat(extensionSourceInventory(root, report.extensionsBefore));
     if (policy) report.policyInventoryBefore = sourceInventory(extensionsBefore.root);
@@ -1007,7 +1046,7 @@ export async function matrixCell(options) {
             const bareRuntimes = await cotal('bare manual npm runtimes observation', ['runtimes', '--json']);
             const bareTmuxRow = [0, 4].includes(bareRuntimes.exit) ? JSON.parse(bareRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
             const remedyPresent = /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(bareVersion.stdout);
-            const bareExtensionsAccounted = bareExtensions.length >= 8 && bareExtensions.every(entry => {
+            const bareExtensionsAccounted = bareExtensions.length >= expectedRecorded(report.target, layout === 'checkout') && bareExtensions.every(entry => {
               const installed = bareInstalledExtensions.find(row => row.pkg === entry.pkg);
               if (!installed || installed.version !== entry.version) return false;
               if (entry.version === report.target) return true;
@@ -1069,7 +1108,7 @@ export async function matrixCell(options) {
               const curAttempt = existsSync(join(cotalHome, 'update-attempt.json')) ? json(join(cotalHome, 'update-attempt.json')) : null;
               const curExts = (await observeExtensions('scheduled manual npm extension root observation')).extensions;
               const launchdBusy = existsSync(join(cotalHome, 'update-launchd.json')) || existsSync(join(cotalHome, 'update-launchd-result.json'));
-              if (curAttempt?.version === report.target && curAttempt?.result === `updated to ${report.target}` && !launchdBusy && curExts.length >= 8 && curExts.every(entry => entry.version === report.target)) {
+              if (curAttempt?.version === report.target && curAttempt?.result === `updated to ${report.target}` && !launchdBusy && curExts.length >= expectedRecorded(report.target, layout === 'checkout') && curExts.every(entry => entry.version === report.target)) {
                 scheduledAttempt = curAttempt;
                 break;
               }
@@ -1094,8 +1133,8 @@ export async function matrixCell(options) {
               extensionsAtTargetOrNamedWithRemedy: bareExtensionsAccounted,
               staleTmuxRefusedWithRemedyBeforeReconcile: [0, 4].includes(bareRuntimes.exit) && typeof bareTmuxRow?.error === 'string' && bareTmuxRow.error.includes(`@cotal-ai/tmux is ${report.candidateNext.targetVersion} and this cotal is ${report.target} - run \`cotal update --self\` to reconcile this installation`),
               launchGateRefusesWhenUnreachableWithRemedy: launchGateRefusal.exit === 2 && /run `cotal update --self` to reconcile this installation/.test(launchGateRefusal.stdout + launchGateRefusal.stderr) && refusalExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === report.candidateNext.targetVersion) && refusalInstalledExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === report.candidateNext.targetVersion),
-              launchGateReconcilesOfficialExtensionsAndLoadsTmux: launchGateVersion.exit === 0 && cliReportsVersion(launchGateVersion.stdout, report.target) && !/Reconciliation pending/.test(launchGateVersion.stdout) && launchGateTmuxRow?.state === 'installed' && launchGateTmuxRow?.package === '@cotal-ai/tmux' && launchGateTmuxRow?.error === null && launchGateExtensions.length >= 8 && launchGateExtensions.every(entry => entry.version === report.target && launchGateInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
-              scheduledCheckReconcilesPendingExtensionsAndLoadsTmux: /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(pendingBeforeScheduled.stdout) && scheduledAttempt?.version === report.target && scheduledAttempt?.result === `updated to ${report.target}` && scheduledVersion.exit === 0 && cliReportsVersion(scheduledVersion.stdout, report.target) && !/Reconciliation pending/.test(scheduledVersion.stdout) && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null && scheduledExtensions.length >= 8 && scheduledExtensions.every(entry => entry.version === report.target && scheduledInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
+              launchGateReconcilesOfficialExtensionsAndLoadsTmux: launchGateVersion.exit === 0 && cliReportsVersion(launchGateVersion.stdout, report.target) && !/Reconciliation pending/.test(launchGateVersion.stdout) && launchGateTmuxRow?.state === 'installed' && launchGateTmuxRow?.package === '@cotal-ai/tmux' && launchGateTmuxRow?.error === null && launchGateExtensions.length >= expectedRecorded(report.target, layout === 'checkout') && launchGateExtensions.every(entry => entry.version === report.target && launchGateInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
+              scheduledCheckReconcilesPendingExtensionsAndLoadsTmux: /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(pendingBeforeScheduled.stdout) && scheduledAttempt?.version === report.target && scheduledAttempt?.result === `updated to ${report.target}` && scheduledVersion.exit === 0 && cliReportsVersion(scheduledVersion.stdout, report.target) && !/Reconciliation pending/.test(scheduledVersion.stdout) && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null && scheduledExtensions.length >= expectedRecorded(report.target, layout === 'checkout') && scheduledExtensions.every(entry => entry.version === report.target && scheduledInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
             };
             const bareBytes = Buffer.from(JSON.stringify({
               version: bareVersion,
@@ -1236,8 +1275,8 @@ export async function matrixCell(options) {
       if (policy === 'missing-config') check('missing config remains absent after refused first hop', !existsSync(config), config);
       check('source inventory unchanged', JSON.stringify(report.sourceInventoryAfterAction) === JSON.stringify(report.policyInventoryBefore), report.sourceInventoryAfterAction);
       check('source CLI remains selected', cliReportsVersion(ok(await cotal('source version after refusal', ['--version']), 'source version').stdout, report.source), report.source);
-      check('all eight first-party extensions recorded before refusal', policy === 'missing-config' ? report.extensionsBefore.length === 0 : report.extensionsBefore.filter(entry => entry.pkg.startsWith('@cotal-ai/')).length === 8, report.extensionsBefore);
-      if (policy === 'legacy-seat') check('stand-in fixture remains separately recorded', report.extensionsBefore.length === 9, report.extensionsBefore);
+      check('all expected first-party extensions recorded before refusal', policy === 'missing-config' ? report.extensionsBefore.length === 0 : report.extensionsBefore.filter(entry => entry.pkg.startsWith('@cotal-ai/')).length === expectedRecorded(report.source), report.extensionsBefore);
+      if (policy === 'legacy-seat') check('stand-in fixture remains separately recorded', report.extensionsBefore.length === expectedRecorded(report.source) + 1, report.extensionsBefore);
       check('cotal status exits zero after refusal', (await cotal('status after refusal', ['status'])).exit === 0, null);
       check('no paused recovery after refusal', !existsSync(join(cotalHome, 'update-recovery.json')), null);
       if (policy === 'missing-config' && report.assertions.every(row => row.passed)) {
@@ -1254,7 +1293,7 @@ export async function matrixCell(options) {
         const escapedObservation = await observeExtensions('public installer escape extension root');
         const escapedExtensions = escapedObservation.extensions;
         report.installerEscape.extensions = escapedExtensions;
-        const seeded = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'].map(name => `@cotal-ai/${name}`);
+        const seeded = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'].map(name => `@cotal-ai/${name}`).filter(pkg => !retiredBuiltin(pkg, report.target));
         check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(escapedObservation.root, 'node_modules', entry.pkg, 'package.json')) && json(join(escapedObservation.root, 'node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
         check('public installer status exits zero', (await call('public installer status', launcher, ['status'])).exit === 0, null);
         check('public installer leaves no recovery', !existsSync(join(cotalHome, 'update-recovery.json')), null);
@@ -1305,7 +1344,8 @@ export async function matrixCell(options) {
       check('unrelated snapshot-shaped directory stays intact', existsSync(sentinel) && readFileSync(sentinel, 'utf8') === 'not created by the interrupted writer\n', retained);
     }
     report.extensionsAfter = extensions;
-    check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
+    const targetContract = layout === 'checkout' || json(join(pkg, 'package.json')).dependencies?.['@cotal-ai/web'] !== undefined;
+    check('every prior extension remains recorded', report.extensionsBefore.filter(entry => !retiredBuiltin(entry.pkg, expectedVersion, targetContract)).every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     const installedExtensions = extensions.map(entry => {
       const path = join(extensionsAfter.root, 'node_modules', entry.pkg);
       const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
@@ -1318,8 +1358,13 @@ export async function matrixCell(options) {
     const version = await cotal('selected CLI version assertion', ['--version']);
     check('selected CLI reports target', version.exit === 0 && cliReportsVersion(version.stdout, expectedVersion), version);
     check('recorded extension package versions match target', versions.installed, installedExtensions);
-    const status = await cotal('status assertion', ['status']);
+    const builtinWeb = hasPluginContract(expectedVersion, targetContract);
+    const status = await cotal('status assertion', builtinWeb ? ['status', '--json'] : ['status']);
     check('cotal status exits zero', status.exit === 0, status);
+    if (builtinWeb) {
+      check('built-ins are absent from the extension manifest', extensions.every(entry => !retiredBuiltin(entry.pkg, expectedVersion, targetContract)), extensions);
+      check('built-in dashboard remains installed', status.exit === 0 && JSON.parse(status.stdout).result?.machine?.web?.installed === true, status);
+    }
     const recovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;
     check('no paused recovery record', recovery === null, recovery);
     if (foreignSnapshot) check('foreign snapshot bytes remain untouched', existsSync(join(report.foreignSnapshot.path, 'foreign-owner-sentinel')) && digest(readFileSync(join(report.foreignSnapshot.path, 'foreign-owner-sentinel'))) === report.foreignSnapshot.sentinelSha256 && readdirSync(report.foreignSnapshot.path).join(',') === 'foreign-owner-sentinel', report.foreignSnapshot);

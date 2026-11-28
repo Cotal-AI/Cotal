@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
+import { writePluginFixture } from "../../scripts/plugin-fixture.mjs";
 
 if (process.platform === "win32") skipSuite("harness-install-update: the reseed and the bridge's login-shell PATH run here on Linux and macOS; Windows runs the declaration check");
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
@@ -47,9 +48,9 @@ const entry = () => manifest().extensions.find(ext => ext.pkg === "cotal-connect
 
 /** A third-party connector package. `install` is the declaration its connector makes, if any. */
 function connectorPackage(dir: string, packageVersion: string, install?: unknown): string {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "cotal-connector-oldbad", version: packageVersion, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-  writeFileSync(join(dir, "index.js"), `import { registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "oldbad", requires: ["oldbad"], buildLaunch() { throw new Error("fixture"); }${install === undefined ? "" : `, install: ${JSON.stringify(install)}`} });\n`);
+  const provider = { kind: "connector", name: "oldbad", requires: ["oldbad"], ...(install === undefined ? {} : { install }) };
+  writePluginFixture(dir, { name: "cotal-connector-oldbad", version: packageVersion, provides: [provider],
+    factorySource: `export default host => host.register({ ...${JSON.stringify(provider)}, buildLaunch() { throw new Error("fixture"); } });\n` });
   return dir;
 }
 const refusedInstall = { title: "Old Bad", maker: "Someone", installers: { linux: { script: "https://oldbad.example/i.sh", shell: "sh", binDir: "~/$(touch pwned)" }, darwin: { script: "https://oldbad.example/i.sh", shell: "sh", binDir: "~/$(touch pwned)" } } };

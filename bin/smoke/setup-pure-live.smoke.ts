@@ -173,7 +173,9 @@ for (const f of ["david.md", "sven.md", "me.md"]) {
 }
 ok("onboarded stamp written", existsSync(join(home, "onboarded.json")));
 const extManifest = JSON.parse(readFileSync(join(configHome, "cotal", "extensions", "extensions.json"), "utf8"));
-ok("web extension installed in sandboxed config", extManifest.extensions?.some((e: { pkg?: string }) => e.pkg === "@cotal-ai/web") === true, extManifest.extensions);
+ok("built-in web is not recorded in the extension manifest", !extManifest.extensions?.some((e: { pkg?: string }) => e.pkg === "@cotal-ai/web"), extManifest.extensions);
+const status = cotal(["status", "--json"], proj);
+ok("setup exposes built-in web", status.status === 0 && JSON.parse(status.stdout).result?.machine?.web?.installed === true, status.stderr);
 ok("provenance announces default persona write", /→ wrote default persona: .*default\.md/.test(first.stderr), first.stderr.slice(-500));
 ok("provenance announces the onboarded stamp", /→ wrote onboarded stamp/.test(first.stderr));
 // The report ends with the one next step: start the space with `up`, from the project. The command

@@ -8,6 +8,7 @@ import { createServer } from 'node:net';
 import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
+import { expectedRecorded } from './plugin-cut.mjs';
 
 export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRoot) {
   assert(sourcePack && targetPack && privateRoot, 'usage: <source-normal-pack> <target-normal-pack> <new-private-root>');
@@ -85,7 +86,7 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
     const version = ok(await cli('B', 'version-target', ['--version'])).stdout.trim().split(/\r?\n/);
     assert.equal(version[0], `cotal-ai ${target.identity.version}`);
     const extensions = version.slice(1).filter(line => /^\s+\S.*\s+\d+\.\d+\.\d+(?:-[\w.-]+)?\s*$/.test(line));
-    assert.equal(extensions.length, 7, 'all seven seeded extensions must be reported');
+    assert.equal(extensions.length, expectedRecorded(target.identity.version) - 1, 'all seeded connector extensions must be reported');
     assert(extensions.every(line => line.trim().split(/\s+/).at(-1) === target.identity.version)); report.passed = true;
   } catch (error) { report.failure = error.stack; throw error; }
   finally {

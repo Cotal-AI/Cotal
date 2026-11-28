@@ -11,13 +11,14 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { type AddressInfo } from "node:net";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { writePluginFixture } from "../../scripts/plugin-fixture.mjs";
 import {
   SERVICE_AUTHORITY_MAX_BYTES, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth,
   isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig,
@@ -346,10 +347,12 @@ try {
   const extPrefix = join(configDir, "cotal", "extensions");
   const pkg = join(extPrefix, "node_modules", "daemon-smoke-connector");
   mkdirSync(pkg, { recursive: true, mode: 0o700 });
-  const coreUrl = pathToFileURL(join(repo, "packages/core/dist/index.js")).href;
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
-  writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],buildLaunch:()=>({command:process.execPath,args:["-e","setInterval(()=>{},1000)"]})});\n`);
-  writeFileSync(join(extPrefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: false }] }] }));
+  const provider = { kind: "connector", name: "daemon-smoke", requires: ["node"] };
+  writePluginFixture(pkg, { name: "daemon-smoke-connector", version: "1.0.0", provides: [provider],
+    factorySource: `export default host => host.register({ ...${JSON.stringify(provider)},buildLaunch:()=>({command:process.execPath,args:["-e","setInterval(()=>{},1000)"]})});\n` });
+  const { cotal } = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+  const { contract: _contract, ...cached } = cotal;
+  writeFileSync(join(extPrefix, "extensions.json"), JSON.stringify({ extensions: [{ ...cached, pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", installId: randomUUID() }] }));
 
   const seedDir = join(configDir, "cotal", "seed");
   mkdirSync(seedDir, { recursive: true, mode: 0o700 });

@@ -6,6 +6,7 @@ import {findPackageJSON} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {evaluateManualDaemonState} from './daemon-manual-acceptance.mjs';
 import {matchSource16410Refusal} from './source-16410-refusal.mjs';
+import {expectedRecorded} from './plugin-cut.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -417,7 +418,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       const bareDaemon = archivedBare.daemonStatus?.exit === 0 ? JSON.parse(archivedBare.daemonStatus.stdout).result : undefined;
       const bareCliHeader = String(archivedBare.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
       const bareRemedy = /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(String(archivedBare.version?.stdout ?? ''));
-      const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= 8 && archivedBare.extensions.every(entry => {
+      const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= expectedRecorded(pair.followOnVersion) && archivedBare.extensions.every(entry => {
         const installed = archivedBare.installedExtensions?.find(row => row.pkg === entry.pkg);
         if (!installed || installed.version !== entry.version) return false;
         if (entry.version === pair.followOnVersion) return true;
@@ -443,7 +444,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && !/Reconciliation pending/.test(String(gateReconcile?.version?.stdout ?? ''))
         && clean(gateReconcile?.runtimes)
         && gateTmuxRow?.state === 'installed' && gateTmuxRow?.package === '@cotal-ai/tmux' && gateTmuxRow?.error === null
-        && Array.isArray(gateReconcile?.extensions) && gateReconcile.extensions.length >= 8
+        && Array.isArray(gateReconcile?.extensions) && gateReconcile.extensions.length >= expectedRecorded(pair.followOnVersion)
         && gateReconcile.extensions.every(entry => entry.version === pair.followOnVersion && gateReconcile.installedExtensions?.find(row => row.pkg === entry.pkg)?.version === pair.followOnVersion);
       const scheduled = archivedBare.scheduledReconcile;
       const scheduledHeader = String(scheduled?.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
@@ -455,7 +456,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && !/Reconciliation pending/.test(String(scheduled?.version?.stdout ?? ''))
         && clean(scheduled?.runtimes)
         && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null
-        && Array.isArray(scheduled?.extensions) && scheduled.extensions.length >= 8
+        && Array.isArray(scheduled?.extensions) && scheduled.extensions.length >= expectedRecorded(pair.followOnVersion)
         && scheduled.extensions.every(entry => entry.version === pair.followOnVersion && scheduled.installedExtensions?.find(row => row.pkg === entry.pkg)?.version === pair.followOnVersion);
       bareManualNpm = clean(archivedBare.version) && bareCliHeader
         && archivedBare.route?.updateRoute === 'in-place'

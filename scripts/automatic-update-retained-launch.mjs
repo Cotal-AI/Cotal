@@ -6,6 +6,8 @@ import {join,resolve,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import { isMainEntry } from './main-entry.mjs';
 import {candidateRegistry} from './automatic-update-platform-baseline.mjs';
+import {writePluginFixture} from './plugin-fixture.mjs';
+import {hasPluginContract} from './plugin-cut.mjs';
 
 function birth(pid) { const fields=readFileSync(`/proc/${pid}/stat`,'utf8').split(') ').slice(1).join(') ').split(' ');assert.notEqual(fields[0],'Z');return fields[19]; }
 
@@ -35,10 +37,16 @@ let reg,next,started=false;
 try{
  reg=await candidateRegistry(resolve(candidate),'B','https://registry.npmjs.org/');env.npm_config_registry=reg.url;report.candidate=reg.identity;
  for(const [name,prefix]of[['a','main'],['b','manager']])ok(await run(`install-${name}`,'npm',['install','-g','--prefix',join(root,prefix),`cotal-ai@${reg.identity.version}`]));
- const core=pathToFileURL(join(root,'manager/lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js')).href;
- const seat=join(root,'fixture/seat.mjs');writeFileSync(join(root,'fixture/package.json'),JSON.stringify({name:'cotal-retain-separate-fixture',version:'1.0.0',type:'module',main:'index.js',peerDependencies:{'@cotal-ai/core':'*'}}));
+ const installed=join(root,'manager/lib/node_modules/cotal-ai');
+ const coreRoot=join(installed,'node_modules/@cotal-ai/core');
+ const core=pathToFileURL(join(coreRoot,'dist/index.js')).href;
+ const coreVersion=JSON.parse(readFileSync(join(coreRoot,'package.json'),'utf8')).version;
+ const contract=hasPluginContract(reg.identity.version,JSON.parse(readFileSync(join(installed,'package.json'),'utf8')).dependencies?.['@cotal-ai/web']!==undefined)?1:0;
+ const provider={kind:'connector',name:'retain-separate',requires:['node']};
+ const registration=contract===1?'export default host => host.register':"import{registry}from'@cotal-ai/core';registry.register";
+ const seat=join(root,'fixture/seat.mjs');
  writeFileSync(seat,`import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';import{createServer}from'node:http';const e=process.env;const p=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,creds:readFileSync(e.COTAL_CREDS,'utf8'),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});p.on('error',console.error);await p.start();const h=createServer((q,r)=>r.end(q.url));await new Promise(d=>h.listen(0,'127.0.0.1',d));writeFileSync(${JSON.stringify(join(root,'ready.json'))},JSON.stringify({pid:process.pid,port:h.address().port}));for(const s of['SIGINT','SIGTERM'])process.on(s,()=>{h.close();p.stop().finally(()=>process.exit(0))});`);
- writeFileSync(join(root,'fixture/index.js'),`import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'retain-separate',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+ writePluginFixture(join(root,'fixture'),{name:'cotal-retain-separate-fixture',version:'1.0.0',core:coreVersion,contract,provides:[provider],factorySource:`${registration}({...${JSON.stringify(provider)},buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`});
  ok(await cli('add-fixture',b,['ext','add',join(root,'fixture')]));
  ok(await cli('setup',b,['setup','--destination','local','--harness','retain-separate','--project',join(root,'project'),'--space','separate-proof','--no-input','--configure-only']));
  const server=createServer();await new Promise(d=>server.listen(0,'127.0.0.1',d));const port=server.address().port;await new Promise(d=>server.close(d));

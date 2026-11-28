@@ -39,11 +39,11 @@ if (args.includes("--cold-reconcile") || args.includes("--cold-reconcile-quota")
     const start = Date.now();
     await reconcileHostedConnectors('0.151.2');
     const builtins = loadExtensionsManifest().extensions.filter(entry => entry.source === 'seeded');
-    assert.equal(builtins.length, 7);
+    assert.equal(builtins.length, 7); // The released 0.151.2 fixture includes web in its seed set.
     assert.ok(builtins.every(entry => entry.version === '0.151.2'));
     const elapsedMs = Date.now()-start;
     if (${process.argv.includes("--cold-reconcile-quota")}) assert.ok(elapsedMs > 120000, 'cold reconciliation must cross the former deadline');
-    console.log('cold hosted reconciliation passed', elapsedMs, 'ms, seven current built-ins');
+    console.log('cold hosted reconciliation passed', elapsedMs, 'ms, all seeded connectors current');
   `], { ...env, HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), npm_config_cache: join(home, "npm"), COTAL_SKIP_CONNECTOR_SEED: "1" }, args.includes("--cold-reconcile-quota") ? "15%" : undefined);
 } else if (args.includes("--retired-app-runtime")) {
   const app = join(root, "Cotal.app", "Contents");

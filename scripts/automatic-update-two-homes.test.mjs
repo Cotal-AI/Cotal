@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { planRelease, verifyResults } from './upgrade-matrix-plan.mjs';
 import { verifyTwoHomeUpgrade, verifySelectedGraphs } from './automatic-update-two-homes-evidence.mjs';
+import { connectorInventory, expectedRecorded, hasPluginContract, retiredBuiltin } from './plugin-cut.mjs';
 import { selectedConnectorRoot, selectionPath } from './automatic-update-two-homes.mjs';
 
 test('two-home POSIX coordinates are required in both release phases and cannot disappear from census', () => {
@@ -135,6 +136,21 @@ function fullTwoHomeReport() {
 test('full modern selected-root evidence accepts all three routes with read-only CLI-only output', () => {
   const report = fullTwoHomeReport();
   assert.deepEqual(verifyTwoHomeUpgrade(report, { platform: 'linux', hosted: true }), { acceptance: true, routes: 3, checks: report.checks.length });
+});
+
+test('plugin cut distinguishes published, snapshot and stamped candidate inventories', () => {
+  assert.equal(expectedRecorded('0.183.9'), 8);
+  assert.equal(expectedRecorded('0.183.1183'), 8);
+  assert.equal(expectedRecorded('0.184.0'), 7);
+  assert.equal(expectedRecorded('0.184.1000'), 7);
+  assert.equal(expectedRecorded('0.183.1', true), 7);
+  assert(hasPluginContract('0.0.0-snapshot'));
+  assert(retiredBuiltin('@cotal-ai/web', '0.184.0'));
+  assert(!retiredBuiltin('@cotal-ai/web', '0.183.9'));
+  const lines = version => ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi'].map(name => `  ${name} ${version}`).join('\n');
+  assert(connectorInventory(lines('0.184.0'), '0.184.0'));
+  assert(!connectorInventory(lines('0.183.9'), '0.183.9'));
+  assert(connectorInventory(`${lines('0.183.9')}\n  web, web-service 0.183.9`, '0.183.9'));
 });
 
 test('full report rejects missing or forged read-only inventory and changed old graph links on every route', () => {

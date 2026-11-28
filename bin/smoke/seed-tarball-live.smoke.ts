@@ -9,8 +9,7 @@
  *    config (never a repo path). Driven through the `.bin/cotal` SYMLINK npm publishes, the way a user
  *    reaches an installed binary: `process.argv[1]` is then the link, whose parents hold no
  *    `package.json` and no `seeded-connectors/`, so only resolving it reaches the payloads
- *  - each connector registers into THE BINARY'S single `@cotal-ai/core` (ext add asserts this; a
- *    dual-core install would fail it), recorded `source:"seeded"`
+ *  - each connector declares its providers and is recorded as `source:"seeded"`
  *  - the docs data every connector reads ships once, in `seeded-connectors/_shared`; the seed puts it
  *    back in each installed connector, and `cotal update` verifies those copies against it
  *
@@ -27,6 +26,7 @@ import { promisify } from "node:util";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { writePluginFixture } from "../../scripts/plugin-fixture.mjs";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const { check, finish, passed, failed } = createSuite();
@@ -58,11 +58,9 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
 
 async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
   const command = "local-peer-probe", pkg = `@cotal-ai/${command}`, source = join(cwd, command);
-  mkdirSync(source);
-  writeFileSync(join(source, "package.json"), JSON.stringify({ name: pkg, version, type: "module", main: "index.mjs", peerDependencies: { "@cotal-ai/core": version } }));
-  writeFileSync(join(source, "index.mjs"), `import { registry } from '@cotal-ai/core';
-registry.register({ kind: 'command', name: '${command}', summary: 'Print a test greeting', run() { console.log('probe loaded'); } });
-`);
+  const provider = { kind: "command", name: command, summary: "Print a test greeting" };
+  writePluginFixture(source, { name: pkg, version, core: version, entry: "index.mjs", provides: [provider],
+    factorySource: `export default host => host.register({ ...${JSON.stringify(provider)}, run() { console.log('probe loaded'); } });\n` });
   const requests: string[] = [];
   const registry = createServer((req, res) => {
     const path = decodeURIComponent(req.url!);
@@ -89,9 +87,12 @@ registry.register({ kind: 'command', name: '${command}', summary: 'Print a test 
     rmSync(installed);
     await run("update", "--self");
     check("self-update repairs a missing entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
-    writeFileSync(installed, "throw new Error('unloadable local entry');\n");
+    const metadata = join(extensions, "node_modules", pkg, "package.json");
+    const damaged = JSON.parse(readFileSync(metadata, "utf8"));
+    delete damaged.cotal;
+    writeFileSync(metadata, JSON.stringify(damaged));
     await run("update", "--self");
-    check("self-update repairs an unloadable entry from the recorded local copy", readFileSync(installed).equals(readFileSync(join(source, "index.mjs"))));
+    check("self-update repairs missing declarations from the recorded local copy", readFileSync(metadata).equals(readFileSync(join(source, "package.json"))));
     check("local scoped extension runs after repair", (await run(command)).stdout.trim() === "probe loaded");
     const status = JSON.parse((await run("status", "--json")).stdout) as { result: { extensions: { items: { package: string }[] } } };
     check("status still lists the local scoped extension", status.result.extensions.items.some(item => item.package === pkg));
@@ -124,6 +125,9 @@ try {
     "implementations/manager",
     "implementations/delivery",
     "implementations/auth",
+    "implementations/acp",
+    "implementations/linear",
+    "implementations/web",
     "extensions/connector-core",
   ];
   // seat's prepack refuses a tree without both Linux helpers, and the build above is a host-only dev
@@ -159,12 +163,7 @@ try {
   const cotalTgz = join(tgz, tarballs.find((f) => /^cotal-ai-\d/.test(f)) ?? "");
   const listing = execFileSync("tar", ["tzf", cotalTgz], { env: cleanEnv, encoding: "utf8" });
   check("cotal-ai tarball ships seeded-connectors/ payloads", listing.includes("package/seeded-connectors/hermes/package.json"));
-  check("cotal-ai tarball bundles the web dashboard payload", listing.includes("package/seeded-connectors/web/package.json"));
-  const webBase = "package/seeded-connectors/web/dist/web";
-  check(
-    "bundled web payload ships the client page and its bundle manifest in dist",
-    listing.includes(`${webBase}/index.html`) && listing.includes(`${webBase}/bundle-licenses.json`),
-  );
+  check("cotal-ai tarball does not seed the built-in web dashboard", !listing.includes("package/seeded-connectors/web/package.json"));
   // Every connector bundle reads the same docs data from beside itself; the tarball carries it once.
   const docsEntries = listing.split("\n").filter((line) => /\/docs-(bundle|index)\.bin$/.test(line)).sort();
   check(
@@ -180,7 +179,7 @@ try {
   // as the generation, so a skewed payload would be installed and treated as current (F1). The prepack
   // asserts this too; the tarball is the last place to catch it before a customer install.
   const umbrellaVersion = (JSON.parse(packedPkg) as { version: string }).version;
-  for (const n of ["claude", "opencode", "hermes", "pi", "web"]) {
+  for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     const seededPkg = JSON.parse(
       execFileSync("tar", ["xzf", cotalTgz, "-O", `package/seeded-connectors/${n}/package.json`], { env: cleanEnv, encoding: "utf8" }),
     ) as { version: string };
@@ -194,9 +193,11 @@ try {
   // the tarball, so a payload whose page points at a missing asset cannot pass into a published
   // binary. marked and DOMPurify are bundled too, because the message rows render bodies as
   // sanitized Markdown, and d3-force, d3-selection and d3-zoom lay out and pan the topology graph.
-  const licenses = JSON.parse(
-    execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" }),
-  ) as { bundled: { package: string; version: string; license: string }[] };
+  const webTgz = join(tgz, tarballs.find((f) => /^cotal-ai-web-/.test(f)) ?? "");
+  const webBase = "package/dist/web";
+  const webListing = execFileSync("tar", ["tzf", webTgz], { env: cleanEnv, encoding: "utf8" });
+  const packedLicenses = execFileSync("tar", ["xzf", webTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" });
+  const licenses = JSON.parse(packedLicenses) as { bundled: { package: string; version: string; license: string }[] };
   const libs = new Map(licenses.bundled.map((e) => [e.package, e]));
   check(
     "web bundle-licenses.json gives every bundled package a version and a license",
@@ -206,26 +207,10 @@ try {
   check("web bundle-licenses.json names react and react-dom", ["react", "react-dom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names marked and dompurify", ["marked", "dompurify"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names d3-force, d3-selection and d3-zoom", ["d3-force", "d3-selection", "d3-zoom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
-  const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { env: cleanEnv, encoding: "utf8" });
+  const page = execFileSync("tar", ["xzf", webTgz, "-O", `${webBase}/index.html`], { env: cleanEnv, encoding: "utf8" });
   const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
   check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
-  for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, listing.includes(`${webBase}/${r}`));
-  // The same payload, packed from the web package directly, the way prepack packs it and the way
-  // `@cotal-ai/web` publishes on its own: the umbrella must carry that package's manifest byte for
-  // byte, not a copy from some other build.
-  //
-  // This pack is also what gives the mutation coverage gate its reach into the web package: the
-  // gate cannot follow the umbrella's prepack, but it can follow an `npm pack` this suite runs over
-  // `implementations/web`. It is NOT the witness for the fixture's mutation. That mutation (the
-  // build stops recording bundled packages) is killed by the "names react and react-dom" cell
-  // above, which reads the umbrella's own tarball.
-  const webTgzDir = join(base, "web-tgz");
-  mkdirSync(webTgzDir, { recursive: true });
-  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { env: cleanEnv, stdio: ["ignore", "ignore", "inherit"] });
-  const webTgz = join(webTgzDir, readdirSync(webTgzDir).find((f) => f.endsWith(".tgz")) ?? "");
-  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { env: cleanEnv, encoding: "utf8" });
-  check("the umbrella's web manifest is the one the web package itself packs",
-    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { env: cleanEnv, encoding: "utf8" }));
+  for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, webListing.includes(`${webBase}/${r}`));
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));
@@ -235,6 +220,10 @@ try {
     encoding: "utf8",
   });
   check("npm install of the tarball closure succeeded", install.status === 0, install.stderr?.split("\n").slice(-6).join("\n"));
+  const webDist = join(prefix, "node_modules", "@cotal-ai", "web", "dist", "web");
+  check("cotal-ai depends on the exact packed web version", JSON.parse(packedPkg).dependencies?.["@cotal-ai/web"] === umbrellaVersion);
+  check("installed web client matches its own packed page and license manifest",
+    readFileSync(join(webDist, "index.html"), "utf8") === page && readFileSync(join(webDist, "bundle-licenses.json"), "utf8") === packedLicenses);
 
   const packageBin = join(prefix, "node_modules", "cotal-ai", "dist", "cotal.js");
   check("installed binary present", existsSync(packageBin));
@@ -266,7 +255,8 @@ try {
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
-  check("seeded service-preset:web (the dashboard) from the bundled payload", out.includes("service-preset:web"), list.stderr);
+  const status = spawnSync(process.execPath, [invokedBin, "status", "--json"], { cwd: prefix, encoding: "utf8", env: seedEnv });
+  check("built-in dashboard is available outside a selected space", status.status === 0 && JSON.parse(status.stdout).result?.machine?.web?.installed === true, status.stderr);
 
   const installKey = createHash("sha256").update(packageBin).digest("hex");
   const selectionPath = join(cfg, "cotal", "installs", installKey, "sets", umbrellaVersion, "selection.json");
@@ -278,12 +268,11 @@ try {
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
   check("connector installed from the durable store under the isolated config (pubDir branch)", Boolean(hermes && hermes.spec.startsWith(cfg)), hermes?.spec);
-  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/connector-jcode", "@cotal-ai/pi", "@cotal-ai/web"];
+  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/connector-jcode", "@cotal-ai/pi"];
   const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
   const allSeeded = seededEntries.every((e) => e.source === "seeded");
-  check("all seven first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 7);
-  const webEntry = manifest.extensions.find((e) => e.pkg === "@cotal-ai/web");
-  check("web installed from the durable store under the isolated config (bundled, not npm-fetched)", Boolean(webEntry && webEntry.spec.startsWith(cfg)), webEntry?.spec);
+  check("all first-party connector extensions recorded source:seeded", allSeeded && seededEntries.length === firstParty.length);
+  check("built-in web has no prefix entry", !manifest.extensions.some((e) => e.pkg === "@cotal-ai/web"));
 
   // The launcher shim a connector's buildLaunch runs (`node dist/serve.js` / `dist/launch.js`) must be
   // PACKAGED — a build that emits only declarations for it passes install + import + materialize but
@@ -306,12 +295,12 @@ try {
   // installed connector holds the files it was packed with.
   const seededPkgs: Record<string, string> = {
     claude: "@cotal-ai/connector-claude-code", opencode: "@cotal-ai/connector-opencode", codex: "@cotal-ai/connector-codex",
-    hermes: "@cotal-ai/connector-hermes", jcode: "@cotal-ai/connector-jcode", pi: "@cotal-ai/pi", web: "@cotal-ai/web",
+    hermes: "@cotal-ai/connector-hermes", jcode: "@cotal-ai/connector-jcode", pi: "@cotal-ai/pi",
   };
   const sharedDir = join(prefix, "node_modules", "cotal-ai", "seeded-connectors", "_shared");
   const placements = (JSON.parse(readFileSync(join(sharedDir, "placements.json"), "utf8")) as { placements: Record<string, string[]> }).placements;
   // Every connector bundles the docs data; the web dashboard does not.
-  const connectors = Object.keys(seededPkgs).filter((name) => name !== "web");
+  const connectors = Object.keys(seededPkgs);
   check("every connector, and only a connector, shipped its docs data in the shared copy", Object.keys(placements).sort().join(" ") === [...connectors].sort().join(" "), Object.keys(placements));
   const installedAt = (name: string, rel: string) => join(extRoot, ...seededPkgs[name].split("/"), ...rel.split("/"));
   const sharedCopy = (rel: string) => readFileSync(join(sharedDir, rel.slice(rel.lastIndexOf("/") + 1)));
@@ -348,25 +337,15 @@ try {
   const kept = reconciled(update());
   const standaloneDir = join(home, ".pi", "agent", "extensions");
   check(
-    "cotal update verifies all seven built-ins against the shipped payload and reinstalls none",
+    "cotal update verifies all seeded connectors against the shipped payload and reinstalls none",
     Object.keys(seededPkgs).every((name) => new RegExp(`verified [^;]*\\b${name}\\b`).test(kept)) && !kept.includes("refreshed"),
     kept,
   );
   check("update does not create a standalone pi extension directory", !existsSync(standaloneDir));
   if (process.platform === "linux") {
     const selfUpdate = () => runUpdate({ ...updateEnv, PATH: `${join(home, "tools")}${delimiter}${updateEnv.PATH}` }, "--self");
-    const coreLink = installedAt("web", "node_modules/@cotal-ai/core");
-    const dashboard = installedAt("web", "dist/index.js");
-    const importDashboard = () => spawnSync(process.execPath, ["--input-type=module", "-e",
-      "await import(process.argv[1]);", dashboard], { cwd: prefix, env: updateEnv, encoding: "utf8" });
-    rmSync(coreLink);
-    symlinkSync(join(base, "removed-generation", "core"), coreLink);
-    const broken = importDashboard();
-    check("the dashboard cannot import with a dangling core peer", broken.status === 1 && broken.stderr.includes("ERR_MODULE_NOT_FOUND"), broken.stderr);
-    const repaired = selfUpdate();
-    check("current self-update verifies the dashboard without reinstalling it", /verified [^;]*\bweb\b/.test(reconciled(repaired)) && !repaired.includes("Reconciling built-in web"), repaired);
-    const loaded = importDashboard();
-    check("the dashboard imports after self-update rebinds its peer", loaded.status === 0, loaded.stderr);
+    const verified = selfUpdate();
+    check("current self-update leaves built-in web outside extension reconciliation", !/Reconciling built-in web|verified [^;]*\bweb\b/.test(verified), verified);
     check("a second self-update skips reconciliation", selfUpdate().includes("installed package closure is current"));
   }
   // Real npm creates the reported existing installation while leaving its lock intact.

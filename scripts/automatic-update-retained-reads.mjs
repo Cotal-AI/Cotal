@@ -7,6 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
+import { expectedRecorded, retiredBuiltin } from './plugin-cut.mjs';
 
 export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode = 'normal') {
   assert(A && B && C && newPrivateRoot, 'usage: <A-normal-packed-closure> <B-normal-packed-closure> <C-normal-packed-closure> <new-private-root>');
@@ -100,9 +101,9 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
     });
     check('extensionInventory', () => {
       const envelope = JSON.parse(ok(ext).stdout); assert.equal(envelope.command, 'ext'); assert.equal(envelope.result.root, join(previous.selected.root, 'extensions'));
-      const items = envelope.result.items; assert.equal(items.length, 8); assert.equal(new Set(items.map(i => i.pkg)).size, 8);
+      const items = envelope.result.items; assert.equal(items.length, expectedRecorded(c)); assert.equal(new Set(items.map(i => i.pkg)).size, expectedRecorded(c));
       assert(items.some(i => i.pkg === '@cotal-ai/tmux')); assert(items.every(i => i.version === b));
-      const manifest = json(join(envelope.result.root, 'extensions.json')); assert.equal(manifest.extensions.length, 8);
+      const manifest = json(join(envelope.result.root, 'extensions.json')); assert.equal(manifest.extensions.filter(entry => !retiredBuiltin(entry.pkg, c)).length, expectedRecorded(c));
       for (const item of items) { assert(manifest.extensions.some(i => i.pkg === item.pkg && i.version === b)); assert.equal(json(join(envelope.result.root, 'node_modules', item.pkg, 'package.json')).version, b); }
     });
     check('runtimeRefusal', () => {
@@ -122,7 +123,7 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
       });
       const reconciled = JSON.parse(ok(await cli('read-reconciled-ext', ['ext', '--json'])).stdout);
       check('reconciledInventory', () => {
-        assert.equal(reconciled.result.items.length, 8);
+        assert.equal(reconciled.result.items.length, expectedRecorded(c));
         assert(reconciled.result.items.every(item => item.version === c));
         assert.equal(reconciled.result.root, join(selection(c).selected.root, 'extensions'));
       });

@@ -8,6 +8,8 @@ import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
+import { writePluginFixture } from './plugin-fixture.mjs';
+import { connectorInventory as inventory, hasPluginContract } from './plugin-cut.mjs';
 
 /** Two homes share one installed CLI, but each must reconcile its own built-ins before launch. */
 export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, routes = ['up', 'launch', 'old-manager'] }) {
@@ -20,7 +22,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
   report.arch = process.arch;
   report.environment = { hostedDisposable: process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', nodeVersion: process.version };
   report.harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim();
-  report.harnessFiles = Object.fromEntries(['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs'].map(name => [name, createHash('sha256').update(readFileSync(new URL(name, import.meta.url))).digest('hex')]));
+  report.harnessFiles = Object.fromEntries(['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs', 'plugin-fixture.mjs', 'plugin-cut.mjs'].map(name => [name, createHash('sha256').update(readFileSync(new URL(name, import.meta.url))).digest('hex')]));
   const save = () => {
     const result = JSON.stringify(report, null, 2);
     const transcript = report.calls.map(call => `${call.route}/${call.home}/${call.label}\n${call.stdout}${call.stderr}`).join('\n');
@@ -60,8 +62,8 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         } finally { clearTimeout(timer); }
       };
       const ok = async (home, label, args) => { const row = await call(home, label, entry, args); check(`${route} ${home} ${label} exits zero`, row.code === 0 && row.signal === null); return row; };
+      const modules = join(prefix, 'lib/node_modules/cotal-ai/node_modules');
       const managerProbe = async (label, instanceId, logicalEntry) => {
-        const modules = join(prefix, 'lib/node_modules/cotal-ai/node_modules');
         const script = `const{localUpdateManagers}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/cli/dist/commands/update.js')).href)});const{assertRecordIdentity}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const candidates=localUpdateManagers({space:'twohomes'},${JSON.stringify(logicalEntry)});const owner=candidates.find(m=>m.instanceId===${JSON.stringify(instanceId)});if(!owner?.process||assertRecordIdentity(owner.process).kind!=='match')throw Error('Manager endpoint has no verified native owner');const{resolveControlTarget}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const{askManager}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/control/index.js')).href)});const t=await resolveControlTarget({space:'twohomes'},'control-caller-admin',${JSON.stringify(instanceId)},{readOnly:true,onRefusal:'throw'});const s=await askManager({versionSkew:()=>{},roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',3000,{instanceId:${JSON.stringify(instanceId)}});if(!s.ok||assertRecordIdentity(owner.process).kind!=='match')throw new Error(s.error??'Manager native identity changed');console.log(JSON.stringify({...s.data,native:owner.process}));`;
         const receipt = await call('B', label, process.execPath, ['--input-type=module', '-e', script]);
         check(`${route} ${label} exits zero`, receipt.code === 0 && receipt.signal === null);
@@ -79,13 +81,15 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         // The public npm command can lead to a Node launcher, not the bootstrap that owns connector sets.
         const logicalEntry = realpathSync(bootstrap);
         const fixture = join(directory, 'fixture'); mkdirSync(fixture, { mode: 0o700 });
-        const fixtureRoot = selectedConnectorRoot(join(directory, 'B/config/cotal'), logicalEntry, old.identity.version);
-        const connectorModules = realpathSync(join(fixtureRoot, 'extensions/node_modules/@cotal-ai/connector-jcode'));
-        const core = execFileSync(process.execPath, ['--experimental-import-meta-resolve', '--input-type=module', '-e', `console.log(import.meta.resolve('@cotal-ai/core',${JSON.stringify(pathToFileURL(join(connectorModules, 'package.json')).href)}));`], { encoding: 'utf8', env: environments.B }).trim();
-        writeFileSync(join(fixture, 'package.json'), JSON.stringify({ name: 'cotal-two-home-seat', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
+        const core = pathToFileURL(join(modules, '@cotal-ai/core/dist/index.js')).href;
+        const coreVersion = JSON.parse(readFileSync(join(modules, '@cotal-ai/core/package.json'), 'utf8')).version;
+        const contract = hasPluginContract(old.identity.version) ? 1 : 0;
+        const provider = {kind: 'connector', name: 'two-home-seat', requires: ['node']};
+        const registration = contract === 1 ? 'export default host => host.register' : "import {registry} from '@cotal-ai/core'; registry.register";
         const joined = join(fixture, 'joined.json');
         writeFileSync(join(fixture, 'seat.mjs'), `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,creds:readFileSync(e.COTAL_CREDS,'utf8'),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();writeFileSync(${JSON.stringify(joined)},JSON.stringify({pid:process.pid,name:e.COTAL_NAME,lifecycleUid:e.COTAL_LIFECYCLE_UID}));setTimeout(()=>ep.stop().finally(()=>process.exit(0)),2000);`);
-        writeFileSync(join(fixture, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'two-home-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(join(fixture, 'seat.mjs'))}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+        const launchSource = `({...${JSON.stringify(provider)},buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(join(fixture, 'seat.mjs'))}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`;
+        writePluginFixture(fixture, { name: 'cotal-two-home-seat', version: '1.0.0', core: coreVersion, contract, provides: [provider], factorySource: registration + launchSource });
         if (route !== 'up') await ok('B', 'register fixture', ['ext', 'add', fixture]);
         await ok('B', 'prepare space', ['space', 'create', 'twohomes', '--plain']);
         const probe = createServer();
@@ -119,7 +123,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         const selectedPath = selectionPath(canonical, logicalEntry, target.identity.version);
         report.readOnly[route] = { targetSelectionAbsent: !existsSync(selectedPath), oldRoot, oldManifestRaw: readFileSync(join(oldRoot, 'extensions/extensions.json'), 'utf8'), oldManifest: JSON.parse(readFileSync(join(oldRoot, 'extensions/extensions.json'), 'utf8')), oldManifestSha256: createHash('sha256').update(readFileSync(join(oldRoot, 'extensions/extensions.json'))).digest('hex') };
         const stale = await ok('B', 'stale home version before command', ['--version']);
-        check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && (inventory(stale.stdout, old.identity.version) || oldRoot !== canonical && stale.stdout === `cotal-ai ${target.identity.version}\n`) && report.readOnly[route].targetSelectionAbsent && !existsSync(selectedPath));
+        check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && (inventory(stale.stdout, old.identity.version, target.identity.version) || oldRoot !== canonical && stale.stdout === `cotal-ai ${target.identity.version}\n`) && report.readOnly[route].targetSelectionAbsent && !existsSync(selectedPath));
         check(`${route} home-only hint never asks for self replacement`, !stale.stdout.includes('update --self'));
         // --version is read-only. The next ordinary command creates the target selection.
         if (route === 'old-manager') {
@@ -132,7 +136,17 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         }
         else if (route === 'up') { await ok('B', 'ordinary next up', ['up', '--detach']); running = true; }
         else {
-          await ok('B', 'ordinary next agent launch', ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events']);
+          const spawnSeat = ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events'];
+          if (contract === 0 && hasPluginContract(target.identity.version)) {
+            const refusal = await call('B', 'refuse retained pre-cut fixture', entry, spawnSeat);
+            const refused = refusal.code !== 0 && refusal.signal === null && /ext add cotal-two-home-seat@latest/.test(refusal.stdout + refusal.stderr) && !existsSync(joined);
+            check('launch pre-cut fixture refused with update remedy', refused);
+            assert(refused, refusal.stdout + refusal.stderr);
+            const updatedCore = JSON.parse(readFileSync(join(modules, '@cotal-ai/core/package.json'), 'utf8')).version;
+            writePluginFixture(fixture, { name: 'cotal-two-home-seat', version: '1.0.1', core: updatedCore, provides: [provider], factorySource: `export default host => host.register${launchSource}` });
+            await ok('B', 'install replacement contract-1 fixture', ['ext', 'add', fixture]);
+          }
+          await ok('B', 'ordinary next agent launch', spawnSeat);
           const seat = JSON.parse(readFileSync(joined, 'utf8'));
           check('a real fixture seat joined without signed-in harness', seat.pid > 0 && seat.name === 'twohome-proof' && typeof seat.lifecycleUid === 'string');
           report.seat = seat;
@@ -208,10 +222,6 @@ function managerIdentity(served, pid) {
   assert(birth, 'Manager birth required');
   assert(served.native?.pid === pid && served.native.token === birth, 'served Manager endpoint differs from native lifetime');
   return { version: served.version, instanceId: served.instanceId, pid, birth, native: served.native };
-}
-
-function inventory(output, version) {
-  return ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
 }
 
 if (isMainEntry(import.meta.url)) {
