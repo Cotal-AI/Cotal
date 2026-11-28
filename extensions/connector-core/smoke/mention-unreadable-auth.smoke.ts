@@ -3,8 +3,9 @@
  * real delivery daemon, a post on a live or a durable channel that mentions such an agent is not
  * given to it, and the daemon sends the post's sender a mention notice naming it. The notice shows
  * as the delivery daemon's notice, names only the agents who could not read the post, and is not
- * sent for a post whose mentions can all read it. A DM from a peer that carries the notice's data
- * part is an ordinary DM. An agent whose read ACL is empty is named like any other.
+ * sent for a post whose mentions can all read it. A readable nonmember gets a copy on a live
+ * channel, but no copy or notice on a durable channel. A DM from a peer that carries the notice's
+ * data part is an ordinary DM. An agent whose read ACL is empty is named like any other.
  *
  * Run: pnpm smoke:mention-unreadable:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -72,7 +73,7 @@ try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   const provCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: provCreds });
-  await seedChannelRegistry({ servers, space, creds: provCreds, file: { defaults: { replay: false }, channels: { general: { replay: false }, side: { replay: false }, log: { replay: false, deliveryClass: "durable" } } } });
+  await seedChannelRegistry({ servers, space, creds: provCreds, file: { defaults: { replay: false }, channels: { general: { replay: false, deliveryClass: "live" }, side: { replay: false }, log: { replay: false, deliveryClass: "durable" } } } });
   const mgr = new CotalEndpoint({ space, servers, creds: provCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
   await mgr.start();
@@ -87,11 +88,11 @@ try {
   await daemon.acquireDeliveryLease(0);
   stops.push(() => daemon.stop());
 
-  const mkAgent = async (name: string, channels: string[]) => {
+  const mkAgent = async (name: string, channels: string[], readable = channels) => {
     const ident = newIdentity();
     const uid = mintLifecycleUid();
-    const creds = await provisionAgent(mgr, auth, ident, { subscribe: channels, allowSubscribe: channels, allowPublish: channels, lifecycleUid: uid });
-    const config: AgentConfig = { space, name, servers, creds, subscribe: channels, allowSubscribe: channels, allowPublish: channels, kind: "agent", tls: false, id: ident.id, lifecycleUid: uid };
+    const creds = await provisionAgent(mgr, auth, ident, { subscribe: channels, allowSubscribe: readable, allowPublish: channels, lifecycleUid: uid });
+    const config: AgentConfig = { space, name, servers, creds, subscribe: channels, allowSubscribe: readable, allowPublish: channels, kind: "agent", tls: false, id: ident.id, lifecycleUid: uid };
     const agent = new MeshAgent(config);
     agent.on("error", () => {});
     agent.start();
@@ -104,12 +105,17 @@ try {
   const sender = await mkAgent("sender", ["general", "side", "log"]);
   const reader = await mkAgent("reader", ["general", "log"]);
   const blind = await mkAgent("blind", ["side"]);
+  const nonmember = await mkAgent("nonmember", ["side"], ["side", "general", "log"]);
   const daemonSees = (id: string) => daemon.getRoster().some((p) => p.card.id === id);
-  await until(() => daemonSees(sender.id) && daemonSees(reader.id) && daemonSees(blind.id), 10_000);
+  await until(() => daemonSees(sender.id) && daemonSees(reader.id) && daemonSees(blind.id) && daemonSees(nonmember.id), 10_000);
+  await nonmember.agent.setAttention("dnd");
   // What reached the sender's endpoint, for the notice's data part, which the inbox does not show.
   const senderRaw: CotalMessage[] = [];
   sender.agent.ep.on("message", (m: CotalMessage) => senderRaw.push(m));
   const send = (args: Record<string, unknown>) => sender.tool("cotal_send").run(sender.agent, sender.config, args);
+  const mentionHelp = (sender.tool("cotal_send").schema.shape.mentions as { description?: string } | undefined)?.description;
+  check("send help explains that a readable nonmember gets no durable mention copy or notice for the sender",
+    mentionHelp?.includes("On a durable channel, an agent that may read it but has not joined gets no mention copy, and you get no notice for that agent.") === true, mentionHelp);
   const rawNoticeFor = (post: string) => senderRaw.find((m) => noticeData(m)?.message === post);
   const noticeFor = (post: string): InboxItem | undefined => {
     const raw = rawNoticeFor(post);
@@ -131,17 +137,25 @@ try {
   check("1g the blind agent is given nothing", !blind.agent.peekInbox().some((i) => i.text === "please look at the build"), blind.agent.peekInbox());
 
   // ── 2. a durable post does the same ───────────────────────────────────────────────────────
-  const sent2 = await send({ channel: "log", text: "deploy log is up", mentions: ["blind"] });
+  const sent2 = await send({ channel: "log", text: "deploy log is up", mentions: ["blind", "nonmember"] });
   check("2a the durable post is sent", !sent2.isError, sent2.text);
   const post2 = await until(() => reader.agent.peekInbox().find((i) => i.channel === "log" && i.text === "deploy log is up"));
   const notice2 = post2 && (await until(() => noticeFor(post2.id ?? "")));
   check("2b the sender gets a mention notice for the durable post", notice2 !== undefined && notice2.notice === "mention" && notice2.text.includes("@blind"), notice2);
+  check("2c the notice does not name the readable nonmember", !!notice2 && !notice2.text.includes("@nonmember"), notice2);
 
   // ── 3. a post whose mentions can all read it gets no notice ───────────────────────────────
-  await send({ channel: "general", text: "reader, thanks for the review", mentions: ["reader"] });
-  const post3 = await until(() => reader.agent.peekInbox().find((i) => i.text === "reader, thanks for the review"));
+  await send({ channel: "general", text: "can you review the build", mentions: ["reader", "nonmember"] });
+  const post3 = await until(() => reader.agent.peekInbox().find((i) => i.text === "can you review the build"));
+  const liveCopy = await until(() => nonmember.agent.peekInbox().find((i) => i.id === post3?.id));
+  check("3a the unjoined reader gets the live mention and can wake in dnd",
+    liveCopy?.mentionsMe === true && nonmember.agent.inboxWake((i) => i.id !== liveCopy.id) === 1 &&
+      !nonmember.agent.joinedChannels().includes("general"), liveCopy);
+  check("3b the earlier durable mention gave the unjoined reader no copy",
+    !!liveCopy && !nonmember.agent.peekInbox().some((i) => i.channel === "log") &&
+      !nonmember.agent.joinedChannels().includes("log"), nonmember.agent.peekInbox());
   await sleep(1500);
-  check("3a no notice is sent", post3 !== undefined && rawNoticeFor(post3.id ?? "") === undefined, senderRaw.map((m) => m.id));
+  check("3c no notice is sent", post3 !== undefined && rawNoticeFor(post3.id ?? "") === undefined, senderRaw.map((m) => m.id));
 
   // ── 4. a forged notice is an ordinary DM ──────────────────────────────────────────────────
   const forger = await mkAgent("forger", []);
