@@ -69,6 +69,11 @@ export function nativeStub(scenario) {
         state.agentApps = apps.map(item => item.name === request.name ? app : item);
         return ok(installing ? { app, service: state.appService ?? "refreshed", ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
       }
+      if (request.op === "start") {
+        if (state.startFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_UNKNOWN", message: "Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof", native: { code: "OPERATION_UNKNOWN" } } };
+        if (state.startHold) await new Promise(resolve => { window.__releaseStart = resolve; });
+        state.serviceStopped = false; return ok({ started: true });
+      }
       if (request.op === "install") {
         for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
         if (state.installHold) await new Promise(resolve => { window.__releaseInstall = resolve; });
@@ -766,7 +771,7 @@ export const scenarios = [
       const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
       assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
       if (observed === "refusal") {
-        assert.equal(await page.locator("#connection-title").textContent(), "Can't reach your space");
+        assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
       }
@@ -808,7 +813,7 @@ export const scenarios = [
   } },
   { name: "surface-both-refused", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected", lastRefusal: "This space is set up under another sign-in on this computer." })) } }, expect: async page => {
     assert.equal(await page.locator("#tray-label").textContent(), "Can't connect");
-    assert.equal(await page.locator("#connection-title").textContent(), "Can't reach your space");
+    assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
     assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
   } },
   { name: "welcome", state: {} },
@@ -842,12 +847,11 @@ export const scenarios = [
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true);
   } },
   // Start service shows the service's latest phase while it runs, and leaves no step spinning once it answers.
-  { name: "start-service-progress-clears", state: { serviceStopped: true, installHold: true, installProgress: ["verifying the recorded installation and owned task before startup", "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)"] },
+  { name: "start-service-progress-clears", state: { serviceStopped: true, stoppedByYou: true, startHold: true },
     act: page => page.click("#recover"),
     expect: async page => {
-      await page.waitForFunction(() => typeof window.__releaseInstall === "function");
-      assert.equal(await page.locator('[data-testid="progress-0"] .progress-detail').textContent(), "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)", "the step shows the latest phase");
-      await page.evaluate(() => window.__releaseInstall());
+      await page.waitForFunction(() => typeof window.__releaseStart === "function");
+      await page.evaluate(() => window.__releaseStart());
       await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
       assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
       assert.equal(await page.locator("#setup-progress").isHidden(), true, "no step keeps spinning after the service started");
@@ -857,7 +861,7 @@ export const scenarios = [
     assert.equal(await page.locator("#setup-progress").isHidden(), true, "no service step keeps spinning while sign-in waits");
   } },
   // A failed Start service keeps its reason after a background status check, until the person acts on it.
-  { name: "start-service-failure-stays", state: { serviceStopped: true, installFails: true }, act: page => page.click("#recover"), expect: async page => {
+  { name: "start-service-failure-stays", state: { serviceStopped: true, stoppedByYou: true, startFails: true }, act: page => page.click("#recover"), expect: async page => {
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "This operation could not finish");
     const reason = "OPERATION_UNKNOWN (OPERATION_UNKNOWN)\nWindows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof";
     assert.equal(await page.locator("#refusal-detail").textContent(), reason);

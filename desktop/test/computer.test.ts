@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown, surfaceInputs, surfaceState, type SurfaceWord } from "../src/model.ts";
+import { computerSpaces, computerSpaceState, computerSummary, SERVICE_START, spaceStateKnown, surfaceInputs, surfaceState, type SurfaceWord } from "../src/model.ts";
 
 test("computer list follows desired intent while retaining connected local spaces", () => {
   const desired = { space: "mine", desired: true, observed: "starting" };
@@ -105,5 +105,8 @@ test("one state feeds the window, the pill, the dot and the tray", () => {
   const dropped = surfaceInputs({}, [row], true);
   assert.equal(dropped.diskFull || dropped.updating || dropped.repairNeeded || dropped.signInRequired, false, "a frame without the fields does not invent them");
   const bothRefused = [{ space: "one", desired: true, observed: "connected", lastRefusal: "Held." }, { space: "two", desired: true, observed: "connected", lastRefusal: "Held." }];
-  assert.equal(surfaceInputs({ account: { spaces: bothRefused } }, bothRefused, true).anyConnected, false, "answering Managers do not connect refused rows");
+  const refused = surfaceInputs({ account: { spaces: bothRefused } }, bothRefused, true);
+  assert.equal(refused.anyConnected, false, "answering Managers do not connect refused rows");
+  assert.equal(surfaceState(refused).title, "Can't connect to your spaces");
+  assert.deepEqual(SERVICE_START, { op: "start" }, "the stopped card and the tray send one Start request");
 });

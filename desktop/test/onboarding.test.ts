@@ -71,6 +71,13 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         if (options.loading) await new Promise(() => {});
         return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
+      if (r.op === "start") {
+        if (options.installNotAnswering) {
+          const reason = typeof options.installNotAnswering === "string" ? ` It refused to start: ${options.installNotAnswering}` : "";
+          return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${reason}`, remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } } satisfies Frame;
+        }
+        stopped = false; return ok({ started: true });
+      }
       if (r.op === "install") {
         installed = true;
         if (options.installNotAnswering) {
@@ -399,7 +406,7 @@ test("Start service starts a stopped background service and leaves no notice", a
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
     const from = a.calls.length;
     await a.click("recover");
-    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "install"), ["install"]);
+    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "start"), ["start"]);
     assert.equal(a.node("connection-title").textContent, before);
     assert.equal(a.node("notice").textContent, "");
     assert.equal(a.node("notice").hidden, true);
