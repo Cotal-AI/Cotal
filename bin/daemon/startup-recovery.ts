@@ -3,16 +3,20 @@
  *
  * When an interrupted update leaves a restorable `update-recovery.json` record and a native
  * `daemon serve` starts on Linux, `serve()` runs `recoverInterruptedUpdate(..., true)` before
- * opening `daemon.sock` or calling `systemd-notify --ready`. That recovery spawns a bound
- * `cotal update` reconcile child, then throws so the native supervisor restarts the restored
- * binary.
+ * opening `daemon.sock` or calling `systemd-notify --ready`. That recovery restores the previous
+ * release onto disk, spawns a bound `cotal update` reconcile child from that restored release,
+ * then throws so the native supervisor restarts the restored binary.
  *
- * Two rules keep that recovery deadlock-free without weakening ordinary update or service-start
- * guarantees:
+ * Two rules keep that recovery deadlock-free across both older published releases and current
+ * builds without weakening ordinary update or service-start guarantees:
  *
- *  1. On Linux, the reconcile child skips `waitForInstalledGeneration` only when its parent is a
- *     verified native `daemon serve` actively restoring that exact transaction. Waiting inside
- *     `daemon serve` before `daemon.sock` exists cannot succeed. Foreground `cotal daemon serve`,
+ *  1. On Linux, `daemon serve` passes `startupRecoveryChildEnv(process.env)` as the startup
+ *     recovery runtime's `env` (omitting `XDG_RUNTIME_DIR` on `COTAL_DAEMON_NATIVE_SERVICE=1`
+ *     before `daemon.sock` is bound, so restored published reconcile children whose `daemonPaths()`
+ *     falls back to `/run/user/<uid>` see an empty non-directory marker and return cleanly from
+ *     `waitForInstalledDaemonGeneration` via `NO_RUNTIME_DIR`), and current reconcile children
+ *     additionally skip `waitForInstalledGeneration` directly when `nativeStartupUpdateRecoveryParent`
+ *     confirms the live native `daemon serve` restoring parent. Foreground `cotal daemon serve`,
  *     `cotal update` children, and macOS and Windows keep the wait.
  *
  *  2. `systemctl --user start` for an installed daemon uses a 65-second call timeout derived from
@@ -54,31 +58,37 @@ export const DAEMON_SYSTEMD_START_TIMEOUT_MS =
   (DAEMON_SYSTEMD_START_TIMEOUT_SEC + DAEMON_SYSTEMD_START_CALL_MARGIN_SEC) * 1000;
 /** Maximum wait for `Restart=always` to bring up the restored daemon after proven startup recovery. */
 export const DAEMON_SYSTEMD_RECOVERY_WAIT_MS = DAEMON_SYSTEMD_START_TIMEOUT_SEC * 1000;
+/** Total recovery budget (`systemctl start` + post-start `Restart=always` readiness + lock re-acquire). */
+export const DAEMON_SYSTEMD_RECOVERY_BUDGET_MS =
+  DAEMON_SYSTEMD_START_TIMEOUT_MS + DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
 
 export interface DaemonClosureScope {
-  suspend<T>(fn: () => Promise<T>): Promise<T>;
+  suspend<T>(fn: () => Promise<T>, remainingBudgetMs?: () => number): Promise<T>;
   release(): void;
 }
 
 export interface DaemonClosureScopeDeps {
   readonly claim?: typeof claimUpdateClosureAccess;
   readonly env?: NodeJS.ProcessEnv;
+  readonly defaultReacquireWaitMs?: number;
 }
 
 /**
  * Claim `.update-closure.lock` for a `bin/daemon/` caller (`setup.ts`) so `startSystemdDaemonUnit`
  * can suspend that single claim during proven startup recovery without exposing a public workspace
- * symbol or risking a double-release if re-acquisition fails.
+ * symbol or risking a double-release if re-acquisition fails. Re-acquisition uses `claim(false, budget)`
+ * so contended waits announce on stderr like `main` and stay bounded by the remaining recovery budget.
  */
 let activeDaemonClosureScope: DaemonClosureScope | undefined;
 
 export function claimSuspendableDaemonClosure(deps: DaemonClosureScopeDeps = {}): DaemonClosureScope {
   const claim = deps.claim ?? claimUpdateClosureAccess;
   const env = deps.env ?? process.env;
+  const fallbackWaitMs = deps.defaultReacquireWaitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
   let releaseUnderlying: (() => void) | undefined = claim();
   const previousScope = activeDaemonClosureScope;
   const scope: DaemonClosureScope = {
-    async suspend<T>(fn: () => Promise<T>): Promise<T> {
+    async suspend<T>(fn: () => Promise<T>, remainingBudgetMs?: () => number): Promise<T> {
       if (!releaseUnderlying || env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") return await fn();
       const drop = releaseUnderlying;
       releaseUnderlying = undefined;
@@ -90,8 +100,9 @@ export function claimSuspendableDaemonClosure(deps: DaemonClosureScopeDeps = {})
         failed = true;
         throw error;
       } finally {
+        const waitMs = Math.max(0, remainingBudgetMs ? remainingBudgetMs() : fallbackWaitMs);
         try {
-          releaseUnderlying = claim(true);
+          releaseUnderlying = claim(false, waitMs);
         } catch (reacquireError) {
           if (!failed) {
             const detail = reacquireError instanceof Error ? reacquireError.message : String(reacquireError);
@@ -118,21 +129,28 @@ export function claimSuspendableDaemonClosure(deps: DaemonClosureScopeDeps = {})
 
 export interface SuspendServiceLockDeps {
   readonly acquire?: (path: string, opts?: AcquireOptions) => Promise<HeldLock>;
+  readonly defaultReacquireWaitMs?: number;
+  readonly onWait?: () => void;
 }
 
 /**
  * Acquire `service-repair.lock` with a `suspend` helper that releases the lock around a proven
- * recovery wait and converts any re-acquisition timeout into a clean `CommandFailure` refusal.
+ * recovery wait, announces contended re-acquires, bounds re-acquisition to the remaining recovery
+ * budget, and converts any re-acquisition timeout into a clean `CommandFailure` refusal.
  */
 export async function claimSuspendableServiceRepairLock(
   lockPath: string,
   enabled = process.platform === "darwin" || process.platform === "linux",
   deps: SuspendServiceLockDeps = {},
-): Promise<{ suspend<T>(fn: () => Promise<T>): Promise<T>; release(): void }> {
+): Promise<{ suspend<T>(fn: () => Promise<T>, remainingBudgetMs?: () => number): Promise<T>; release(): void }> {
   const acquire = deps.acquire ?? acquireLockAsync;
+  const fallbackWaitMs = deps.defaultReacquireWaitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
+  const onWait = deps.onWait ?? (() => {
+    console.error("waiting for another daemon service operation to finish");
+  });
   let lock: HeldLock | undefined = enabled ? await acquire(lockPath) : undefined;
   return {
-    async suspend<T>(fn: () => Promise<T>): Promise<T> {
+    async suspend<T>(fn: () => Promise<T>, remainingBudgetMs?: () => number): Promise<T> {
       if (!lock) return await fn();
       const drop = lock;
       lock = undefined;
@@ -144,8 +162,13 @@ export async function claimSuspendableServiceRepairLock(
         failed = true;
         throw error;
       } finally {
+        const waitMs = Math.max(0, remainingBudgetMs ? remainingBudgetMs() : fallbackWaitMs);
         try {
-          lock = await acquire(lockPath);
+          lock = await acquire(lockPath, {
+            label: "the daemon service lock",
+            waitMs,
+            onWait,
+          });
         } catch (reacquireError) {
           if (!failed) {
             const detail = reacquireError instanceof Error ? reacquireError.message : String(reacquireError);
@@ -165,6 +188,24 @@ export async function claimSuspendableServiceRepairLock(
       drop?.release();
     },
   };
+}
+
+/**
+ * Environment passed to `recoverInterruptedUpdate(..., true)` inside `daemon serve` before
+ * `daemon.sock` is bound. On native Linux `daemon serve` (`COTAL_DAEMON_NATIVE_SERVICE === "1"`),
+ * setting `XDG_RUNTIME_DIR: "/dev/null"` in the child copy (never mutating `process.env`) makes
+ * unmodified older published reconcile children (`cotal-ai@0.183.1` and earlier) receive
+ * `EndpointRefusal("NO_RUNTIME_DIR")` in `daemonPaths()` instead of falling back to `/run/user/<uid>`,
+ * so `reportRunningManager` falls back to local/retained Manager continuity and
+ * `waitForInstalledDaemonGeneration` returns immediately instead of waiting 120s for a socket the
+ * parent has not opened yet. Foreground `daemon serve` and non-Linux platforms keep `env` unchanged.
+ */
+export function startupRecoveryChildEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform !== "linux" || env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return env;
+  return { ...env, XDG_RUNTIME_DIR: "/dev/null" };
 }
 
 /** Read a live Linux parent process's argument tokens from `/proc/<ppid>/cmdline`, or `undefined`. */
@@ -384,7 +425,7 @@ export async function startSystemdDaemonUnit(
   deps: SystemdStartupRecoveryWaitDeps & {
     readonly homeDir?: string;
     readonly lookupOwner?: (pid: number) => string | undefined;
-    readonly suspendServiceLock?: <T>(fn: () => Promise<T>) => Promise<T>;
+    readonly suspendServiceLock?: <T>(fn: () => Promise<T>, remainingBudgetMs?: () => number) => Promise<T>;
   } = {},
 ): Promise<{ readonly recoveredVersion?: string }> {
   const style = deps.refusalStyle ?? "unit-control";
@@ -396,6 +437,10 @@ export async function startSystemdDaemonUnit(
     serviceEnv: env,
     lookupOwner: deps.lookupOwner,
   });
+
+  const waitMs = deps.waitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
+  const budgetDeadline = Date.now() + DAEMON_SYSTEMD_START_TIMEOUT_MS + waitMs;
+  const remainingBudgetMs = () => Math.max(0, budgetDeadline - Date.now());
 
   const runStartAndWait = async (): Promise<{ readonly recoveredVersion?: string }> => {
     let startFailed = false;
@@ -422,12 +467,11 @@ export async function startSystemdDaemonUnit(
     const unconfirmed = () => unconfirmedStartFailure(style, unit, startDetail);
     if (!preProof || !hasPostStartClearedTombstone(preProof.recoveryPath)) throw unconfirmed();
 
-    const waitMs = deps.waitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
     const pollMs = deps.pollMs ?? 200;
     const query = deps.query ?? queryDaemon;
     const readRec = deps.readRecovery ?? readUpdateRecovery;
     const birth = deps.birth ?? processBirth;
-    const deadline = Date.now() + waitMs;
+    const deadline = Math.min(budgetDeadline, Date.now() + waitMs);
     for (;;) {
       try {
         if (readRec() === undefined && hasPostStartClearedTombstone(preProof.recoveryPath)) {
@@ -466,8 +510,8 @@ export async function startSystemdDaemonUnit(
 
   if (!preProof) return await runStartAndWait();
   const suspendClosure = <T>(fn: () => Promise<T>): Promise<T> =>
-    activeDaemonClosureScope ? activeDaemonClosureScope.suspend(fn) : fn();
+    activeDaemonClosureScope ? activeDaemonClosureScope.suspend(fn, remainingBudgetMs) : fn();
   return await (deps.suspendServiceLock
-    ? deps.suspendServiceLock(() => suspendClosure(runStartAndWait))
+    ? deps.suspendServiceLock(() => suspendClosure(runStartAndWait), remainingBudgetMs)
     : suspendClosure(runStartAndWait));
 }

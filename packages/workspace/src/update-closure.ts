@@ -24,10 +24,11 @@ const lockPath = () => join(homeCotalDir(), ".update-closure.lock");
 
 /** Wait without acquiring on read-only boot gates. A wait on another command's installation change
  *  says so after one second, so a command that prints nothing yet is not mistaken for a hang. */
-export function waitForUpdateClosure(): boolean {
+export function waitForUpdateClosure(waitMs = 300_000): boolean {
   let waitedForUpdate = false;
   const started = Date.now();
-  const deadline = started + 300_000;
+  const boundedWaitMs = Math.max(0, waitMs);
+  const deadline = started + boundedWaitMs;
   let updateDeadline: number | undefined;
   let announced = false;
   let announcedWriter = false;
@@ -42,14 +43,15 @@ export function waitForUpdateClosure(): boolean {
     const updating = record?.owner?.pid === current.owner.pid && record.owner.nonce === current.owner.nonce;
     if (updating) {
       waitedForUpdate = true;
-      updateDeadline ??= Date.now() + 120_000;
+      updateDeadline ??= Date.now() + Math.min(120_000, Math.max(0, deadline - Date.now()));
       if (!announced) { console.error("waiting for a Cotal update to finish"); announced = true; }
     } else if (!announcedWriter && Date.now() - started >= 1_000) {
       console.error(`waiting for another cotal command (pid ${current.owner.pid}) to finish changing this installation`);
       announcedWriter = true;
     }
-    if (Date.now() >= (updating ? updateDeadline! : deadline)) throw new Error(updating ? "Cotal update did not finish within 120 seconds; retry once it finishes" : `closure writer pid ${current.owner.pid} did not finish within 300 seconds`);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    const effectiveWaitMs = updating ? Math.min(120_000, boundedWaitMs) : boundedWaitMs;
+    if (Date.now() >= (updating ? updateDeadline! : deadline)) throw new Error(updating ? `Cotal update did not finish within ${Math.round(effectiveWaitMs / 1000)} seconds; retry once it finishes` : `closure writer pid ${current.owner.pid} did not finish within ${Math.round(effectiveWaitMs / 1000)} seconds`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25, Math.max(1, (updating ? updateDeadline! : deadline) - Date.now())));
   }
 }
 
@@ -63,14 +65,14 @@ export function installationWriter(): { pid: number } | undefined {
 }
 
 /** Reserve the outer closure barrier before taking seed or extension writer locks. */
-export function claimUpdateClosureAccess(recover = false): () => void {
+export function claimUpdateClosureAccess(recover = false, waitMs = 300_000): () => void {
   const owner = process.env[OWNER];
   const nonce = process.env[NONCE];
   if (!held && (owner !== undefined || nonce !== undefined)) {
     const record = readUpdateRecovery();
     if (!record && process.env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") {
       delete process.env[OWNER]; delete process.env[NONCE]; delete process.env[START]; delete process.env.COTAL_UPDATE_CLOSURE_TRANSACTION;
-      return claimUpdateClosureAccess();
+      return claimUpdateClosureAccess(recover, waitMs);
     }
     const current = inspectLock(lockPath());
     const matchesStart = process.platform === "win32" && process.env[START] === "" && record
@@ -82,9 +84,12 @@ export function claimUpdateClosureAccess(recover = false): () => void {
     return () => {};
   }
   if (!held) {
-    if (!recover) waitForUpdateClosure();
+    const started = Date.now();
+    const boundedWaitMs = Math.max(0, waitMs);
+    if (!recover) waitForUpdateClosure(boundedWaitMs);
+    const remainingMs = Math.max(0, started + boundedWaitMs - Date.now());
     const start = ownerStart(process.pid) ?? "";
-    held = acquireLock(lockPath(), { label: "a closure writer", waitMs: 300_000 });
+    held = acquireLock(lockPath(), { label: "a closure writer", waitMs: remainingMs });
     process.env[OWNER] = String(process.pid);
     process.env[NONCE] = held.nonce;
     process.env[START] = start;

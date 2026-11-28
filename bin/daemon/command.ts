@@ -544,10 +544,12 @@ async function serve(args: ParsedArgs): Promise<void> {
     const disposition = cleanWindowsUpdate();
     automaticCustodyPaused = disposition === "paused" || disposition === "pending";
   }
+  const { startupRecoveryChildEnv } = await import("./startup-recovery.js");
   const deferredRecovery = readUpdateRecovery();
   const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
-  if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  const startupRecoveryRuntime = { ...recoveryRuntime, get env() { return startupRecoveryChildEnv(process.env); } };
+  if (!automaticCustodyPaused && await recoverInterruptedUpdate(startupRecoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
   const { paths, home } = resolveTarget(args);
   let running;

@@ -1,11 +1,11 @@
 /**
- * Startup update-recovery and `systemctl --user start` recovery proofs (`Cotal#10819` Part 2):
+ * Startup update-recovery and `systemctl --user start` recovery proofs:
  *
  *  Cell 1: Shared systemd start constants (`DAEMON_SYSTEMD_START_TIMEOUT_SEC === 60`,
  *          `DAEMON_SYSTEMD_START_TIMEOUT_MS === 65_000`, `DAEMON_SYSTEMD_RECOVERY_WAIT_MS === 60_000`)
  *          and `renderDaemonUnit` `TimeoutStartSec=60`.
- *  Cell 2: `nativeStartupUpdateRecoveryParent` predicate matrix: Linux-only (`darwin` and `win32`
- *          always return `false`, preserving `main` behaviour off Linux); accepts native Linux
+ *  Cell 2: `nativeStartupUpdateRecoveryParent` and `startupRecoveryChildEnv` predicate matrix:
+ *          Linux-only (`darwin` and `win32` always keep `main` behaviour); accepts native Linux
  *          `daemon serve` only when `COTAL_DAEMON_NATIVE_SERVICE === "1"`, `phase === "restoring"`,
  *          and live `owner` matches `ppid` + start token; rejects foreground `daemon serve`,
  *          `cotal update` parent argv, non-`restoring` phases, and dead/reused PIDs.
@@ -26,10 +26,11 @@
  *          - `"daemon-restart"` (`restartInstalled`) preserves exact `OPERATION_UNKNOWN` message,
  *            `target: { unit }`, and remedy on non-zero exit across all 6 missing-proof cases, plus
  *            wrong-version timeout.
- *  Cell 8: Lock re-acquire failure handling (`claimSuspendableDaemonClosure` and
- *          `claimSuspendableServiceRepairLock`): converts a re-acquire failure into a clean
- *          `DEPENDENCY_UNAVAILABLE` `CommandFailure` with remedy, and outer `release()` is a safe no-op
- *          that never throws `TypeError` or masks an earlier failure.
+ *  Cell 8: Bounded, announced lock re-acquisition and failure handling (`claimSuspendableDaemonClosure`
+ *          and `claimSuspendableServiceRepairLock`): re-acquires pass `recover = false` and bound
+ *          `waitMs` to the remaining recovery budget, announce contended waits on stderr, convert
+ *          timeout into a clean `DEPENDENCY_UNAVAILABLE` `CommandFailure` with remedy, and keep outer
+ *          `release()` a safe no-op that never throws `TypeError` or masks an earlier failure.
  *  Cell 9: Built-CLI `cotal daemon start --json` end-to-end:
  *          (a) Startup recovery exit (`status !== 0` + `"null\n"` tombstone) followed by `Restart=always`
  *              spawning a real `daemon serve` succeeds with non-enumerable `recoveredVersion` (unchanged
@@ -45,16 +46,26 @@
  *              version actually loaded, never the interrupted target version).
  *          (c) `refreshServiceForApplication` (desktop agent-app install path) pins post-recovery
  *              `waitForDaemon` to `recoveredVersion`.
+ *  Cell 11: Interrupted upgrade from a published-shape previous release (`0.183.1` without
+ *           `nativeStartupUpdateRecoveryParent` or `skipStartupRecoveryWait`) to current head:
+ *           starting native `daemon serve` from head restores `0.183.1` onto disk and spawns the
+ *           restored `0.183.1` reconcile child with `startupRecoveryChildEnv` (`XDG_RUNTIME_DIR="/dev/null"`
+ *           in the child copy while parent `process.env.XDG_RUNTIME_DIR` stays untouched), so the
+ *           unmodified `0.183.1` child exits `0` promptly without self-waiting 120s in
+ *           `waitForInstalledDaemonGeneration` and `update-recovery.json` clears to `"null\n"`.
  */
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
@@ -83,6 +94,7 @@ import { serveDaemon } from "../daemon/server.js";
 import {
   claimSuspendableDaemonClosure,
   claimSuspendableServiceRepairLock,
+  DAEMON_SYSTEMD_RECOVERY_BUDGET_MS,
   DAEMON_SYSTEMD_RECOVERY_WAIT_MS,
   DAEMON_SYSTEMD_START_CALL_MARGIN_SEC,
   DAEMON_SYSTEMD_START_TIMEOUT_MS,
@@ -91,6 +103,7 @@ import {
   nativeStartupUpdateRecoveryParent,
   readParentArgv,
   startSystemdDaemonUnit,
+  startupRecoveryChildEnv,
 } from "../daemon/startup-recovery.js";
 
 for (const key of Object.keys(process.env)) {
@@ -159,6 +172,7 @@ try {
     check("start call margin is 5s", DAEMON_SYSTEMD_START_CALL_MARGIN_SEC === 5);
     check("derived systemctl start call timeout is 65_000 ms", DAEMON_SYSTEMD_START_TIMEOUT_MS === 65_000);
     check("derived post-start recovery wait is 60_000 ms", DAEMON_SYSTEMD_RECOVERY_WAIT_MS === 60_000);
+    check("derived total recovery budget is 125_000 ms", DAEMON_SYSTEMD_RECOVERY_BUDGET_MS === 125_000);
     const savedArgv1 = process.argv[1];
     const savedExecArgv = process.execArgv;
     let rendered: ReturnType<typeof renderDaemonUnit>;
@@ -292,6 +306,18 @@ try {
     check(
       "readParentArgv reads live Linux /proc/<pid>/cmdline tokens",
       Array.isArray(readParentArgv(process.pid, "linux")) && readParentArgv(process.pid, "linux")!.length >= 2,
+    );
+    const parentOrig: NodeJS.ProcessEnv = { COTAL_DAEMON_NATIVE_SERVICE: "1", XDG_RUNTIME_DIR: "/run/user/1000" };
+    const nativeChildEnv = startupRecoveryChildEnv(parentOrig, "linux");
+    check(
+      "startupRecoveryChildEnv sets XDG_RUNTIME_DIR=/dev/null on native Linux copy without mutating parent env",
+      nativeChildEnv.XDG_RUNTIME_DIR === "/dev/null" && parentOrig.XDG_RUNTIME_DIR === "/run/user/1000",
+    );
+    check(
+      "startupRecoveryChildEnv leaves foreground Linux and non-Linux env unchanged",
+      startupRecoveryChildEnv({ XDG_RUNTIME_DIR: "/run/user/1000" }, "linux").XDG_RUNTIME_DIR === "/run/user/1000" &&
+        startupRecoveryChildEnv(parentOrig, "darwin").XDG_RUNTIME_DIR === "/run/user/1000" &&
+        startupRecoveryChildEnv(parentOrig, "win32").XDG_RUNTIME_DIR === "/run/user/1000",
     );
   }
 
@@ -852,26 +878,33 @@ process.exit(code ?? 1);
     }
   }
 
-  // ---- Cell 8: Lock re-acquire failure handling (Finding 5b + Ruling 5) ----
+  // ---- Cell 8: Bounded, announced lock re-acquisition and failure handling ----
   {
-    // (a) Closure re-acquire fails after inner fn() succeeded -> clean CommandFailure refusal, and scope.release() does not throw
-    let closureClaims = 0;
+    // (a) Closure re-acquire passes recover=false and bounded waitMs from remaining budget, and converts failure into clean CommandFailure refusal
+    const closureCallArgs: Array<{ recover: boolean | undefined; waitMs: number | undefined }> = [];
     const closureScopeA = claimSuspendableDaemonClosure({
       env: {},
-      claim: () => {
-        closureClaims++;
-        if (closureClaims > 1) throw new Error("closure writer pid 77777 did not finish within 300 seconds");
+      claim: (recover, waitMs) => {
+        closureCallArgs.push({ recover, waitMs });
+        if (closureCallArgs.length > 1) throw new Error("closure writer pid 77777 did not finish within 1 seconds");
         return () => {};
       },
     });
     let reacquireErrA: unknown;
     try {
-      await closureScopeA.suspend(async () => "ok");
+      await closureScopeA.suspend(async () => "ok", () => 1_250);
     } catch (error) {
       reacquireErrA = error;
     } finally {
       closureScopeA.release();
     }
+    check(
+      "closure re-acquire uses recover=false and remaining recovery budget waitMs",
+      closureCallArgs.length === 2 &&
+        closureCallArgs[1]!.recover === false &&
+        closureCallArgs[1]!.waitMs === 1_250,
+      closureCallArgs,
+    );
     check(
       "closure re-acquire failure after inner success throws DEPENDENCY_UNAVAILABLE refusal with remedy and safe release()",
       reacquireErrA instanceof CommandFailure &&
@@ -900,7 +933,7 @@ process.exit(code ?? 1);
       try {
         await closureScopeB.suspend(async () => {
           throw primaryFailure;
-        });
+        }, () => 500);
       } finally {
         try {
           closureScopeB.release();
@@ -917,33 +950,142 @@ process.exit(code ?? 1);
       { caughtB, releaseThrewB },
     );
 
-    // (c) service-repair.lock re-acquire failure after inner success -> clean CommandFailure refusal with remedy
-    let serviceAcquires = 0;
-    const serviceScope = await claimSuspendableServiceRepairLock(join(root, "fake-service-repair.lock"), true, {
-      acquire: async () => {
-        serviceAcquires++;
-        if (serviceAcquires > 1) throw new Error("a lock is held by a live process (pid 88888)");
-        return { path: join(root, "fake-service-repair.lock"), nonce: "n", release() {} };
-      },
-    });
-    let serviceReacquireErr: unknown;
+    // (c) Real contended .update-closure.lock re-acquire announces wait on stderr and enforces short remaining budget instead of blocking 300s
+    const dir8c = join(root, "cell8c-contended-closure");
+    mkdirSync(dir8c, { recursive: true, mode: 0o700 });
+    const savedCotalHome8 = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = dir8c;
+    const origConsoleError = console.error;
+    const announcedLines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      announcedLines.push(args.map(String).join(" "));
+    };
+    let foreignChild: ReturnType<typeof spawn> | undefined;
     try {
-      await serviceScope.suspend(async () => "ok");
-    } catch (error) {
-      serviceReacquireErr = error;
+      const realScope = claimSuspendableDaemonClosure();
+      let contendedErr: unknown;
+      const contendedStart = Date.now();
+      try {
+        await realScope.suspend(
+          async () => {
+            // Spawn a separate process holding .update-closure.lock for >1.5s while suspended
+            const workspaceHref = new URL("../../packages/workspace/dist/index.js", import.meta.url).href;
+            foreignChild = spawn(
+              process.execPath,
+              [
+                "--input-type=module",
+                "-e",
+                `const { acquireLock } = await import(${JSON.stringify(workspaceHref)});
+                 const lock = acquireLock(${JSON.stringify(join(dir8c, ".update-closure.lock"))}, { waitMs: 1000 });
+                 process.stdout.write("HELD\\n");
+                 setTimeout(() => { lock.release(); process.exit(0); }, 4000);`,
+              ],
+              {
+                cwd: dir8c,
+                env: { ...process.env, COTAL_HOME: dir8c },
+                stdio: ["ignore", "pipe", "pipe"],
+                timeout: 10_000,
+                killSignal: "SIGKILL",
+              },
+            );
+            await new Promise<void>((resolve, reject) => {
+              foreignChild!.once("error", reject);
+              foreignChild!.stdout!.on("data", (chunk) => {
+                if (String(chunk).includes("HELD")) resolve();
+              });
+            });
+            return "ok";
+          },
+          () => 1_250,
+        );
+      } catch (error) {
+        contendedErr = error;
+      } finally {
+        realScope.release();
+      }
+      const contendedElapsed = Date.now() - contendedStart;
+      check(
+        "contended .update-closure.lock re-acquire announces writer wait on stderr and fails within remaining budget (<4s, never 300s)",
+        contendedErr instanceof CommandFailure &&
+          contendedErr.code === "DEPENDENCY_UNAVAILABLE" &&
+          contendedElapsed >= 1_000 &&
+          contendedElapsed < 4_000 &&
+          announcedLines.some((line) => line.includes("waiting for another cotal command")),
+        { contendedErr, contendedElapsed, announcedLines },
+      );
     } finally {
-      serviceScope.release();
+      console.error = origConsoleError;
+      if (foreignChild) await killAndAwaitExit(foreignChild, "SIGKILL");
+      if (savedCotalHome8 === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = savedCotalHome8;
     }
-    check(
-      "service-repair.lock re-acquire failure throws DEPENDENCY_UNAVAILABLE refusal with remedy and safe release()",
-      serviceReacquireErr instanceof CommandFailure &&
-        serviceReacquireErr.outcome === "refused" &&
-        serviceReacquireErr.code === "DEPENDENCY_UNAVAILABLE" &&
-        serviceReacquireErr.message.includes("could not reacquire the daemon service lock") &&
-        typeof serviceReacquireErr.remedy === "string" &&
-        serviceReacquireErr.remedy.length > 0,
-      serviceReacquireErr,
-    );
+
+    // (d) Contended service-repair.lock re-acquire announces wait, respects remaining budget, and converts timeout into clean CommandFailure refusal
+    const serviceLockFile = join(root, "contended-service-repair.lock");
+    const serviceAnnouncements: string[] = [];
+    let foreignServiceChild: ReturnType<typeof spawn> | undefined;
+    try {
+      const serviceScope = await claimSuspendableServiceRepairLock(serviceLockFile, true, {
+        onWait: () => {
+          serviceAnnouncements.push("waiting for another daemon service operation to finish");
+        },
+      });
+      let serviceReacquireErr: unknown;
+      const serviceStart = Date.now();
+      try {
+        await serviceScope.suspend(
+          async () => {
+            const workspaceHref = new URL("../../packages/workspace/dist/index.js", import.meta.url).href;
+            foreignServiceChild = spawn(
+              process.execPath,
+              [
+                "--input-type=module",
+                "-e",
+                `const { acquireLock } = await import(${JSON.stringify(workspaceHref)});
+                 const lock = acquireLock(${JSON.stringify(serviceLockFile)}, { waitMs: 1000 });
+                 process.stdout.write("HELD\\n");
+                 setTimeout(() => { lock.release(); process.exit(0); }, 4000);`,
+              ],
+              {
+                cwd: root,
+                env: process.env,
+                stdio: ["ignore", "pipe", "pipe"],
+                timeout: 10_000,
+                killSignal: "SIGKILL",
+              },
+            );
+            await new Promise<void>((resolve, reject) => {
+              foreignServiceChild!.once("error", reject);
+              foreignServiceChild!.stdout!.on("data", (chunk) => {
+                if (String(chunk).includes("HELD")) resolve();
+              });
+            });
+            return "ok";
+          },
+          () => 450,
+        );
+      } catch (error) {
+        serviceReacquireErr = error;
+      } finally {
+        serviceScope.release();
+      }
+      const serviceElapsed = Date.now() - serviceStart;
+      check(
+        "service-repair.lock re-acquire announces wait, bounds waitMs to remaining budget (<3s, never 300s), and throws DEPENDENCY_UNAVAILABLE with remedy",
+        serviceReacquireErr instanceof CommandFailure &&
+          serviceReacquireErr.outcome === "refused" &&
+          serviceReacquireErr.code === "DEPENDENCY_UNAVAILABLE" &&
+          serviceReacquireErr.message.includes("could not reacquire the daemon service lock") &&
+          typeof serviceReacquireErr.remedy === "string" &&
+          serviceReacquireErr.remedy.length > 0 &&
+          serviceAnnouncements.length === 1 &&
+          serviceElapsed < 3_000,
+        { serviceReacquireErr, serviceElapsed, serviceAnnouncements },
+      );
+    } finally {
+      if (foreignServiceChild) await killAndAwaitExit(foreignServiceChild, "SIGKILL");
+      rmSync(serviceLockFile, { force: true });
+    }
   }
 
   // ---- Cell 9: Built-CLI `cotal daemon start --json` recovery + exact refusal JSON shape ----
@@ -1525,6 +1667,290 @@ console.log(JSON.stringify({ result, lines }));
     } finally {
       await new Promise<void>((resolve) => idpServer.close(() => resolve()));
     }
+  }
+
+  // ---- Cell 11: Interrupted upgrade from published-shape 0.183.1 (without skipStartupRecoveryWait) to head ----
+  {
+    const dir = join(root, "cell11-published-to-head");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const env = cleanBaseEnv(dir);
+    const prefix = join(dir, "prefix");
+    const cache = join(dir, "npm-cache");
+    const native = join(dir, "native");
+    for (const d of [prefix, cache, native]) mkdirSync(d, { recursive: true, mode: 0o700 });
+
+    const baselineVersion = "0.183.1";
+    const headVersion = "0.183.9999";
+    const fixtureDir = join(dir, "upgrade-fixture");
+    const built = spawnSync(
+      process.execPath,
+      [join(repo, "bin/smoke/build-daemon-upgrade-fixture.mjs"), fixtureDir, "--workspace-source"],
+      { cwd: repo, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 300_000, killSignal: "SIGKILL" },
+    );
+    check(
+      "upgrade fixture built offline",
+      built.status === 0,
+      { status: built.status, signal: built.signal, error: built.error?.message },
+    );
+
+    const reversionTree = (treeDir: string, ver: string): void => {
+      const rootPkg = JSON.parse(readFileSync(join(treeDir, "package.json"), "utf8")) as {
+        version: string;
+        dependencies?: Record<string, string>;
+      };
+      rootPkg.version = ver;
+      for (const k of Object.keys(rootPkg.dependencies ?? {})) {
+        if (k.startsWith("@cotal-ai/")) rootPkg.dependencies![k] = ver;
+      }
+      writeFileSync(join(treeDir, "package.json"), `${JSON.stringify(rootPkg, null, 2)}\n`);
+      for (const entry of readdirSync(join(treeDir, "seeded-connectors"), { withFileTypes: true })) {
+        const p = join(treeDir, "seeded-connectors", entry.name, "package.json");
+        if (entry.isDirectory() && existsSync(p)) {
+          const c = JSON.parse(readFileSync(p, "utf8")) as { version: string };
+          c.version = ver;
+          writeFileSync(p, `${JSON.stringify(c, null, 2)}\n`);
+        }
+      }
+      const walkFirstParty = (nm: string): void => {
+        const scopeDir = join(nm, "@cotal-ai");
+        if (!existsSync(scopeDir)) return;
+        for (const entry of readdirSync(scopeDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const pkgRoot = join(scopeDir, entry.name);
+          const mf = join(pkgRoot, "package.json");
+          if (existsSync(mf)) {
+            const m = JSON.parse(readFileSync(mf, "utf8")) as Record<string, unknown>;
+            m.version = ver;
+            for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+              const deps = m[field] as Record<string, string> | undefined;
+              for (const k of Object.keys(deps ?? {})) {
+                if (k.startsWith("@cotal-ai/")) deps![k] = ver;
+              }
+            }
+            writeFileSync(mf, `${JSON.stringify(m, null, 2)}\n`);
+          }
+          if (existsSync(join(pkgRoot, "node_modules"))) walkFirstParty(join(pkgRoot, "node_modules"));
+        }
+      };
+      walkFirstParty(join(treeDir, "node_modules"));
+    };
+
+    // Baseline 0.183.1 tree: strip nativeStartupUpdateRecoveryParent / skipStartupRecoveryWait so its reconcile
+    // child has published cotal-ai@0.183.1's exact waitForInstalledGeneration behaviour.
+    const baseTree = join(fixtureDir, "hoisted-fix2-0.151.2");
+    reversionTree(baseTree, baselineVersion);
+    const baseUpdateEntryPath = join(baseTree, "dist/daemon/update-entry.js");
+    const strippedBaseUpdateEntry = readFileSync(baseUpdateEntryPath, "utf8")
+      .replace(/import\s*\{\s*nativeStartupUpdateRecoveryParent\s*\}\s*from\s*["']\.\/startup-recovery\.js["'];\r?\n/, "")
+      .replace(
+        "const recoveryAdmission = readUpdateRecovery(), skipStartupRecoveryWait = nativeStartupUpdateRecoveryParent(recoveryAdmission);",
+        "const recoveryAdmission = readUpdateRecovery();",
+      )
+      .replace(/\s*if\s*\(skipStartupRecoveryWait\)\s*return;\r?\n/, "\n");
+    writeFileSync(baseUpdateEntryPath, strippedBaseUpdateEntry);
+    check(
+      "baseline 0.183.1 update-entry has neither nativeStartupUpdateRecoveryParent nor skipStartupRecoveryWait",
+      !strippedBaseUpdateEntry.includes("nativeStartupUpdateRecoveryParent") &&
+        !strippedBaseUpdateEntry.includes("skipStartupRecoveryWait"),
+    );
+
+    const headTree = join(fixtureDir, "hoisted-fix2-0.151.3");
+    reversionTree(headTree, headVersion);
+
+    Object.assign(env, {
+      PATH: `${native}:${join(prefix, "bin")}:${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
+      npm_config_prefix: prefix,
+      npm_config_cache: cache,
+      npm_config_update_notifier: "false",
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      COTAL_SKIP_CONNECTOR_SEED: "1",
+    });
+    writeSeedState(env.XDG_CONFIG_HOME!, baselineVersion);
+
+    // Materialize baseline 0.183.1 into global prefix layout (<prefix>/lib/node_modules/cotal-ai + <prefix>/bin/cotal)
+    mkdirSync(join(prefix, "lib/node_modules"), { recursive: true, mode: 0o755 });
+    mkdirSync(join(prefix, "bin"), { recursive: true, mode: 0o755 });
+    const cpBase = spawnSync("cp", ["-a", baseTree, join(prefix, "lib/node_modules/cotal-ai")], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+    });
+    check("initial global placement of 0.183.1 succeeded", cpBase.status === 0, cpBase.stderr || cpBase.stdout);
+    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", join(prefix, "bin/cotal"));
+    chmodSync(join(prefix, "lib/node_modules/cotal-ai/dist/cotal.js"), 0o755);
+
+    const installedRoot = realpathSync(join(prefix, "lib/node_modules/cotal-ai"));
+    const installedEntry = join(installedRoot, "dist/cotal.js");
+    const paths = daemonPaths(env, env.COTAL_HOME!);
+    mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+    const unitDir = join(env.XDG_CONFIG_HOME!, "systemd", "user");
+    mkdirSync(unitDir, { recursive: true, mode: 0o700 });
+    const unitPath = join(unitDir, "cotal-daemon.service");
+    const unitBytes = [
+      "[Unit]",
+      "Description=Cotal machine daemon",
+      "",
+      "[Service]",
+      "Type=notify",
+      "NotifyAccess=all",
+      "TimeoutStartSec=60",
+      `Environment=PATH="${env.PATH}"`,
+      "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
+      `ExecStart="${process.execPath}" "${installedEntry}" "daemon" "serve"`,
+      "Restart=always",
+      "",
+    ].join("\n");
+    writeFileSync(unitPath, unitBytes, { mode: 0o600 });
+    writeFileSync(
+      join(paths.state, "service-unit.json"),
+      `${JSON.stringify({
+        v: 1,
+        mechanism: "systemd-user",
+        unit: "cotal-daemon.service",
+        unitPath,
+        unitSha256: createHash("sha256").update(unitBytes).digest("hex"),
+        installedAt: new Date().toISOString(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    // Fake systemctl that stays enabled and answers show-environment; if the 0.183.1 child ever reached
+    // waitForInstalledDaemonGeneration with a reachable runtime dir, it would call `systemctl start` and
+    // block 120s waiting for daemon.sock!
+    const childStartCallsFile = join(dir, "child-systemctl-starts.log");
+    writeFileSync(
+      join(native, "systemctl"),
+      `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.join(" ") === "--user show-environment") {
+  console.log(${JSON.stringify(`XDG_CONFIG_HOME=${env.XDG_CONFIG_HOME}`)});
+  process.exit(0);
+}
+if (args.some(a => a.includes("UnitFileState"))) {
+  console.log("enabled");
+  process.exit(0);
+}
+if (args.includes("start")) {
+  fs.appendFileSync(${JSON.stringify(childStartCallsFile)}, args.join(" ") + "\\n");
+  process.exit(0);
+}
+process.exit(0);
+`,
+      { mode: 0o700 },
+    );
+
+    // Stage and publish headTree as the active generation over installed 0.183.1, leaving an interrupted
+    // `phase: "replacing"` update-recovery.json with a real closure snapshot owned by a dead process.
+    const interruptStageScript = join(dir, "stage-interrupt.mjs");
+    const execTxHref = new URL("../dist/execution-transaction.js", import.meta.url).href;
+    const snapshotHref = new URL("../../implementations/cli/dist/lib/update-snapshot.js", import.meta.url).href;
+    const workspaceHref = new URL("../../packages/workspace/dist/index.js", import.meta.url).href;
+    writeFileSync(
+      interruptStageScript,
+      `const { journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration } = await import(${JSON.stringify(execTxHref)});
+const { snapshotUpdateClosure } = await import(${JSON.stringify(snapshotHref)});
+const { claimUpdateClosureAccess, updateClosureOwner, writeUpdateRecovery } = await import(${JSON.stringify(workspaceHref)});
+const release = claimUpdateClosureAccess();
+const snapshot = snapshotUpdateClosure();
+const generation = retainExecutionGeneration(${JSON.stringify(installedRoot)}, ${JSON.stringify(headTree)});
+const journal = journalExecutionTransaction(${JSON.stringify(installedRoot)}, generation, ${JSON.stringify(installedEntry)});
+writeUpdateRecovery({
+  previous: ${JSON.stringify(baselineVersion)},
+  target: ${JSON.stringify(headVersion)},
+  installed: ${JSON.stringify(baselineVersion)},
+  phase: "replacing",
+  reason: "staged execution replacement in progress",
+  owner: updateClosureOwner(),
+  preparedRestart: false,
+  execution: journal,
+  snapshot: snapshot.path,
+});
+publishExecutionTransaction(${JSON.stringify(installedRoot)}, journal);
+release();
+process.exit(0);
+`,
+      { mode: 0o600 },
+    );
+    const stageRun = spawnSync(process.execPath, [interruptStageScript], {
+      cwd: dir,
+      env,
+      encoding: "utf8",
+      timeout: 120_000,
+      killSignal: "SIGKILL",
+    });
+    check("staged 0.183.1 -> head interruption prepared cleanly", stageRun.status === 0, stageRun.stderr || stageRun.stdout);
+
+    // Confirm active execution is now headVersion before native daemon serve starts
+    const verBefore = spawnSync(process.execPath, [installedEntry, "--version"], {
+      cwd: dir,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+      killSignal: "SIGKILL",
+    });
+    check(
+      "installed entry reports headVersion before native daemon serve startup recovery",
+      verBefore.status === 0 && verBefore.stdout.split(/\r?\n/, 1)[0] === `cotal-ai ${headVersion}`,
+      verBefore.stdout + verBefore.stderr,
+    );
+
+    // Now start native `daemon serve` (which boots headVersion's code via selectExecutionProgram, restores 0.183.1,
+    // and spawns the restored 0.183.1 reconcile child BEFORE daemon.sock exists). Without startupRecoveryChildEnv,
+    // the 0.183.1 reconcile child would self-wait 120s and time out!
+    const recoveryStarted = Date.now();
+    const serveChild = spawn(process.execPath, [installedEntry, "daemon", "serve"], {
+      cwd: dir,
+      env: { ...env, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 45_000,
+      killSignal: "SIGKILL",
+    });
+    let serveOut = "";
+    serveChild.stdout.on("data", (chunk) => {
+      serveOut += String(chunk);
+    });
+    serveChild.stderr.on("data", (chunk) => {
+      serveOut += String(chunk);
+    });
+    const serveClosed = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+      serveChild.once("close", (code, signal) => resolve({ code, signal })),
+    );
+    const recoveryElapsed = Date.now() - recoveryStarted;
+
+    check(
+      "native daemon serve restores published-shape 0.183.1 and exits promptly (<35s, no 120s child self-wait)",
+      serveClosed.signal === null &&
+        serveClosed.code !== 0 &&
+        recoveryElapsed < 35_000 &&
+        serveOut.includes(`Restored cotal-ai@${baselineVersion} after an interrupted update.`) &&
+        serveOut.includes("interrupted update restored the previous installation; restart the daemon with the restored CLI") &&
+        !serveOut.includes("waiting up to 120s for Cotal"),
+      { serveClosed, recoveryElapsed, serveOut },
+    );
+    check(
+      "restored 0.183.1 reconcile child did not invoke systemctl start during startup recovery",
+      !existsSync(childStartCallsFile),
+      existsSync(childStartCallsFile) ? readFileSync(childStartCallsFile, "utf8") : "",
+    );
+    check(
+      "update-recovery.json holds exact null tombstone after published->head startup recovery",
+      readFileSync(join(env.COTAL_HOME!, "update-recovery.json"), "utf8").trim() === "null",
+    );
+    const verAfter = spawnSync(process.execPath, [installedEntry, "--version"], {
+      cwd: dir,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+      killSignal: "SIGKILL",
+    });
+    check(
+      "installed entry reports restored 0.183.1 after startup recovery",
+      verAfter.status === 0 && verAfter.stdout.split(/\r?\n/, 1)[0] === `cotal-ai ${baselineVersion}`,
+      verAfter.stdout + verAfter.stderr,
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
