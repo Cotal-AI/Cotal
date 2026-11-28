@@ -680,8 +680,14 @@ Other providers get no assumed page or section name. JSON carries the same expla
 `result.message`, the command and its description in `result.next`, and the dashboard alternative
 in `result.dashboard`.
 
-Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
-refresh the service's PATH when the daemon is signed in to one provider. The provider comes
+On macOS and Linux, a newly installed or refreshed service appends the per-user installer folders
+declared by seeded and installed connectors (`~/.local/bin`, `~/.opencode/bin`, and
+`~/.pi/agent/bin` for the built-in connectors) after the caller's `PATH` when missing, so hosted
+Managers find applications installed there later without setting up the service again.
+Services installed by an earlier release keep their recorded `PATH` until refreshed, and
+applications installed outside those folders also need a refresh. Run `cotal daemon setup` from a
+terminal that finds the newly installed application to refresh the service's `PATH` when the daemon
+is signed in to one provider. The provider comes
 from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
 the CLI selects Cloud when no provider is known. Outside an interactive terminal, a sole
 known provider from saved accounts or registered spaces is selected even without a saved sign-in.

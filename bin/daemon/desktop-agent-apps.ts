@@ -2,9 +2,10 @@
  *  account's PATH finds it, and its maker's installer and sign-in. The webview names a connector and
  *  nothing else; every command comes from that connector's cached install declaration. */
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, join, win32 } from "node:path";
+import { basename, dirname, join, posix, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { HarnessInstall, HarnessInstaller } from "@cotal-ai/core";
 import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, loadExtensionsManifest, OFFICIAL_CONNECTORS, resolveOnPath } from "@cotal-ai/workspace";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
@@ -157,13 +158,75 @@ export async function agentApps(): Promise<AgentApp[]> {
   return await Promise.all(declaredApps().map(app => row(app, path)));
 }
 
+function userHome(home?: string): string {
+  return home ?? (process.env.HOME || homedir());
+}
+
 /** `~/` and `%NAME%\` in a declared folder, made absolute for this account. */
-function folder(binDir: string): string {
-  if (binDir.startsWith("~/")) return join(homedir(), ...binDir.slice(2).split("/"));
+function folder(binDir: string, home = userHome()): string {
+  if (binDir.startsWith("~/")) return posix.join(home, ...binDir.slice(2).split("/"));
   const match = /^%([A-Z]+)%\\(.+)$/.exec(binDir);
   const base = match ? process.env[match[1]!] : undefined;
   if (!base || !win32.isAbsolute(base)) throw new CommandFailure("refused", "UNSUPPORTED", `the folder ${binDir} cannot be found on this account`);
   return win32.join(base, match![2]!);
+}
+
+function validPosixBinDir(binDir: unknown): binDir is string {
+  return typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
+    && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
+}
+
+function shippedConnectorBinDirs(os: "darwin" | "linux"): readonly string[] {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const parent = dirname(here);
+  const binRoot = basename(parent) === "dist" ? dirname(parent) : parent;
+  const file = join(binRoot, "dist", "daemon", "seeded-installers.json");
+  const corrupt = (cause?: unknown) => new CommandFailure(
+    "refused",
+    "DEPENDENCY_UNAVAILABLE",
+    `the seeded connector installer list at ${file} is corrupt or unreadable. Reinstall Cotal and run the command again`,
+    { remedy: "reinstall this Cotal installation and run the command again", ...(cause === undefined ? {} : { cause }) },
+  );
+  let raw: string;
+  try {
+    if (!statSync(file).isFile()) throw new Error("not a regular file");
+    raw = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(file, { throwIfNoEntry: false })) return [];
+    throw corrupt(error);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch (error) { throw corrupt(error); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw corrupt();
+  const data = parsed as { v?: unknown; installers?: unknown };
+  if (data.v !== 1 || !data.installers || typeof data.installers !== "object" || Array.isArray(data.installers)) throw corrupt();
+  const entries = Object.values(data.installers as Record<string, unknown>);
+  if (entries.length === 0) throw corrupt();
+  const dirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw corrupt();
+    const record = entry as Record<string, unknown>;
+    for (const [platform, dir] of Object.entries(record)) {
+      if ((platform !== "darwin" && platform !== "linux") || !validPosixBinDir(dir)) throw corrupt();
+    }
+    if (typeof record[os] === "string") dirs.push(record[os] as string);
+  }
+  return dirs;
+}
+
+/** The absolute per-user installer folders declared by this OS's seeded and installed connectors. */
+export function serviceAgentAppBinDirs(os: "darwin" | "linux", home = userHome()): string[] {
+  const dirs: string[] = [];
+  for (const binDir of shippedConnectorBinDirs(os)) {
+    dirs.push(folder(binDir, home));
+  }
+  try {
+    for (const app of declaredApps()) {
+      const binDir = app.install?.installers[os]?.binDir;
+      if (validPosixBinDir(binDir)) dirs.push(folder(binDir, home));
+    }
+  } catch { /* fall back to shipped declarations */ }
+  return [...new Set(dirs.filter(dir => dir.startsWith("/") && dir.length <= 4096 && !/[\u0000-\u001f\u007f]/u.test(dir)))];
 }
 
 /** Run the maker's installer: on macOS and Linux its script is downloaded with curl and piped to the
