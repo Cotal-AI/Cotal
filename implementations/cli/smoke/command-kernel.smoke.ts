@@ -1888,6 +1888,26 @@ for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECO
   }
 }
 
+// If the journal disappears before the restore child runs, do not claim automatic updates are paused.
+{
+  const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  let restoring = false;
+  fixture.rt.prepareExecution = async () => ({
+    entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+    async preflight() {}, publish() {}, restore() { restoring = true; },
+    verify() { if (!restoring) throw new Error("target verification failed"); },
+  });
+  fixture.rt.prepareReplacement = async () => {
+    if (restoring) clearUpdateRecovery();
+    return async () => {};
+  };
+  assert.equal(await executeUpdate(true, fixture.rt), 1);
+  assert.equal(readUpdateRecovery(), undefined);
+  const error = fixture.events.filter(event => event.startsWith("err:")).join("\n");
+  assert.match(error, /update recovery journal is missing\. No recovery record was written/);
+  assert.doesNotMatch(error, /Automatic updates are paused/);
+}
+
 // --- archive metadata overlaps only independent reads and preserves deterministic failure order ---
 {
   const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
