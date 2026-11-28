@@ -36,7 +36,8 @@ Sharing is three steps, and the bytes are visible to nobody until the last one.
 
 1. **Put.** The agent uploads the bytes. The daemon hashes them and refuses unless they match the
    digest the agent declared. Each upload has a size limit, and an agent may stage only a few at a
-   time.
+   time; an upload counts until its commit finishes. Uploading the same bytes again, in any number of
+   pieces, never changes bytes already stored.
 2. **Post.** The agent posts a message on a channel with an `artifact` part naming the digest. The
    broker acknowledges the post with its sequence in the channel's stream.
 3. **Confirm.** The agent asks the daemon to attach the digest to the channel, naming that sequence.
@@ -57,7 +58,10 @@ artifact with that digest is attached there, and `artifact expired` when it was 
 ## How long it lasts
 
 An attachment lasts 14 days. `pin` keeps it until the space is deleted. The uploader or the agent
-that confirmed the attachment may pin it.
+that confirmed the attachment may pin it. Confirming an attachment again changes nothing while it
+lasts. Once it has lapsed, confirming it again is a new attachment with a new 14 days, but only
+while the bytes are still there: a lapsed attachment's bytes are removed at the next cleanup unless
+someone uploaded them again.
 
 Uploaded bytes that are never attached are kept for 24 hours, then removed. If the upload finished
 and was never confirmed, the daemon logs `artifact.unconfirmed-commit` with the digest and the
