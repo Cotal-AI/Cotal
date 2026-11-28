@@ -275,7 +275,7 @@ Run `cotal version` and confirm that the selected binary is the target version b
 
 ## Reconcile the installation
 
-After an interrupted update, a successful `cotal update --self` reclaims private scratch that has been idle for more than an hour and contains only the Node compile cache. On Linux, it also reclaims that scratch if the reconciliation cache holds only records that prove the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
+While `cotal update --self` installs a newer release, a terminal hangup during package staging, replacement or reconciliation waits for the step in progress to finish without starting the next step, removes its private scratch at once, and exits 129. Plain `cotal update`, and `cotal update --self` when no newer release is available, do not catch a terminal hangup. After an interrupted update, a successful `cotal update --self` reclaims private scratch that has been idle for more than an hour and contains only the Node compile cache. On Linux, it also reclaims that scratch after an hour if the reconciliation cache holds only records that prove the updater and child process group have exited, or after 24 hours of inactivity when npm left cache data after an uncatchable kill. Cotal keeps unrecorded reconciliation caches, group- or other-writable cache data, and scratch with unrelated entries.
 
 On versions 0.159.1 through 0.160.7, a home that was never configured can refuse `cotal update --self` with `update snapshot refused: ENOENT` because its configuration directory does not exist. Rerun the installer:
 

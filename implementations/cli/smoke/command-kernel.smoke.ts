@@ -2044,10 +2044,130 @@ for (const installed of ["0.13.2", "0.13.3"]) {
 }
 
 // --- interrupts retain update custody until verification and reconciliation finish --------------
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  const beforeInt = process.listenerCount("SIGINT");
+  const beforeTerm = process.listenerCount("SIGTERM");
+  const beforeHup = process.listenerCount("SIGHUP");
+  const { rt, events } = updateRuntime({
+    npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+  });
+  let discarded = 0, published = 0, preflighted = 0;
+  rt.prepareExecution = async () => {
+    assert.equal(process.listenerCount("SIGINT"), beforeInt, "SIGINT is not caught during staging");
+    assert.equal(process.listenerCount("SIGTERM"), beforeTerm, "SIGTERM is not caught during staging");
+    assert.equal(process.listenerCount("SIGHUP"), beforeHup + 1, "SIGHUP is caught during staging");
+    if (signal === "SIGHUP") {
+      process.emit("SIGHUP", "SIGHUP");
+    } else {
+      const child = spawnSync(
+        process.execPath,
+        ["-e", `process.kill(process.pid, ${JSON.stringify(signal)}); setInterval(() => {}, 1000);`],
+        { encoding: "utf8", timeout: 10_000 },
+      );
+      assert.equal(child.status, null, `uncaught ${signal} terminates staging as on main`);
+      assert.equal(child.signal, signal);
+      throw new Error(`staging cancelled by ${signal}`);
+    }
+    return {
+      entry: "/global/node_modules/cotal-ai/dist/cotal.js",
+      journal: "/private/execution.json",
+      async preflight() { preflighted++; },
+      publish() { published++; },
+      restore() {},
+      verify() {},
+      discard() { discarded++; },
+    };
+  };
+  let thrown: unknown;
+  let status: number | undefined;
+  try {
+    status = await executeUpdate(true, rt);
+  } catch (error) {
+    thrown = error;
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (signal === "SIGHUP") {
+    assert.equal(thrown, undefined);
+    assert.equal(status, 129, "SIGHUP during staging exits 129");
+    assert.equal(discarded, 1, "SIGHUP during staging discards the unpublished generation");
+  } else {
+    assert.equal(status, 1, `${signal} staging termination refuses without publishing`);
+    assert.equal(thrown, undefined);
+  }
+  assert.equal(preflighted, 0, `${signal} during staging does not run target preflight`);
+  assert.equal(published, 0, `${signal} during staging does not publish or replace packages`);
+  assert.ok(!events.some((event) => /^(global:|reconcile|verify:)/.test(event)), `${signal} during staging starts no global install or reconcile`);
+  assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 0, `${signal} during staging prints no post-replacement interrupt notice`);
+  assert.equal(readUpdateRecovery(), undefined, `${signal} during staging writes no recovery journal`);
+  assert.equal(events.at(-1), "release-global:/global/node_modules");
+  assert.equal(process.listenerCount("SIGINT"), beforeInt);
+  assert.equal(process.listenerCount("SIGTERM"), beforeTerm);
+  assert.equal(process.listenerCount("SIGHUP"), beforeHup);
+}
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-staging-sig-"));
+  const installed = join(root, "prefix/lib/node_modules/cotal-ai");
+  mkdirSync(join(installed, "dist"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(installed, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1" }));
+  const entry = join(installed, "dist/cotal.js");
+  writeFileSync(entry, "#!/usr/bin/env node\n", { mode: 0o755 });
+  try {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      const marker = join(root, `replaced-${signal}`);
+      const script = `
+        import { writeFileSync } from "node:fs";
+        import { executeUpdate, updateRuntime } from ${JSON.stringify(new URL("../src/commands/update.js", import.meta.url).href)};
+        const rt = Object.assign({}, updateRuntime, {
+          version: () => "0.13.1",
+          npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : ${JSON.stringify(join(root, "prefix/lib/node_modules"))}, stderr: "" }),
+          releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "0.13.2", dist: { tarball: "https://registry.example/pkg.tgz", integrity: "sha512-fx" } }), stderr: "" }),
+          npmAsync: async () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "0.13.2", dist: { tarball: "https://registry.example/pkg.tgz", integrity: "sha512-fx" } }), stderr: "" }),
+          installPrefix: () => ${JSON.stringify(join(root, "prefix"))},
+          executionGlobalRoot: () => ${JSON.stringify(join(root, "prefix/lib/node_modules"))},
+          claimGlobalUpdate: () => () => {},
+          extensions: () => [],
+          prepareExecution: async () => {
+            process.kill(process.pid, ${JSON.stringify(signal)});
+            await new Promise((resolve) => setTimeout(resolve, 10000));
+            writeFileSync(${JSON.stringify(marker)}, "replaced");
+            throw new Error("unreachable");
+          },
+        });
+        await executeUpdate(true, rt);
+      `;
+      const child = spawnSync(
+        process.execPath,
+        [...process.execArgv, "--input-type=module", "-e", script],
+        {
+          encoding: "utf8",
+          timeout: 20_000,
+          env: {
+            ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_"))),
+            HOME: root,
+            COTAL_HOME: join(root, "cotal"),
+            XDG_CONFIG_HOME: join(root, "config"),
+            TMPDIR: root,
+            COTAL_SKIP_CONNECTOR_SEED: "1",
+            DO_NOT_TRACK: "1",
+          },
+        },
+      );
+      assert.equal(child.status, null, `real ${signal} during staging terminates child instead of continuing:\n${child.stdout}\n${child.stderr}`);
+      assert.equal(child.signal, signal, `real ${signal} during staging exits with signal ${signal} as on main`);
+      assert.doesNotMatch(child.stdout + child.stderr, /Interrupt received;/);
+      assert.equal(existsSync(marker), false, `real ${signal} during staging replaces nothing`);
+      assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version, "0.13.1");
+      assert.equal(existsSync(join(root, "cotal/update-recovery.json")), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
   for (const phase of ["install", "reconcile"] as const) {
     const beforeInt = process.listenerCount("SIGINT");
     const beforeTerm = process.listenerCount("SIGTERM");
+    const beforeHup = process.listenerCount("SIGHUP");
     const { rt, events } = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
     });
@@ -2061,13 +2181,28 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       }
       return spawnGlobal(...args);
     };
-    assert.equal(await executeUpdate(true, rt), signal === "SIGINT" ? 130 : 143);
-    assert.ok(events.includes("verify:/global/node_modules:0.13.2"), "interruption still verifies the installed package");
-    assert.ok(events.some((event) => event.startsWith("global:reconcile:")), "interruption still reconciles matching extensions");
-    assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 1, "repeated interrupts produce one explanation");
+    assert.equal(await executeUpdate(true, rt), code);
+    if (signal === "SIGHUP") {
+      if (phase === "install") {
+        assert.ok(!events.includes("verify:/global/node_modules:0.13.2"), "hangup during install does not start verification");
+        assert.ok(!events.some((event) => event.startsWith("global:reconcile:")), "hangup during install does not start reconciliation");
+      } else {
+        assert.equal(events.filter((event) => event.startsWith("global:reconcile:")).length, 1, "hangup during reconciliation starts no retry child");
+      }
+      assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 0);
+      const recovery = readUpdateRecovery();
+      assert.equal(recovery?.phase, "replacing", "hangup leaves the recovery journal for the next run");
+      if (recovery?.snapshot) rmSync(recovery.snapshot, { recursive: true, force: true });
+      clearUpdateRecovery();
+    } else {
+      assert.ok(events.includes("verify:/global/node_modules:0.13.2"), "interruption still verifies the installed package");
+      assert.ok(events.some((event) => event.startsWith("global:reconcile:")), "interruption still reconciles matching extensions");
+      assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 1, "repeated interrupts produce one explanation");
+    }
     assert.equal(events.at(-1), "release-global:/global/node_modules");
     assert.equal(process.listenerCount("SIGINT"), beforeInt, "SIGINT handling is restored after the update");
     assert.equal(process.listenerCount("SIGTERM"), beforeTerm, "SIGTERM handling is restored after the update");
+    assert.equal(process.listenerCount("SIGHUP"), beforeHup, "SIGHUP handling is restored after the update");
   }
 }
 
