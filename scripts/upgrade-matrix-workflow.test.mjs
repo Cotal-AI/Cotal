@@ -118,6 +118,7 @@ function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', 
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   const harnessSha256 = digest(execFileSync('git', ['show', harnessSource + ':scripts/automatic-update-platform-baseline.mjs'], { cwd: new URL('..', import.meta.url) }));
   const data = { cell: structuredClone(cell), origin: { source: plan.sourceSHA, artifact: '42', digest: 'sha256:fixed' }, report: { id: `candidate-B-linux-${sourceVersion}-${channel}-configured-self`, tier: 'candidate-B (synthetic registry, real native processes)', platform: 'linux', source: sourceVersion, sourceRequested: sourceVersion, harnessSource, harnessSha256, cleanupSafety: { passed: true }, target: plan.targetVersion, layout: channel, state: 'configured', method: 'self', result: 'passed', environment: { hostedDisposable: true, registryOverridden: true }, candidate: { source: plan.sourceSHA, direction: 'B' }, extensionsBefore: Array.from({ length: 8 }, (_, i) => ({ pkg: `extension-${i}` })), assertions: names.map(name => ({ name, passed: true })), calls: [] } };
+  data.report.contracts = { source: 0, target: 0 };
   change(data, directory);
   writeFileSync(join(root, 'upgrade-plan/plan.json'), JSON.stringify(plan));
   writeFileSync(join(directory, 'coordinate.json'), JSON.stringify(data.cell));
@@ -130,6 +131,7 @@ function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', 
   writeFileSync(join(root, 'summary.mjs'), program
     .replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href))
     .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href))
+    .replace("'./scripts/plugin-cut.mjs'", JSON.stringify(new URL('./plugin-cut.mjs', import.meta.url).href))
     .replace("'./scripts/candidate-next-evidence.mjs'", JSON.stringify(new URL('./candidate-next-evidence.mjs', import.meta.url).href))
     .replace("'./scripts/daemon-manual-acceptance.mjs'", JSON.stringify(new URL('./daemon-manual-acceptance.mjs', import.meta.url).href)));
   const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_NEXT_ARTIFACT: '43', EXPECTED_NEXT_DIGEST: 'sha256:next', EXPECTED_FOLLOW_ON_ARTIFACT: '44', EXPECTED_FOLLOW_ON_DIGEST: 'sha256:follow', EXPECTED_HARNESS_SOURCE: harnessSource };
@@ -588,6 +590,24 @@ test('pinned source chain cannot pass without second-hop and whole-machine evide
   }
 });
 test('actual workflow census accepts precisely matching configured evidence', () => assert.equal(fixture().exit, 0));
+test('actual workflow census requires both observed plugin contracts', () => {
+  for (const change of [
+    ({report}) => { delete report.contracts; },
+    ({report}) => { delete report.contracts.source; },
+    ({report}) => { delete report.contracts.target; },
+  ]) {
+    const result = fixture(change);
+    assert.notEqual(result.exit, 0);
+    assert.match(result.stderr, /source and target plugin contracts required/);
+  }
+});
+test('actual workflow census grades configured counts from the observed source contract', () => {
+  const observed = fixture(({report}) => { report.contracts.source = 1; report.extensionsBefore.pop(); });
+  assert.equal(observed.exit, 0, observed.stderr);
+  const legacy = fixture(({report}) => { report.extensionsBefore.pop(); });
+  assert.notEqual(legacy.exit, 0);
+  assert.match(legacy.stderr, /configured scenarios require populated extension inventory/);
+});
 test('actual workflow census refuses fresh report relabelled configured', () => assert.notEqual(fixture(d => { d.report.state = 'fresh'; d.report.extensionsBefore = []; }).exit, 0));
 test('actual workflow census refuses wrong immutable artifact identity', () => assert.notEqual(fixture(d => { d.origin.artifact = 'foreign'; }).exit, 0));
 test('actual workflow census refuses changed coordinate metadata', () => assert.notEqual(fixture(d => { d.cell.scenario = 'fresh'; }).exit, 0));
