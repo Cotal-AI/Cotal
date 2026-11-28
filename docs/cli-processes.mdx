@@ -635,6 +635,12 @@ cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 `USAGE_INVALID` before contacting the daemon. Use 1 to 64 ASCII letters, digits, underscores or hyphens.
 
 On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
+A default install, with no `--daemon-home`, refuses before it writes a unit, task or receipt when
+this shell resolves a different directory from the one the background service resolves.
+The service environment supplies that directory: the systemd user manager on Linux, and the
+account profile on Windows. The refusal names both directories and says nothing was registered.
+Unset the shell override, or pass `--daemon-home <directory>`. When the service environment
+cannot be read, the existing refusal stands and nothing else is refused.
 On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
 runit or s6. Use `cotal update --self` for manual updates.
 If your login does not provide `XDG_RUNTIME_DIR`, use a runtime directory owned by your user

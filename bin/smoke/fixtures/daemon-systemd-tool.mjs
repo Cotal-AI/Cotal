@@ -28,7 +28,7 @@ if (basename(process.argv[1]) === "loginctl") {
 } else if (args.includes("show-environment")) {
   if (context.failShowEnvironment) process.exit(1);
   operation = "directory-read";
-  console.log(context.environmentOutput ?? `HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
+  console.log(context.environmentOutput ?? `HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}${context.cotalHome ? `\nCOTAL_HOME=${context.cotalHome}` : ""}`);
 } else if (args.includes("show")) {
   const unit = args[args.indexOf("show") + 1];
   if (unit === "*") {
