@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { repairPlan?: Record<string, unknown>; repairApply?: Record<string, unknown>; removedAccount?: boolean; managerRefused?: boolean; recovery?: boolean; browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { repairPlan?: Record<string, unknown>; repairApply?: Record<string, unknown>; removedAccount?: boolean; managerRefused?: boolean; managerStarting?: { reason: string; startedAgoMs: number }; recovery?: boolean; browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -114,7 +114,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, stopped: "by-you" } } } satisfies Frame;
-      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : connected ? [manager] : [] });
+      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : options.managerStarting ? [{ space: "team", state: "starting", reason: options.managerStarting.reason, observedAt: new Date(now - options.managerStarting.startedAgoMs).toISOString() }] : connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
@@ -508,6 +508,27 @@ test("a refused hosted Manager shows its reason without the command it names, an
     const detail = a.node("refusal-detail").textContent ?? "";
     assert.match(detail, /The agent host for this space stopped\. The background service said: Manager cleanup identity differs from its recorded instance/, "Details keeps the reason after a plain sentence");
     assert.doesNotMatch(detail, /`|cotal\s|deregister/, "the terminal next step stays out of Details");
+  } finally { a.dom.window.close(); }
+});
+
+test("a Manager that is still starting shows the Starting card and no Repair", async () => {
+  const a = await app({ installed: true, managerStarting: { reason: "waiting for the hosted Manager to initialize and register", startedAgoMs: 1_000 } });
+  try {
+    await a.click("login"); await a.login();
+    await a.tick();
+    assert.equal(a.node("sidebar-status-word").textContent, "Starting");
+    assert.equal(a.node("connection-title").textContent, "This computer is starting");
+    assert.equal(a.node("recovery-panel").hidden, true, "a start still inside its bound is not a failure");
+  } finally { a.dom.window.close(); }
+});
+
+test("a start that outlasts its bound becomes the failure card with Repair", async () => {
+  const a = await app({ installed: true, managerStarting: { reason: "waiting for the hosted Manager to initialize and register", startedAgoMs: 90_000 } });
+  try {
+    await a.click("login"); await a.login();
+    await a.tick();
+    assert.equal(a.node("recover").textContent, "Repair");
+    assert.equal(a.node("connection-title").textContent, "The agent host for this space stopped");
   } finally { a.dom.window.close(); }
 });
 
