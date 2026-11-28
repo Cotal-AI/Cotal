@@ -1,0 +1,59 @@
+name: Linux build lab
+
+on:
+  push:
+    branches: ['test/fxlab-1125']
+
+permissions: {}
+
+jobs:
+  lab:
+    name: lab ${{ matrix.port }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [2231, 2232, 2233, 2234]
+    steps:
+      - name: Prepare the host
+        env:
+          LANE_KEYS: ${{ secrets.WINLAB_LANE_KEYS }}
+          HOST_KEY: ${{ secrets.FXLAB_HOST_KEY }}
+        run: |
+          set -eu
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          mkdir -p ~/.ssh ~/.local/opt ~/.local/bin ~/fleet-fx/bin ~/Projects/Cotal-AI
+          chmod 700 ~/.ssh
+          printf '%s\n' "$LANE_KEYS" > ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          command -v sshd > /dev/null || { sudo apt-get update -q; sudo apt-get install -y -q openssh-server; }
+          printf '%s\n' "$HOST_KEY" | sudo tee /etc/ssh/ssh_host_ed25519_key > /dev/null
+          sudo chmod 600 /etc/ssh/ssh_host_ed25519_key
+          sudo ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key | sudo tee /etc/ssh/ssh_host_ed25519_key.pub > /dev/null
+          sudo systemctl restart ssh
+          curl -fsSL https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz | tar -xJ -C ~/.local/opt
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/nats-server-v2.14.0-linux-amd64.tar.gz | tar -xz -C /tmp
+          cp /tmp/nats-server-v2.14.0-linux-amd64/nats-server ~/.local/bin/
+          export PATH=$HOME/.local/opt/node-v24.21.0-linux-x64/bin:$PATH
+          git clone -q https://github.com/Cotal-AI/Cotal ~/Projects/Cotal-AI/Cotal
+          npm install -g "$(node -p "require(process.env.HOME + '/Projects/Cotal-AI/Cotal/package.json').packageManager.split('+')[0]")"
+          sudo mkdir -p /var/tmp/fx-run
+          sudo chown "$USER" /var/tmp/fx-run
+          echo "free $(df -BG --output=avail /home | tail -1), $(nproc) processors, node $(node --version), pnpm $(pnpm --version)"
+      - name: Hold the tunnel
+        env:
+          TUN_KEY: ${{ secrets.WINLAB_TUNNEL_KEY }}
+          TUN_HOST: ${{ secrets.WINLAB_TUNNEL_HOST }}
+          TUN_KNOWN: ${{ secrets.WINLAB_TUNNEL_KNOWN }}
+        run: |
+          set -u
+          umask 077
+          mkdir -p "$RUNNER_TEMP/tun"
+          printf '%s\n' "$TUN_KEY" > "$RUNNER_TEMP/tun/key"
+          printf '%s\n' "$TUN_KNOWN" > "$RUNNER_TEMP/tun/known"
+          end=$(( $(date +%s) + 340 * 60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            timeout $(( end - $(date +%s) )) ssh -N -i "$RUNNER_TEMP/tun/key" -o UserKnownHostsFile="$RUNNER_TEMP/tun/known" -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -R "127.0.0.1:${{ matrix.port }}:127.0.0.1:22" "$TUN_HOST" || true
+            sleep 10
+          done
