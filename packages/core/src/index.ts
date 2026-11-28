@@ -144,6 +144,7 @@ export * from "./canonical.js";
 export * from "./artifact.js";
 export * from "./artifact-index-stores.js";
 export * from "./artifacts-contract.js";
+export * from "./artifacts-client.js";
 export * from "./parts.js";
 export * from "./agui-kind.js";
 export * from "./event-channel.js";

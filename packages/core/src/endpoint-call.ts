@@ -156,6 +156,15 @@ export function buildRequest(
   return { subject, n, ...requestEnvelope(op, verb, args) };
 }
 
+/** The bytes one call puts on the wire before any header: its subject plus its serialized body, built
+ *  by {@link buildRequest} itself, so it cannot disagree with what is sent. A caller sizing a chunk
+ *  measures with this for the exact args of the call it is about to make (E6): the envelope depends on
+ *  the caller's names, the instance it binds and a sequence that grows digits as a transfer proceeds. */
+export function requestFrameBytes(space: string, route: EpRoute, op: EpVerbOp): number {
+  const req = buildRequest(space, route, op, { replyExpected: true });
+  return new TextEncoder().encode(req.subject).byteLength + req.body.byteLength;
+}
+
 // Node clamps a `setTimeout` delay beyond 2^31-1 ms (~24.8 days) to 1ms, so an over-large deadline
 // would fire IMMEDIATELY (an unbounded budget masquerading as a huge one). Bound every budget to the
 // timer range so the deadline the caller passes is the deadline the timer honors.
