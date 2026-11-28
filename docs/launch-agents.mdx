@@ -116,7 +116,7 @@ Hermes, Jcode, and pi expose no option mechanism and refuse them.
 The built-in `pty` runtime runs seats inside the manager process on every supported platform.
 To use an extension runtime, install its provider and select it when configuring the manager.
 For example, `cotal ext add @cotal-ai/orca` installs the Orca provider.
-Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`.
+Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, `@cotal-ai/herdr`, and `@cotal-ai/paseo`.
 Runtime names come from the registry. A missing provider or application is refused rather than replaced with another runtime.
 
 The tmux runtime opens each seat in its own window of the space's `cotal-<space>` session.

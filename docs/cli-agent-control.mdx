@@ -385,8 +385,8 @@ they are cross-agent admin operations. On a user-auth mesh, your sign-in stops a
 owner) whatever your scope; another owner's agent needs `admin` on your ledger row
 ([identity & auth](identity-and-auth.mdx)). Launch detached agents with [`spawn --detach`](cli-agents.mdx#spawn).
 
-`pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca` or
-`herdr` runtime runs in a surface the manager does not own, so there is no stream to give and
+`pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca`,
+`herdr` or `paseo` runtime runs in a surface the manager does not own, so there is no stream to give and
 `attach` refuses once with `UNSUPPORTED`, exit 2, carrying that runtime's own guidance for watching
 the agent where it runs, and a Next that names `cotal send` and `cotal watch`. The reconnect loop
 below does not retry that refusal, because asking again cannot change it.
@@ -590,7 +590,7 @@ Typing into an agent under another owner needs the `admin` scope. Seat locality 
 for you.
 
 Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
-`herdr`) attach to a process they do not own, so they have no input stream for it and the command
+`herdr`, `paseo`) attach to a process they do not own, so they have no input stream for it and the command
 refuses by name rather than dropping the keystroke.
 
 

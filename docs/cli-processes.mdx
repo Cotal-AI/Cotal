@@ -65,7 +65,7 @@ resume commit, still accepted for older callers (see [Backups](cli-backups.mdx#b
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
 directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
-optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
+optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, `@cotal-ai/herdr`, or `@cotal-ai/paseo`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only

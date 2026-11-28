@@ -85,7 +85,7 @@ export const setupFlags = [
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "the application your agents run in: its own setup runs, and `cotal spawn` in the space launches it" },
   { name: "project", type: "string", value: "<dir>", description: "the project folder: the space's root, whose .cotal/agents holds its personas" },
   { name: "space", short: "s", type: "string", value: "<name>", description: "the space to prepare (local) or the registered space to use (self-hosted)" },
-  { name: "runtime", type: "string", multiple: true, value: "<name>", description: "a runtime to set up besides the built-in pty: tmux, cmux, orca, herdr or an installed one (repeatable); none without it" },
+  { name: "runtime", type: "string", multiple: true, value: "<name>", description: "a runtime to set up besides the built-in pty: tmux, cmux, orca, herdr, paseo or an installed one (repeatable); none without it" },
   { name: "connection-file", type: "string", value: "<bundle.json>", description: "self-hosted: register the space from a connection bundle exported where it runs" },
   { name: "configure-only", type: "boolean", description: "write the preparation and start nothing (the default)" },
   { name: "start", type: "boolean", description: "after preparation, start the local stack when needed and launch the default persona; scripts require --detach" },

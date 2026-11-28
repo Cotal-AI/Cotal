@@ -70,7 +70,7 @@ const ansi = /\x1b\[/;
   const json = run(["runtimes", "--json"]);
   const names = json.envelope?.result?.items.map((row) => `${row.name}:${row.state}`);
   check("runtimes --json is one complete envelope with no target", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.target === null, shown(json));
-  check("runtimes --json lists pty built in and each official runtime as not installed", JSON.stringify(names) === JSON.stringify(["pty:built-in", "orca:not-installed", "tmux:not-installed", "cmux:not-installed", "herdr:not-installed"]), names);
+  check("runtimes --json lists pty built in and each official runtime as not installed", JSON.stringify(names) === JSON.stringify(["pty:built-in", "orca:not-installed", "tmux:not-installed", "cmux:not-installed", "herdr:not-installed", "paseo:not-installed"]), names);
   const rich = run(["runtimes"], { FORCE_COLOR: "1" });
   const richText = rich.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   check("runtimes draws a colored table with its state words", rich.status === 0 && ansi.test(rich.stdout) && /Runtime\s+State\s+Extension/.test(richText) && /tmux\s+○ not installed\s+@cotal-ai\/tmux/.test(richText) && /cotal ext add <package>/.test(richText), shown(rich));
