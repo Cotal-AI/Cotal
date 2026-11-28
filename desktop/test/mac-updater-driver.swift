@@ -100,6 +100,10 @@ case "text":
 case "click":
     guard CommandLine.arguments.count == 4 else { fail("missing DOM id") }
     output(press(element(CommandLine.arguments[3])))
+case "fill":
+    guard CommandLine.arguments.count == 5 else { fail("missing DOM id or value") }
+    guard AXUIElementSetAttributeValue(element(CommandLine.arguments[3]), kAXValueAttribute as CFString, CommandLine.arguments[4] as CFString) == .success else { fail("cannot enter text") }
+    output(true)
 case "close":
     guard AXIsProcessTrusted() else { fail("Accessibility permission is required") }
     for _ in 0..<2 {

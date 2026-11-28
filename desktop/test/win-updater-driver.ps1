@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$AppPath,
-  [Parameter(Mandatory = $true)][ValidateSet('describe', 'text', 'click', 'settings', 'close', 'quit', 'dump')][string]$Operation,
-  [string]$TargetId = ''
+  [Parameter(Mandatory = $true)][ValidateSet('describe', 'text', 'click', 'fill', 'settings', 'close', 'quit', 'dump')][string]$Operation,
+  [string]$TargetId = '',
+  [string]$Value = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -184,6 +185,15 @@ switch ($Operation) {
     $pressed = Press-Element $root $el $TargetId
     $pressed['mainScreenWait'] = $wait
     $pressed | ConvertTo-Json -Compress
+  }
+  'fill' {
+    if (!$visible) { throw 'Cotal window is not visible for text entry' }
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)
+    $el = Find-ById $root $TargetId
+    $pattern = $null
+    if (!$el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { throw 'The input does not support text entry.' }
+    $pattern.SetValue($Value)
+    $true | ConvertTo-Json -Compress
   }
   'settings' {
     if (!$visible) { throw 'Cotal window is not visible for settings navigation' }
