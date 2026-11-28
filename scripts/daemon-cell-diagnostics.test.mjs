@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { captureDaemonDiagnostics, daemonShowProperties, canonicalSocketPath, inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
+import { activePluginContract } from './plugin-cut.mjs';
 
 test('only the observed native macOS /var/folders alias is canonicalized', () => {
   const socket = '/var/folders/2s/native/C/cotal/daemon.sock';
@@ -258,6 +259,7 @@ test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and f
   writeFileSync(join(distDir, 'cotal.js'), bootstrap, { mode: 0o600 });
 
   const inPlace = inspectInstalledUpdateRoute(pkgRoot, 'linux');
+  assert.equal(activePluginContract(pkgRoot, inPlace), 0);
   assert.deepEqual(inPlace, {
     name: 'cotal-ai',
     version: '0.164.13',
@@ -276,7 +278,7 @@ test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and f
   assert(Buffer.byteLength(inventoryRaw) > 256 * 1024);
   const inventorySha256 = createHash('sha256').update(inventoryRaw).digest('hex');
   writeFileSync(join(genRoot, 'inventory.json'), inventoryRaw, { mode: 0o600 });
-  writeFileSync(join(stagedPkg, 'package.json'), JSON.stringify({ name: 'cotal-ai', version: '0.164.1013' }), { mode: 0o600 });
+  writeFileSync(join(stagedPkg, 'package.json'), JSON.stringify({ name: 'cotal-ai', version: '0.164.1013', dependencies: {'@cotal-ai/web': '0.164.1013'} }), { mode: 0o600 });
   writeFileSync(join(stagedDist, 'cotal-program.js'), '// staged program\n', { mode: 0o600 });
   const bootstrapSha256 = createHash('sha256').update(bootstrap).digest('hex');
   const activeName = `.active-${createHash('sha256').update(pkgRoot).digest('hex')}.json`;
@@ -292,6 +294,7 @@ test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and f
   assert.equal(staged.version, '0.164.1013');
   assert.equal(staged.selectedCliVersion, '0.164.1013');
   assert.equal(staged.packageManagerRecordVersion, '0.164.13');
+  assert.equal(activePluginContract(pkgRoot, staged), 1);
   assert.equal(staged.generationId, genId);
   assert.equal(staged.inventorySha256, inventorySha256);
 

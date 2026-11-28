@@ -292,7 +292,7 @@ test('hosted consent chain requires both timed Manager stages and exact first-ho
   const commands = {artifact: 'hosted-between-hop-commands.txt', bytes: bytes.length, sha256: hash(bytes)};
   writeFileSync(join(f.output, commands.artifact), bytes, {mode: 0o600});
   const agentBefore = JSON.stringify({result: {kind: 'seats', items: [{name: 'upgrade_proof_worker'}], managers: [{instanceId: 'initial-manager', state: 'answered'}]}});
-  const report = {candidateNext: pair, candidateSourceInvocation: candidateSourceIdentity(source), source: '0.164.10', target: '1.2.3', agentHost: 'daemon', agentBefore,
+  const report = {contracts: {source: 0, target: 1}, candidateNext: pair, candidateSourceInvocation: candidateSourceIdentity(source), source: '0.164.10', target: '1.2.3', agentHost: 'daemon', agentBefore,
     participant: {space: 'proof-space'}, managerHost: {mode: 'daemon-hosted', space: 'proof-space', instanceId: 'initial-manager'},
     calls: [
       {label: 'confirm daemon-hosted seat', argv: [source.cli, 'ps', '--on', 'initial-manager', '--space', 'proof-space', '--json'], exit: 0, signal: null, timeout: false, stdout: agentBefore, stderr: '', startedAt: at, finishedAt: at},
@@ -396,7 +396,7 @@ test('hosted consent chain requires both timed Manager stages and exact first-ho
 test('candidate evidence binds captured artifacts, public command receipts and default measured refusal', async t => {
   const f = await capture(t, {stage: 'after-update'}), source = installed();
   const pair = {...source.identity, source: 'synthetic-sha', sourceManifestSha256: 'source-manifest', targetManifestSha256: 'target-manifest', targetVersion: '1.2.3'};
-  const report = {candidateNext: pair, candidateSourceInvocation: candidateSourceIdentity(source), source: '1.2.3', target: '1.2.3', calls: [{label: 'upgrade under test', argv: source.argv, exit: 0, signal: null, timeout: false}], nextHop: {mode: 'candidate', finalTargetVersion: '1.2.3', secondHop: {update: {exit: 0, signal: null, timeout: false}}}, daemonDiagnostics: {'after-update': f.diagnostics}};
+  const report = {contracts: {source: 0, target: 1}, candidateNext: pair, candidateSourceInvocation: candidateSourceIdentity(source), source: '1.2.3', target: '1.2.3', calls: [{label: 'upgrade under test', argv: source.argv, exit: 0, signal: null, timeout: false}], nextHop: {mode: 'candidate', finalTargetVersion: '1.2.3', secondHop: {update: {exit: 0, signal: null, timeout: false}}}, daemonDiagnostics: {'after-update': f.diagnostics}};
   const args = {report, cell: {sourceSHA: pair.source, platform: 'linux', channel: 'npm'}, output: f.output, sourceManifestSha256: pair.sourceManifestSha256, targetManifestSha256: pair.targetManifestSha256};
   const before = JSON.stringify(report);
   assert.deepEqual(verifyCandidateNextEvidence(args), {sourceIdentity: true, firstRefusal: false, intermediateWhole: true, nextHopSuccess: true});
@@ -480,8 +480,8 @@ test('candidate evidence binds captured artifacts, public command receipts and d
       const reconciledRuntimes = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {items: [{name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null}]}}), stderr: ''};
       const bareDaemonStatus = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {state: 'ready', version: '1.2.3', pid: process.pid}}), stderr: ''};
       const bareRoute = {name: 'cotal-ai', version: '1.2.3', selectedCliVersion: '1.2.3', packageManagerRecordVersion: '1.2.3', updateRoute: 'in-place'};
-      const bExtensions = [{pkg: '@cotal-ai/tmux', version: follow.candidateNext.targetVersion}, ...Array.from({length: 7}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: follow.candidateNext.targetVersion}))];
-      const cExtensions = [{pkg: '@cotal-ai/tmux', version: '1.2.3'}, ...Array.from({length: 7}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: '1.2.3'}))];
+      const bExtensions = [{pkg: '@cotal-ai/tmux', version: follow.candidateNext.targetVersion}, ...Array.from({length: 6}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: follow.candidateNext.targetVersion}))];
+      const cExtensions = [{pkg: '@cotal-ai/tmux', version: '1.2.3'}, ...Array.from({length: 6}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: '1.2.3'}))];
       const bareBytes = Buffer.from(JSON.stringify({
         version: bareVersion,
         daemonStatus: bareDaemonStatus,
@@ -531,6 +531,11 @@ test('candidate evidence binds captured artifacts, public command receipts and d
     missingCall.calls.pop();
     assert.throws(() => verifyCandidateNextEvidence({...followArgs, report: missingCall}));
     if (followOnAction === 'npm') {
+      const missingContracts = structuredClone(follow);
+      delete missingContracts.contracts;
+      assert.throws(() => verifyCandidateNextEvidence({...followArgs, report: missingContracts}), /plugin contracts required/);
+      const legacyTarget = {...follow, contracts: {...follow.contracts, target: 0}};
+      assert.equal(verifyCandidateNextEvidence({...followArgs, report: legacyTarget}).bareManualNpm, false);
       const silentStale = structuredClone(follow);
       const staleVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n', stderr: ''};
       const staleExtensions = Array.from({length: 8}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: '1.2.2'}));

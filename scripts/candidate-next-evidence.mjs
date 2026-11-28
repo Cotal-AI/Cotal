@@ -6,7 +6,7 @@ import {findPackageJSON} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {evaluateManualDaemonState} from './daemon-manual-acceptance.mjs';
 import {matchSource16410Refusal} from './source-16410-refusal.mjs';
-import {expectedRecorded} from './plugin-cut.mjs';
+import {expectedRecorded, requirePluginContracts} from './plugin-cut.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -152,6 +152,7 @@ export function intermediateWholeMachine({diagnostics, output, target, platform,
 
 /** Verify the candidate-owned hop, optional measured first-hop refusal, and optional follow-on C action in archived evidence. */
 export function verifyCandidateNextEvidence({report, cell, output, sourceManifestSha256, targetManifestSha256, followOnManifestSha256}) {
+  requirePluginContracts(report);
   const pair = report.candidateNext;
   assert(pair, 'paired candidate identity missing');
   assert.equal(pair.source, cell.sourceSHA);
@@ -418,7 +419,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       const bareDaemon = archivedBare.daemonStatus?.exit === 0 ? JSON.parse(archivedBare.daemonStatus.stdout).result : undefined;
       const bareCliHeader = String(archivedBare.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
       const bareRemedy = /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(String(archivedBare.version?.stdout ?? ''));
-      const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= expectedRecorded(pair.followOnVersion) && archivedBare.extensions.every(entry => {
+      const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= expectedRecorded(report.contracts.target) && archivedBare.extensions.every(entry => {
         const installed = archivedBare.installedExtensions?.find(row => row.pkg === entry.pkg);
         if (!installed || installed.version !== entry.version) return false;
         if (entry.version === pair.followOnVersion) return true;
@@ -444,7 +445,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && !/Reconciliation pending/.test(String(gateReconcile?.version?.stdout ?? ''))
         && clean(gateReconcile?.runtimes)
         && gateTmuxRow?.state === 'installed' && gateTmuxRow?.package === '@cotal-ai/tmux' && gateTmuxRow?.error === null
-        && Array.isArray(gateReconcile?.extensions) && gateReconcile.extensions.length >= expectedRecorded(pair.followOnVersion)
+        && Array.isArray(gateReconcile?.extensions) && gateReconcile.extensions.length >= expectedRecorded(report.contracts.target)
         && gateReconcile.extensions.every(entry => entry.version === pair.followOnVersion && gateReconcile.installedExtensions?.find(row => row.pkg === entry.pkg)?.version === pair.followOnVersion);
       const scheduled = archivedBare.scheduledReconcile;
       const scheduledHeader = String(scheduled?.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
@@ -456,7 +457,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && !/Reconciliation pending/.test(String(scheduled?.version?.stdout ?? ''))
         && clean(scheduled?.runtimes)
         && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null
-        && Array.isArray(scheduled?.extensions) && scheduled.extensions.length >= expectedRecorded(pair.followOnVersion)
+        && Array.isArray(scheduled?.extensions) && scheduled.extensions.length >= expectedRecorded(report.contracts.target)
         && scheduled.extensions.every(entry => entry.version === pair.followOnVersion && scheduled.installedExtensions?.find(row => row.pkg === entry.pkg)?.version === pair.followOnVersion);
       bareManualNpm = clean(archivedBare.version) && bareCliHeader
         && archivedBare.route?.updateRoute === 'in-place'
