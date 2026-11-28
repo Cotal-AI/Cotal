@@ -20,14 +20,16 @@ import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
 export function withLegacyPluginChannelDeny(space: string, permissions: Record<string, unknown>, enabled?: boolean): Record<string, unknown> {
   if (!enabled) return permissions;
   const reserved = legacyPluginChannelFilters(space);
-  const denyLegacy = (direction: unknown, denied: readonly string[]) => {
-    const rows = direction as { allow?: string[]; deny?: string[] } | undefined;
-    return { ...rows, deny: [...new Set([...(rows?.deny ?? []), ...denied])] };
+  const denyLegacy = (direction: "pub" | "sub", denied: readonly string[]) => {
+    const rows = permissions[direction] as { allow?: string[]; deny?: string[] } | undefined;
+    if (!Array.isArray(rows?.allow) || rows.allow.length === 0)
+      throw new Error(`routed channel permissions require an explicit nonempty ${direction}.allow`);
+    return { ...rows, deny: [...new Set([...(rows.deny ?? []), ...denied])] };
   };
   return {
     ...permissions,
-    pub: denyLegacy(permissions.pub, [...reserved, ...reserved.map(filter => `$JS.API.CONSUMER.CREATE.${chatStream(space)}.*.${filter}`)]),
-    sub: denyLegacy(permissions.sub, reserved),
+    pub: denyLegacy("pub", [...reserved, ...reserved.map(filter => `$JS.API.CONSUMER.CREATE.${chatStream(space)}.*.${filter}`)]),
+    sub: denyLegacy("sub", reserved),
   };
 }
 
@@ -360,8 +362,8 @@ export function operatorPermissions(space: string, pr: MintPrincipal): Record<st
  *  and the creds are accepted, then closes it — it performs NO pub/sub. So the tightest possible grant:
  *  deny ALL publish, subscribe only to the own reply inbox. A leaked probe cred can open a socket and do
  *  nothing else. (Was the broad `manager` cred — minted on nearly every command, the worst over-grant.) */
-export function probePermissions(pr: MintPrincipal): Record<string, unknown> {
-  return { pub: { deny: [">"] }, sub: { allow: [`_INBOX_${pr.connId}.>`] } };
+export function probePermissions(pr: MintPrincipal, pluginChannelsEnabled?: boolean): Record<string, unknown> {
+  return { pub: { ...(pluginChannelsEnabled ? { allow: [">"] } : {}), deny: [">"] }, sub: { allow: [`_INBOX_${pr.connId}.>`] } };
 }
 
 /** CHANNEL-WRITER — edits the channel registry ONLY: `cotal channels set/default` and the

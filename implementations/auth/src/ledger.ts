@@ -501,11 +501,11 @@ type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody"> & { tokenHash: 
  *  with the secret hash and custody REQUIRED — and never shadowing an interactive row. Takes the
  *  managed-grant lock for this one write; a caller that must decide on a read first uses
  *  {@link withManagedGrantTransaction} instead. */
-export function grantManagedActor(dir: string, row: ManagedGrantInput): ActorRow {
-  return withManagedGrantTransaction(dir, (tx) => tx.grantManaged(row));
+export function grantManagedActor(dir: string, row: ManagedGrantInput, pluginChannelsEnabled = false): ActorRow {
+  return withManagedGrantTransaction(dir, (tx) => tx.grantManaged(row, pluginChannelsEnabled));
 }
 
-function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
+function rawGrantManaged(dir: string, row: ManagedGrantInput, pluginChannelsEnabled: boolean): ActorRow {
   assertRowInputs(row);
   assertNotChatAlias(dir, row.owner, row.actor, "grantManagedActor");
   if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
@@ -513,7 +513,7 @@ function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
   // Custody is checked at runtime as well as by type: an untyped caller must not write a managed
   // row that cannot say who holds its lifecycle.
   assertManagedGrantCustody(row.custody);
-  assertWithinSpawnerGrant(dir, row, "spawn");
+  assertWithinSpawnerGrant(dir, row, "spawn", pluginChannelsEnabled);
   const shadowRefusal = () =>
     new Error(`actor "${row.actor}" already has an interactive grant - a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
   if (findIn(dir, "interactive", row.owner, row.actor)) throw shadowRefusal();
@@ -587,7 +587,7 @@ export interface ManagedGrantTransaction {
   /** The unified fresh read: interactive or managed row, or undefined. Same fail-closed rules as
    *  {@link findActorUnified}. */
   read(owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined;
-  grantManaged(row: ManagedGrantInput): ActorRow;
+  grantManaged(row: ManagedGrantInput, pluginChannelsEnabled?: boolean): ActorRow;
   grantInteractive(row: Omit<ActorRow, "grantedAt">): ActorRow;
   /** Set an interactive row's display label and keep every other field, its lifecycle UID and grant
    *  time included. The label is outside the authorization digest, so a bearer issued under the row
@@ -631,7 +631,7 @@ export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGr
   };
   const tx: ManagedGrantTransaction = Object.freeze({
     read: live((owner: string, actor: string) => findActorUnified(dir, owner, actor)),
-    grantManaged: live((row: ManagedGrantInput) => rawGrantManaged(dir, row)),
+    grantManaged: live((row: ManagedGrantInput, pluginChannelsEnabled: boolean = false) => rawGrantManaged(dir, row, pluginChannelsEnabled)),
     grantInteractive: live((row: Omit<ActorRow, "grantedAt">) => rawGrantInteractive(dir, row)),
     relabelInteractive: live((owner: string, actor: string, label: string) => {
       const row = findIn(dir, "interactive", owner, actor);
@@ -821,12 +821,7 @@ export function hashActorToken(actorToken: string): string {
  *  32-byte digests). Every failure is the SAME sentence — a prober must not learn whether an
  *  (owner, actor) row exists, lives in the other space, or got the secret wrong (the sentence
  *  still names the operator's likely fix: respawn). */
-export function ledgerAuthorizeAgentExchange(
-  dir: string,
-  owner: string,
-  actor: string,
-  actorToken: string,
-): {
+interface AuthorizedAgentExchange {
   owner: string;
   actor: string;
   scope: string[];
@@ -835,7 +830,14 @@ export function ledgerAuthorizeAgentExchange(
   role?: string;
   parent?: string;
   lifecycleUid?: string;
-} {
+}
+
+export function ledgerAuthorizeAgentExchange(dir: string, owner: string, actor: string, actorToken: string, pluginChannelsEnabled?: boolean): AuthorizedAgentExchange;
+export function ledgerAuthorizeAgentExchange(dir: string, owner: string, actor: string, actorToken: string, readRouting: () => Promise<{ enabled: boolean }>): Promise<AuthorizedAgentExchange>;
+export function ledgerAuthorizeAgentExchange(
+  dir: string, owner: string, actor: string, actorToken: string,
+  routing: boolean | (() => Promise<{ enabled: boolean }>) = false,
+): AuthorizedAgentExchange | Promise<AuthorizedAgentExchange> {
   const deny = () =>
     new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
   let row: ActorRow | undefined;
@@ -855,7 +857,11 @@ export function ledgerAuthorizeAgentExchange(
   // required: rechecking the envelope here makes it a STANDING invariant (an operator narrowing or
   // revoking the spawner bites its agents at their next ≤ AGENT_BEARER_TTL_SEC refresh), the same
   // posture as the connect boundary's "bearer scope vs CURRENT row" check.
-  assertWithinSpawnerGrant(dir, row, "exchange");
+  if (typeof routing === "function") {
+    // The leader read yields. Recheck the secret and current row afterwards rather than mint from a stale row.
+    return routing().then(({ enabled }) => ledgerAuthorizeAgentExchange(dir, owner, actor, actorToken, enabled));
+  }
+  assertWithinSpawnerGrant(dir, row, "exchange", routing);
   return {
     owner: row.owner,
     actor: row.actor,

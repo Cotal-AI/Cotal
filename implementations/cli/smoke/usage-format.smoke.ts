@@ -375,13 +375,15 @@ if (process.platform !== "win32") {
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
   const rejected = JSON.parse(conflict.stdout);
   const copyDir = `${parent}/reviews-copy`;
-  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const retry = /cotal (endpoint init different --dir <new-directory>(?: --json)?)/.exec(rejected.error?.remedy ?? "");
+  if (!retry) throw new Error("endpoint init conflict omitted the alternate-directory command");
+  const copy = run(retry[1]!.split(" ").map((word) => word === "<new-directory>" ? copyDir : word), {}, cwd);
   const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
   check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
     conflict.status === 2 && conflict.stderr === "" && rejected.command === "endpoint init" && rejected.outcome === "refused"
     && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
-    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
-    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && retry?.[1]?.endsWith(" --json") && plainConflict.status === 2
+    && plainConflict.stderr.includes("cotal endpoint init different --dir <new-directory> --plain")
     && files.every((path, index) => readFileSync(path).equals(original[index]!))
     && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
     [conflict, plainConflict, copy, checked].map(shown));

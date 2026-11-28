@@ -12,6 +12,7 @@ import { channelInAllow, chatHistDurable, chatStream, chatSubject, DEV_OWNER, re
 import { lowerPersonaEndpoints } from "../src/persona-endpoints.js";
 import { legacyPluginChannelFilters, PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { pluginChannelSpaceStateSubject } from "../src/plugin-channel-space-state.js";
+import { withLegacyPluginChannelDeny } from "../src/provision-permission-builders.js";
 
 let pass = 0;
 let fail = 0;
@@ -94,6 +95,18 @@ console.log("profile isolation");
 {
   const pr = { owner: caller.owner, actor: caller.actor, connId: caller.actor, lifecycleUid: caller.uid };
   const pluginStream = pluginChannelStream(space);
+  for (const [direction, rows] of [
+    ["pub", { sub: { allow: ["probe.allowed"] } }],
+    ["sub", { pub: { allow: ["probe.allowed"] }, sub: { allow: [] } }],
+    ["pub", { pub: { deny: [">"] }, sub: { allow: ["probe.allowed"] } }],
+  ] as const) {
+    let reason = "";
+    try { withLegacyPluginChannelDeny(space, rows, true); } catch (e) { reason = String(e); }
+    ok(`routed wrapper refuses implicit ${direction} allow`, reason.includes(`explicit nonempty ${direction}.allow`));
+    ok(`off wrapper leaves ${direction} bytes alone`, withLegacyPluginChannelDeny(space, rows, false) === rows);
+  }
+  const routedProbe = importNativeSubjectPermissions(permissionsFor("probe", space, pr, { pluginChannelsEnabled: true }));
+  ok("the routed probe still denies all publishes", !issuedPermitsSubject(routedProbe.publish, "probe.allowed"));
   const reserved = legacyPluginChannelFilters(space);
   const offName = `${PLUGIN_CHANNEL_ROOT}.*.>`;
   const disabledAgent = permissionsFor("agent", space, pr, { pluginChannelsEnabled: false, allowSubscribe: [offName], allowPublish: [offName] });

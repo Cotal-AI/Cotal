@@ -32,6 +32,19 @@ import {
   permissionsFor, epServeGrantRows, epsSubject, CREDENTIAL_LIFETIMES, DEV_OWNER,
   type Profile,
 } from "@cotal-ai/core";
+import { readFileSync, writeSync } from "node:fs";
+
+const recording = process.argv.includes("--record-off-channel-permissions");
+const mainPermissionBytes = recording ? undefined : JSON.parse(readFileSync(new URL("./fixtures/off-channel-permissions-main.json", import.meta.url), "utf8")) as {
+  commit: string; profiles: Record<string, object>;
+};
+const observedBytes: Record<string, object> = {};
+function wholeRows(name: string, permissions: object): string[] {
+  if (!Object.hasOwn(observedBytes, name) && mainPermissionBytes)
+    c(`${name}: all off-state permission bytes match main`, JSON.stringify(permissions) === JSON.stringify(mainPermissionBytes.profiles[name]));
+  observedBytes[name] = permissions;
+  return rowsOf(permissions);
+}
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra !== undefined ? JSON.stringify(extra) : ""); } };
@@ -72,10 +85,11 @@ const rowsOf = (perm: unknown): string[] => {
   return [...(p.pub?.allow ?? []), ...(p.sub?.allow ?? [])];
 };
 const via = (profile: Profile, opts: Record<string, unknown> = {}) => (): string[] =>
-  rowsOf(permissionsFor(profile, SPACE, pr, opts as never));
+  wholeRows(profile, permissionsFor(profile, SPACE, pr, { ...opts, pluginChannelsEnabled: false }));
 const viaEnvironment = (profile: Profile, actor: string) => (): string[] => {
   const owner = `u_${"a".repeat(26)}`;
-  return rowsOf(permissionsFor(profile, SPACE, { ...pr, owner, actor }, {
+  return wholeRows(profile, permissionsFor(profile, SPACE, { ...pr, owner, actor }, {
+    pluginChannelsEnabled: false,
     environmentManager: { owner, instanceId: IID, lifecycleUid: UID,
       authorityEndpoint: "test.example.environment", authorityInstanceId: IID,
       expiresAt: Math.floor(Date.now() / 1000) + 240 },
@@ -88,14 +102,14 @@ const viaEnvironment = (profile: Profile, actor: string) => (): string[] => {
  * that reaches `FOREIGN` is a genuine cross-session leak and not an artifact of the fixture.
  */
 const PRODUCERS: Record<Profile, () => string[]> = {
-  agent: via("agent"),
+  agent: via("agent", { allowSubscribe: ["general", "ops.>", ["ext", "linear", "inbox"].join(".")], allowPublish: ["general", ["ext", "linear", "inbox"].join(".")] }),
   observer: via("observer"),
   admin: via("admin"),
   supervisor: via("supervisor"),
   "manager-caller": via("manager-caller", { managerInstanceId: IID, capabilities: ["spawn", "run", "admin"] }),
   "remote-manager": () => [`manager_${IID}`, `manager_exec_${IID}`].flatMap((actor) =>
-    rowsOf(permissionsFor("remote-manager", SPACE,
-      { ...pr, actor }, { remoteManager: { instanceId: IID, owner: DEV_OWNER, actor } }))),
+    wholeRows(actor, permissionsFor("remote-manager", SPACE,
+      { ...pr, actor }, { remoteManager: { instanceId: IID, owner: DEV_OWNER, actor }, pluginChannelsEnabled: false }))),
   "environment-bootstrap": viaEnvironment("environment-bootstrap", `manager_bootstrap_${IID}`),
   "environment-manager-supervisor": viaEnvironment("environment-manager-supervisor", `manager_${IID}`),
   "environment-manager-executor": viaEnvironment("environment-manager-executor", `manager_exec_${IID}`),
@@ -237,5 +251,7 @@ console.log("D. the session-ledger (the durable revocation authority) holds NO s
     ledger.some((r) => r.startsWith("$KV.cotal_sessions_")), ledger);
 }
 
+if (recording) for (const [name, rows] of Object.entries(observedBytes)) writeSync(1, `OFF_CHANNEL_PROFILE=${JSON.stringify([name, rows])}\n`);
+else c("main parity fixture names every exercised profile", Object.keys(mainPermissionBytes?.profiles ?? {}).sort().join() === Object.keys(observedBytes).sort().join());
 console.log(`\neps-grant-sweep: ${ok} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

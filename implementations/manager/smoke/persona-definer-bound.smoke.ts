@@ -207,7 +207,7 @@ try {
 
 console.log("user-auth mesh");
 try {
-  const { cotalAuthProvider, ensureCalloutAuth, grantActor } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, ensureCalloutAuth, grantActor, saveServiceKeys } = await import("@cotal-ai/auth");
   const userRoot = join(dir, "user");
   const userAgents = join(userRoot, ".cotal", "agents");
   mkdirSync(userAgents, { recursive: true });
@@ -232,7 +232,9 @@ try {
     ref: () => ({ id: "smoke-mgr" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, chatFrontier: async () => 0,
     requestDeliveryAdmin: requestDeliveryAdminZeroMemberships, getRoster: () => [],
   };
-  await ensureCalloutAuth(workspaceSecretStore(userRoot), { space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+  const secrets = workspaceSecretStore(userRoot);
+  await ensureCalloutAuth(secrets, { space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+  await saveServiceKeys(secrets, space, { dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed } });
   const owner = "u_smokeownersmokeownersmokeo";
   const ledger = userAuthStateDir(userRoot, space);
   grantActor(ledger, { owner, actor: "definer", scope: ["spawn"], allowSubscribe: ["review"], allowPublish: ["review"], label: "smoke definer" });

@@ -494,6 +494,7 @@ export interface AuthorityClientOpts {
   /** Package-internal connection custody for an embedded auth context. */
   onConnection?: (nc: NatsConnection, label: string) => void;
   server: string;
+  tlsRequired?: boolean;
   space: string;
   dataAccount: ServiceKeys["dataAccount"];
   /** The CONNZ-visible connection name (`cotal:auth-reader:<space>` / `cotal:auth-mint:<space>`). */
@@ -686,6 +687,7 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
   try {
     nc = await dialerFor(opts.server)({
       servers: opts.server,
+      ...(opts.tlsRequired === true ? { tls: {} } : {}),
       name: opts.label,
       authenticator: jwtAuthenticator(() => currentJwt, new TextEncoder().encode(identity.seed)),
       inboxPrefix: `_INBOX_${identity.id}`,

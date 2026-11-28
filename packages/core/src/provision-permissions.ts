@@ -339,7 +339,7 @@ function profilePermissions(profile: Profile, space: string, pr: MintPrincipal, 
     return restoreProfilePermissions(space, pr.connId, opts.restore);
   }
   if (profile === "operator") return operatorPermissions(space, pr); // human-CLI client (send/dm/ask)
-  if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight
+  if (profile === "probe") return probePermissions(pr, opts.pluginChannelsEnabled); // connect-only liveness/auth preflight
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge
   if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // space-wide STREAM.DELETE holder
