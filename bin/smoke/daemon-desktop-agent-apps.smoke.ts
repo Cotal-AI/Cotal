@@ -386,8 +386,9 @@ async function standardCells() {
   // Cell 1: every seeded connector's application is listed; none is installed on this PATH.
   {
     const frames = await request(target, { op: "agent-apps" });
-    check(resultOf(frames).ok === true, `agent-apps answers: ${JSON.stringify(resultOf(frames))}`);
-    check(resultOf(frames).result?.management === "local", "an unseeded profile with no service has local management");
+    const end = resultOf(frames);
+    check(end.ok === true, `agent-apps answers: ${JSON.stringify(end)}`);
+    check(end.result?.management === "local", `an unseeded profile with no service has local management (management=${String(end.result?.management)}${end.error?.native ? `, native=${end.error.native.code}` : ""})`);
     const apps = appsOf(frames);
     assert.deepEqual(apps.map(app => app.name).sort(), ["claude", "codex", "hermes", "jcode", "opencode", "pi"]); checks++;
     const claude = apps.find(app => app.name === "claude")!;
