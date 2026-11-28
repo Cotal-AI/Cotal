@@ -78,7 +78,7 @@ machines. In the guided setup, choose **Local**. Choose **Cloud** there to use a
 space from the terminal.
 
 On minimal Linux images, check the [installer prerequisites](docs/installation.mdx#use-the-shell-installer)
-first. Rocky Linux 9 needs `sudo dnf install tar` before running the installer.
+first. RHEL, AlmaLinux and Rocky Linux 9 need `sudo dnf install tar` before running the installer, and use this command-line install because the Linux desktop `.rpm` requires WebKitGTK 4.1 (see [Linux desktop support](docs/installation.mdx#install-the-desktop-app-on-linux) for supported distributions and Enterprise Linux 10 EPEL/CRB setup).
 
 ```bash
 curl -fsSL https://get.cotal.ai | sh

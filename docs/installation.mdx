@@ -1,6 +1,6 @@
 ---
 title: "Install Cotal"
-description: "Install the cotal command with the shell installer or npm."
+description: "Install the cotal command or check Linux desktop package support."
 kind: Start here
 audience: "first-time users"
 ---
@@ -9,16 +9,17 @@ import { Card, Cards } from 'fumadocs-ui/components/card';
 
 Install the `cotal` command on your machine, then use the Quickstart to create your first space.
 Choose the shell installer on macOS or Linux, or use npm if you already have Node.js.
+For the `.deb` and `.rpm` desktop packages, see [Install the desktop app on Linux](#install-the-desktop-app-on-linux).
 
 ## Use the shell installer
 
 The installer supports x64 and arm64 machines.
-On Linux, use a glibc distribution such as Debian, Ubuntu, Fedora, or Arch.
+On Linux, use a glibc distribution such as Debian, Ubuntu, Fedora, RHEL, AlmaLinux, Rocky Linux, or Arch.
 Alpine and other musl distributions are not supported.
 
 If the installer needs to download Node.js, it requires `curl` or `wget`, `tar` with gzip support,
 `mktemp`, and a SHA-256 tool (`sha256sum`, `shasum`, or `openssl`).
-Minimal cloud images may omit `tar`. On Rocky Linux 9, install it before running the installer:
+Minimal cloud images may omit `tar`. On RHEL, AlmaLinux, or Rocky Linux 9, install it before running the installer:
 
 ```bash
 sudo dnf install tar
@@ -164,6 +165,54 @@ Do not use `npm --force` to overwrite it.
 Keep the shell installation and its files if your user daemon still uses them. Changing PATH
 picks the npm CLI for new shell commands without moving the daemon or deleting any spaces.
 Use the original launcher's absolute path to manage its installation and daemon.
+
+## Install the desktop app on Linux
+
+GitHub releases publish x64 Linux desktop packages as `.deb` (`Cotal_<version>_amd64.deb`) and `.rpm` (`Cotal-<version>-1.x86_64.rpm`).
+Both packages require WebKitGTK 4.1 (`libwebkit2gtk-4.1.so.0`) and the Ayatana AppIndicator tray library (`libayatana-appindicator3.so.1`).
+
+Supported Linux versions:
+
+- **Ubuntu 24.04 (`.deb`):** Linux desktop packages are built and verified on Ubuntu 24.04:
+
+  ```bash
+  sudo apt install ./Cotal_<version>_amd64.deb
+  ```
+
+- **Fedora 41 and newer (`.rpm`):** WebKitGTK 4.1 is in the default repositories:
+
+  ```bash
+  sudo dnf install ./Cotal-<version>-1.x86_64.rpm
+  ```
+
+- **Enterprise Linux 10 (`.rpm`):** Verified on CentOS Stream 10 (which AlmaLinux 10 is built from). On RHEL 10, AlmaLinux 10, Rocky Linux 10, and CentOS Stream 10, WebKitGTK 4.1 and the tray library come from EPEL and CRB (CodeReady Builder on RHEL). Without both enabled, `dnf` refuses the `.rpm` with `nothing provides libayatana-appindicator3.so.1()(64bit)` and `nothing provides libwebkit2gtk-4.1.so.0()(64bit)`.
+
+  On AlmaLinux 10, Rocky Linux 10, or CentOS Stream 10, enable EPEL and CRB before installing the `.rpm`:
+
+  ```bash
+  sudo dnf install dnf-plugins-core epel-release
+  sudo dnf config-manager --set-enabled crb
+  sudo dnf install ./Cotal-<version>-1.x86_64.rpm
+  ```
+
+  On RHEL 10, enable the CodeReady Builder repository and EPEL 10 first, then run `sudo dnf install ./Cotal-<version>-1.x86_64.rpm`.
+
+### Enterprise Linux 9
+
+RHEL 9, AlmaLinux 9, and Rocky Linux 9 ship WebKitGTK 4.0 (`webkit2gtk3`), and EPEL 9 does not add WebKitGTK 4.1.
+The desktop `.rpm` cannot be installed on version 9 (`dnf` fails with `nothing provides libwebkit2gtk-4.1.so.0()(64bit)` even with EPEL and CRB enabled).
+
+On RHEL, AlmaLinux, or Rocky Linux 9, install the [command-line CLI](#use-the-shell-installer) instead.
+The shell installer installs `cotal-ai` with its own Node 24 runtime, and the background service runs without the desktop window (verified on AlmaLinux 9.9):
+
+```bash
+sudo dnf install tar
+curl -fsSL https://get.cotal.ai | sh -s -- --no-setup
+cotal daemon install
+cotal daemon status
+```
+
+Open a new shell first if `~/.local/bin` was just added to `PATH`. `cotal daemon status` reports `ready` once the service is running.
 
 ## Check the installation
 
