@@ -108,7 +108,12 @@ if (!["linux", "darwin"].includes(process.platform)) {
     await until(() => activations.includes("0.4.0"), 30_000);
     stop();
     fs.unlinkSync(executionDescriptorPath(root));
-    // Real child exits exercise the same installed-entry failure reporting as a hosted start.
+    const { connectorConfigDir } = await import("@cotal-ai/workspace");
+    const seed = join(connectorConfigDir(), "seed");
+    fs.mkdirSync(seed, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(join(seed, "stamp.json"), '{"generation":"0.1.0"}');
+    fs.writeFileSync(join(seed, "reconcile.cursor.json"), JSON.stringify({ nonce: "failed", package: "claude", phase: "add", failed: "seed generation 0.1.0\nfirst attempt" }));
+    // The current stamp must not suppress a retry. Capture the actual child result without a terminal.
     for (const [body, cause] of [
       ['process.stderr.write("first progress\\nfinal failure\\n"); process.exit(7);', 'exit 7'],
       ['process.stderr.write("first progress\\nlast progress\\n"); process.kill(process.pid, "SIGTERM");', 'signal SIGTERM'],

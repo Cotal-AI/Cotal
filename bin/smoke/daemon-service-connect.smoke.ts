@@ -2754,7 +2754,7 @@ process.stdin.once('data', () => {
               const recover = (expectedHolder: string) => ask(paths.socket, { op: "space-recover", space: ON, candidate: current.ownerKey, holder: expectedHolder }, 100_000);
               await waitAccount(recoveryShown, "failing holder exposes confirmed recovery through real daemon status");
               check("different subject never silently takes custody", owner() === holder.ownerKey);
-              check("CLI points to the explicit app action", (await plainCommand("status")).out.includes("choose Use signed-in account"));
+              check("CLI points to the explicit app action", (await plainCommand("status")).out.includes("choose Move to this account"));
               const changed = await recover("https://changed.example/api/auth");
               check("stale holder address refuses without moving custody", !changed.ok && JSON.stringify(changed).includes("holding account changed") && owner() === holder.ownerKey, changed);
               custodyOldFails = false;
@@ -4061,7 +4061,7 @@ process.exit(result.status ?? 93);
           try {
             idpRevoked = true;
             const refusal = resultOf(await ask(managedPaths.socket, { op: "manager-start", space: ON }, 100_000));
-            check("3A explicit-home login reason and Next target the owning daemon", refusal.state === "refused" && refusal.reason?.includes(`--daemon-home ${managedHome}`) && refusal.next?.includes(`--daemon-home ${managedHome}`), refusal);
+            check("3A explicit-home login reason has no command and Next targets the owning daemon", refusal.state === "refused" && typeof refusal.reason === "string" && refusal.reason.length > 0 && !/`|cotal [a-z]|https?:\/\//.test(refusal.reason) && refusal.next?.includes(`--daemon-home ${managedHome}`), refusal);
           } finally { idpRevoked = false; await killAndAwaitExit(owned, "SIGTERM"); }
           await cli("service-disconnect", "--space", ON);
           idpRevoked = true;
@@ -4070,7 +4070,7 @@ process.exit(result.status ?? 93);
           finally { idpRevoked = false; }
           const remedy = `cotal daemon login --idp ${idpUrl}`;
           console.log("  HM009 login refusal", JSON.stringify(missing));
-          check("HM009 sign-in refusal names same daemon login in reason and Next", missing.state === "refused" && missing.reason?.includes(remedy) && missing.next?.includes(remedy), missing);
+          check("HM009 sign-in refusal keeps the command in Next only, reason in plain words", missing.state === "refused" && /rejected the cached session/.test(missing.reason ?? "") && !/`|cotal [a-z]|https?:\/\//.test(missing.reason ?? "") && missing.next?.includes(remedy), missing);
           return;
         }
         if (process.argv.includes("--hosted-corrupt-repro")) {

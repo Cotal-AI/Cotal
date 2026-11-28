@@ -69,6 +69,8 @@ test("launch readiness, application retry and polling follow the selected space"
           result = { state: states.get(req.space!) };
           break;
         }
+        // Repair reads a plan; nothing here needs fixing once the agent host answers.
+        case "repair-plan": result = { digest: "0".repeat(64), steps: [] }; break;
         default: throw new Error(`Unexpected request ${req.op}`);
       }
       if (req.op === holdOperation) {
@@ -204,10 +206,14 @@ test("launch readiness, application retry and polling follow the selected space"
     assert.equal(button("connect").disabled, false);
     managers.set("first", { space: "first", state: "refused", reason: "The space could not be verified.", next: "Run cotal daemon restart" });
     button("refresh").click(); await settle();
-    assert.equal(doc.getElementById("refusal-detail")!.textContent, "DEPENDENCY_UNAVAILABLE\nThe space could not be verified.");
+    assert.equal(doc.getElementById("refusal-detail")!.textContent, "MANAGER_UNAVAILABLE\nThe agent host for this space stopped. The background service said: The space could not be verified.", "Details keeps the reason after a plain sentence, never the terminal next step");
     managers.delete("first");
     daemonVersion = "older";
+    // The agent host's card offers Repair. Repair finds nothing to fix once it answers again, and its
+    // Done reads status afresh, which shows the version mismatch.
     button("recover").click(); await settle();
+    assert.equal(button("repair-apply").textContent, "Done");
+    button("repair-apply").click(); await settle();
     assert.equal(button("connect").disabled, false, "an app replacement keeps stock setup available");
     assert.equal(title(), "Cotal was updated");
   } finally { win.close(); }
@@ -505,7 +511,7 @@ test("another installation's service offers no setup button and no command line"
       const ready = { state: "ready", version: "0.164.15", managers: [{ space: "first", state: "answering", instanceId: "m1", connectors: [{ agent: "claude", state: "available" }] }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed: "connected" }] } };
       if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "darwin", arch: "arm64", memoryBytes: 0 } };
       if (req.op === "status") return calls.filter(call => call.op === "status").length > 2
-        ? { v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation, so this one cannot refresh it", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js" } }
+        ? { v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation, so this one cannot refresh it", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js", native: { code: "ANOTHER_INSTALLATION", detail: { owner: { kind: "cli" } } } } }
         : { v: 1, event: "result", ok: true, result: ready };
       if (req.op === "status-watch") return await new Promise<Frame>(() => {});
       if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://cloud.cotal.ai/api/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
@@ -518,11 +524,9 @@ test("another installation's service offers no setup button and no command line"
     await settle();
     doc.getElementById("refresh")!.click();
     await settle();
-    assert.equal(doc.getElementById("connection-title")!.textContent, "Another Cotal installation runs the background service");
-    assert.equal(doc.getElementById("recover")!.hidden, true, "Try again and Connect are not offered");
+    assert.equal(doc.getElementById("connection-title")!.textContent, "Another copy of Cotal runs the background service");
+    assert.equal(doc.getElementById("recover")!.textContent, "Repair", "Repair, not Try again or Connect, is the one button");
     assert.equal(/\/usr\/local|bin\/cotal|`/.test(doc.getElementById("refusal-detail")!.textContent ?? ""), false, "Details shows no command line");
-    doc.getElementById("recover")!.click();
-    await settle();
     assert.equal(calls.filter(call => call.op === "setup").length, 0, "nothing runs setup again");
   } finally { win.close(); }
 });
