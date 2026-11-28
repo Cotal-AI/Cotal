@@ -50,7 +50,7 @@ import { grantOption, shellWord } from "../lib/endpoint-errors.js";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
-import { namedChannelMode } from "../lib/transient.js";
+import { hasPluginChannelRoot, namedChannelMode } from "../lib/transient.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
 /** The name a join line shows for another participant. A blank name is not one, so the line uses the id. */
@@ -112,8 +112,7 @@ async function checkCredentialJoin(creds: string, space: string, uid: string, ch
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant inbox access for lifecycle ${uid} in ${space}`, {
       remedy: "pass --lifecycle-uid with the lifecycle UID that `cotal auth mint <name> --provision` reported for this credential; a different UID cannot bind its inbox",
     });
-  const pluginName = channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
-  const mode = pluginName ? namedChannelMode(await modeForPlugin(), channel, space) : "legacy";
+  const mode = hasPluginChannelRoot(channel) ? namedChannelMode(await modeForPlugin(), channel, space) : "legacy";
   const route = channelRoute(space, "*", "*", channel, mode);
   const history = `$JS.API.CONSUMER.CREATE.${route.stream}.${chatHistDurable(DEV_OWNER, actor, uid)}.${route.subject}`;
   const canRead = route.rail.kind === PLUGIN_CHANNEL_ROOT
@@ -442,7 +441,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const canBroadcast = () => {
     if (!concreteChannel) return false;
     const mode = ep.channelRoutingMode();
-    if (mode === undefined && (channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`))) return false;
+    if (mode === undefined && hasPluginChannelRoot(channel)) return false;
     return publishPermission === undefined || issuedPermitsSubject(publishPermission,
       channelRoute(space, ep.principal.owner, ep.principal.actor, channel, mode ?? "legacy").subject);
   };

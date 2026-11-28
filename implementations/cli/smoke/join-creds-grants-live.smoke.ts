@@ -76,6 +76,22 @@ async function checkEnabledJoin(): Promise<void> {
     const denied = cli(...args, "--channel", hiddenChannel);
     check("the same credential cannot join the other isolated channel", await denied.exited === 2 &&
       denied.output().includes("PERMISSION_DENIED") && denied.output().includes(`does not grant read access to #${hiddenChannel}`), denied.output());
+
+    const old = await fixture.mintAgent({ legacy: true, read: [fixture.chatChannel, hiddenChannel], post: [fixture.chatChannel, hiddenChannel] });
+    const oldFile = join(dir, "enabled-legacy-join.creds");
+    writeFileSync(oldFile, old.creds, { mode: 0o600 });
+    const oldArgs = ["join", "--space", space, "--server", servers, "--creds", oldFile, "--lifecycle-uid", old.lifecycleUid];
+    const unmapped = cli(...oldArgs, "--channel", hiddenChannel);
+    check("a legacy CHAT grant cannot join an isolated destination", await unmapped.exited === 2 &&
+      unmapped.output().includes("PERMISSION_DENIED") && unmapped.output().includes(`does not grant read access to #${hiddenChannel}`), unmapped.output());
+    const ordinary = cli(...oldArgs, "--channel", fixture.chatChannel);
+    try {
+      await until(() => ordinary.output().includes("holding presence") || ordinary.proc.exitCode !== null);
+      check("the pre-activation credential still joins ordinary CHAT", ordinary.proc.exitCode === null && ordinary.output().includes("holding presence"), ordinary.output());
+    } finally {
+      await killAndAwaitExit(ordinary.proc);
+      await ordinary.exited;
+    }
   } finally {
     await fixture.close();
   }

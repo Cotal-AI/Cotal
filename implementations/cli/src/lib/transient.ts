@@ -24,10 +24,15 @@ export interface ConnectValues {
 /** Require routing proof for a named plugin operation, not for ordinary CHAT. */
 export function namedChannelMode(mode: ReturnType<CotalEndpoint["channelRoutingMode"]>, channel: string, space: string): "legacy" | "isolated" {
   if (mode !== undefined) return mode;
-  if (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) return "legacy";
+  if (!hasPluginChannelRoot(channel)) return "legacy";
   throw new CommandFailure("refused", "PERMISSION_DENIED", "This credential cannot see plugin channels.", {
     target: { space, channel },
   });
+}
+
+/** Recognize the reserved namespace without choosing a route. */
+export function hasPluginChannelRoot(channel: string): boolean {
+  return channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
 }
 
 /** Resolve where to connect + with what credentials (`--creds` → raw off-registry; user-auth mesh →

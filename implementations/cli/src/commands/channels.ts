@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   CHANNEL_DEFAULTS_KEY,
-  CotalEndpoint, PLUGIN_CHANNEL_ROOT,
+  CotalEndpoint,
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
@@ -14,7 +14,7 @@ import {
   type Connection, type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
-import { batchedRead } from "../lib/transient.js";
+import { batchedRead, hasPluginChannelRoot } from "../lib/transient.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
@@ -208,8 +208,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
 }
 
 async function visibleChannelMetadata(connection: Connection, registry: ChannelRegistryRead): Promise<ChannelRegistryRead> {
-  const hasReservedRoot = (channel: string) => channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
-  if (!Object.keys(registry.channels ?? {}).some(hasReservedRoot) && !registry.undecodable?.some(({ key }) => hasReservedRoot(key))) return registry;
+  if (!Object.keys(registry.channels ?? {}).some(hasPluginChannelRoot) && !registry.undecodable?.some(({ key }) => hasPluginChannelRoot(key))) return registry;
   const viewer = new CotalEndpoint({
     space: connection.space, servers: connection.server, ...endpointAuth(connection),
     consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
@@ -219,8 +218,8 @@ async function visibleChannelMetadata(connection: Connection, registry: ChannelR
   try {
     await viewer.start();
     if (viewer.channelRoutingMode() === "legacy") return registry;
-    const channels = Object.fromEntries(Object.entries(registry.channels ?? {}).filter(([name]) => !hasReservedRoot(name)));
-    const undecodable = registry.undecodable?.filter(({ key }) => !hasReservedRoot(key));
+    const channels = Object.fromEntries(Object.entries(registry.channels ?? {}).filter(([name]) => !hasPluginChannelRoot(name)));
+    const undecodable = registry.undecodable?.filter(({ key }) => !hasPluginChannelRoot(key));
     return { defaults: registry.defaults, channels, ...(undecodable?.length ? { undecodable } : {}) };
   } finally {
     await viewer.stop().catch(() => {});
@@ -264,9 +263,10 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
     if (isPublishPermissionDenied(error)) return;
     throw error;
   }
-  const registered = Object.keys(registry.channels ?? {}).sort();
-  const saved = new Set([...registered, ...(registry.undecodable ?? []).map((entry) => entry.key)]);
+  const saved = new Set([...Object.keys(registry.channels ?? {}), ...(registry.undecodable ?? []).map((entry) => entry.key)]);
   if (saved.has(name) || (await earlierMessages(values, name)) !== false) return;
+  const visible = await visibleChannelMetadata(reader, registry);
+  const registered = Object.keys(visible.channels ?? {}).sort();
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   const word = spelled === undefined ? undefined : shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled);

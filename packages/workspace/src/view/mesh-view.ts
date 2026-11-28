@@ -5,6 +5,8 @@ import type { CotalEndpoint, CotalMessage, DeliveryClass, EndpointRef, Membershi
 import { PLUGIN_CHANNEL_ROOT, channelRoute, deliveryOf, chatWildcard, isEventChannel, parseSubject, partsToText, subjectPatternCovers } from "@cotal-ai/core";
 import { observerChannelTapSubjects } from "./observer.js";
 
+const isReservedChannel = (channel: string) => channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
+
 // ---- the model the surfaces render -----------------------------------------
 
 export type FeedDelivery = "multicast" | "unicast" | "anycast";
@@ -378,21 +380,24 @@ export class MeshView extends EventEmitter {
   }
 
   private scopeMembership(snapshot: MembershipSnapshot): MembershipSnapshot {
-    if (!this.chatOnly || this.ep.channelRoutingMode() === "legacy") return snapshot;
-    const allowed = observerChannelTapSubjects(this.ep) ?? [];
-    const visible = (channel: string): boolean => {
-      if (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) return true;
-      try {
-        const { subject } = channelRoute(this.ep.space, "*", "*", channel, "isolated");
-        return allowed.some((grant) => subjectPatternCovers(grant, subject));
-      } catch { return false; }
-    };
+    if (this.ep.channelRoutingMode() === "legacy") return snapshot;
     const members = snapshot.members.flatMap((row) => {
-      const live = row.live.filter(visible), durable = row.durable.filter(visible);
+      const live = row.live.filter(this.channelVisible), durable = row.durable.filter(this.channelVisible);
       return live.length || durable.length || (!row.live.length && !row.durable.length) ? [{ ...row, live, durable }] : [];
     });
     return { ...snapshot, members };
   }
+
+  private channelVisible = (channel: string): boolean => {
+    if (!isReservedChannel(channel)) return true;
+    const mode = this.ep.channelRoutingMode();
+    if (mode === "legacy") return true;
+    if (mode !== "isolated" || !this.chatOnly) return false;
+    try {
+      const { subject } = channelRoute(this.ep.space, "*", "*", channel, mode);
+      return (observerChannelTapSubjects(this.ep) ?? []).some((grant) => subjectPatternCovers(grant, subject));
+    } catch { return false; }
+  };
 
   /** Discard local chat for one channel, or all chat if no channel is given, after a confirmed purge. */
   discardChatHistory(channel?: string): void {
@@ -407,13 +412,14 @@ export class MeshView extends EventEmitter {
 
   snapshot(): MeshSnapshot {
     const channels = [...this.channelCounts]
+      .filter(([channel]) => this.channelVisible(channel))
       .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0, deliveryClass: this.ep.channelDeliveryClass(channel) }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
     return {
       agents: this.roster.filter((p) => p.card.kind === "agent"),
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
-      feed: this.feed.slice(),
+      feed: this.feed.filter((entry) => entry.channel === undefined || this.channelVisible(entry.channel)),
       membership: { ...this.membership, ...(this.membership.snapshot ? { snapshot: this.scopeMembership(this.membership.snapshot) } : {}) },
       rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
@@ -447,8 +453,9 @@ export class MeshView extends EventEmitter {
  *  from.name is sender-chosen display text, not identity (#1399): the roster is the only writer
  *  of id→name, so a spoofed name can never re-key a thread or a label. */
   private ingest(subject: string, msg: CotalMessage): void {
-    const parsed = this.chatOnly ? parseSubject(subject) : null;
-    if (parsed?.kind === PLUGIN_CHANNEL_ROOT && this.ep.channelRoutingMode() !== "isolated") return;
+    const parsed = parseSubject(subject);
+    if (parsed?.kind === PLUGIN_CHANNEL_ROOT && (this.ep.channelRoutingMode() !== "isolated" || !this.channelVisible(parsed.rest))) return;
+    if (parsed?.kind === "chat" && isReservedChannel(parsed.rest) && this.ep.channelRoutingMode() !== "legacy") return;
     const kind = parsed?.kind === PLUGIN_CHANNEL_ROOT ? "chat" : deliveryOf(subject);
     if (!kind) return;
     const now = Date.now();
@@ -572,7 +579,7 @@ export class MeshView extends EventEmitter {
     // fetch would enumerate every one of them, issue a `channelHistory` round trip each, and then
     // throw the results away: unbounded work to display nothing. That is a performance defect
     // rather than a cosmetic one, which is why it is filtered here and not in the loop below.
-    const chat = chans.filter((c) => !isEventChannel(c.channel) && !discarded.has(c.channel));
+    const chat = chans.filter((c) => !isEventChannel(c.channel) && !discarded.has(c.channel) && this.channelVisible(c.channel));
     const batches = await Promise.all(
       chat.map((c) =>
         this.ep.channelHistory(c.channel, { limit: HISTORY_LIMIT }).catch(() => [] as CotalMessage[]),
@@ -582,7 +589,7 @@ export class MeshView extends EventEmitter {
     const history: FeedEntry[] = [];
     for (const msgs of batches)
       for (const msg of msgs) {
-        if (!msg.channel || discarded.has(msg.channel) || (msg.id && this.seen.has(msg.id))) continue;
+        if (!msg.channel || !this.channelVisible(msg.channel) || discarded.has(msg.channel) || (msg.id && this.seen.has(msg.id))) continue;
         if (msg.id) this.seen.add(msg.id);
         history.push({
           id: msg.id,
@@ -641,7 +648,7 @@ export class MeshView extends EventEmitter {
     // the strip on this poll instead of lingering with its last count.
     const next = new Map<string, number>();
     for (const { channel, messages } of chans)
-      if (!isEventChannel(channel)) next.set(channel, messages);
+      if (!isEventChannel(channel) && this.channelVisible(channel)) next.set(channel, messages);
     this.channelCounts = next;
     for (const channel of this.arrivals.keys()) if (!next.has(channel)) this.arrivals.delete(channel);
     this.dirty = true;

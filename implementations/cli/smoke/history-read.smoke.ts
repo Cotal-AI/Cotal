@@ -253,6 +253,7 @@ async function checkEnabledPluginHistory(): Promise<void> {
       grant?.read?.join() === channel && grant.post?.join() === channel, shown(whoami));
     await fixture.seedMembership(reader.principal, { live: [fixture.chatChannel, channel], durable: [fixture.chatChannel, hiddenChannel] });
     await checkEnabledObserverIsChatOnly(fixture, scope, save, send, reader.principal);
+    await checkEnabledLegacyCredential(fixture, scope, save);
 
     const live = follow(["history", channel, "--follow", "--creds", viewer, ...scope]);
     try {
@@ -277,6 +278,45 @@ async function checkEnabledPluginHistory(): Promise<void> {
   } finally {
     await fixture.close();
   }
+}
+
+async function checkEnabledLegacyCredential(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
+): Promise<void> {
+  const { space, servers, hiddenChannel, chatChannel } = fixture;
+  const old = await fixture.mintAgent({ legacy: true, read: [chatChannel, hiddenChannel], post: [chatChannel, hiddenChannel] });
+  const file = save("enabled-legacy-agent.creds", old.creds);
+  const observer = save("enabled-metadata-observer.creds", await fixture.mintObserver());
+  const call = (args: string[], creds = file) => run([...args, "--creds", creds, ...scope]);
+  const metadata = await call(["channel"], observer);
+  check("configured metadata shows ordinary CHAT without the stale hidden registry row", metadata.status === 0 &&
+    metadata.stdout.includes(chatChannel) && !metadata.stdout.includes(hiddenChannel), shown(metadata));
+  const retained = await call(["history", hiddenChannel]);
+  const sent = await call(["send", "-c", hiddenChannel, "legacy grant must not route to plugin history"]);
+  check("a pre-activation CHAT grant does not authorize isolated reads or writes",
+    retained.status === 2 && retained.envelope?.error?.code === "PERMISSION_DENIED" && sent.status === 2 &&
+    sent.envelope?.error?.code === "PERMISSION_DENIED", { retained: shown(retained), sent: shown(sent) });
+
+  // Model retained pre-cutover traffic through the old signed CHAT permission, not a new grant.
+  const stalePost = "legacy CHAT body at an isolated name";
+  const wire = await connect({ servers, ...standaloneConnectOpts({ creds: old.creds, tls: false }) });
+  try {
+    const ack = await jetstream(wire).publish(chatSubject(space, old.owner, old.actor, hiddenChannel), JSON.stringify({
+      id: randomUUID(), ts: Date.now(), space, from: { id: old.principal, name: "old", kind: "agent" },
+      channel: hiddenChannel, parts: [{ kind: "text", text: stalePost }],
+    }));
+    check("the pre-activation control can seed a stale CHAT post on the broker", ack.stream === chatStream(space), ack);
+  } finally {
+    await wire.close();
+  }
+  const chat = await call(["send", "-c", chatChannel, "ordinary pre-activation credential control"]);
+  const inventory = await call(["history"], observer);
+  const legacyHistory = await call(["history", chatChannel]);
+  check("ordinary history remains readable while legacy lookalikes stay out of inventory and retained output",
+    chat.status === 0 && inventory.status === 0 && legacyHistory.status === 0 &&
+    texts(inventory).includes("ordinary pre-activation credential control") && texts(legacyHistory).includes("ordinary pre-activation credential control") &&
+    !inventory.stdout.includes(hiddenChannel) && !inventory.stdout.includes(stalePost),
+    { chat: shown(chat), inventory: shown(inventory), legacyHistory: shown(legacyHistory) });
 }
 
 async function checkEnabledObserverIsChatOnly(

@@ -38,7 +38,7 @@ import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
 import { streamsAbsent } from "../lib/space-streams.js";
-import { namedChannelMode } from "../lib/transient.js";
+import { hasPluginChannelRoot, namedChannelMode } from "../lib/transient.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -454,7 +454,10 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // failure there is a part not read; reading every channel needs it to know what to read.
   let listed: { channel: string; messages: number }[] | undefined;
   try {
-    if (!namedPlugin) listed = await ep.listChannels();
+    if (!namedPlugin) {
+      listed = await ep.listChannels();
+      if (mode === undefined) listed = listed.filter(({ channel }) => !hasPluginChannelRoot(channel));
+    }
   } catch (e) {
     if (req.channel === undefined) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not list the channels of ${conn.space}: ${(e as Error).message}`, { target: req.target });
@@ -630,7 +633,8 @@ function historyTapSubjects(conn: Connection, channel: string | undefined, mode:
     return new Set(grants.read.filter((row) => !chatOnly || row.kind === "chat").map((row) => row.subject));
   }
   if (granted === undefined) return new Set([chatWildcard(space)]);
-  return new Set(granted.map((ch) => channelRoute(space, "*", "*", ch, mode ?? "legacy").subject));
+  return new Set(granted.filter((ch) => mode !== undefined || !hasPluginChannelRoot(ch))
+    .map((ch) => channelRoute(space, "*", "*", ch, mode ?? "legacy").subject));
 }
 
 /** The live half of `--follow`: taps the selection's subjects and records connection gaps.
@@ -678,6 +682,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   const receive = (subject: string, msg: CotalMessage | undefined) => {
     if (!msg) return;
     const p = parseSubject(subject);
+    if (p?.kind === "chat" && hasPluginChannelRoot(p.rest) && ep.channelRoutingMode() !== "legacy") return;
     if (p?.kind === "chat" || (p?.kind === PLUGIN_CHANNEL_ROOT && ep.channelRoutingMode() === "isolated"))
       push({ item: itemOf(msg, { channel: p.rest }) });
     else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });

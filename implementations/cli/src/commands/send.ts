@@ -34,7 +34,7 @@ import {
 import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { batchedRead, namedChannelMode, openTransient, streamGoneAt } from "../lib/transient.js";
+import { batchedRead, hasPluginChannelRoot, namedChannelMode, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -482,8 +482,9 @@ export async function send(args: ParsedArgs): Promise<void> {
     // An unread check does not refuse, and a missing stream only matters to its own rail.
     // An open space that runs elsewhere gets its streams from its first participant, and this send
     // may be that participant, as a chat session is when it starts (#7045).
+    const routingMode = ep.channelRoutingMode();
     const route = input.mode === "msg" ? channelRoute(space, ep.principal.owner, ep.principal.actor, input.target,
-      namedChannelMode(ep.channelRoutingMode(), input.target, space)) : undefined;
+      namedChannelMode(routingMode, input.target, space)) : undefined;
     const storedOn = route?.stream ?? (input.mode === "dm" ? dmStream(space) : taskStream(space));
     if (spaceStreamsExpected(space, connection.mode)) {
       // The isolated publish requires an acknowledgement from its expected stream. A caller's
@@ -505,7 +506,7 @@ export async function send(args: ParsedArgs): Promise<void> {
         // consumer outlives the send by five minutes (#4091). A user bearer, or a credential with no
         // Direct Get row, keeps the scan.
         const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: batchedRead(connection, channelBucket(space)) });
-        registered = Object.keys(registry.channels ?? {});
+        registered = Object.keys(registry.channels ?? {}).filter((channel) => routingMode === "legacy" || !hasPluginChannelRoot(channel));
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };
         if (!policy.registered) warnings.push(await unregisteredChannel(values, input.target, target, registered));
