@@ -182,16 +182,16 @@ try {
   );
 
   // Keep the broker down until nats.js exhausts its reconnect attempts and closes the real current
-  // connection. This reaches CotalEndpoint.superviseConnection through nc.closed(), not through a
+  // connection. This reaches EndpointConnection.superviseConnection through nc.closed(), not through a
   // constructed fake, and observes the MeshAgent diagnostic the user-facing status surface reads.
   const ep = agent.ep as unknown as {
     conn: { nc?: {
       setServers(servers: string[]): void;
       reconnect(): Promise<void>;
     } };
-    reestablishLoop(): Promise<void>;
+    connection: { reestablishLoop(): Promise<void> };
   };
-  ep.reestablishLoop = async () => {};
+  ep.connection.reestablishLoop = async () => {};
   const unreachablePort = await pickFreePort();
   ep.conn.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
   await ep.conn.nc!.reconnect();

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv } from "@cotal-ai/connector-core";
 import { codexConnector } from "../src/index.js";
+import { configOverrides } from "../src/codex-config.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -85,6 +86,49 @@ try {
   );
   const flagWins = launch({ space: "s", name: "peer", configPath: agentFile, model: "gpt-5.6-sol" });
   check("the --model flag wins over the agent file", flagWins.env?.COTAL_MODEL === "gpt-5.6-sol");
+
+  // Modes: Codex's one mode is the fast toggle, which the host renders as Codex's service tier.
+  check("modes support is declared", codexConnector.supportsModes === true);
+  const tier = (modes: Record<string, boolean | string>, extra = {}) => launch({ space: "s", name: "n", modes, ...extra }).env?.COTAL_CODEX_SERVICE_TIER;
+  check("fast on selects Codex's priority tier", tier({ fast: true }) === "priority");
+  check("fast off selects Codex's default tier", tier({ fast: false }) === "default");
+  check("a launch that names no mode leaves the tier to Codex", base.env !== undefined && !("COTAL_CODEX_SERVICE_TIER" in base.env));
+  throws("an unknown mode is refused", () => tier({ plan: true }), /mode "plan" is not one Codex offers/);
+  throws("an unknown mode beside fast is refused", () => tier({ fast: true, plan: "x" }), /mode "plan" is not one Codex offers/);
+  throws("a fast value that is not true or false is refused", () => tier({ fast: "yes" }), /takes true or false, not "yes"/);
+  throws("a validate-only launch refuses an unknown mode too", () => tier({ plan: true }, { validateOnly: true }), /not one Codex offers/);
+
+  // The fast mode and an operator service_tier both choose the tier, so the mix is refused at spawn.
+  const opTierOpt = { launchOptions: { service_tier: '"flex"' } };
+  const conflict = /mode "fast" and launch option "service_tier" both set Codex's service tier.*--opt service_tier=\.\.\. alone/;
+  throws("fast on beside an operator service_tier is refused", () => tier({ fast: true }, opTierOpt), conflict);
+  throws("fast off beside an operator service_tier is refused", () => tier({ fast: false }, opTierOpt), conflict);
+  throws("a validate-only launch refuses the mix too", () => tier({ fast: true }, { ...opTierOpt, validateOnly: true }), conflict);
+  const opOnly = launch({ space: "s", name: "n", ...opTierOpt }).env ?? {};
+  check(
+    "an operator service_tier alone still launches, with no mode tier",
+    !("COTAL_CODEX_SERVICE_TIER" in opOnly) && JSON.parse(opOnly.COTAL_CODEX_CONFIG ?? "{}").service_tier === '"flex"',
+    opOnly.COTAL_CODEX_CONFIG,
+  );
+
+  // The host renders the tier as a `-c service_tier` override, and refuses one beside an operator's.
+  const serviceTiers = (o: [string, string][]) => o.filter(([k]) => k === "service_tier").map(([, v]) => v);
+  const ownConfig = process.env.COTAL_CODEX_CONFIG;
+  delete process.env.COTAL_CODEX_CONFIG;
+  try {
+    const rendered = serviceTiers(configOverrides(undefined, undefined, false, "priority"));
+    check("a tier renders service_tier", rendered.length === 1 && rendered[0] === '"priority"', rendered);
+    check("no tier renders no service_tier", serviceTiers(configOverrides(undefined, undefined, false, undefined)).length === 0);
+    const asking = serviceTiers(configOverrides(undefined, undefined, true, "priority"));
+    check("an askPermissions launch keeps its tier", asking.length === 1 && asking[0] === '"priority"', asking);
+    process.env.COTAL_CODEX_CONFIG = JSON.stringify({ service_tier: '"flex"' });
+    throws("the host refuses a tier beside an operator service_tier", () => configOverrides(undefined, undefined, false, "priority"), /both set the service tier/);
+    const opTier = serviceTiers(configOverrides(undefined, undefined, false, undefined));
+    check("an operator service_tier alone renders once", opTier.length === 1 && opTier[0] === '"flex"', opTier);
+  } finally {
+    if (ownConfig === undefined) delete process.env.COTAL_CODEX_CONFIG;
+    else process.env.COTAL_CODEX_CONFIG = ownConfig;
+  }
 
   // Launch options → -c override bag (rendered by the host); key-shape guard.
   const opted = launch({

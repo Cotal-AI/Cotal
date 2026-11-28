@@ -12,7 +12,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileInstalledSystemdOomPolicy, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { isDaemonStatusInterrupted, waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -140,6 +140,22 @@ async function collectConnectorSets(): Promise<void> {
   } catch { /* An incomplete inventory or failed collection never fails the update. */ }
 }
 
+function reconcileInstalledLinuxPolicy(): void {
+  if (process.platform !== "linux" || process.env.COTAL_UPDATE_PARENT || process.env.COTAL_UPDATE_CLOSURE_TRANSACTION || readUpdateRecovery()) return;
+  try { reconcileInstalledSystemdOomPolicy({ state: join(homeCotalDir(), "daemon") }, undefined, line => console.log(line)); }
+  catch { /* Unreachable or modified units retain their existing policy without failing update. */ }
+}
+
+function refreshPinnedLauncher(): void {
+  try {
+    const installed = executionInstallRoot();
+    if (existsSync(join(installed, "dist/cotal-npm"))) {
+      const selected = selectExecutionProgram(installed);
+      if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true });
+    }
+  } catch { /* Refresh is optional after successful reconciliation. */ }
+}
+
 function preflightExecutionWithCleanup(): boolean {
   const repaired = preflightExecutionUpdate();
   if (!process.env.COTAL_UPDATE_PARENT) {
@@ -236,7 +252,7 @@ const composed: Command = { ...command, async run(args) {
       if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error;
       if (linuxMissingProgram({ state: join(homeCotalDir(), "daemon") })) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the recorded daemon program is missing and this session cannot reach the user service", { remedy: "run `cotal daemon install` from a logged-in session using the working Cotal installation" });
     }
-    if (paths && await repairMissingInstalledProgram(paths)) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
+    if (paths && await repairMissingInstalledProgram(paths, undefined, line => console.log(line))) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
   }
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
@@ -630,16 +646,9 @@ const composed: Command = { ...command, async run(args) {
   if (!(staged && args.values.self === true) && logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
+  reconcileInstalledLinuxPolicy();
   if (packageCheck !== "current") await collectConnectorSets();
-  if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
-    try {
-      const installed = executionInstallRoot();
-      if (existsSync(join(installed, "dist/cotal-npm"))) {
-        const selected = selectExecutionProgram(installed);
-        if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL", windowsHide: true });
-      }
-    } catch { /* Refresh is optional after successful reconciliation. */ }
-  }
+  if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) refreshPinnedLauncher();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {

@@ -25,7 +25,9 @@ if (!existsSync(join(repo, 'bin', 'dist', 'cotal.js')) || !existsSync(join(repo,
 const version = JSON.parse(readFileSync(join(repo, 'bin', 'package.json'), 'utf8')).version;
 const staging = mkdtempSync(join(native, '.runtime-stage-'));
 const deploy = join(staging, 'runtime');
-const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
+// The RPM writer can interleave hard-link sets from the pnpm store. The DEB writer copies each resource independently.
+const importMethod = process.platform === 'linux' ? ['--config.package-import-method=copy'] : [];
+const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', ...importMethod, 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
 if (result.status !== 0) throw new Error(`pnpm deploy failed; retained staging is ${staging}`);
 
 function traceEsm(entry) {
@@ -134,6 +136,12 @@ if (process.platform === 'darwin' || process.platform === 'linux') {
   const stripArgs = process.platform === 'darwin' ? ['-x', stagedBinary] : ['--strip-unneeded', stagedBinary];
   const stripped = spawnSync('strip', stripArgs, { encoding: 'utf8' });
   if (stripped.status !== 0) throw new Error(`strip failed for bundled Node: ${stripped.stderr || stripped.stdout}`);
+}
+// Stripping invalidates Node's signature, and macOS 27 kills a binary whose signature is invalid. Sign the
+// stripped copy ad hoc so the probe below can run it; the app bundle signs it again with its own identity.
+if (process.platform === 'darwin') {
+  const signed = spawnSync('codesign', ['--force', '--sign', '-', stagedBinary], { encoding: 'utf8' });
+  if (signed.status !== 0) throw new Error(`ad hoc codesign failed for bundled Node: ${signed.stderr || signed.stdout}`);
 }
 const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--version'], {
   encoding: 'utf8', timeout: 30_000,
