@@ -14,3 +14,10 @@ export async function withAppMutation<T>(paths: DaemonPaths, run: () => Promise<
     return await run();
   } finally { closeSync(fd); }
 }
+
+/** Whether another change holds the agent-app admission gate right now. Takes and releases it at once. */
+export function appMutationBusy(paths: DaemonPaths): boolean {
+  ensureStateDir(paths);
+  const fd = openSync(join(paths.state, "agent-app.lock"), constants.O_RDWR | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
+  try { return !lockExclusiveNb(fd); } finally { closeSync(fd); }
+}
