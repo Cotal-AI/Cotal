@@ -50,7 +50,7 @@ import { DigestLocks } from "../src/artifact-verbs.js";
 import { metaSubject } from "../src/artifact-objects.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 27;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -261,19 +261,45 @@ try {
   const back = await fetchArtifact(alice, d3, channel);
   check("a re-put after GC is a new verified commit that confirms and fetches", reput.digest === d3 && sha(back.bytes) === d3);
 
+  // ---- E23 on a real broker between the transport and storage floors ----
+  // Restarted over the same store with a limit that carries a small stored chunk and every request and
+  // reply this flow needs, but not one full 64 KiB stored chunk. A tiny artifact is stored and fetched;
+  // a large one is refused at put-begin, before any byte is staged, naming the limit.
+  const restartWith = async (maxPayload: number) => {
+    await release();
+    await new Promise((r) => nats.once("exit", r));
+    writeFileSync(confPath, serverConfig(broker, [account], { transport: { kind: "plaintext" }, port, storeDir: join(brokerDir, "js"), maxPayload }));
+    nats = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
+    release = teardownOnSignal(nats, brokerDir);
+    let ok = false;
+    for (let i = 0; i < 150 && !ok; i++) { await wait(200); try { ok = alice.maxPayload === maxPayload && bob.maxPayload === maxPayload; } catch { /* still reconnecting */ } }
+    // The daemon's own store connections reconnect too; give them their own moment.
+    await wait(2_000);
+    return ok;
+  };
+  const mid = 48 * 1024;
+  const midUp = await restartWith(mid);
+  const tinyBytes = new Uint8Array(500).map((_, i) => (i * 7) % 251), tinyDigest = sha(tinyBytes);
+  const tinyPut = await putArtifact(alice, tinyBytes, { name: "tiny.bin", mediaType: "application/octet-stream" }).then((r) => r.digest, (e: Error) => `!${e.message}`);
+  const tinyPost = await alice.multicastWithAck("tiny", { channel, parts: [{ ...part, name: "tiny.bin", digest: tinyDigest, size: tinyBytes.byteLength }] });
+  await confirmAttach(alice, { digest: tinyDigest, channel, seq: tinyPost.seq });
+  const tinyBack = await fetchArtifact(bob, tinyDigest, channel).then((r) => sha(r.bytes), (e: Error) => `!${e.message}`);
+  check("on a broker between the transport and storage floors, a tiny artifact is stored, confirmed and fetched",
+    midUp && tinyPut === tinyDigest && tinyBack === tinyDigest, { midUp, tinyPut, tinyBack });
+  const big = new Uint8Array(100_000).map((_, i) => (i * 13) % 251);
+  const bigRefusal = await refusal(alice.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_PUT_BEGIN_COMMAND, { name: "big.bin", mediaType: "x/y", size: big.byteLength, digest: sha(big) })
+    .then((r) => { if (!r.reply.ok) throw r.reply.error; }));
+  check("on that broker a large artifact is refused at put-begin, resource-exhausted, not-executed, naming the limit and what it needs",
+    /"code":"resource-exhausted"/.test(bigRefusal) && /not-executed/.test(bigRefusal)
+      && new RegExp(`payload limit is too small for this artifact: its max_payload is ${mid} bytes, and storing ${big.byteLength} bytes needs at least`).test(bigRefusal), bigRefusal);
+
   // ---- E21 on a real broker that is too small: restarted over the same store with a lower limit ----
   // A caller's describe is cached per endpoint and kept across a reconnect (endpoint-control-plane.ts
   // clears it only on refresh, a permission recovery, a currency split or a registry listing), and each
   // attempt reads the connection's CURRENT max_payload. So alice's next put-chunk, after the broker
   // comes back with a limit below one raw byte of that request, meets the request floor for real.
   const low = f9(1) + EP_REQUEST_HEADER_ALLOWANCE - 64;
-  await release();
-  await new Promise((r) => nats.once("exit", r));
-  writeFileSync(confPath, serverConfig(broker, [account], { transport: { kind: "plaintext" }, port, storeDir: join(brokerDir, "js"), maxPayload: low }));
-  nats = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
-  release = teardownOnSignal(nats, brokerDir);
-  let reconnected = false;
-  for (let i = 0; i < 150 && !reconnected; i++) { await wait(200); try { reconnected = alice.maxPayload === low; } catch { /* still reconnecting */ } }
+  const reconnected = await restartWith(low);
   let lowFloor = "";
   const lowStarted = Date.now();
   try {

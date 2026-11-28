@@ -93,14 +93,37 @@ export interface VerbDeps {
   now?: () => number;
   /** Ordered test barriers: awaited at the named point of a real handler, so a cell holds a verb there
    *  and drives the sweep or a quiesce against it. Absent in a running daemon. */
-  hold?: (point: "commit-locked" | "confirm-locked" | "fetch-read") => Promise<void>;
+  hold?: (point: "commit-locked" | "confirm-locked" | "fetch-gated" | "fetch-read") => Promise<void>;
 }
+
+/** Run one handler, and fence its REFUSALS at the reply boundary as its successes are fenced (E18): a
+ *  handler whose generation ended while it ran answers `unavailable` instead of a stale answer such as
+ *  `unknown digest`. The fence refusal keeps `not-executed` only when the handler's own refusal said
+ *  so; any other refusal may follow a landed write, so it says `unknown`. */
+export function fenceRefusals<T>(scope: ServeScope, run: () => Promise<T>): Promise<T> {
+  return run().catch((e: unknown) => {
+    scope.fence.check(scope.generation, "the refusal reply", e instanceof EpEnvelopeError && e.outcome === "not-executed" ? "not-executed" : "unknown");
+    throw e;
+  });
+}
+
+type HandlerFactory<O> = (scope: ServeScope) => (sctx: EpServeContext) => Promise<O>;
+const fenced = <O>(raw: HandlerFactory<O>): HandlerFactory<O> => (scope) => (sctx) => fenceRefusals(scope, () => raw(scope)(sctx));
 
 /** Builds the handlers for one serving generation. Staged uploads outlive a generation: they are only
  *  ever committed under the generation the commit request arrives on. */
 export class ArtifactVerbs {
   readonly staging = new StagingLedger();
-  constructor(private readonly deps: VerbDeps) {}
+  constructor(private readonly deps: VerbDeps) {
+    // Every handler's refusals pass the serve fence at the reply boundary (E18).
+    this.putBegin = fenced(this.putBegin);
+    this.putChunk = fenced(this.putChunk);
+    this.putCommit = fenced(this.putCommit);
+    this.fetchBegin = fenced(this.fetchBegin);
+    this.fetchChunk = fenced(this.fetchChunk);
+    this.confirmAttach = fenced(this.confirmAttach);
+    this.pin = fenced(this.pin);
+  }
 
   private now(): number { return this.deps.now?.() ?? Date.now(); }
 
@@ -122,7 +145,7 @@ export class ArtifactVerbs {
     if (args.size === 0) throw notExecuted("bad-request", "put-begin: an artifact holds at least one byte; nothing was staged");
     const over = this.staging.refusal(caller, args.size);
     if (over !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${over}`);
-    const tooSmall = this.stores("put-begin").objects.storeRefusal();
+    const tooSmall = this.stores("put-begin").objects.storeRefusal(args.size);
     if (tooSmall !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${tooSmall}; nothing was staged`);
     scope.fence.check(scope.generation, "staging the upload");
     const uploadId = randomBytes(16).toString("hex");
@@ -135,6 +158,8 @@ export class ArtifactVerbs {
     const args = sctx.request.args as unknown as ArtifactsPutChunkInput;
     const s = this.staging.own(args.uploadId, caller);
     if (s === undefined) throw notExecuted("not-found", `put-chunk: no upload ${args.uploadId} is staged for you; begin a new one`);
+    // Fenced before anything touches the upload: a stale handler neither appends to it nor ends it (E18).
+    scope.fence.check(scope.generation, "staging the chunk");
     const bytes = Buffer.from(args.data, "base64");
     // A failed chunk ends the upload and says so: there is no resume (plan section 8).
     const refused = this.staging.appendRefusal(s, args.seq, bytes, ARTIFACT_CHUNK_MAX);
@@ -146,7 +171,6 @@ export class ArtifactVerbs {
           ? "put-chunk: the chunk carries no byte, so the upload makes no progress; the upload is dead, begin a new one"
           : `put-chunk: the chunk would take the upload past its declared ${s.size} bytes (or over ${ARTIFACT_CHUNK_MAX} per chunk); the upload is dead, begin a new one`);
     }
-    scope.fence.check(scope.generation, "staging the chunk");
     this.staging.append(s, bytes);
     return { received: s.received };
   };
@@ -157,7 +181,10 @@ export class ArtifactVerbs {
     if (this.staging.own(args.uploadId, caller) === undefined)
       throw notExecuted("not-found", `put-commit: no upload ${args.uploadId} is staged for you; begin a new one`);
     const fence = writeFence(scope);
-    // The upload stays charged until this settles (E20), and is never addressable again.
+    // Fenced before the upload is taken, and a fence refusal raised before any write puts the same
+    // upload back, so a stale handler never consumes what the next generation should commit (E18).
+    scope.fence.check(scope.generation, "taking the upload for commit");
+    // The upload stays charged until this settles (E20).
     const committed = await this.staging.commit(args.uploadId, async (s) => {
       if (s.received !== s.size)
         throw notExecuted("failed-precondition", `put-commit: ${s.received} of the declared ${s.size} bytes arrived; nothing was committed`);
@@ -171,6 +198,10 @@ export class ArtifactVerbs {
       const { index, objects } = this.stores("put-commit");
       await this.deps.locks.run(digest, async () => {
         await this.deps.hold?.("commit-locked");
+        // The limit for THIS artifact, read again right before the reservation: it can have dropped
+        // since put-begin, or while this commit waited for the digest (E23).
+        const tooSmall = objects.storeRefusal(s.size);
+        if (tooSmall !== undefined) throw notExecuted("resource-exhausted", `put-commit: ${tooSmall}; nothing was committed`);
         // Commit order (plan section 6): reservation, chunks, meta, possession. A blob is never visible
         // to the sweep without a live reservation in front of it.
         const reservationId = randomUUID();
@@ -179,7 +210,7 @@ export class ArtifactVerbs {
         await index.writePossession(digest, caller, { size: meta.size, name: s.name, mediaType: s.mediaType, committedAt: this.now(), reservationId }, fence.guard);
       });
       return { digest, size: s.size };
-    });
+    }, (e) => e instanceof EpEnvelopeError && e.code === "unavailable" && e.outcome === "not-executed");
     fence.reply("the commit reply");
     return committed;
   };
@@ -191,6 +222,7 @@ export class ArtifactVerbs {
     await this.deps.fenceCaller(sctx.subject.caller, command);
     // The read gate first: nothing digest-dependent is read before it.
     await this.deps.mayReadChannel(sctx.subject.caller, channel, command);
+    await this.deps.hold?.("fetch-gated");
     const { index, objects } = this.stores(command);
     const row = await index.readAttachment(channel, digest);
     if (row === undefined) throw notExecuted("not-found", `${command}: ${FETCH_UNKNOWN}`);

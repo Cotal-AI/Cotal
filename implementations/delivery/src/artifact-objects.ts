@@ -18,7 +18,7 @@
  */
 import { headers, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
-import { artifactBucket, isCasLoss, objectStoreStream } from "@cotal-ai/core";
+import { artifactBucket, EpEnvelopeError, isCasLoss, objectStoreStream } from "@cotal-ai/core";
 import { digestToken } from "./artifact-keys.js";
 
 /** The commit record: what the store verified, not what any message claims. */
@@ -107,13 +107,16 @@ export class ArtifactObjects {
     return m === null ? undefined : m.data;
   }
 
-  /** Why this connection cannot store an artifact, or `undefined` when it can: a broker message limit
-   *  below one stored chunk and its headers. Asked at `put-begin`, before any byte is staged (C15), and
-   *  again before the first write. */
-  storeRefusal(): string | undefined {
+  /** Why this connection cannot store an artifact of `size` bytes, or `undefined` when it can: the
+   *  broker's message limit must carry the artifact's largest stored chunk (`size` up to
+   *  {@link ARTIFACT_STORE_CHUNK_BYTES}) plus {@link STORE_HEADER_ALLOWANCE} bytes of headers (E23). Asked at
+   *  `put-begin`, before any byte is staged, and again under the commit's digest lock, before its
+   *  reservation. */
+  storeRefusal(size: number): string | undefined {
     const max = this.nc.info?.max_payload;
-    return typeof max === "number" && max < ARTIFACT_STORE_CHUNK_BYTES + STORE_HEADER_ALLOWANCE
-      ? `the broker's payload limit is too small: its max_payload is ${max} bytes, and storing an artifact needs at least ${ARTIFACT_STORE_CHUNK_BYTES + STORE_HEADER_ALLOWANCE}`
+    const need = Math.min(size, ARTIFACT_STORE_CHUNK_BYTES) + STORE_HEADER_ALLOWANCE;
+    return typeof max === "number" && max < need
+      ? `the broker's payload limit is too small for this artifact: its max_payload is ${max} bytes, and storing ${size} bytes needs at least ${need} (the largest stored chunk plus ${STORE_HEADER_ALLOWANCE} bytes of headers)`
       : undefined;
   }
 
@@ -132,8 +135,10 @@ export class ArtifactObjects {
     const size = blocks.reduce((n, b) => n + b.byteLength, 0);
     if (blocks.some((b, i) => b.byteLength !== storedChunkLength(size, i)) || blocks.length !== storedChunkCount(size))
       throw new Error(`the bytes of ${meta.digest} are not in storage framing; nothing was written`);
-    const tooSmall = this.storeRefusal();
-    if (tooSmall !== undefined) throw new Error(tooSmall);
+    // The caller checked the same limit before its reservation; a limit that moved in between is a
+    // failure after that write, so it says so.
+    const tooSmall = this.storeRefusal(size);
+    if (tooSmall !== undefined) throw new EpEnvelopeError("resource-exhausted", tooSmall, undefined, "unknown");
     const js = jetstream(this.nc);
     const record: ArtifactMeta = { ...meta, size, chunks: blocks.length };
     const createOnly = () => { const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0"); return h; };

@@ -32,7 +32,7 @@ import { ARTIFACT_DATA_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, daemonEndpointKe
 import { attachmentKeyDigest, channelAttachmentsFilter, concreteChannel } from "./artifact-keys.js";
 import { ArtifactIndex } from "./artifact-index.js";
 import { ArtifactObjects } from "./artifact-objects.js";
-import { ArtifactVerbs, DigestLocks, fenceCallerWith } from "./artifact-verbs.js";
+import { ArtifactVerbs, DigestLocks, fenceCallerWith, fenceRefusals } from "./artifact-verbs.js";
 import { readChatEntryForConfirm } from "./artifact-chat-read.js";
 import { startSweeps, UNCONFIRMED_COMMIT_EVENT } from "./artifact-sweep.js";
 import type { DaemonServedEndpoint, ServeScope, StagedStores } from "./endpoint-bind.js";
@@ -194,7 +194,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     // Every contract command has its handler (SPEC 13.9). Building them installs nothing (E19).
     defs: (scope) => {
       const handlers: Record<string, EpCommandDef["handler"]> = {
-        [ARTIFACTS_LIST_COMMAND]: list(scope),
+        [ARTIFACTS_LIST_COMMAND]: (sctx) => fenceRefusals(scope, () => list(scope)(sctx)),
         [ARTIFACTS_PUT_BEGIN_COMMAND]: verbs.putBegin(scope),
         [ARTIFACTS_PUT_CHUNK_COMMAND]: verbs.putChunk(scope),
         [ARTIFACTS_PUT_COMMIT_COMMAND]: verbs.putCommit(scope),

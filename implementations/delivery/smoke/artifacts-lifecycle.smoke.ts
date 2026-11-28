@@ -44,7 +44,7 @@ import type { ChatEntryForConfirm } from "../src/artifact-chat-read.js";
 import { DaemonEndpointBinder, type ServeScope } from "../src/endpoint-bind.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 20;
+const EXPECTED_CELLS = 24;
 const { check, finish, passed, failed } = createSuite();
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -208,15 +208,28 @@ try {
     check("an empty put-chunk is refused, not-executed, and ends the upload", /carries no byte/.test(empty) && /not-executed/.test(empty) && /no upload/.test(after), { empty, after });
   }
   {
-    // C15: a data connection whose broker limit is below one stored chunk refuses at put-begin, before
-    // any byte is staged, not at commit. The real handler over a connection reporting that limit.
-    const small = new ArtifactObjects({ info: { max_payload: 60_000 } } as unknown as NatsConnection, space);
+    // C15/E23: a data connection whose broker limit cannot carry this artifact's largest stored chunk
+    // refuses at put-begin, before any byte is staged. The real handler over a connection reporting it.
+    const small = new ArtifactObjects({ info: { max_payload: 1_000 } } as unknown as NatsConnection, space);
     const smallVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: small }), locks: new DigestLocks(),
       fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined });
     const refused = await refusal(smallVerbs.putBegin(s)(ctx(dave, { name: "s", mediaType: "x/y", size: 10, digest: sha(bytesOf(10, 7)) })));
-    check("on a broker limit below one stored chunk, put-begin refuses before staging, resource-exhausted, not-executed, naming the limit",
-      /"code":"resource-exhausted"/.test(refused) && /payload limit is too small: its max_payload is 60000 bytes/.test(refused) && /not-executed/.test(refused)
+    check("on a broker limit below this artifact's stored chunk, put-begin refuses before staging, resource-exhausted, not-executed, naming the limit",
+      /"code":"resource-exhausted"/.test(refused) && /payload limit is too small for this artifact: its max_payload is 1000 bytes, and storing 10 bytes needs at least 1034/.test(refused) && /not-executed/.test(refused)
         && smallVerbs.staging.chargeOf(dave).uploads === 0, refused);
+    // The limit drops between put-begin and put-commit: the commit refuses before its reservation.
+    const info = { max_payload: 1 << 20 };
+    const dropping = new ArtifactObjects({ info } as unknown as NatsConnection, space);
+    const droppingVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: dropping }), locks: new DigestLocks(),
+      fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined });
+    const bytes = bytesOf(10, 9), d = sha(bytes);
+    const { uploadId } = await droppingVerbs.putBegin(s)(ctx(dave, { name: "s", mediaType: "x/y", size: 10, digest: d }));
+    await droppingVerbs.putChunk(s)(ctx(dave, { uploadId, seq: 0, data: Buffer.from(bytes).toString("base64") }));
+    info.max_payload = 1_000;
+    const atCommit = await refusal(droppingVerbs.putCommit(s)(ctx(dave, { uploadId })));
+    check("a limit that drops below this artifact's stored chunk after put-begin refuses the commit not-executed, with no reservation written",
+      /"code":"resource-exhausted"/.test(atCommit) && /not-executed/.test(atCommit) && /nothing was committed/.test(atCommit)
+        && (await kv.reserve.get(principalDigestKey(d, dave))) === null, atCommit);
   }
   {
     const first = await stage(carol, bytesOf(1000, 3), [1000]);
@@ -273,6 +286,56 @@ try {
     check("a fetch-chunk held across a quiesce sends no bytes, and fetch-begin refuses after it",
       /unavailable/.test(r) && /not-executed/.test(r) && /unavailable/.test(begin), { r, begin });
     s = scope();
+  }
+  {
+    // E18: a fetch held after its read gate, released after a quiesce, for a digest NOT attached here:
+    // it answers the fence refusal, never the stale `unknown digest`.
+    const held = arm("fetch-gated");
+    const fetching = refusal(verbs.fetchBegin(s)(ctx(bob, { digest: sha(bytesOf(7, 77)), channel: "team.nothing" })));
+    await held.reached;
+    await binder.quiesce("lost the lease");
+    held.release();
+    const r = await fetching;
+    s = scope();
+    const control = await refusal(verbs.fetchBegin(s)(ctx(bob, { digest: sha(bytesOf(7, 77)), channel: "team.nothing" })));
+    check("a fetch held past its gate across a quiesce answers unavailable not-executed, not unknown digest; the same fetch on the new generation says unknown digest",
+      /"code":"unavailable"/.test(r) && /not-executed/.test(r) && !/unknown digest/.test(r) && /unknown digest/.test(control), { r, control });
+  }
+  {
+    // E18: a commit held at its caller admission, released after a quiesce, refuses before taking the
+    // upload; the renewed generation commits the very same upload.
+    const bytes = bytesOf(4_000, 61), d = sha(bytes);
+    const st = await stage(dave, bytes, [4_000]);
+    const slowFence = new ArtifactVerbs({ space, stores: () => ({ index, objects }), locks,
+      fenceCaller: async (c) => { await hold("caller-admitted"); return { owner: c.owner, actor: c.actor, uid: c.uid }; },
+      mayReadChannel: async () => {}, readChatEntry: async () => undefined });
+    // The same staged upload, reached through the handler of a generation that is about to end.
+    (slowFence as unknown as { staging: unknown }).staging = verbs.staging;
+    const held = arm("caller-admitted");
+    const stale = refusal(slowFence.putCommit(s)(ctx(dave, { uploadId: st.uploadId })));
+    await held.reached;
+    await binder.quiesce("lost the lease");
+    held.release();
+    const r = await stale;
+    s = scope();
+    const renewed = await refusal(verbs.putCommit(s)(ctx(dave, { uploadId: st.uploadId })));
+    check("a commit held across a quiesce refuses not-executed without consuming the upload; the renewed generation commits that same upload",
+      /"code":"unavailable"/.test(r) && /not-executed/.test(r) && renewed === "ok" && await metaPresent(d), { r, renewed });
+  }
+  {
+    // E18: a commit refused by the fence at its FIRST write (the reservation) puts the upload back.
+    const bytes = bytesOf(4_000, 62), d = sha(bytes);
+    const st = await stage(dave, bytes, [4_000]);
+    const held = arm("commit-locked");
+    const stale = refusal(st.commit());
+    await held.reached;
+    await binder.quiesce("lost the lease");
+    held.release();
+    const r = await stale;
+    s = scope();
+    const renewed = await refusal(verbs.putCommit(s)(ctx(dave, { uploadId: st.uploadId })));
+    check("a commit fenced at its reservation, before any write, keeps the upload for the renewed generation",
+      /not-executed/.test(r) && renewed === "ok" && await metaPresent(d), { r, renewed });
   }
 
   // ---- E22: interleavings through the real handlers, each held before its first write ----

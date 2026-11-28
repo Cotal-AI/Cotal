@@ -7378,18 +7378,19 @@ the caller's own lifecycle. Possession and staging are keyed on the caller's lif
 
 **Put.** `put-begin` stages an upload in the server's memory and refuses before any byte past the
 per-artifact limit or the per-lifecycle staging bounds (`resource-exhausted`, `not-executed`), and when
-the broker's payload limit cannot carry one stored chunk (64 KiB plus 1 KiB of headers in the
-reference). An upload stays charged against those bounds until its commit finishes or fails, so
-overlapping commits cannot exceed them. Chunks arrive in order; a chunk out of order, empty, or past
-the declared size ends the upload. `put-commit` hashes the staged bytes and refuses unless they hash
-to the declared digest.
+the broker's payload limit cannot carry the artifact's largest stored chunk (the smaller of its size
+and 64 KiB, plus 1 KiB of headers in the reference); `put-commit` checks that limit again before its
+first write. An artifact holds at least one byte. An upload stays charged against those bounds until
+its commit finishes or fails, so overlapping commits cannot exceed them. Chunks arrive in order; a
+chunk out of order, empty, or past the declared size ends the upload. `put-commit` hashes the staged
+bytes and refuses unless they hash to the declared digest.
 A commit writes, in this order, a reservation row, the chunks, the meta record and the caller's
 possession row. The server stores the bytes in fixed-size chunks whatever chunks they arrived in, and
-every store write is create-only, so a re-put of the same digest in another chunking, or the retry of
-a commit that stopped part way, never changes bytes already stored. The bytes are not visible to
-anyone until attached. A client MUST size each `put-chunk` inside the attempt that sends it, from that
-attempt's own serialized request and the connection's current limit, and MUST refuse before
-publishing when one raw byte cannot fit.
+every object chunk and meta write is create-only, so a re-put of the same digest in another chunking,
+or the retry of a commit that stopped part way, never changes bytes already stored. The bytes are not
+visible to anyone until attached. A client MUST size each `put-chunk` inside the attempt that sends
+it, from that attempt's own serialized request and the connection's current limit, and MUST refuse
+before publishing when one raw byte cannot fit.
 
 **Attach.** A publisher posts an `artifact` part on a channel, learns the chat sequence the broker
 acknowledged for that post, and calls `confirm-attach` with it. The server reads that one chat entry
@@ -7397,14 +7398,17 @@ and attaches the digest to the channel only when the entry is a post by the call
 referencing that digest, and the caller possesses the digest with live bytes. Every refusal for which
 the caller is not entitled is the same reply:
 `{code: "permission-denied", message: "confirm-attach: not authorized for that artifact", outcome: "not-executed"}`
-with no details. A repeated confirm of a live attachment changes nothing: its expiry and row stay as
-they were. Once the attachment has lapsed, a confirm while the bytes still exist (a reservation from a
-re-put holds them) is a new attachment with a new 14-day expiry; after the bytes are removed it is
-refused. An attachment lapses 14 days after it is made unless pinned.
+with no details. A repeated confirm of an attachment still in state `attached` changes nothing, even
+past its expiry before the server has tombstoned it: its expiry and row stay as they were. Once the
+server has turned it into an expired tombstone, a confirm while the bytes still exist (a reservation
+from a re-put holds them) is a new attachment with a new 14-day expiry; after the bytes are removed it
+is refused. An attachment lapses 14 days after it is made unless pinned.
 
 **Serving across a lease change.** The server checks that it still serves the endpoint immediately
-before every store write and before every reply. A refusal raised before the request's first write
-carries `outcome: not-executed`; one raised after a write landed carries `outcome: unknown`.
+before every store write and before every reply, a refusal included, and a request that would take a
+staged upload checks before taking it. A refusal raised before the request's first write carries
+`outcome: not-executed`, and an upload such a refusal interrupted stays staged; one raised after a
+write landed carries `outcome: unknown`.
 
 **Fetch.** `fetch-begin` and `fetch-chunk` check the caller's read access to the channel BEFORE
 anything that depends on the digest, so a caller who may not read the channel receives the same

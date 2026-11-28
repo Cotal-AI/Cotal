@@ -112,15 +112,29 @@ export class StagingLedger {
   }
 
   /** Take the open upload `uploadId` for commit: it stops being addressable, and stays charged until
-   *  `run` settles, when its buffers are released. */
-  async commit<T>(uploadId: string, run: (s: StagedUpload) => Promise<T>): Promise<T> {
+   *  `run` settles. On success, or a refusal `restorable` rejects, its buffers are released. A refusal
+   *  `restorable` accepts (one raised before any write, such as the serve fence) puts the same upload
+   *  back, open and charged, so the generation that serves next can still commit it (E18). */
+  async commit<T>(uploadId: string, run: (s: StagedUpload) => Promise<T>, restorable: (error: unknown) => boolean = () => false): Promise<T> {
     const s = this.open.get(uploadId);
     if (s === undefined) throw new Error(`no upload ${uploadId} is open`);
     clearTimeout(s.timer);
     this.open.delete(uploadId);
     this.committing.add(s);
-    try { return await run(s); }
-    finally { this.committing.delete(s); release(s); }
+    let result: T;
+    try { result = await run(s); }
+    catch (e) {
+      this.committing.delete(s);
+      if (restorable(e)) {
+        s.timer = setTimeout(() => this.drop(uploadId), this.ttlMs);
+        s.timer.unref?.();
+        this.open.set(uploadId, s);
+      } else release(s);
+      throw e;
+    }
+    this.committing.delete(s);
+    release(s);
+    return result;
   }
 
   /** Drop every upload (the endpoint is closing). A commit in flight releases its own. */
