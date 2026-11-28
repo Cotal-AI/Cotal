@@ -152,6 +152,9 @@ export function seedWriterKind(): SeedWriterKind {
   return "released";
 }
 
+/** The diagnostic identifies the machine's connector store and executable entry. */
+export class SeedWriterRefusal extends Error {}
+
 /**
  * Refuse a checkout (or unproven) writer before it can copy payloads, stamp a
  * generation, or GC an installed one. `COTAL_ALLOW_CHECKOUT_SEED=1` is the
@@ -168,7 +171,7 @@ export function assertReleasedSeedWriter(generation: string, action: string): vo
     entry = process.argv[1] ?? "(no entry)";
   }
   const origin = kind === "checkout" ? "a source checkout" : "an unproven CLI entry";
-  throw new Error(
+  throw new SeedWriterRefusal(
     `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Set COTAL_SKIP_CONNECTOR_SEED=1 to run other commands without seeding; isolating XDG_CONFIG_HOME alone does not lift this refusal. COTAL_HOME does not relocate this store.`,
   );
 }

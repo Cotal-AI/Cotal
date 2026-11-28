@@ -78,6 +78,16 @@ If the preferences file is a symbolic link, the event reports the reason without
 If a service adapter path crosses a symbolic link, the event names the option. The link and its destination stay in the local remedy.
 When `space create` refuses a project root that is not a directory, the event reports the reason. The path stays in the local remedy.
 If a project path contains a control character or bidirectional formatting mark, the refusal identifies it locally. The event carries the error code without the diagnostic text or stack.
+When `use` cannot find a space, the requested name and the list of known spaces stay local. The event reports `TARGET_NOT_FOUND` without the message or stack.
+If `up` refuses because the selected project's folder is unavailable, its path and the space names stay local. The event reports `TARGET_UNAVAILABLE` without the message or stack.
+If a startup registration has a relative project path, its conflict message and stack stay local.
+When a file occupies the requested broker store directory or one of its parents, the event omits the paths, message and stack. The local refusal names the file.
+When the answering managers report that none hosts a requested agent, the local refusal lists their instance IDs. The event omits the message and stack.
+If `down` refuses because another project owns the stack, space names and paths stay in the local diagnostic. If `space add` refuses an explicit registration root, its path stays in the local remedy.
+When a project name is already prepared elsewhere or another space already uses the root, the local preparation conflict names the folder. The event reports `CONFLICT` without that diagnostic text or stack.
+If a broker requires authentication and the registration folder holds trust for a different space, the event reports the mismatch. The names, broker address and trust path stay in the local remedy.
+If a project command refuses to use a control directory as the project folder, the paths stay local. A refusal to write the machine's connector store from a checkout or unrecognized executable also keeps the store and executable paths local.
+When a foreground launch or its preview refuses a missing persona, the file or catalog path stays in the local diagnostic. A connection refusal for a space that has not started also keeps its restart path and space name local.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at

@@ -133,15 +133,22 @@ try {
       && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)} --json`)} again`, shown(rooted));
   const intake = await openTelemetryIntake();
   try {
-    const foreground = await new Promise<{ status: unknown; stderr: string }>(resolve => {
-      execFile(process.execPath, [BIN, "up", "--foreground", "--server", server], {
-        cwd: root, env: { ...env, DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url }, timeout: 120_000,
-      }, (error, _stdout, stderr) => resolve({ status: error?.code ?? 0, stderr }));
+    const measured = (words: string[]) => new Promise<{ status: unknown; stderr: string }>(resolve => {
+      const options = { cwd: root, env: { ...env, DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url }, timeout: 120_000 };
+      assertSmokeSandboxDown(anchor, words, options);
+      execFile(process.execPath, [BIN, ...words], options, (error, _stdout, stderr) => resolve({ status: error?.code ?? 0, stderr }));
     });
+    const foreground = await measured(["up", "--foreground", "--server", server]);
     check("a blocked foreground start keeps its service stop and retries the original invocation",
       foreground.status === 2 && foreground.stderr.replace(/\s+/g, " ").includes(`${stop}, then repeat your original foreground startup command from the same folder with the same options`));
     const events = intake.received.filter(body => body.event === "command");
     check("the startup refusal reports its code without its service diagnostic", events.length === 1 && events[0]?.errorCode === "LIFECYCLE_BLOCKED" && events[0].errorMessage === null && events[0].errorStack === null && !JSON.stringify(events).includes(id));
+    const managers = cotal("ps", "--space", space, "--json").env?.result?.managers as { instanceId: string; state: string }[] | undefined;
+    const answered = managers?.find(m => m.state === "answered")?.instanceId;
+    const absent = "missing-fixture-worker", miss = await measured(["stop", absent, "--space", space, "--plain"]);
+    const sent = intake.received.filter(body => body.command === "stop");
+    check("stopping an absent agent names the answering Manager only locally", !!answered && miss.status === 2 && miss.stderr.includes(answered) && miss.stderr.includes(absent)
+      && sent.length === 1 && sent[0]?.errorCode === "TARGET_NOT_FOUND" && sent[0].errorMessage === null && sent[0].errorStack === null && ![answered, absent].some(value => JSON.stringify(sent).includes(value)));
   } finally { intake.server.close(); }
   const brokerOnly = cotal("up", "--no-manager", "--json");
   const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
