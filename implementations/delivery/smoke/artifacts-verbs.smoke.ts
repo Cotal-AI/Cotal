@@ -47,7 +47,7 @@ import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smo
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { sweepOnce, UNCONFIRMED_COMMIT_EVENT } from "../src/artifact-sweep.js";
 import { DigestLocks } from "../src/artifact-verbs.js";
-import { metaSubject } from "../src/artifact-objects.js";
+import { ArtifactObjects, metaSubject } from "../src/stores/jetstream-store.js";
 import { pickFreePort } from "./_free-port.js";
 
 const EXPECTED_CELLS = 27;
@@ -227,7 +227,7 @@ try {
   conns.push(sweeperNc);
   const kvm = new Kvm(sweeperNc);
   const sweepKv = { attach: await kvm.open(artifactAttachBucket(space)), possess: await kvm.open(artifactPossessBucket(space)), reserve: await kvm.open(artifactReserveBucket(space)) };
-  const sweep = (offsetMs: number) => sweepOnce({ space, nc: sweeperNc, kv: sweepKv, locks: new DigestLocks(), fence: () => {}, emit: (e) => events.push(JSON.stringify(e)), now: () => Date.now() + offsetMs });
+  const sweep = (offsetMs: number) => sweepOnce({ space, objects: new ArtifactObjects(dataNc, space, sweeperNc), kv: sweepKv, locks: new DigestLocks(), fence: () => {}, emit: (e) => events.push(JSON.stringify(e)), now: () => Date.now() + offsetMs });
 
   // A second artifact, attached and unpinned, and a third, committed and never confirmed.
   const b2 = new Uint8Array([5, 6, 7, 8, 9]), d2 = sha(b2);
