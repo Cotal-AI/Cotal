@@ -26,7 +26,7 @@ export async function listHarnessCommands(
   }
   const agent = connector.name;
   if (!connector.commands) return { agent, cwd, supported: false, reason: `${agent} seats run no commands or skills` };
-  await parts.connectorInventory.refreshUnavailableConnectors(agent, true);
+  await parts.connectorInventory.refreshConnectors(agent, true);
   const harness = parts.harnessResolution.launchHarness(connector);
   if ("refusal" in harness) throw new EpEnvelopeError("failed-precondition", harness.refusal, undefined, "not-executed");
   let envAllow: ReturnType<typeof spawnEnvAllow>;
