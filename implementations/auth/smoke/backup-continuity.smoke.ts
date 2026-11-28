@@ -83,10 +83,7 @@ try {
     allowPublish: ["ops", "general"],
     label: "first label",
   });
-  const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
-    store,
-    dir,
-    space: SPACE,
+  const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE,
     owner: OWNER,
     actor: "worker",
     scope: ["spawn"],

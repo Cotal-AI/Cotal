@@ -254,14 +254,15 @@ export async function handleExchange(req: IncomingMessage, res: ServerResponse, 
       return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
     if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
       return send(res, 400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
+    const readRouting = () => ctx.resolvePluginChannelState(ctx.space);
     if (req.headers["cotal-conversation-resume"] === "1") {
       if (view !== undefined || ttlSec !== undefined) return send(res, 400, { error: "conversation resume cannot mint a bearer" });
-      const answer = checkConversationResumeExchange(ctx.dir, owner, actor, actorToken, conversationResume);
+      const answer = await checkConversationResumeExchange(ctx.dir, owner, actor, actorToken, conversationResume, readRouting);
       if (answer.status === 401) return refuseExchange(res, ctx, policy, peer, peerThrottled, "refused an agent exchange: conversation resume was refused", 401, answer.body);
       return send(res, answer.status, answer.body);
     }
     try {
-      const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
+      const grant = await ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken, readRouting);
       if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
         throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
       ctx.connectLimiter.check({ owner, actor });

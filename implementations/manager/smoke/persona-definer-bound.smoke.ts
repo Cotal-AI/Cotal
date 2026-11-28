@@ -207,19 +207,21 @@ try {
 
 console.log("user-auth mesh");
 try {
-  const { cotalAuthProvider, ensureCalloutAuth, grantActor } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, ensureCalloutAuth, grantActor, saveServiceKeys } = await import("@cotal-ai/auth");
   const userRoot = join(dir, "user");
   const userAgents = join(userRoot, ".cotal", "agents");
   mkdirSync(userAgents, { recursive: true });
   const U = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: userRoot });
   const M = U as unknown as {
     userMode: boolean;
+    auth: typeof auth;
     config: { remoteAuthority?: unknown };
     managerInstanceId: string;
     agents: Map<string, { name: string }>;
     opDefinePersona: (args: Record<string, unknown>, caller: string, admin: boolean) => Promise<ControlReply>;
   };
   M.userMode = true;
+  M.auth = auth;
   M.managerInstanceId = mintLifecycleUid();
   (U as unknown as { runtime: unknown }).runtime = {
     kind: "pty",
@@ -230,7 +232,9 @@ try {
     ref: () => ({ id: "smoke-mgr" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: async () => {}, chatFrontier: async () => 0,
     requestDeliveryAdmin: requestDeliveryAdminZeroMemberships, getRoster: () => [],
   };
-  await ensureCalloutAuth(workspaceSecretStore(userRoot), { space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+  const secrets = workspaceSecretStore(userRoot);
+  await ensureCalloutAuth(secrets, { space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+  await saveServiceKeys(secrets, space, { dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed } });
   const owner = "u_smokeownersmokeownersmokeo";
   const ledger = userAuthStateDir(userRoot, space);
   grantActor(ledger, { owner, actor: "definer", scope: ["spawn"], allowSubscribe: ["review"], allowPublish: ["review"], label: "smoke definer" });

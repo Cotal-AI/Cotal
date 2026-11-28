@@ -49,6 +49,9 @@ import {
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import {
+  PLUGIN_CHANNEL_SPACE_STATE_KEY, initializePluginChannelSpaceState, pluginChannelSpaceStateSubject, readPluginChannelSpaceState,
+} from "../src/plugin-channel-space-state.js";
 
 let ok = 0, fail = 0;
 // A PASSING CELL PRINTS: `mutation-proof` counts `✓` marks to tell "the mutation applied and no
@@ -62,6 +65,42 @@ const SPACE = "epbind";
 const UID = "u".repeat(26);
 const IID = "i".repeat(26);
 const caller: EpCaller = { owner: "u_abc", actor: "worker", uid: UID };
+
+async function checkPluginSpaceState(jsm: Awaited<ReturnType<typeof jetstreamManager>>, kvm: Kvm): Promise<void> {
+  const space = `${SPACE}-plugin-state`;
+  const read = () => readPluginChannelSpaceState(jsm, space);
+  const initialize = () => initializePluginChannelSpaceState(jsm, space);
+  const refuse = async (label: string, query: () => Promise<unknown>) => {
+    try { await query(); c(label, false, "did not refuse"); } catch { c(label, true); }
+  };
+  await refuse("plugin state read refuses a missing bucket", read);
+  const kv = await kvm.create(recordsBucket(space));
+  const missing = await read();
+  c("leader-confirmed missing plugin state is off at epoch zero", missing.revision === 0 && !missing.state.enabled && missing.state.epoch === 0);
+  c("plugin state write subject pins the existing records bucket and exact key",
+    pluginChannelSpaceStateSubject(space) === `$KV.${recordsBucket(space)}.plugin-channel-space`);
+  const initialized = await initialize();
+  const repeated = await initialize();
+  const readBack = await read();
+  c("first-write CAS initializes only off state and never overwrites it",
+    initialized.revision > 0 && initialized.revision === repeated.revision && repeated.revision === readBack.revision &&
+    readBack.state.version === 1 && !readBack.state.enabled && readBack.state.epoch === 0);
+  const put = (value: unknown) => kv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, new TextEncoder().encode(JSON.stringify(value)));
+  const epochRevision = await put({ version: 1, epoch: 3, enabled: false });
+  c("trusted reads preserve an off epoch and its broker revision", (await read()).state.epoch === 3 && (await initialize()).revision === epochRevision);
+  await put({ version: 1, epoch: 4, enabled: true });
+  await refuse("dark release refuses enabled state on read", read);
+  await refuse("dark release initializer refuses to replace enabled state", initialize);
+  await put({ version: 2, epoch: 4, enabled: false, plugins: {} });
+  await refuse("unknown version is not interpreted as off", read);
+  await put({ version: 1, epoch: -1, enabled: false });
+  await refuse("malformed epoch is not interpreted as off", read);
+  await kv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, new TextEncoder().encode("{"));
+  await refuse("corrupt JSON is not interpreted as off", read);
+  await kv.delete(PLUGIN_CHANNEL_SPACE_STATE_KEY);
+  await refuse("deletion marker is not interpreted as off", read);
+  await refuse("initializer does not resurrect a deleted key", initialize);
+}
 
 // ── name grammar (broker-free) ──
 c("stream names are the §13.12 forms",
@@ -615,6 +654,7 @@ try {
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
+  await checkPluginSpaceState(jsm, kvm);
 
   // A BARE CALL IS NOT A CELL. These two were `await …; await …; c("is idempotent", true)`, so a
   // mutant that made EITHER call throw ended the run with no assertion name on it — and the FIRST

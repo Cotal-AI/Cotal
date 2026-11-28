@@ -2,7 +2,7 @@ import { assertLifecycleToken, canonicalJson, type ConversationGrant } from "@co
 import { ledgerAuthorizeAgentExchange } from "./ledger.js";
 
 /** Confirm an exact existing approval without issuing, changing or extending a credential. */
-export function checkConversationResumeExchange(dir: string, owner: string, actor: string, actorToken: string, value: unknown) {
+export async function checkConversationResumeExchange(dir: string, owner: string, actor: string, actorToken: string, value: unknown, readRouting: () => Promise<{ enabled: boolean }>) {
   const resume = value as { v?: unknown; lifecycleUid?: unknown; grant?: ConversationGrant } | null;
   const bad = { status: 400, body: { error: "invalid conversation resume request" } };
   if (!resume || Object.keys(resume).length !== 3 || resume.v !== 1 || typeof resume.lifecycleUid !== "string" || !resume.grant ||
@@ -10,8 +10,8 @@ export function checkConversationResumeExchange(dir: string, owner: string, acto
   const lifecycleUid = resume.lifecycleUid;
   try { assertLifecycleToken(lifecycleUid); } catch { return bad; }
   const refused = { status: 401, body: { v: 1, lifecycleUid, status: "refused" } };
-  let live: ReturnType<typeof ledgerAuthorizeAgentExchange>;
-  try { live = ledgerAuthorizeAgentExchange(dir, owner, actor, actorToken); }
+  let live: Awaited<ReturnType<typeof ledgerAuthorizeAgentExchange>>;
+  try { live = await ledgerAuthorizeAgentExchange(dir, owner, actor, actorToken, readRouting); }
   catch { return refused; }
   if (live.lifecycleUid !== lifecycleUid || canonicalJson(resume.grant) !== canonicalJson({
     scope: live.scope, role: live.role ?? null, allowSubscribe: live.allowSubscribe, allowPublish: live.allowPublish, subscribe: [], endpoints: [],

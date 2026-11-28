@@ -27,6 +27,7 @@
  * Run: pnpm smoke:ep-serve:auth   (needs nats-server on PATH; part of smoke:ci)
  */
 import { randomUUID } from "node:crypto";
+import { matchesMainPermissions } from "./_off-channel-main.js";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +46,7 @@ import {
   type EpIssuanceGate, type EpIssuanceBarrier, type IssuedStore,
 } from "../src/index.js";
 import { makeIssuanceGate, type IssuanceGateInit } from "./_issuance-gate.js";
+import { PLUGIN_CHANNEL_ROOT, pluginChannelSubject } from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -198,8 +200,13 @@ try {
   // ---- mint the restricted profiles (each mint wins its own CAS on the open gate) ----
   const serveId = newIdentity();
   const serveCreds = await mintCreds(auth, serveId, "endpoint-serve", {
-    principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam,
+    principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant, serveIssuance: gate.seam, pluginChannelsEnabled: true,
   });
+  const pluginChannel = `${PLUGIN_CHANNEL_ROOT}.linear.inbox`;
+  c("a routed serve-only login cannot publish on a plugin channel",
+    await probe(serveCreds, serveId.id, (nc) => nc.publish(pluginChannelSubject(space, "u_op", "mgr", pluginChannel))) === "denied");
+  c("a routed serve-only login cannot subscribe to a plugin channel",
+    await probe(serveCreds, serveId.id, (nc) => { nc.subscribe(pluginChannelSubject(space, "*", "*", pluginChannel)); }) === "denied");
   c("the mint STAGED its credential-ledger row and WON the gate CAS (one active row)",
     gate.active() === 1 && gate.revoked() === 0);
   c("the staged ledger row carries the NORMATIVE §13.1 fields (per-JWT credentialId + nkey credentialKey, holderPrincipal, lifecycleUid, ['root'] lineage, state, exp)",
@@ -210,6 +217,13 @@ try {
       && r.registrationRevision === reg.registrationRevision && r.nameAuthorityRevision === NAR; })());
   c("a SECOND mint from the same artifact writes a DISTINCT per-JWT ledger row (renewal never overwrites)",
     (await mintServe()).includes("USER JWT") && gate.active() === 2 && new Set([...gate.rows.keys()]).size === 2);
+  {
+    const creds = await mintServe({ pluginChannelsEnabled: false });
+    const jwt = /BEGIN NATS USER JWT-+\s+(\S+)/.exec(creds)![1];
+    const { nats, sub: connectionId } = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
+    const rows = JSON.parse(JSON.stringify({ pub: nats.pub, sub: nats.sub }).replaceAll(space, "FIXTURE_SPACE").replaceAll(connectionId, "FIXTURE_CONN"));
+    c("off-state endpoint-serve JWT matches main's complete permission rows", matchesMainPermissions("endpointServe", rows));
+  }
   c("the issuance gate stage is create-only/idempotent (re-staging the SAME row keeps ONE row; a differing row for the same id conflicts)",
     (() => {
       const before = gate.rows.size; const r = [...gate.rows.values()][0];

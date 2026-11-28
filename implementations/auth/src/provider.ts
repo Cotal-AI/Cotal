@@ -17,7 +17,8 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
-import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
+import { readLocalSpawnRouting, readRegisteredSpawnRouting, type SpawnBroker } from "./spawn-routing-observation.js";
+import { loginRecoveryCommand, assertUserAuthInfo, canonicalRoot, credentialFailure, findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, loadMeshes, probeLiveness, readMesh, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
@@ -47,9 +48,40 @@ import {
   loadCalloutAuth,
   loadOwnerSecret,
   loadPinnedIdp,
+  loadServiceKeys,
   saveServiceKeys,
   type AuthServiceRefusal,
 } from "./store.js";
+
+function registeredSpawnBroker(dir: string, space: string): SpawnBroker | undefined {
+  let entry;
+  try { entry = readMesh(space); }
+  catch (error) {
+    if (isMeshRegistryError(error)) return undefined;
+    throw error;
+  }
+  if (entry?.mode !== "user" || entry.userAuth?.provider !== AUTH_PROVIDER_NAME || entry.userAuth.remote === true || entry.unchecked === true || entry.stoppedByDown === true)
+    return undefined;
+  let ledgerDir;
+  try { ledgerDir = userAuthStateDir(entry.root, space, { readOnly: true }); }
+  catch (error) {
+    if (isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED") return undefined;
+    throw error;
+  }
+  if (canonicalRoot(dir) !== canonicalRoot(ledgerDir)) return undefined;
+  return { server: entry.server, ...(entry.tlsRequired === true ? { tlsRequired: true } : {}) };
+}
+
+async function localSpawnRouting(store: SecretStore, dir: string, space: string, explicit: SpawnBroker | undefined): Promise<boolean> {
+  // A stopped/damaged registration, legacy layout or non-answering registered broker keeps the
+  // local write on legacy rules. The issuance checks are in service-exchange-routes.ts:265 and ledger.ts:753.
+  const broker = explicit ?? registeredSpawnBroker(dir, space);
+  if (!broker) return false;
+  const keys = await loadServiceKeys(store, space);
+  if (!keys) throw new Error("delegated grant requires local auth service signing material to read channel routing state");
+  const observation = { ...broker, space, dataAccount: keys.dataAccount };
+  return explicit ? readLocalSpawnRouting(observation) : readRegisteredSpawnRouting(observation);
+}
 
 /** The pre-effect half of {@link cotalAuthProvider.prepareServer}: the space segment, the IdP pin
  *  requirement and match, and on a first enable the JWKS probe. Reads only: no directory, pin, key
@@ -736,13 +768,14 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, eventPayloads, role, parent, label, lifecycleUid, fresh, custody }) {
+  async grantAgent({ store, dir, space, broker, owner, actor, scope, allowSubscribe, allowPublish, eventPayloads, role, parent, label, lifecycleUid, fresh, custody }) {
     // Async work first: the callout material is loaded before the transaction, never inside it.
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
     if (custody?.kind !== "local-manager" && custody?.kind !== "foreground")
       throw new Error("grantAgent: custody is required and is local-manager or foreground; a remote-manager row is written only by the auth service's enrollment");
+    const enabled = parent === undefined ? false : await localSpawnRouting(store, dir, space, broker);
     // ONE synchronous transaction: the `fresh` occupancy read, the token mint and the write are
     // decided under the same lock, so no other writer can land between the read and the upsert.
     // An earlier occupancy read by the caller authorizes nothing here; this one is authoritative.
@@ -763,7 +796,7 @@ export const cotalAuthProvider: AuthProvider = {
         tokenHash: minted.tokenHash,
         lifecycleUid,
         custody,
-      });
+      }, enabled);
       return minted.actorToken;
     });
     return { actorToken, sentinelCreds: callout.sentinelCreds };

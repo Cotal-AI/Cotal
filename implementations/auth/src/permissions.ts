@@ -5,7 +5,7 @@
  * enforces the token-specific invariants (derived owner, `act.scope` as the single capability authority)
  * and resolves the agent's channel ACL server-side, then hands core a `MintPrincipal`.
  */
-import { capabilityRole, permissionsFor, assertDerivedOwnerToken, type IssuedBinding, type ListingBinding, type MintPrincipal, type MintOpts } from "@cotal-ai/core";
+import { capabilityRole, permissionsFor as corePermissionsFor, assertDerivedOwnerToken, type IssuedBinding, type ListingBinding, type MintPrincipal, type MintOpts } from "@cotal-ai/core";
 import { VIEW_REQUIRED_SCOPE } from "./token.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
@@ -47,6 +47,7 @@ export type ListingIssuer = (args: {
  *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 export type AclResolver = (
   t: ValidatedUserToken,
+  pluginChannelsEnabled?: boolean,
 ) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid" | "eventPayloads"> & {
   /** The actor's CURRENT capability grant (the row's scope), so the mint can re-contain the
    *  bearer's capabilities against the row AS OF THE MINT, not only as of the connect gate. */
@@ -98,11 +99,12 @@ export function calloutPermissions(
 ): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
-  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
-  verifySession: SessionVerifier,
-  issueUserCaller: UserCallerIssuer,
-  resolveEndpointCaller: EndpointCallerResolver,
-  issueListing: ListingIssuer,
+  authorizeManagerCaller: ((owner: string, instanceId: string) => Promise<void>) | undefined,
+  verifySession: SessionVerifier | undefined,
+  issueUserCaller: UserCallerIssuer | undefined,
+  resolveEndpointCaller: EndpointCallerResolver | undefined,
+  issueListing: ListingIssuer | undefined,
+  resolvePluginChannelState?: (space: string) => Promise<{ enabled: boolean }>,
 ): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
@@ -111,8 +113,11 @@ export function calloutPermissions(
   issueUserCaller?: UserCallerIssuer,
   resolveEndpointCaller?: EndpointCallerResolver,
   issueListing?: ListingIssuer,
+  resolvePluginChannelState?: (space: string) => Promise<{ enabled: boolean }>,
 ): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
-  return (t, connId, readerId) => {
+  const project = (t: ValidatedUserToken, connId: string, readerId: string, pluginChannelsEnabled = false) => {
+    const permissionsFor: typeof corePermissionsFor = (profile, space, principal, opts) =>
+      corePermissionsFor(profile, space, principal, pluginChannelsEnabled ? { ...opts, pluginChannelsEnabled } : opts);
     if (t.act.view === "service-endpoint")
       throw new Error("callout permissions: service-endpoint requires native service authorization; ordinary actor profiles refuse it");
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
@@ -139,7 +144,7 @@ export function calloutPermissions(
     // narrowed or moved row refuses at the mint. Two sequential reads narrow the window rather
     // than linearize it (strict revocation linearization is a gate/CAS write, the 13.1 fence
     // pattern); the mint trusts the SECOND read.
-    const acl = resolveAcl(t);
+    const acl = pluginChannelsEnabled ? resolveAcl(t, true) : resolveAcl(t);
     if (acl.lifecycleUid !== t.act.lifecycleUid)
       throw new Error("callout permissions: the current row's lifecycle is not the bearer's - the alias was re-granted during connect; re-exchange for a fresh bearer");
     const current = new Set(acl.scope);
@@ -235,4 +240,7 @@ export function calloutPermissions(
       ...(recheck === undefined ? {} : { [ENDPOINT_CALLER_RECHECK]: recheck }),
     }));
   };
+  return resolvePluginChannelState
+    ? async (t, connId, readerId) => project(t, connId, readerId, (await resolvePluginChannelState(t.space)).enabled)
+    : (t, connId, readerId) => project(t, connId, readerId);
 }

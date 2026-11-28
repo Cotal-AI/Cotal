@@ -12,18 +12,23 @@
  * parentless (operator/roster) row are the authority and attenuate nothing.
  * Run: pnpm smoke:auth-attenuation
  */
+import assert from "node:assert/strict";
+import { createAccount } from "@nats-io/nkeys";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  authorizeDelegatedUserIntentAdmission,
+  findManagedActor,
   grantActor,
   grantManagedActor,
   revokeActor,
   newActorToken,
   ledgerAuthorizeAgentExchange,
   managedActorLedgerDir,
+  type AuthorizeDelegatedUserIntentAdmissionArgs,
 } from "../src/index.js";
-import { eventChannel, mintLifecycleUid } from "@cotal-ai/core";
+import { EpEnvelopeError, PLUGIN_CHANNEL_ROOT, eventChannel, mintLifecycleUid, remoteManagerServePrincipal } from "@cotal-ai/core";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail?: unknown) {
@@ -51,7 +56,75 @@ const OWNER = `u_${"a".repeat(26)}`; // derived-owner grammar: u_ + 26 × [a-z2-
 const OTHER = `u_${"b".repeat(26)}`;
 const CLI = `${OWNER}.cli`;
 
+const pluginChannel = `${PLUGIN_CHANNEL_ROOT}.linear.inbox`;
+const routedSpawner = "plugin_spawner";
+function grantRoutedSpawner(channels: string[]) {
+  grantActor(dir, { owner: OWNER, actor: routedSpawner, scope: ["spawn"], allowSubscribe: channels, allowPublish: channels });
+}
+
+function checkLocalRoutedGrant() {
+  grantRoutedSpawner([">"]);
+  const parent = `${OWNER}.${routedSpawner}`;
+  const row: Parameters<typeof grantManagedActor>[1] = {
+    owner: OWNER, actor: "local_plugin_child", parent, scope: [], custody: { kind: "foreground" },
+    allowSubscribe: [pluginChannel], allowPublish: [pluginChannel],
+    tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+  };
+  const refused = rejects("routed local grant refuses a plugin channel under a chat-only parent",
+    () => grantManagedActor(dir, row, true), "would exceed its spawner's grant");
+  check("routed local grant names both ACL overreaches and leaves no managed row",
+    refused.includes(`read [${pluginChannel}] beyond [>]`) && refused.includes(`post [${pluginChannel}] beyond [>]`) &&
+    findManagedActor(dir, OWNER, row.actor) === undefined, refused);
+  const legacy = grantManagedActor(dir, { ...row, actor: "local_legacy_child", lifecycleUid: mintLifecycleUid() }, false);
+  check("off-state local grant still accepts the same channel under the chat wildcard", legacy.allowPublish[0] === pluginChannel);
+  grantRoutedSpawner([pluginChannel]);
+  grantManagedActor(dir, row, true);
+  const saved = findManagedActor(dir, OWNER, row.actor);
+  check("routed local grant writes an exact plugin grant under an explicit parent",
+    saved?.parent === parent && saved.allowSubscribe.length === 1 && saved.allowSubscribe[0] === pluginChannel &&
+    saved.allowPublish.length === 1 && saved.allowPublish[0] === pluginChannel);
+}
+
+async function checkRoutedIntentAdmission() {
+  grantRoutedSpawner([">"]);
+  const account = createAccount();
+  const accountPublicKey = account.getPublicKey();
+  account.clear();
+  const space = "routed-admission", instanceId = mintLifecycleUid(), managerLifecycleUid = mintLifecycleUid();
+  const actor = "intent_plugin_child";
+  let enabled = false, aliasReads = 0;
+  const args: AuthorizeDelegatedUserIntentAdmissionArgs = {
+    dir, owner: OWNER, platformOwner: OTHER, space, accountPublicKey, now: Date.now(),
+    request: {
+      v: 1, kind: "delegated-user-intent", space, accountPublicKey, instanceId,
+      actor: routedSpawner, requestId: mintLifecycleUid(),
+      intent: { operation: "launch", target: { actor, subscribe: [pluginChannel], allowPublish: [pluginChannel] } },
+    },
+    observeAssignment: async () => ({ v: 1, space, accountPublicKey, instanceId, lifecycleUid: managerLifecycleUid, assignmentRevision: 3, state: "assigned" }),
+    observeManagerGate: async () => ({ state: "open", principal: remoteManagerServePrincipal(OTHER, instanceId), processEpoch: 4, registrationRevision: 5 }),
+    resolvePluginChannelState: async (requested) => { assert.equal(requested, space); return { enabled }; },
+    observeLaunchRecord: async () => { throw new Error("launch admission must not look up a retirement target"); },
+    observeAliasRecords: async () => { aliasReads++; return []; },
+  };
+  const legacy = await authorizeDelegatedUserIntentAdmission(args);
+  check("off-state delegated admission still accepts the same channel under the chat wildcard", legacy.state === "admitted");
+  enabled = true;
+  await assert.rejects(authorizeDelegatedUserIntentAdmission(args), (error: unknown) =>
+    error instanceof EpEnvelopeError && error.code === "permission-denied" &&
+    error.message.includes(`read [${pluginChannel}] beyond [>]`) && error.message.includes(`post [${pluginChannel}] beyond [>]`));
+  check("routed delegated admission refuses a chat-only parent before observing alias records",
+    aliasReads === 1 && findManagedActor(dir, OWNER, actor) === undefined);
+  grantRoutedSpawner([pluginChannel]);
+  const admitted = await authorizeDelegatedUserIntentAdmission(args);
+  check("routed delegated admission accepts the explicit plugin grant without writing a managed row",
+    admitted.state === "admitted" && admitted.parent === `${OWNER}.${routedSpawner}` && aliasReads === 2 &&
+    findManagedActor(dir, OWNER, actor) === undefined);
+}
+
 try {
+  checkLocalRoutedGrant();
+  await checkRoutedIntentAdmission();
+
   // ---- the spawner: a spawn-scoped human within [general, review.>] ----
   grantActor(dir, {
     owner: OWNER, actor: "cli", scope: ["spawn"],

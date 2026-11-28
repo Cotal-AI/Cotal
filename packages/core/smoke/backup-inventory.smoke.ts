@@ -19,22 +19,41 @@
  * Run: pnpm smoke:backup-inventory   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { connect } from "@nats-io/transport-node";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { connect, createInbox } from "@nats-io/transport-node";
 import {
   canonicalBackupStreamConfig,
+  chatStream,
+  chatSubject,
+  consumerConfigFromCheckpoint,
+  createSpaceStreams,
+  downloadStreamSnapshot,
   dlvStream,
   eventPayloadStream,
+  finalizeStreamRestore,
+  initiateStreamRestore,
   isReachable,
+  newIdentity,
+  pluginFanoutDurableConfig,
+  purgePluginHistory,
+  recreateConsumerCheckpoint,
   setupSpaceStreams,
+  spaceDeletionStreams,
+  spacePluginStreams,
+  uploadStreamRestoreChunk,
   validateSpaceBackupInventory,
+  validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
+  validatePersistentConsumerInventory,
+  type PersistentConsumerCheckpoint,
 } from "../src/index.js";
+import { PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "bkinv";
 const PORT = await pickFreePort();
@@ -68,6 +87,83 @@ const validateAgainstBroker = async (): Promise<string> => {
   try { validateSpaceBackupInventory(SPACE, names); return ""; }
   catch (e) { return (e as Error).message; }
 };
+
+async function roundTripPluginHistory(source: Awaited<ReturnType<typeof connect>>, checkpoint: PersistentConsumerCheckpoint, subjects: readonly string[], body: Uint8Array): Promise<void> {
+  const port = await pickFreePort();
+  const target = `nats://127.0.0.1:${port}`;
+  const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const child = spawn("nats-server", ["-js", "-sd", store, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+  const release = teardownOnSignal(child, store);
+  try {
+    await awaitBrokerReady(() => isReachable(target), { servers: target, attempts: 50, delayMs: 100 });
+    const chunks: Uint8Array[] = [];
+    const snapshot = await downloadStreamSnapshot(source, checkpoint.stream, {
+      deliverSubject: createInbox(), onChunk: (chunk) => { chunks.push(chunk); },
+    });
+    const nc = await connect({ servers: target });
+    try {
+      const session = await initiateStreamRestore(nc, SPACE, checkpoint.stream, snapshot.config, snapshot.state as unknown as Readonly<Record<string, unknown>>);
+      for (const chunk of chunks) await uploadStreamRestoreChunk(nc, session, chunk);
+      const restored = await finalizeStreamRestore(nc, session);
+      const fanout = await recreateConsumerCheckpoint(nc, SPACE, checkpoint);
+      const manager = await jetstreamManager(nc);
+      const state = (await manager.streams.info(checkpoint.stream, { subjects_filter: ">" })).state;
+      const consumer = await manager.consumers.info(checkpoint.stream, checkpoint.name);
+      assert.equal(state.messages, snapshot.state.messages);
+      assert.equal(restored.state.bytes, snapshot.state.bytes);
+      for (const subject of subjects) {
+        assert.equal(state.subjects?.[subject], 1);
+        assert.deepEqual((await manager.streams.getMessage(checkpoint.stream, { last_by_subj: subject }))?.data, body);
+      }
+      check("native backup and restore conserve plugin posts and the pending fan-out", consumer.num_pending === 2 && fanout.config.opt_start_seq === 1, consumer);
+    } finally { await nc.close(); }
+  } finally {
+    await killAndAwaitExit(child);
+    release();
+  }
+}
+
+async function verifyPluginStorage(): Promise<void> {
+  const nc = await connect({ servers });
+  try {
+    const manager = await jetstreamManager(nc);
+    const js = jetstream(nc);
+    const streams = spacePluginStreams(SPACE);
+    const history = pluginChannelStream(SPACE);
+    const owner = newIdentity().id, actor = newIdentity().id;
+    const subject = (plugin: string) => pluginChannelSubject(SPACE, owner, actor, `${PLUGIN_CHANNEL_ROOT}.${plugin}.work`);
+    check("default bootstrap created none of the plugin streams", (await readBrokerStreams()).every((name) => !streams.includes(name)));
+    await createSpaceStreams(manager, SPACE, true);
+    const inventory = validateSpaceBackupInventory(SPACE, await readBrokerStreams(), { pluginChannels: true });
+    check("enabled inventory contains the native plugin history stream", inventory.full.includes(history));
+    const wrongEpoch = await validateAgainstBroker();
+    check("off inventory refuses live plugin streams", wrongEpoch.includes("unexpected") && streams.every((name) => wrongEpoch.includes(name)), wrongEpoch);
+    await manager.consumers.add(history, pluginFanoutDurableConfig(SPACE));
+    const alpha = subject("alpha"), beta = subject("beta");
+    const body = new Uint8Array([42]);
+    const a = await js.publish(alpha, body), b = await js.publish(beta, body);
+    check("both plugins receive native publish ACKs from plugin history", a.stream === history && b.stream === history);
+    const consumer = await manager.consumers.info(history, PLUGIN_FANOUT_DURABLE);
+    check("fan-out holds both new posts pending", consumer.num_pending === 2, consumer.num_pending);
+    const stored = validateBackupStreamState((await manager.streams.info(history)).state as unknown as Record<string, unknown>);
+    const [checkpoint] = validatePersistentConsumerInventory(SPACE, { [history]: [consumer] }, { [history]: stored }, [history]);
+    const replay = consumerConfigFromCheckpoint(SPACE, checkpoint!);
+    check("plugin fan-out checkpoint retains the filter and both pending posts", checkpoint?.ackFloorStreamSequence === 0 &&
+      replay.opt_start_seq === a.seq && replay.filter_subject === consumer.config.filter_subject, checkpoint);
+    await roundTripPluginHistory(nc, checkpoint!, [alpha, beta], body);
+    const chat = await js.publish(chatSubject(SPACE, owner, actor, "ordinary"), body);
+    check("ordinary chat receives its own native stream ACK", chat.stream === chatStream(SPACE));
+    const purged = await purgePluginHistory(manager, SPACE, "alpha");
+    check("scoped purge acknowledged exactly alpha's message", purged === 1, purged);
+    const state = (await manager.streams.info(history, { subjects_filter: ">" })).state;
+    check("plugin history retains beta but not alpha", state.messages === 1 && state.subjects?.[beta] === 1 && !state.subjects?.[alpha], state);
+    check("scoped purge left ordinary chat untouched", (await manager.streams.info(chatStream(SPACE))).state.messages === 1);
+    const targets = spaceDeletionStreams(SPACE, await readBrokerStreams());
+    for (const stream of targets) await manager.streams.delete(stream);
+    const remaining = await readBrokerStreams();
+    check("deletion targets leave neither plugin history nor its fan-out", remaining.length === 0, remaining);
+  } finally { await nc.close(); }
+}
 
 try {
   let up = false;
@@ -117,6 +213,7 @@ try {
   await c2.close();
   const restored = await validateAgainstBroker();
   check("the check is green again once the probes are undone", restored === "", restored);
+  await verifyPluginStorage();
 
   console.log(`\nbackup inventory vs broker truth: ${ok} passed, ${fail} failed`);
 } finally {

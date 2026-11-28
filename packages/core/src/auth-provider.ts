@@ -483,6 +483,8 @@ export interface AuthProvider extends Extension {
     store: SecretStore;
     dir: string;
     space: string;
+    /** Explicit trusted broker target for delegation. If omitted, the provider can use the space's bound registration. */
+    broker?: { server: string; tlsRequired?: boolean };
     owner: string;
     actor: string;
     scope: string[];

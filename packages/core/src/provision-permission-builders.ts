@@ -13,7 +13,39 @@ import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { snapshotAckGrant } from "./backup.js";
+import { legacyPluginChannelFilters, pluginChannelStream, PLUGIN_CHANNEL_ROOT, type ChannelRoute } from "./plugin-channel-route.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
+
+/** Fence the legacy reserved subjects and exact legacy history reads in routed spaces. */
+export function withLegacyPluginChannelDeny(space: string, permissions: Record<string, unknown>, enabled?: boolean): Record<string, unknown> {
+  if (!enabled) return permissions;
+  const reserved = legacyPluginChannelFilters(space);
+  const denyLegacy = (direction: "pub" | "sub", denied: readonly string[]) => {
+    const rows = permissions[direction] as { allow?: string[]; deny?: string[] } | undefined;
+    if (!Array.isArray(rows?.allow) || rows.allow.length === 0)
+      throw new Error(`routed channel permissions require an explicit nonempty ${direction}.allow`);
+    return { ...rows, deny: [...new Set([...(rows.deny ?? []), ...denied])] };
+  };
+  return {
+    ...permissions,
+    pub: denyLegacy("pub", [...reserved, ...reserved.map(filter => `$JS.API.CONSUMER.CREATE.${chatStream(space)}.*.${filter}`)]),
+    sub: denyLegacy("sub", reserved),
+  };
+}
+
+/** History on the plugin rail is filter-scoped and pinned to the agent's own reader name. */
+export function channelHistoryRows(reader: string, routes: readonly ChannelRoute[]): string[] {
+  const plugin = routes.find(route => route.rail.kind === PLUGIN_CHANNEL_ROOT);
+  const bind = plugin === undefined ? [] : [
+    `$JS.API.CONSUMER.INFO.${plugin.stream}.${reader}`,
+    `$JS.API.CONSUMER.MSG.NEXT.${plugin.stream}.${reader}`,
+    `$JS.API.CONSUMER.DELETE.${plugin.stream}.${reader}`,
+  ];
+  return [
+    ...routes.map(({ stream, subject }) => `$JS.API.CONSUMER.CREATE.${stream}.${reader}.${subject}`),
+    ...bind,
+  ];
+}
 
 /** The reads a spawn-scoped manager-caller view carries on its one pinned instance. A launch uses
  * `status` (execution mode and connectors), `models` (their catalogs), `resolve-cwd` (canonical
@@ -330,8 +362,8 @@ export function operatorPermissions(space: string, pr: MintPrincipal): Record<st
  *  and the creds are accepted, then closes it — it performs NO pub/sub. So the tightest possible grant:
  *  deny ALL publish, subscribe only to the own reply inbox. A leaked probe cred can open a socket and do
  *  nothing else. (Was the broad `manager` cred — minted on nearly every command, the worst over-grant.) */
-export function probePermissions(pr: MintPrincipal): Record<string, unknown> {
-  return { pub: { deny: [">"] }, sub: { allow: [`_INBOX_${pr.connId}.>`] } };
+export function probePermissions(pr: MintPrincipal, pluginChannelsEnabled?: boolean): Record<string, unknown> {
+  return { pub: { ...(pluginChannelsEnabled ? { allow: [">"] } : {}), deny: [">"] }, sub: { allow: [`_INBOX_${pr.connId}.>`] } };
 }
 
 /** CHANNEL-WRITER — edits the channel registry ONLY: `cotal channels set/default` and the
@@ -400,9 +432,9 @@ export function teardownPermissions(space: string, pr: MintPrincipal, transferSt
   const MSHIP = `KV_${membershipBucket(space)}`;
   const RECORDS = `KV_${recordsBucket(space)}`;
   // The deletion path and the exact per-stream grants use one target list. Reject any caller-
-  // supplied transfer name that is not this space's transfer bucket before minting the grant.
+  // supplied name unless it is a transfer bucket or the exact plugin history stream of this space.
   for (const name of transferStreams)
-    if (!isTransferStream(space, name)) throw new Error(`permissionsFor: teardown transferStreams names ${JSON.stringify(name)}, not one of ${space}'s transfer streams`);
+    if (name !== pluginChannelStream(space) && !isTransferStream(space, name)) throw new Error(`permissionsFor: teardown transferStreams names ${JSON.stringify(name)}, not one of ${space}'s transfer streams`);
   const del = spaceDeletionStreams(space, transferStreams)
     .flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
