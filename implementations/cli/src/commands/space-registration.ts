@@ -183,11 +183,13 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
 export function handAddedRegistration(name: string, force: boolean, target: unknown, presentation: Presentation = "rich"): MeshEntry | undefined {
   const prepared = findPreparedSpace(name);
   if (prepared) {
-    const problem = projectRootProblem(prepared.root);
-    if (problem === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
-      `restore the original project folder at its recorded path, or run ${codeSpan(`${displayCmd()} space forget ${shellWord(name)}`)} to register the other broker, then repeat the add with the same options`);
-    const start = codeSpan(`${displayCmd()} up --root ${shellWord(prepared.root)} --space ${name}`);
-    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${codeSpan(`${displayCmd()} space forget ${name}`)}, then repeat the add with the same options`);
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    const forget = codeSpan(`${cli} space forget ${shellWord(name)}${format}`);
+    if (projectRootProblem(prepared.root) === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
+      `restore the original project folder at its recorded path, or run ${forget} to register the other broker, then repeat the add with the same options`);
+    const start = codeSpan(`${cli} up --root ${shellWord(prepared.root)} --space ${shellWord(name)}${format}`);
+    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${forget}, then repeat the add with the same options`);
   }
   const existing = findMesh(name);
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.

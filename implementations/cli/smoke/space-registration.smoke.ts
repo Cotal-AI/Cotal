@@ -1516,7 +1516,10 @@ if (process.platform === "linux") {
   removePreparedSpace("y".repeat(100));
   rmSync(earlier, { recursive: true, force: true });
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
-  check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
+  const addPlain = await run(["space", "add", "demo", "--server", LIVE, "--root", root, "--plain"]);
+  for (const [format, advice] of [["--json", add.env?.error?.remedy ?? ""], ["--plain", addPlain.stderr]] as const) {
+    check(`adding a prepared name preserves ${format} on both recovery commands`, refused(add, 2, "CONFLICT") && addPlain.status === 2 && advice.includes(`--space demo ${format}\``) && advice.includes(`space forget demo ${format}\``) && findMesh("demo") === undefined, advice);
+  }
 
   const list = await json(["space"]);
   check("space lists it apart from the registrations", list.env?.result.prepared.some((p: { space: string; root: string }) => p.space === "demo" && p.root === fresh) && !list.env.result.items.some((s: { space: string }) => s.space === "demo"), list.env?.result);
