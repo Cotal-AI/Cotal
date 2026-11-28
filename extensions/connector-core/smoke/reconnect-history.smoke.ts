@@ -192,7 +192,7 @@ async function checkInterruptedReplay(manager: CotalEndpoint, publisher: CotalEn
   const pages: number[] = [];
   const rows = await agent.ep["history"].collectHistory(chatSubject(space, "*", "*", family), { seq: 1 }, {
     limit: 257,
-    visitPage: async page => { pages.push(page.length); },
+    visitPage: async (page: readonly unknown[]) => { pages.push(page.length); },
   });
   assert.deepEqual(pages, [256, 1], "a visitor must stop at the requested total limit");
   assert.deepEqual(rows, [], "a visitor must not retain the history it receives");
@@ -207,14 +207,16 @@ async function checkPendingJoin(
   const agent = await wideReader(manager, `join-${action}`, []);
   await agent.start();
   const tools = cotalToolSpecs(agent.config);
-  const invoke = (name: string) => tools.find(spec => spec.name === name)!.run(agent, agent.config, { channel });
+  const invoke = async (name: string) => tools.find(spec => spec.name === name)!.run(agent, agent.config, { channel });
   const history = agent.ep["history"];
   const readPolicy = history["joinPolicyFresh"].bind(history);
-  const paused = Promise.withResolvers<void>();
-  const resume = Promise.withResolvers<void>();
-  history["joinPolicyFresh"] = async ch => {
+  let pauseReached!: () => void;
+  let resumeJoin!: () => void;
+  const paused = new Promise<void>(resolve => { pauseReached = resolve; });
+  const resume = new Promise<void>(resolve => { resumeJoin = resolve; });
+  history["joinPolicyFresh"] = async (ch: string) => {
     const policy = await readPolicy(ch);
-    if (ch === channel) { paused.resolve(); await resume.promise; }
+    if (ch === channel) { pauseReached(); await resume; }
     return policy;
   };
   const seen: string[] = [];
@@ -224,12 +226,12 @@ async function checkPendingJoin(
   const pending = invoke("cotal_join");
   let left;
   try {
-    await Promise.race([paused.promise, pending.then(result => { throw new Error(result.text); })]);
+    await Promise.race([paused, pending.then(result => { throw new Error(result.text); })]);
     if (action === "rebuild") await agent.ep.reconnect();
     if (action === "stop") await agent.stop();
     if (action === "leave") left = await invoke("cotal_leave");
   } finally {
-    resume.resolve();
+    resumeJoin();
   }
   const joined = await pending;
   console.log(`pending join ${action}: ${JSON.stringify({ joined, left })}`);
