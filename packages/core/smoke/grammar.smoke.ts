@@ -21,7 +21,7 @@ import { MAX_CHANNEL_LENGTH, subjectMatches } from "../src/subject-grammar.js";
 import { historyMessageFromDelivery, kindFromParsed } from "../src/endpoint-messages.js";
 import {
   PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel, legacyPluginChannelFilters,
-  pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
+  parsePluginChannelSubject, pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
 } from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
@@ -46,6 +46,8 @@ const issue = `${linear}.agtec-6270.thread`;
 const pluginSubject = pluginChannelSubject("demo", "u_abc", "act1", issue);
 c("plugin subject pins owner then actor", pluginSubject === `${pluginWire}.u_abc.act1.linear.agtec-6270.thread`);
 const parsedPlugin = parseSubject(pluginSubject);
+c("standalone plugin parser also restores the space and leaves CHAT alone",
+  parsePluginChannelSubject(pluginSubject)?.space === "demo" && parsePluginChannelSubject(cs) === null);
 c("shared parser restores the plugin logical channel", parsedPlugin?.kind === familyRoot &&
   parsedPlugin.owner === "u_abc" && parsedPlugin.actor === "act1" && parsedPlugin.sender === "u_abc.act1" && parsedPlugin.rest === issue);
 const verifiedOwner = "u_nd77wkm3o3eyk6qvuwhy76b2nm";

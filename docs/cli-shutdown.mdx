@@ -414,6 +414,8 @@ whole-stack target ownership, set exclusion, confirmed agent impact or schema
 reconciliation. The retained `down --preserve-state`
 route separately refuses a retained or unreadable additive record under its
 maintenance lock, without adopting its effects into the preserved set.
+If a legacy preserved stop is interrupted after the manager commits, run `cotal down --preserve-state`
+again from the same project. Once the stop finishes, `cotal up` resumes it.
 A validated completed restore in `active` for the registered space does not block ordinary
 bare `down`. The other root, ownership, sharing and native process guards still apply, and
 stopping leaves the restore journal and fallback store unchanged.

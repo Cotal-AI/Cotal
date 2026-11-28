@@ -59,9 +59,14 @@ function npmOfflineCacheMiss(result: CommandResult): boolean {
   catch { return false; }
 }
 
+export function reportConnectorAccessRestored(rt: UpdateRuntime, permissionsRestored: boolean, offline = false): void {
+  if (permissionsRestored) rt.out(`Restored owner access to the Cotal connector configuration${offline ? "; no installed packages were replaced." : "."}`);
+}
+
 export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean, permissionsRestored = false): Promise<number> {
   if (latest.missingNpm) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+    reportConnectorAccessRestored(rt, permissionsRestored);
     rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
     return 1;
   }
@@ -69,10 +74,11 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
     rt.onOfflineVersionCheckSkipped?.();
     if (promotionRecovered) rt.out("Completed an interrupted extension promotion.");
-    if (permissionsRestored) rt.out("Restored owner write permission on the Cotal connector configuration; no installed packages were replaced.");
+    reportConnectorAccessRestored(rt, permissionsRestored, true);
     rt.out(`${latest.error}. The latest-version check was skipped.`);
     return 0;
   }
+  reportConnectorAccessRestored(rt, permissionsRestored);
   if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
     rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
     return 1;

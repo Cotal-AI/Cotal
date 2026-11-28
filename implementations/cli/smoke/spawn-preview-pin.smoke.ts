@@ -51,7 +51,7 @@ const preview = (args: string[]): { status: number | null; envelope: Envelope } 
 };
 
 try {
-  writeFileSync(join(root, "project", "sample.md"), "---\nname: sample\nrole: reviewer\n---\nReview this.\n");
+  writeFileSync(join(root, "project", "sample.md"), "---\nname: sample\nrole: reviewer\nsubscribe: [general]\nallowSubscribe: [general]\n---\nReview this.\n");
   const listener = createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
   const port = (listener.address() as { port: number }).port;
@@ -127,6 +127,16 @@ try {
   const foreground = preview([...file, "--foreground"]);
   check.deepEqual([foreground.status, foreground.envelope.result?.kind,
     foreground.envelope.result?.allocated, foreground.envelope.result?.launched], [0, "direct-launch-preview", false, false]);
+
+  for (const flag of ["--subscribe", "--allow-subscribe"]) {
+    const direct = preview([...file, flag, "updates"]);
+    check.deepEqual([direct.status, direct.envelope.error?.code], [1, "USAGE_INVALID"]);
+    check.match(direct.envelope.error?.message ?? "", /not within allowSubscribe/);
+    const managed = preview([...base, flag, "updates"]);
+    check.deepEqual([managed.status, managed.envelope.result?.kind], [0, "managed-launch-preview"]);
+  }
+  const emptySubscription = preview([...file, "--subscribe", ""]);
+  check.deepEqual([emptySubscription.status, emptySubscription.envelope.result?.launched], [0, false]);
 
   for (const [selectors, placement] of [
     [[], "direct"], [["--foreground"], "direct"],
