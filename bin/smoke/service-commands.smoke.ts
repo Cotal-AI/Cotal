@@ -131,13 +131,15 @@ check("a start missing an option with no default refuses naming its flag, and ea
 const added = refusal(() => servicePresetDefinition(preset, SPACE, {}, root));
 check("  and the add form repeats its own command line", added?.remedy?.startsWith("cotal service add <name> --preset fixture --token ") === true, added);
 const unregistered = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
-check("a broker default with no registered space refuses and names the flag", unregistered?.code === "DEPENDENCY_UNAVAILABLE" && unregistered.message.includes("--server") && unregistered.remedy?.includes("pass --server <url>") === true, unregistered);
+check("a broker default with no registered space refuses and names the flag", unregistered?.code === "DEPENDENCY_UNAVAILABLE" && unregistered.message.includes("--server") && unregistered.remedy?.includes("pass --server <url>") === true && unregistered.remedy.includes("original command") && !unregistered.remedy.includes("cotal up"), unregistered);
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 recordMesh({ space: SPACE, server: SERVER, root, mode: "open", ts: new Date().toISOString() });
 const absent = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
 const creds = presetMaterialPath("fixture.creds", SPACE, root, false);
 check("a file default the space does not keep refuses, naming the file and the flag, and invents none",
-  absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true, absent);
+  absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true && absent.remedy.includes(`space show ${SPACE}`) && !absent.remedy.includes("cotal up"), absent);
+const extra = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t", "new-instance": true }, false));
+check("an additional instance cannot take file flags, so the remedy identifies the first-start alternative", extra?.remedy?.includes("to configure a first start instead, remove `--new-instance` and pass --creds <file>") === true, extra);
 mkdirSync(dirname(creds), { recursive: true, mode: 0o700 });
 writeFileSync(creds, "fixture\n", { mode: 0o600 });
 const filledMissing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));
@@ -263,7 +265,7 @@ try {
   for (const flags of [[], ["--dry-run"]]) {
     const install = cotal(["manager", "install", "--space", SPACE, ...flags]);
     const text = out(install);
-    const next = process.platform === "win32"
+    const next = flags.length ? text.includes(`\`cotal service --space ${SPACE}\``) && !/ExecStart=|KillMode=mixed/.test(text) : process.platform === "win32"
       ? ["cotal", "pnpm cotal"].some(cli => text.includes(`\`${cli} up --space ${SPACE}\``)) && !/ExecStart=|KillMode=mixed/.test(text)
       : text.includes(`manager start --foreground --space ${SPACE}`) && text.includes("KillMode=mixed");
     check(`cotal manager install ${flags.join(" ")} refuses before any effect and names a platform-appropriate next step`,
@@ -515,6 +517,11 @@ try {
   const next = (name: string) => `see what each option takes with \`cotal service add ${name} --preset broker --help\``;
   // The binary runs in `root`, so a relative --log-file is made absolute there, as `cotal up --log-file` makes it.
   const relativeLog = brokerAdd("b1", ["--log-file", "logs/broker.log"]);
+  const installPreview = cotal(["service", "install", "b1", "--space", PREPARED, "--dry-run", "--json"]);
+  const installError = JSON.parse(installPreview.stdout).error;
+  const read = /`cotal (service [^`]+)`/.exec(installError?.remedy ?? "")?.[1];
+  const inventory = read === `service --space ${PREPARED} --json` ? cotal(read.split(" ")) : undefined;
+  check("a broker install preview offers a read that lists the saved broker in its own space", installPreview.status === 2 && installError?.code === "UNSUPPORTED" && inventory?.status === 0 && JSON.parse(inventory.stdout).result.services.some((row: { name: string }) => row.name === "b1"), out(installPreview));
   const savedLog = (() => { const launch = serviceDefinitionStore(PREPARED).read("b1")?.record.value.launch; return launch?.type === "adapter" ? launch.options.logFile : undefined; })();
   const absolute = join(realpathSync(root), "logs", "broker.log");
   check("a relative --log-file is saved absolute against the folder add runs in, and its file need not exist yet",

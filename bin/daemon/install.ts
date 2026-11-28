@@ -40,12 +40,12 @@ import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, processStartToken, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, daemonUserServiceEnv, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
-import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
+import { excludeLifetime, processBirth, readLifetimeRecord, type DaemonPeerLifetime } from "./lifetime.js";
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
@@ -324,10 +324,16 @@ function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): vo
   });
 }
 
-function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">): void {
-  if (process.platform !== "darwin" && process.platform !== "linux") return;
+function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">, stopPeer?: DaemonPeerLifetime): boolean {
+  if (process.platform !== "darwin" && process.platform !== "linux") return false;
   const held = inspectLock(join(paths.state, "service-repair.lock"));
-  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state) || (process.platform === "linux" && readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)))) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
+  const otherOwner = held.state === "active" && held.owner.pid !== process.pid;
+  // Darwin's advisory lock uses a different start-token format from the kernel peer lifetime.
+  const peerOwnsLock = otherOwner && stopPeer?.pid === held.owner.pid && Boolean(held.owner.start)
+    && (process.platform === "linux" ? held.owner.start === stopPeer.birth
+      : held.owner.start === processStartToken(stopPeer.pid) && processBirth(stopPeer.pid) === stopPeer.birth);
+  if ((otherOwner && !peerOwnsLock) || readServiceRepair(paths.state) || (process.platform === "linux" && readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)))) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
+  return peerOwnsLock;
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
@@ -899,19 +905,21 @@ function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUni
 export interface DaemonOwnershipObservation {
   readonly state: "owned" | "not-owned" | "unknown";
   readonly reason: "verified" | "marker-absent" | "identity-differs" | "source-marker-absent" | "observation-failed" | "observation-timeout" | "observation-aborted" | "worker-failed";
+  readonly stopPeerOwnsLock?: true;
 }
 
 /** A native launch marker is trusted only with this installation's verified recorded source. */
-export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
+export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string, stopPeer?: DaemonPeerLifetime): DaemonOwnershipObservation {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
     const intent = process.platform === "darwin" || process.platform === "linux" ? (readServiceRepair(paths.state) ?? (process.platform === "linux" ? readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)) : undefined)) : undefined;
-    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
+    const stopPeerOwnsLock = !intent && assertNoServiceRepair(paths, stopPeer);
+    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, true);
     if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
     const marked = recordedSourceMarked(receipt, plan.mechanism);
-    return marked ? { state: "owned", reason: "verified" } : { state: "not-owned", reason: "source-marker-absent" };
+    return marked ? { state: "owned", reason: "verified", ...(stopPeerOwnsLock ? { stopPeerOwnsLock: true } : {}) } : { state: "not-owned", reason: "source-marker-absent" };
   } catch { return { state: "unknown", reason: "observation-failed" }; }
 }
 
@@ -931,7 +939,7 @@ export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string
 }
 
 /** Observe native provenance without running supervisor tools on the serving event loop. */
-export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal): Promise<DaemonOwnershipObservation> {
+export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal, stopPeer?: DaemonPeerLifetime): Promise<DaemonOwnershipObservation> {
   if (signal?.aborted) return Promise.resolve({ state: "unknown", reason: "observation-aborted" });
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return Promise.resolve({ state: "not-owned", reason: "marker-absent" });
   return new Promise(resolve => {
@@ -947,8 +955,8 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
       if (workerData.execution) Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze(workerData.execution) });
-      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
-    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
+      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home, workerData.stopPeer))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
+    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, stopPeer, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
     const finish = (observation: DaemonOwnershipObservation) => {
@@ -1186,6 +1194,15 @@ interface UninstallResult extends UninstallPlan {
   readonly removedServiceRecords: readonly string[];
 }
 
+export interface MoveResult {
+  readonly state: "moved";
+  readonly unit: string;
+  /** The other installation's entry the service ran before the move. */
+  readonly from: string;
+  /** Hosted spaces the old service ran; the new one resumed them from the same records. */
+  readonly spaces: readonly string[];
+}
+
 /** Stop it, disable autostart, erase its service records under lifetime exclusion, remove the unit
  *  and receipt, and reload the user manager (on macOS and Windows, the adapter's deregistration). */
 export async function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
@@ -1195,7 +1212,25 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
 }
 
 async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
-  const { receipt, plan, service, recovered } = recordedUnit(paths, daemonHome, nativeRun, true);
+  return stopAndDeregister(paths, daemonHome, true, "uninstall", (plan, service) => {
+    let removedServiceRecords: string[];
+    try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }
+    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "removing local service credentials and identity records failed; some records may remain. Repair their permissions and retry uninstall; the remote records may remain until you remove the computer in the dashboard; the daemon source and receipt were retained", { remedy: "inspect \`cotal daemon status\` and the native service, then retry \`cotal daemon uninstall\`" }); }
+    rmSync(plan.unitPath, { force: true });
+    if (!service) submitSystemdUnitRegistration("reload", plan.unit);
+    rmSync(unitReceiptFile(paths), { force: true });
+    return { ...plan, state: "removed" as const, removedServiceRecords };
+  });
+}
+
+/**
+ * Stop the recorded service through its pinned connection, remove its native registration and wait
+ * for the exact process to exit, then run `finish` under lifetime exclusion. Uninstall erases records
+ * there; a move keeps every record and installs this installation's unit instead.
+ */
+async function stopAndDeregister<T>(paths: DaemonPaths, daemonHome: string | undefined, recover: boolean, verb: "uninstall" | "move",
+  finish: (plan: UninstallPlan, service: NativeService | undefined, receipt: UnitReceipt) => T | Promise<T>): Promise<T> {
+  const { receipt, plan, service, recovered } = recordedUnit(paths, daemonHome, nativeRun, recover);
   if (recovered) {
     submitSystemdUnitControl("stop", plan.unit);
     mkSecretDir(paths.state);
@@ -1210,7 +1245,9 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
   catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
   const owner = readLifetimeRecord(paths.lock);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
-  const uncertain = (detail: string) => new CommandFailure("unknown", "OPERATION_UNKNOWN", `${detail}; the daemon source and receipt were retained`, { remedy: "inspect \`cotal daemon status\` and the native service, then retry \`cotal daemon uninstall\`" });
+  const uncertain = (detail: string) => new CommandFailure("unknown", "OPERATION_UNKNOWN", `${detail}; the daemon source and receipt were retained`, verb === "uninstall"
+    ? { remedy: "inspect \`cotal daemon status\` and the native service, then retry \`cotal daemon uninstall\`" }
+    : { native: { code: "MOVE_UNCONFIRMED" } });
   try {
     if (socket && (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start))
       throw uncertain("the daemon lifetime changed while its endpoint was opened");
@@ -1260,10 +1297,11 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        // Reset or a Darwin peer closed before identification proves neither a live
-        // endpoint nor absence. Reobserve under the same shutdown deadline.
+        // A Linux probe can connect just before unlink and read the lifetime after release.
+        // Reobserve a vanished path, but still require endpoint absence and process exit.
         else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET"
           && !(process.platform === "darwin" && error instanceof ClosedPeerRefusal)
+          && !(process.platform === "linux" && socket && error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER" && !existsSync(paths.socket))
           && !(process.platform === "win32" && stopCommitted && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
@@ -1278,12 +1316,99 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     // The wait above must not turn a changed source/receipt into deletion authority.
     const current = recordedUnit(paths, daemonHome, nativeRun, recovered === true).receipt;
     if (current.unitSha256 !== receipt.unitSha256 || current.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
-    let removedServiceRecords: string[];
-    try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }
-    catch { throw uncertain("removing local service credentials and identity records failed; some records may remain. Repair their permissions and retry uninstall; the remote records may remain until you remove the computer in the dashboard"); }
+    return await finish(plan, service, receipt);
+  } finally { socket?.destroy(); exclusion?.release(); }
+}
+
+/**
+ * Move the background service from another Cotal installation to this one. It stops the recorded
+ * service through the same verified path as uninstall, but keeps every record in the daemon home:
+ * sign-in sessions, this computer's identity and every space's service records. Then it installs
+ * this installation's unit and waits for it to answer at `version`. If this installation's service
+ * cannot be published or does not answer, the previous unit is restored and started again, and the
+ * move refuses `MOVE_ROLLED_BACK`. If that restore fails too, it refuses `MOVE_RESTORE_FAILED`: no
+ * service may run, and the next Repair finds the service not set up or not running and offers to fix it.
+ *
+ * The restore covers a failure this process sees. A process that dies after the previous unit is
+ * removed and before this one is published leaves no unit; the next Repair finds the service not
+ * set up and offers to set it up.
+ */
+export async function applyMove(paths: DaemonPaths, daemonHome: string | undefined, expected: { from: string; version: string }, report?: (detail: string) => void): Promise<MoveResult> {
+  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  try {
+    const before = recordedUnit(paths, daemonHome, nativeRun, false);
+    const changed = (detail: string) => new CommandFailure("refused", "CONFLICT", `${detail}; nothing was changed`, { native: { code: "PLAN_CHANGED" } });
+    if (before.receipt.daemonHome !== daemonHome) throw changed("the recorded service names another daemon home");
+    const identity = recordedDaemonIdentity(before);
+    if (identity.same) throw changed("the background service already belongs to this installation");
+    if (identity.installed !== expected.from) throw changed("the background service changed since it was checked");
+    const previous = { receipt: readFileSync(unitReceiptFile(paths)), source: readFileSync(before.receipt.unitPath), parsed: before.receipt, plan: before.plan, service: before.service };
+    let spaces: string[] = [];
+    try { const status = await queryDaemon({ paths }); if (status.ok) spaces = (status.result.managers ?? []).filter(manager => manager.state !== "stopped").map(manager => manager.space); }
+    catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+    report?.("stopping the background service of the other installation");
+    await stopAndDeregister(paths, daemonHome, false, "move", (plan, service) => {
+      rmSync(plan.unitPath, { force: true });
+      if (!service) submitSystemdUnitRegistration("reload", plan.unit);
+      rmSync(unitReceiptFile(paths), { force: true });
+    });
+    let unit: string;
+    try {
+      report?.("installing this installation's background service");
+      unit = applyInstallUnlocked(paths, daemonHome).unit;
+      await answeringAt(paths, expected.version, 60_000);
+    } catch (error) {
+      report?.("this installation's service did not start; restoring the previous one");
+      try { await restoreMovedUnit(paths, daemonHome, previous); }
+      catch (restore) {
+        // The restore itself failed: no service may run now. Say what is left, never the rollback sentence.
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}), and restoring the previous service failed (${(restore as Error).message}); no background service may be running, and the agents the previous service ran were stopped`, { native: { code: "MOVE_RESTORE_FAILED" } });
+      }
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}); the previous service was restored and started again, and the agents it ran were stopped and do not start again by themselves`, { native: { code: "MOVE_ROLLED_BACK" } });
+    }
+    return { state: "moved", unit, from: identity.installed, spaces };
+  } finally { lock?.release(); }
+}
+
+export async function answeringAt(paths: DaemonPaths, version: string | undefined, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const reply = await queryDaemon({ paths });
+      if (reply.ok && (version === undefined || reply.result.version === version && reply.result.protocol === DAEMON_PROTOCOL_VERSION)) return;
+    } catch (error) {
+      if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`it did not answer within ${Math.round(timeoutMs / 1000)}s`);
+    await delay(250);
+  }
+}
+
+/** Put back the unit a move replaced. A half-published replacement is stopped and removed first. */
+async function restoreMovedUnit(paths: DaemonPaths, daemonHome: string | undefined,
+  previous: { receipt: Buffer; source: Buffer; parsed: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined }): Promise<void> {
+  if (readReceipt(paths)) await stopAndDeregister(paths, daemonHome, false, "move", (plan, service) => {
     rmSync(plan.unitPath, { force: true });
     if (!service) submitSystemdUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
-    return { ...plan, state: "removed", removedServiceRecords };
-  } finally { socket?.destroy(); exclusion?.release(); }
+  });
+  else {
+    if (!previous.service) { try { submitSystemdUnitControl("stop", previous.plan.unit); } catch { /* A unit that never loaded has nothing to stop. */ } }
+    rmSync(previous.parsed.unitPath, { force: true });
+  }
+  const exclusion = excludeLifetime(paths.lock);
+  try {
+    writeSecretFileAtomic(previous.parsed.unitPath, previous.source);
+    writeSecretFileAtomic(unitReceiptFile(paths), previous.receipt);
+  } finally { exclusion.release(); }
+  if (previous.service) {
+    const { mechanism, unit, unitPath } = previous.plan;
+    previous.service.register({ mechanism: mechanism as NativePlan["mechanism"], unit, unitPath, bytes: previous.source, sha256: previous.parsed.unitSha256, user: "", restart: "", wantedBy: "" });
+  } else {
+    submitSystemdUnitRegistration("reload", previous.plan.unit);
+    submitSystemdUnitRegistration("enable", previous.plan.unit);
+    submitSystemdUnitControl("start", previous.plan.unit);
+  }
+  // The previous service runs its own version; only that it answers again is confirmed here.
+  await answeringAt(paths, undefined, 60_000);
 }

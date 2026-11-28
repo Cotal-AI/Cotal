@@ -216,7 +216,7 @@ export class ServePlane {
   /** Update the class spawn rails when application availability crosses zero, without redialing. */
   syncClassSpawn(): void {
     const serving = this.serviceServe;
-    if (!serving || this.leaseStopping) return;
+    if (!serving || this.leaseStopping || serving.nc.isClosed()) return;
     const replacement = this.serveOnConnection(serving.nc, serving.grant);
     // Reusing the incarnation queues keeps overlap single-delivery. Do not await the old
     // handlers here: the status or launch that changed availability can be one of them.
@@ -277,6 +277,7 @@ export class ServePlane {
       }
       s.nc = nc;
       s.handle = handle;
+      this.syncClassSpawn();
       console.error(`manager service endpoint re-dialed: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${s.grant.epoch})`);
       return true;
     });

@@ -71,13 +71,14 @@ export async function refreshPresence(connected = false): Promise<void> {
   } finally { working = false; }
 }
 
-export async function startPresence(notice: (message: string, error?: boolean) => void, actions?: { settings: () => void; dashboard: () => void }): Promise<void> {
+export async function startPresence(notice: (message: string, error?: boolean) => void, actions?: { settings: () => void; dashboard: () => void; repair?: () => void }): Promise<void> {
   report = notice;
   await listen<string>("desktop-close-explained", event => report(event.payload));
   await listen<string>("desktop-presence-error", event => report(event.payload, true));
   if (actions) {
     await listen("desktop-open-settings", actions.settings);
     await listen("desktop-open-dashboard", actions.dashboard);
+    if (actions.repair) await listen("desktop-open-repair", actions.repair);
   }
   await refreshPresence();
 }

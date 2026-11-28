@@ -487,6 +487,13 @@ if (process.platform !== "win32") {
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
   const homeEntry = JSON.stringify(findMesh("homestack"));
+  const wrongFolder = join(folder, "not-the-stack");
+  mkdirSync(join(wrongFolder, ".cotal"), { recursive: true });
+  sandbox(wrongFolder);
+  for (const option of ["--yes", "--dry-run"]) {
+    const misplaced = run(["down", option, "--with-agents", "--json"], wrongFolder);
+    check(`a wrong-folder down with ${option} asks to repeat the original options in the owning folder`, misplaced.status === 2 && misplaced.envelope?.error?.code === "TARGET_NOT_FOUND" && misplaced.envelope.error.remedy?.includes("repeat your original command from the folder") === true && !existsSync(join(wrongFolder, ".cotal", "stack-controller.json")), shown(misplaced));
+  }
   const holdsUp = run(["up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1", "--json"], nested);
   const holdsManifest = run(["up", "-f", "cotal.yaml", "--json"], nested);
   const homeAfter = JSON.stringify(findMesh("homestack"));

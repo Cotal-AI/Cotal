@@ -9,8 +9,8 @@ const release = join(native, 'target', 'release');
 const bundle = join(release, 'bundle');
 
 const CEILINGS = {
-  installedFileMB: 195,
-  installed4kMB: 210,
+  installedFileMB: 210,
+  installed4kMB: 225,
   nodeBinaryMB: 112,
   desktopBinaryMB: 18,
   downloadInstallerMB: 75,

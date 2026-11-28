@@ -76,11 +76,12 @@ try {
   // ── a failed seed beside an absent package: repair, remove, reset ────────────────────────────────
   {
     const { cfg, dir } = fixture(false);
-    // `node` and nothing else on PATH, so the seed child's `npm install` cannot start.
-    const bin = track(mkdtempSync(join(tmpdir(), "cotal-seed-no-npm-")));
+    // Fail the installer without depending on how the running Node was distributed.
+    const bin = track(mkdtempSync(join(tmpdir(), "cotal-seed-failing-npm-")));
     symlinkSync(process.execPath, join(bin, "node"));
+    writeFileSync(join(bin, "npm"), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
     const failed = boot(cfg, { PATH: bin });
-    check("absent extension recovery: a seed without npm fails and keeps its cursor", failed.status !== 0 && existsSync(cursorPath(cfg)), failed.stderr);
+    check("absent extension recovery: a failing npm keeps the seed cursor", failed.status !== 0 && existsSync(cursorPath(cfg)), failed.stderr);
     const refused = cotal(cfg, ["ext", "remove", PKG]);
     check("absent extension recovery: remove is refused until the failed seed is repaired",
       refused.status !== 0 && /a previous connector seed failed \(package "claude", phase add\)/.test(refused.stderr) && /cotal ext seed --repair/.test(refused.stderr), refused.stderr);

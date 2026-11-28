@@ -2,6 +2,7 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,6 +30,18 @@ const deploy = join(staging, 'runtime');
 const importMethod = process.platform === 'linux' ? ['--config.package-import-method=copy'] : [];
 const result = spawnSync(process.execPath, [pnpm, '--filter', 'cotal-ai', '--config.node-linker=hoisted', ...importMethod, 'deploy', '--prod', '--ignore-scripts', deploy], { cwd: repo, stdio: 'inherit' });
 if (result.status !== 0) throw new Error(`pnpm deploy failed; retained staging is ${staging}`);
+
+const nodeBin = dirname(realpathSync(process.execPath));
+const npmSource = process.platform === 'win32' ? join(nodeBin, 'node_modules', 'npm') : join(dirname(nodeBin), 'lib', 'node_modules', 'npm');
+const npmRelativeEntry = 'bin/npm-cli.js';
+const npmSourceEntry = join(npmSource, npmRelativeEntry);
+const npmManifest = JSON.parse(readFileSync(join(npmSource, 'package.json'), 'utf8'));
+const { satisfies } = createRequire(npmSourceEntry)('semver');
+if (npmManifest.name !== 'npm' || npmManifest.bin?.npm !== npmRelativeEntry || !satisfies(process.version, npmManifest.engines?.node)) {
+  throw new Error('The npm package shipped with the build Node does not support that Node.');
+}
+const npmTarget = join(deploy, 'node_modules', 'npm');
+cpSync(npmSource, npmTarget, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
 
 function traceEsm(entry) {
   const visited = new Set();
@@ -143,10 +156,13 @@ if (process.platform === 'darwin') {
   const signed = spawnSync('codesign', ['--force', '--sign', '-', stagedBinary], { encoding: 'utf8' });
   if (signed.status !== 0) throw new Error(`ad hoc codesign failed for bundled Node: ${signed.stderr || signed.stdout}`);
 }
-const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--version'], {
+const probeOptions = {
   encoding: 'utf8', timeout: 30_000,
   env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key))),
-});
+};
+const npmProbe = spawnSync(stagedBinary, [join(npmTarget, npmRelativeEntry), '--version'], probeOptions);
+if (npmProbe.status !== 0 || npmProbe.stdout.trim() !== npmManifest.version) throw new Error('The bundled npm did not report its expected version.');
+const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--version'], probeOptions);
 if (probe.status !== 0 || !probe.stdout.trim().startsWith(`cotal-ai ${version}`)) throw new Error('The deployed stock CLI did not report the expected version.');
 writeFileSync(join(deploy, 'desktop-runtime.json'), JSON.stringify({ schema: 1, version, target, node: process.versions.node, files: hashes }, null, 2) + '\n');
 function renameProbedBinary(source, destination) {
@@ -164,4 +180,4 @@ function renameProbedBinary(source, destination) {
 renameProbedBinary(stagedBinary, binary);
 renameSync(deploy, output);
 rmSync(staging, { recursive: true, force: true });
-console.log(`Prepared stock cotal-ai ${version} and Node ${process.versions.node} for ${target}. No service was installed or started.`);
+console.log(`Prepared stock cotal-ai ${version}, Node ${process.versions.node}, and npm ${npmManifest.version} for ${target}. No service was installed or started.`);

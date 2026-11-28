@@ -3,6 +3,10 @@
     "targets": ["nsis", "msi"],
     "externalBin": [
       "binaries/node"
-    ]
+    ],
+    "resources": {
+      "runtime/": "runtime/",
+      "installers/command-line/cotal.cmd": "bin/cotal.cmd"
+    }
   }
 }

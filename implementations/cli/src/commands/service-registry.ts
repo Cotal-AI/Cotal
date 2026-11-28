@@ -7,7 +7,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
 import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, serviceListStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, serviceListStep, wholeStackPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
@@ -160,7 +160,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       await assertManagerLogin(root, space, managerLoginRetry(commandName, mode, suppliedName!, args.values), running ? "the running manager was left running" : undefined);
     }
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values, prepared);
-    if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
+    if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, root, mode, presentation, commandName);
     if (resolved?.stopped) return mode === "status"
       ? stoppedManagerStatus(resolved, resolved.stopped, space, root, presentation, commandName)
       : recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
@@ -300,7 +300,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   // up in the selected one, whose service of that name it does not concern.
   const file = args.values.file;
   const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`cotal service remove ${name} --space ${oneLine(space)} --yes\`, then add it again` });
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`${serviceConfirmCommand("remove", name, space, {}, presentation)}\`, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   /** The broker's address is checked before a definition is saved, as its paths are, so a start does
    *  not record a failed instance for an address the broker cannot serve. */
@@ -436,10 +436,10 @@ export function announcePresetTarget(resolved: PresetServiceTarget, space: strin
  *  status reports it and starts nothing beside it, and a manager's log is read by
  *  {@link recordedManagerLogs}; any other action refuses, since no saved service owns it, and names
  *  where it is stopped. */
-function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { pid: number; label: string }, space: string, mode: string, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
+function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { pid: number; label: string }, space: string, root: string, mode: string, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
   const target = { space, name: resolved.requested, executionHost: "this-machine", pid: recorded.pid };
-  const stop = "it stops with its stack through `cotal down`, or where `cotal supervise` runs it";
-  if (mode !== "start" && mode !== "status") throw recordedProcessRefusal(resolved.requested, recorded, space, `${commandName} ${mode}`);
+  if (mode !== "start" && mode !== "status") throw recordedProcessRefusal(resolved.requested, recorded, space, root, `${commandName} ${mode}`, presentation);
+  const stop = recordedStopAdvice(space, root, presentation);
   writeResult(presentation, { command: commandName, target, result: { kind: mode === "start" ? "service-start" : "service-status", name: resolved.requested, preset: resolved.preset, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, started: false, ...(mode === "status" ? { observedProcess: "running" } : {}) }, noOp: mode === "start" }, (): Report => ({ sections: [
     { title: mode === "start" ? `The ${recorded.label} is already running; nothing was started` : `The ${recorded.label} is running`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Stop", stop]] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See it with the rest of this space" }, { command: "cotal ps", description: "List the agents it runs" }] }] },
@@ -456,11 +456,15 @@ function stoppedManagerStatus(resolved: PresetServiceTarget, recorded: NonNullab
   ] }));
 }
 
+function recordedStopAdvice(space: string, root: string, presentation: ReturnType<typeof presentationOf>): string {
+  return `if its stack started it, ${wholeStackPreviewStep(space, root, presentation)}; if a supervisor started it, stop it where the supervisor runs`;
+}
+
 /** Why `action` refuses a preset's process recorded by PID alone: no saved service owns it. */
-export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, action: string): CommandFailure {
+export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, root: string, action: string, presentation: ReturnType<typeof presentationOf>): CommandFailure {
   return localDiagnostic(new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
     target: { space, name, executionHost: "this-machine", pid: recorded.pid },
-    remedy: `it stops with its stack through \`cotal down\`, or where \`cotal supervise\` runs it${name === "manager" || name === STACK_DEFINITION.manager ? "; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents" : ""}`,
+    remedy: `${recordedStopAdvice(space, root, presentation)}${name === "manager" || name === STACK_DEFINITION.manager ? "; stopping that manager stops every hosted workflow run it drives, and stopping its stack also stops the broker and agents" : ""}`,
   }));
 }
 

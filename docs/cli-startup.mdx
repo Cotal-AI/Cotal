@@ -627,7 +627,9 @@ address or another program holds it. The next `up` plans it as a first start, wi
 another `--server`, and `down` reports that nothing runs there. That refusal names the address and
 any space this machine registered there. For a first `up`, it offers a retry from the original folder
 with the same options and a different port if one is available, or says how to free the original port.
-If another program holds a previously started stack's recorded address, free that address before retrying. A stack whose broker does not listen on its recorded address,
+If a separate service owns a component in this project, startup names the service and its instance. If you choose to stop it, repeat the original startup from the same folder to keep options such as the manager seat cap.
+
+If another program holds a previously started stack's recorded address, free that address before retrying. Repeat the original startup from the same folder so the broker uses the settings you requested. A stack whose broker does not listen on its recorded address,
 because a bind host recorded beside it names another address, or because no bind host was recorded
 and the address is not `127.0.0.1`, cannot be reached and pins no bind host. `up` there refuses
 `CONFLICT` before anything starts and names `cotal up --host <host>` with the address's own host,
@@ -881,7 +883,7 @@ prints `reopening <dir>, the store this root's last broker served`. `up -f` refu
 stores. Pass `--store-dir <dir>` to reopen it, or remove it with
 `cotal clean store --force`. While that store holds data, a
 `--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
-(exit 2) and names both. Create the directory first to start a new empty store there.
+(exit 2) and names both paths locally. Its suggested `--store-dir` value quotes the old path when needed, so you can copy it to reopen that store. Create the directory first to start a new empty store there.
 
 When the broker or manager of a static-auth stack that `up` started in a folder exits and leaves its
 pidfile, `cotal status` in that folder shows the row as `stale pidfile` and puts `cotal up` first under
