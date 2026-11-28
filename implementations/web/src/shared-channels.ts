@@ -17,20 +17,19 @@ export function sharedChannels(mode: () => RoutingMode) {
       if (current === "legacy") return snapshot;
       return {
         ...snapshot,
-        members: snapshot.members.map((member) => ({
-          ...member,
-          live: member.live.filter((name) => sharedChannelVisible(current, name)),
-          durable: member.durable.filter((name) => sharedChannelVisible(current, name)),
-        })),
+        members: snapshot.members.flatMap((member) => {
+          const live = member.live.filter((name) => sharedChannelVisible(current, name));
+          const durable = member.durable.filter((name) => sharedChannelVisible(current, name));
+          if (live.length === member.live.length && durable.length === member.durable.length) return [member];
+          return live.length || durable.length ? [{ ...member, live, durable }] : [];
+        }),
       };
     },
     presence(presence: Presence): Presence {
       const current = mode();
       if (current === "legacy" || presence.channelModes === undefined) return presence;
-      return {
-        ...presence,
-        channelModes: Object.fromEntries(Object.entries(presence.channelModes).filter(([name]) => sharedChannelVisible(current, name))),
-      };
+      const modes = Object.entries(presence.channelModes).filter(([name]) => sharedChannelVisible(current, name));
+      return { ...presence, channelModes: modes.length ? Object.fromEntries(modes) : undefined };
     },
     page(html: Buffer): Buffer | string {
       return mode() === "isolated"

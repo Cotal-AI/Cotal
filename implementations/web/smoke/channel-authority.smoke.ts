@@ -615,7 +615,13 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
   check("isolated shared list and named reads omit only the reserved family", !shared.visible(plugin) && !shared.visible(PLUGIN_CHANNEL_ROOT) && visibleList().map(({ channel }) => channel).join() === ordinary);
   const filtered = shared.membership(membership);
   check("isolated membership omits plugin patterns and channels but keeps ordinary patterns and freshness", filtered.asOf === 10 && filtered.members[0].live.join() === `${ordinary},>` && filtered.members[0].durable.length === 0);
+  const emptyMember = { id: "local.empty", observedAt: 10, live: [], durable: [] };
+  const pluginOnlyMember = { id: "local.plugin", observedAt: 10, live: [family], durable: [plugin] };
+  const members = shared.membership({ ...membership, members: [emptyMember, pluginOnlyMember] }).members;
+  check("isolated membership drops a member emptied by filtering but preserves an already empty row", members.length === 1 && members[0] === emptyMember);
   check("isolated roster omits plugin attention channel keys without hiding the peer or ordinary mode", shared.presence(presence).card === presence.card && shared.presence(presence).channelModes?.[ordinary] === "muted" && shared.presence(presence).channelModes?.[plugin] === undefined);
+  const pluginOnlyPresence = shared.presence({ ...presence, channelModes: { [plugin]: "quiet" } });
+  check("isolated roster serializes a plugin-only attention map as absent", pluginOnlyPresence.card === presence.card && !Object.hasOwn(JSON.parse(JSON.stringify(pluginOnlyPresence)), "channelModes"));
   check("only confirmed isolated mode puts the agreed notice into the HTML shell", String(shared.page(html)).includes('data-shared-plugin-notice="Plugin channels are not shown in this shared view."'));
   let requested: readonly string[] = [];
   const backfill = await activityBackfill({

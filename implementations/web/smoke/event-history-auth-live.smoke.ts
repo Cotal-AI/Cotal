@@ -9,7 +9,7 @@ import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, isReachable, mintCreds, newIdentity, PLUGIN_CHANNEL_ROOT, serverConfig, setupSpaceStreams, type CotalMessage, type MembershipSnapshot, type Part } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, isReachable, mintCreds, newIdentity, PLUGIN_CHANNEL_ROOT, serverConfig, setupSpaceStreams, type CotalMessage, type MembershipSnapshot, type Part, type Presence } from "@cotal-ai/core";
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 
@@ -120,6 +120,7 @@ interface SharedViewCase {
   channel: string;
   ordinaryChannel: string;
   readerId: string;
+  pluginOnlyId: string;
   retained: CotalMessage;
   publishVerified(): Promise<CotalMessage>;
 }
@@ -130,6 +131,12 @@ function checkSharedMembership(snapshot: MembershipSnapshot, cell: SharedViewCas
   assert.deepEqual(member?.live, [cell.ordinaryChannel], "shared live membership retains only the ordinary channel");
   assert.deepEqual(member?.durable, [cell.ordinaryChannel], "shared durable membership retains only the ordinary channel");
   assert.ok(!JSON.stringify(snapshot).includes(cell.channel), "shared membership has no plugin channel name");
+  assert.ok(!snapshot.members.some(({ id }) => id === cell.pluginOnlyId), "shared membership omits the plugin-only member instead of sending empty arrays");
+}
+
+function checkPluginOnlyPresence(roster: Presence[], cell: SharedViewCase): void {
+  const peer = roster.find(({ card }) => card.id === cell.pluginOnlyId);
+  assert.ok(peer && !Object.hasOwn(peer, "channelModes"), "shared roster retains the plugin-only peer without an attention map");
 }
 
 async function readSharedView(base: string, cookie: string, cell: SharedViewCase): Promise<void> {
@@ -146,9 +153,11 @@ async function readSharedView(base: string, cookie: string, cell: SharedViewCase
   assert.ok(!activity.includes(cell.channel) && !activity.includes(cell.retained.id), "activity has neither the plugin channel nor its retained post");
   checkSharedMembership(JSON.parse(await read("/api/membership")) as MembershipSnapshot, cell);
   const roster = await read("/api/roster");
-  const reader = (JSON.parse(roster) as { card: { id: string }; channelModes?: Record<string, string> }[]).find(({ card }) => card.id === cell.readerId);
+  const peers = JSON.parse(roster) as Presence[];
+  const reader = peers.find(({ card }) => card.id === cell.readerId);
   assert.equal(reader?.channelModes?.[cell.ordinaryChannel], "quiet", "the shared roster includes the same reader's ordinary attention setting");
   assert.ok(!roster.includes(cell.channel), "shared roster has no plugin attention channel name");
+  checkPluginOnlyPresence(peers, cell);
 }
 
 function hasMessage(events: FeedEvent[], event: string, id: string, channel?: string): boolean {
@@ -175,9 +184,13 @@ async function checkViewerFeeds(base: string, cookie: string, sender: Pick<Cotal
     assert.ok(!other.events.some(({ data }) => data.msg?.id === metadata.id) && !hasMessage(watching.events, "message", metadata.id), "the frame does not reach the other viewer or the generic feed");
     if (enabled) {
       assert.ok(plugin && plugin.channel === enabled.channel, "the fixture verifies publication on the plugin rail");
-      await until(() => viewers.every(({ events }) => events.some(({ event }) => event === "membership")), "both viewers receive broker-backed membership snapshots");
+      const rosters = (events: FeedEvent[]) => events.filter(({ event }) => event === "roster").map(({ data }) => data as unknown as Presence[]);
+      await until(() => viewers.every(({ events }) => events.some(({ event }) => event === "membership") &&
+        rosters(events).some((roster) => roster.some(({ card }) => card.id === enabled.pluginOnlyId))), "both viewers receive broker-backed membership and populated roster snapshots");
       for (const { events } of viewers) {
         checkSharedMembership(events.find(({ event }) => event === "membership")!.data as unknown as MembershipSnapshot, enabled);
+        const populated = rosters(events).filter((roster) => roster.some(({ card }) => card.id === enabled.pluginOnlyId));
+        for (const roster of populated) checkPluginOnlyPresence(roster, enabled);
         assert.ok(!JSON.stringify(events).includes(enabled.channel) && !events.some(({ data }) => data.msg?.id === plugin.id), "neither shared feed names the plugin channel or receives the plugin post");
         await readSharedView(base, cookie, enabled);
       }
@@ -193,36 +206,47 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
   const { channel, chatChannel, endpoint, mintAgent } = fixture;
   try {
     await fixture.startDelivery();
-    const [readCred, writeCred] = await Promise.all([
+    const [readCred, writeCred, pluginOnlyCred] = await Promise.all([
       mintAgent({ read: [channel] }),
       mintAgent({ post: [channel, chatChannel, `events.${DEV_OWNER}.>`] }),
+      mintAgent({ read: [channel] }),
     ]);
     const reader = endpoint({ ...readCred, card: { kind: "agent", name: "plugin-reader" }, channels: [channel], allowSubscribe: [channel] });
     const writer = endpoint({ ...writeCred, card: { kind: "agent", name: "plugin-writer" }, channels: [], consume: false, registerPresence: false });
+    const pluginOnly = endpoint({ ...pluginOnlyCred, card: { kind: "agent", name: "plugin-only-reader" }, channels: [channel], allowSubscribe: [channel] });
     const delivered = new Set<string>();
     reader.on("message", (msg, delivery, meta) => {
       if (meta.kind === "channel" && msg.channel === channel && !delivery.durable && !meta.historical) delivered.add(msg.id);
       delivery.ack();
     });
-    await Promise.all([reader.start(), writer.start()]);
+    await Promise.all([reader.start(), writer.start(), pluginOnly.start()]);
     assert.ok([reader, writer].every((ep) => ep.channelRoutingMode() === "isolated"), "fixture agents admit the isolated route");
     await reader.setChannelModes({ [channel]: "quiet", [chatChannel]: "quiet" });
+    await pluginOnly.setChannelModes({ [channel]: "quiet" });
     const retained = await writer.multicast("retained plugin post", { channel });
     assert.ok((await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === retained.id), "the scoped reader sees retained plugin history before the dashboard reads");
     assert.ok((await reader.listChannels()).some((row) => row.channel === channel), "the scoped reader can discover the plugin channel");
     await fixture.seedMembership(readCred.principal, { live: [chatChannel, channel], durable: [chatChannel, channel] });
+    await fixture.seedMembership(pluginOnlyCred.principal, { live: [channel], durable: [channel] });
     const credsPath = join(dir, "shared-observer.creds");
     const observerCreds = await fixture.mintObserver();
-    const observer = endpoint({ creds: observerCreds, card: { kind: "endpoint", name: "membership-witness" }, channels: [], consume: false, registerPresence: false, watchPresence: false });
+    const observer = endpoint({ creds: observerCreds, card: { kind: "endpoint", name: "metadata-witness" }, channels: [], consume: false, registerPresence: false, watchPresence: true });
     await observer.start();
-    const raw = (await observer.readMembership()).members.find(({ id }) => id === reader.card.id);
+    const members = (await observer.readMembership()).members;
+    const raw = members.find(({ id }) => id === reader.card.id);
     assert.ok(raw?.live.includes(channel) && raw.durable.includes(channel), "the real broker snapshot contains the plugin membership before dashboard filtering");
+    const rawPluginOnly = members.find(({ id }) => id === pluginOnly.card.id);
+    assert.deepEqual([rawPluginOnly?.live, rawPluginOnly?.durable], [[channel], [channel]], "the fixture seeded a plugin-only member in the real broker snapshot");
+    const rawPeer = () => observer.getRoster().find(({ card }) => card.id === pluginOnly.card.id);
+    await until(() => rawPeer()?.channelModes?.[channel] === "quiet", "the broker watch receives the plugin-only attention setting");
+    assert.deepEqual(rawPeer()?.channelModes, { [channel]: "quiet" }, "the real broker roster contains the plugin-only attention map before filtering");
     writeFileSync(credsPath, observerCreds, { mode: 0o600 });
     const dashboard = await launchDashboard({ servers: fixture.servers, space: fixture.space, credsPath });
     await checkViewerFeeds(dashboard.base, dashboard.cookie, writer, frame, {
       channel,
       ordinaryChannel: chatChannel,
       readerId: reader.card.id,
+      pluginOnlyId: pluginOnly.card.id,
       retained,
       async publishVerified() {
         const post = await writer.multicast("live plugin post", { channel });
@@ -273,7 +297,7 @@ try {
     await stopDashboard();
   }
   await checkEnabledSpace(frame as unknown as Part);
-  console.log("COTAL_SMOKE_SENTINEL cells=27 passed=27 failed=0");
+  console.log("COTAL_SMOKE_SENTINEL cells=31 passed=31 failed=0");
 } finally {
   await agent?.stop();
   await stopDashboard();
