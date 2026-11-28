@@ -370,7 +370,16 @@ setCurrent("keep");
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
-  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message.includes("pass an existing folder; for an open space it may be empty"), shown(noRoot));
+  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message === "--root must name an existing directory" && noRoot.env.error.remedy.includes(join(home, "missing")) && noRoot.env.error.remedy.includes("for an open space it may be empty"), shown(noRoot));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const parent = projectRoot("sealed-parent"), child = join(parent, "project");
+    mkdirSync(child);
+    chmodSync(parent, 0o600);
+    try {
+      const hidden = await json(["space", "add", "r2", "--server", LIVE, "--root", child]);
+      check("a registration root hidden by parent permissions is not reported as a missing directory", refused(hidden, 2, "PERMISSION_DENIED") && hidden.env?.error?.remedy.includes(child) && !findMesh("r2"), shown(hidden));
+    } finally { chmodSync(parent, 0o700); }
+  }
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
   const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);
@@ -1303,7 +1312,7 @@ if (process.platform === "linux") {
     refused(inCopy, 2, "CONFLICT") && inCopy.env?.error?.message === `${accountCopy} holds records copied or moved from ${accountRoot}, the root of "held"`, shown(inCopy));
   const heldElsewhere = await json(["space", "add", "alias", "--server", AUTH_LIVE, "--root", accountRoot]);
   check("an auth broker whose --root holds another space's trust is refused naming that space first",
-    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
+    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && heldElsewhere.env?.error?.message === "the broker requires auth, but this folder holds trust for a different space" && heldElsewhere.env.error.remedy.includes('holds the trust for "held", not "alias"') && heldElsewhere.env.error.remedy.includes(AUTH_LIVE), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   const rootFile = join(home, "plain-file-root");
   writeFileSync(rootFile, "keep");

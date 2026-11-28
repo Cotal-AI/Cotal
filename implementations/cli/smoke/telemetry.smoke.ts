@@ -253,6 +253,9 @@ for (const level of ["regular", "minimal"]) {
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
     && commands.length === 1 && commands[0]?.errorCode === "USAGE_INVALID" && commands[0]?.errorMessage === "the project root is not a directory" && !JSON.stringify(invalid.sent).includes(marker), shown(invalid));
+  const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
+  const addEvent = add.sent.find(body => body.event === "command");
+  check("a refused registration root stays local", add.status === 1 && add.stdout.includes(marker) && addEvent?.errorCode === "USAGE_INVALID" && addEvent.errorMessage === "--root must name an existing directory" && !JSON.stringify(add.sent).includes(marker), shown(add));
   const odd = join(s.project, `tab\tfolder ${marker}`);
   const refused = await s.run(["space", "create", space, "--root", odd, "--json"]);
   const reported = refused.sent.filter(body => body.event === "command");
@@ -269,6 +272,16 @@ for (const level of ["regular", "minimal"]) {
     check(`an unstarted manager's ${mode} refusal keeps the space local`, prepared.status === 0 && r.status === 2 && r.stdout.includes(space)
       && commands.length === 1 && event?.outcome === "refused" && event.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null
       && event.errorStack === null && !JSON.stringify(r.sent).includes(space), shown(r));
+  }
+}
+
+{
+  const s = sandbox(), marker = "private-conflict-fixture", root = join(s.project, `folder ${marker}`);
+  const made = await s.run(["space", "create", "existing", "--root", root], { DO_NOT_TRACK: "1" });
+  for (const [name, at] of [["existing", s.project], ["another", root]] as const) {
+    const r = await s.run(["space", "create", name, "--root", at, "--json"]), event = r.sent.find(body => body.event === "command");
+    check(`preparation conflict for ${name} keeps the existing path local`, made.status === 0 && r.status === 2 && r.stdout.includes(marker) && r.stdout.includes("space show existing --json")
+      && event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
 }
 

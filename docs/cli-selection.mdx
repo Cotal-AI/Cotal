@@ -118,7 +118,8 @@ refuses with `USAGE_INVALID`, exit 1, before anything is written. With
 holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
 required, and the inventory includes it in the registration command and explains what folder to pass.
 Leaving it out is a one-line `USAGE_INVALID` refusal. An open space keeps no credentials there, so
-its folder must exist but can be empty. An auth space needs the folder whose `.cotal/auth` holds its trust.
+its folder must exist but can be empty. If this account cannot inspect the folder, check access to
+it and its parent directories before retrying. An auth space needs the folder whose `.cotal/auth` holds its trust.
 With `--file`, a user-auth connection bundle exported
 where the space runs supplies the login pins and the server, unless `--server` names another
 address for that broker. `--from` fetches the space's discovery document only after you agree in an
@@ -252,10 +253,10 @@ home `COTAL_HOME` redirects may hold project folders beside its records, so unde
 itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
 outside its `.cotal`, is a project of its own. If another space uses the folder, prepare the new
-space in a different folder with `--root <dir>`. For a registration added by hand, the next step
-says to start its broker where it runs and gives `cotal space show <name>` and
-`cotal space forget <name>` for that exact registration. For a local space, the next step names
-how to start, select or forget it. A folder this
+space in a different folder with `--root <dir>`. If the folder belongs to a prepared or registered
+space, the refusal suggests inspecting it with `cotal space show <name>`. It names each registration
+when several share the folder. The inspection keeps `--json` or `--plain` when requested and leaves
+the selection and registrations unchanged. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
