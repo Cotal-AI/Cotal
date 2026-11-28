@@ -131,7 +131,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                     let mut frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt" | "setup-progress" | "agent-app-progress") => on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?,
+                        Some("login-prompt" | "setup-progress" | "agent-app-progress" | "repair-progress") => on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?,
                         Some("status") if is_watch => {
                             if agent_terminal.is_none() { agent_terminal = Some(terminal_available().await); }
                             frame["result"]["agentTerminal"] = Value::Bool(agent_terminal.unwrap_or(false));
@@ -374,6 +374,7 @@ pub fn run() {
             app.manage(native_presence::load(app.handle())?);
             let status = MenuItem::with_id(app, "status", "Starting", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let repair = MenuItem::with_id(app, "repair", "Repair…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
@@ -383,7 +384,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
+            let menu = Menu::with_items(app, &[&status, &update, &settings, &repair, &dashboard, &quit])?;
             app.manage(TrayUpdate(update));
             app.manage(TrayStatus(status));
             app.manage(SurfaceWord(std::sync::Mutex::new(String::new())));
@@ -409,6 +410,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
+                    "repair" => { show(app); let _ = app.emit("desktop-open-repair", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { stop_watch(app); app.exit(0); } },
                     _ => {}

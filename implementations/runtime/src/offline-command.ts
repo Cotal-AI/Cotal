@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationContext, recordOperationWarning, renderReport, shellPath, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -319,6 +319,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
     const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
     const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
+    recordOperationContext({ reportedFailure: { outcome: failure.outcome, code: failure.code } });
     const result = { kind: "workflow-validation", valid: false, problems };
     const view = (): Report => ({ sections: [
       { title: "Workflow not valid", blocks: [

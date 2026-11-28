@@ -36,6 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
+import { applyRepair, planRepair, REPAIR_CONSENTS } from "./repair.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
@@ -57,7 +58,8 @@ const daemonFlags = [
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
-  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
+  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script. repair --apply: approve every step that asks: moving the service from another Cotal installation, starting a stopped service, and removing an old registration" },
+  { name: "apply", type: "string", value: "<digest>", description: "repair: run the plan with this digest, as `cotal daemon repair` printed it" },
   { name: "wait", type: "string", value: "<seconds>", description: "setup --no-manager only: how long to wait for machine approval (default 900, 0 reports what it reached)" },
   { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
   { name: "space", short: "s", type: "string", value: "<s>", description: "target space (required except for status, where it selects one hosted Manager)" },
@@ -167,7 +169,7 @@ function statusView(s: DaemonStatus): Report {
     ...(s.vitals ? [{ title: "Computer vitals", blocks: [{ kind: "fields" as const, rows: [["Sampled", s.vitals.sampledAt], ["CPU", `${s.vitals.cpu.logicalCount} logical, ${s.vitals.cpu.utilisationPercent.toFixed(1)}% over ${s.vitals.cpu.intervalMs}ms`], ...(s.vitals.cpu.load1 !== undefined ? [["Load (1/5/15m)", `${s.vitals.cpu.load1} / ${s.vitals.cpu.load5} / ${s.vitals.cpu.load15}`]] : []), ["Memory", capacityText(s.vitals.memory.totalBytes, s.vitals.memory.availableBytes)], ["System uptime", uptimeText(s.vitals.uptimeSeconds)], ...s.vitals.filesystems.map(fs => [fs.mount, capacityText(fs.totalBytes, fs.freeBytes)])] as [string, string][] }] }] : []),
     ...(s.vitalsError ? [{ title: "Computer vitals error", blocks: [{ kind: "lines" as const, lines: [s.vitalsError] }] }] : []),
     ...(s.update ? [{ title: "Updates", blocks: [{ kind: "fields" as const, rows: [["Current", s.update.current], ["Latest seen", s.update.latest ?? "unknown"], ["Last check", s.update.lastCheck ?? "not checked"], ["Automatic updates", s.update.automatic ? "on" : "off"], ["Last result", s.update.lastResult], ["Failures", String(s.update.failures)], ["Next attempt", s.update.nextAttempt ?? "none"]] as [string, string][] }] }] : []),
-    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.custodyRecovery ? "; open the app and choose Use signed-in account to confirm moving this connection" : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
+    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.custodyRecovery ? "; open the app and choose Move to this account to confirm moving this connection" : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
     ...(s.agents ?? []).map(inventory => ({ title: `Agents: ${inventory.space}`, blocks: inventory.state === "unreadable"
       ? [{ kind: "lines" as const, lines: [inventory.message] }]
       : inventory.agents.length ? inventory.agents.map(agent => ({ kind: "fields" as const, rows: [["Name", agent.name], ["Application", agent.application], ["Model", agent.model ?? "not pinned"], ["Space", inventory.space], ["Folder", agent.cwd], ["Started", agent.startedAt], ["State", agent.state]] as [string, string][] }))
@@ -433,6 +435,27 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
         : r.mechanism === "systemd-user" ? "The daemon is stopped and will not start at login. Linger is left enabled, because other user services may rely on it." : "The owned daemon job is stopped and will not start at login. Other user services were not changed.", tone: "hint" },
         ...("removedServiceRecords" in r ? [{ text: `Removed local service credentials and identity records: ${r.removedServiceRecords.length ? r.removedServiceRecords.join(", ") : "none remained"}. Remote records may remain; remove the computer in the dashboard to revoke its authority.`, tone: "hint" as const }] : [])] },
     ] },
+  ] }));
+}
+
+/** `cotal daemon repair`: show what Repair would fix, or run that exact plan with --apply. */
+async function repairCommand(args: ParsedArgs): Promise<void> {
+  const presentation = presentationOf(args.values);
+  const values = args.values as { apply?: string; yes?: boolean };
+  const { paths, home } = resolveTarget(args);
+  const opts = { paths, daemonHome: home, version: binVersion(), peerUid, peerPid, report: (line: string) => { if (presentation !== "json") process.stderr.write(`${line}\n`); } };
+  if (values.apply === undefined) {
+    const plan = await planRepair(opts);
+    writeResult(presentation, { command: "daemon repair", target: null, result: plan }, () => ({ sections: [
+      { title: "Repair", blocks: [{ kind: "fields", rows: plan.steps.map((step): [string, string] => [step.step, step.outcome === "fix" ? `${step.found} ${step.change}` : step.found]) }] },
+      ...(plan.steps.some(step => step.outcome === "fix") ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [`Run ${codeSpan(daemonCommandCopy("repair", home, [["--apply", plan.digest], ...(plan.steps.some(step => step.consent) ? ["--yes" as const] : [])]))} to fix this.`] }] }] : []),
+    ] }));
+    return;
+  }
+  if (!/^[0-9a-f]{64}$/.test(values.apply)) throw new CommandFailure("refused", "USAGE_INVALID", "--apply needs the 64-character plan digest that `cotal daemon repair` printed");
+  const result = await applyRepair({ ...opts, digest: values.apply, consent: values.yes === true ? [...REPAIR_CONSENTS] : [], throwOnFailure: true });
+  writeResult(presentation, { command: "daemon repair", target: null, result }, () => ({ sections: [
+    { title: result.repaired ? "Repaired" : "Repaired in part", blocks: [{ kind: "fields", rows: result.steps.map((step): [string, string] => [step.step, step.changed ?? step.found]) }] },
   ] }));
 }
 
@@ -744,6 +767,7 @@ async function run(args: ParsedArgs): Promise<void> {
   if (mode === "service-connect" || mode === "service-disconnect" || mode === "service-status") return serviceCommand(args, mode);
   if (mode === "install" || mode === "uninstall") return unitCommand(args, mode);
   if (mode === "setup") return setupCommand(args);
+  if (mode === "repair") return repairCommand(args);
   throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? `cotal daemon needs a mode: ${daemonCommand.subcommands!.map((command) => command.name).join(", ")}` : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "run `cotal help daemon`" });
 }
 
@@ -752,8 +776,8 @@ const daemonCommand: Command = {
   name: "daemon",
   group: "Manager",
   summary: "connect this computer to an account, manage its persistent daemon, or host a space's Manager",
-  usage: "cotal daemon <name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop> [--daemon-home <dir>] [--json|--plain]",
-  positionals: "<name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
+  usage: "cotal daemon <name|setup|start|status|serve|install|uninstall|repair|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop> [--daemon-home <dir>] [--json|--plain]",
+  positionals: "<name|setup|start|status|serve|install|uninstall|repair|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
   flags: daemonFlags,
   flagNames: ["daemon-home", "json", "plain"],
   outputs: ["json", "plain"],
@@ -767,6 +791,7 @@ const daemonCommand: Command = {
     { name: "serve", usage: "cotal daemon serve [--daemon-home <dir>] [--json|--plain]", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", usage: "cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "uninstall", usage: "cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "repair", usage: "cotal daemon repair [--apply <digest> [--yes]] [--daemon-home <dir>] [--json|--plain]", summary: "check this computer's background service and say what Repair would fix; --apply runs that exact plan, and --yes approves every step that asks first", examples: [{ command: "cotal daemon repair", note: "show what Repair would fix" }, { command: "cotal daemon repair --apply <digest> --yes", note: "run the plan shown, moving the service if it needs to" }], flagNames: ["apply", "yes", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "login", usage: "cotal daemon login [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["cloud", "no-browser", "idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "connect-check", usage: "cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon whether it could register with a space as its own service; registers nothing", examples: [{ command: "cotal daemon connect-check --space <space>", note: "check whether it could register" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "register", usage: "cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon to request its own service registration with a space; the space owner must approve it, and it does not connect", examples: [{ command: "cotal daemon register --space <space>", note: "ask a space to approve it as a service" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
