@@ -7,7 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSyn
 import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, processStartToken, processStatFields, reapSeat, seatId, SeatClient } from "../src/index.js";
 import { sharedCgroupAvailable } from "../src/shared-cgroup.js";
 import { isSharedScope, readPrivateRecord, readSharedHost, recordedProcess, sharedHostSocket } from "../src/shared-record.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
@@ -1003,16 +1003,30 @@ async function sharedOwnerDeathCell(): Promise<void> {
   const entry = new URL("../dist/shared-managed.js", import.meta.url).href;
   const owner = spawn(process.execPath, ["--input-type=module", "-e", `
     import assert from 'node:assert/strict';
+    import { existsSync, readFileSync } from 'node:fs';
+    import { processStartToken } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
     import { launchManagedSharedSeat } from ${JSON.stringify(entry)};
     const [base, lineage] = process.argv.slice(1);
+    const marker = base + '/detached-pid';
+    const payload = "const { spawn } = require('node:child_process'); " +
+      "const child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { detached: true, stdio: 'ignore' }); " +
+      "child.once('spawn', () => require('node:fs').writeFileSync(process.argv[1], String(child.pid))); " +
+      "setInterval(()=>{}, 1000);";
     const seats = [];
     for (const name of ['owner-death-one', 'owner-death-two']) {
       const handle = await launchManagedSharedSeat(lineage, { root: lineage, name, cwd: base,
-        spec: { command: process.execPath, args: ['-e', 'setInterval(()=>{}, 1000)'], env: { PATH: '/usr/bin:/bin' } } });
+        spec: { command: process.execPath,
+          args: name === 'owner-death-one' ? ['-e', payload, marker] : ['-e', 'setInterval(()=>{}, 1000)'],
+          env: { PATH: '/usr/bin:/bin' } } });
       assert(handle?.childIdentity, 'owner fixture did not launch a managed v2 seat');
       seats.push(handle.childIdentity);
     }
-    process.send(seats);
+    const deadline = Date.now() + 5000;
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    const pid = Number(readFileSync(marker, 'utf8'));
+    const start = processStartToken(pid);
+    assert(start, 'detached fixture descendant did not start');
+    process.send({ seats, detached: { pid, start, boot: seats[0].boot } });
     setInterval(() => {}, 1000);
   `, base, lineage], {
     cwd: base, stdio: ["ignore", "ignore", "inherit", "ipc"],
@@ -1020,25 +1034,40 @@ async function sharedOwnerDeathCell(): Promise<void> {
       HOME: base, XDG_CONFIG_HOME: join(base, "config"), TMPDIR: base, DO_NOT_TRACK: "1" },
   });
   const stopped = new Promise<void>(resolve => owner.once("close", () => resolve()));
-  let children: { pid: number; start: string; boot: string }[] | undefined;
-  owner.on("message", (message: typeof children) => { children = message; });
+  type Identity = { pid: number; start: string; boot: string };
+  let report: { seats: Identity[]; detached: Identity } | undefined;
+  owner.on("message", (message: typeof report) => { report = message; });
   try {
-    assert(await until(() => children !== undefined || owner.exitCode !== null || owner.signalCode !== null, 30_000));
-    assert(children?.length === 2, "child owner did not report two seats");
+    assert(await until(() => report !== undefined || owner.exitCode !== null || owner.signalCode !== null, 30_000));
+    assert(report?.seats.length === 2, "child owner did not report two seats");
+    const { seats, detached } = report;
     const roots = nativeGenerations(lineage);
     assert.equal(roots.length, 1);
     const host = readSharedHost(roots[0]!);
     const ownerStart = processStartToken(owner.pid!);
     assert(ownerStart && recordedProcess(owner.pid!, ownerStart, host.bootId) === "live");
     assert.equal(recordedProcess(host.pid, host.start, host.bootId), "live");
-    assert(children.every(child => recordedProcess(child.pid, child.start, child.boot) === "live"));
-    assert(children.every(child => readFileSync(`/proc/${child.pid}/cgroup`, "utf8").includes(`/${host.scope}/seat-`)));
+    const rows = [...seats, detached];
+    const membership = (pid: number) => readFileSync(`/proc/${pid}/cgroup`, "utf8").trim();
+    assert(rows.every(child => recordedProcess(child.pid, child.start, child.boot) === "live"));
+    assert(rows.every(child => membership(child.pid).includes(`/${host.scope}/seat-`)));
+    assert.equal(membership(detached.pid), membership(seats[0]!.pid));
+    assert.equal(processStatFields(detached.pid)?.[3], String(detached.pid), "descendant owns a separate session");
+    const group = `/sys/fs/cgroup${dirname(membership(detached.pid).slice(3))}`;
+    const listed = () => {
+      const result = spawnSync("/usr/bin/systemctl", ["--user", "list-units", "--all", "--plain", "--no-legend", host.scope],
+        { encoding: "utf8", timeout: 1000 });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    assert(existsSync(group) && listed().includes(host.scope), "the exact unit and its cgroup are live");
     assert(owner.kill("SIGKILL"));
     // No daemon, successor, or fixture stop runs during this wait. Only the host observes owner death.
-    check("v2 owner-only SIGKILL ends the host and both seats within 10 seconds", await until(() =>
+    check("v2 owner-only SIGKILL ends the unit, host, both seats and detached descendant within 10 seconds", await until(() =>
       owner.signalCode === "SIGKILL" && recordedProcess(owner.pid!, ownerStart, host.bootId) === "gone" &&
       recordedProcess(host.pid, host.start, host.bootId) === "gone" &&
-      children!.every(child => recordedProcess(child.pid, child.start, child.boot) === "gone"), 10_000));
+      rows.every(child => recordedProcess(child.pid, child.start, child.boot) === "gone") &&
+      !existsSync(group) && !listed(), 10_000));
   } finally {
     if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
     await stopped;
