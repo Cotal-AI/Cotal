@@ -545,19 +545,20 @@ function validateServiceEndpointArguments(args: ParsedArgs): void {
   }
 }
 
-/** `cotal service-endpoint`: one host request ({@link serviceEndpointHostCall}) at the resolved
- *  local authority root, and its answer rendered. */
+/** Render the host answer and any supplemental diagnostics for human output. */
 async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise<void> {
   const { dir, space } = actorState(target);
   const presentation = presentationOf(args.values);
   await legibly(async () => {
-    const call = await serviceEndpointHostCall(dir, space, args.positionals, args.values as ServiceEndpointValues);
+    let diagnosis: string[] = [];
+    const call = await serviceEndpointHostCall(dir, space, args.positionals, args.values as ServiceEndpointValues, presentation === "json" ? undefined : (lines) => { diagnosis = lines; });
     writeResult(presentation, { command: "service-endpoint", target: { space }, result: { kind: "service-endpoint-host", ...call } }, (result) => ({
       space,
       sections: [{ title: `Service endpoint ${result.request}`, blocks: [
         { kind: "fields" as const, rows: [["Space", space], ["Subject", result.subject], ["State", String((result.answer as { state: string }).state)],
+          ...(result.answer.state === "approved" ? [["Root credential expiry at approval", new Date(result.answer.approval.rootExpiresAt * 1000).toJSON() ?? "not displayable"]] : []),
           ...(result.requestId !== undefined ? [["Request id", result.requestId]] : [])] as [string, string][] },
-        { kind: "lines" as const, lines: [...(result.note !== undefined ? [result.note] : []), { text: JSON.stringify(result.answer), tone: "hint" as const }] },
+        { kind: "lines" as const, lines: [...diagnosis, ...(result.note !== undefined ? [result.note] : []), { text: JSON.stringify(result.answer), tone: "hint" as const }] },
       ] }],
     }));
   });

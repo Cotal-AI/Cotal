@@ -33,7 +33,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
@@ -191,7 +191,7 @@ async function status(args: ParsedArgs): Promise<void> {
     const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
     if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+        remedy: linuxAutostartWarning(paths, home) ?? `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },
       });
     }
@@ -209,7 +209,8 @@ async function status(args: ParsedArgs): Promise<void> {
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
-  writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
+  const warning = linuxAutostartWarning(paths, home);
+  writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result, ...(warning ? { warnings: [{ code: "TARGET_UNAVAILABLE", target: null, message: warning }] } : {}) }, statusView);
 }
 
 /** Select the provider before approval or native setup effects. */
@@ -406,12 +407,16 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
       return;
     }
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
-    writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
-      { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
-        { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
+    const warning = dry ? undefined : linuxAutostartWarning(paths, home);
+    const autostart = warning === null ? linuxAutostartUnverified(r.unit, r.user) : warning;
+    const linger = warning === null ? "could not be verified" : r.lingerAlready ? "already enabled" : dry ? "would be enabled" : ("lingerEnabled" in r && r.lingerEnabled) ? "enabled by this install" : "not enabled";
+    const target = { unit: r.unit };
+    writeResult(presentation, { command: "daemon install", target, result: r, ...(autostart && presentation === "json" ? { warnings: [{ code: "TARGET_UNAVAILABLE", target, message: autostart }] } : {}) }, () => ({ sections: [
+      { title: autostart ? "Service recorded" : r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
+        { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", linger] as [string, string]] : []), ["Restart", r.restart], [autostart ? "Configured target" : "Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
-          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
+          : autostart ?? `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
       ] },
     ] }));
     return;
@@ -432,6 +437,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
         ...("removedServiceRecords" in r ? [{ text: `Removed local service credentials and identity records: ${r.removedServiceRecords.length ? r.removedServiceRecords.join(", ") : "none remained"}. Remote records may remain; remove the computer in the dashboard to revoke its authority.`, tone: "hint" as const }] : [])] },
     ] },
   ] }));
+}
+
+function setupAutostartWarnings(paths: DaemonPaths, home: string | undefined, unit: string | undefined, target: unknown) {
+  if (!unit) return [];
+  const warning = linuxAutostartWarning(paths, home, unit);
+  const message = warning === null ? linuxAutostartUnverified(unit) : warning;
+  return message ? [{ code: "TARGET_UNAVAILABLE", target, message }] : [];
 }
 
 /** Connect a headless machine with one command: install, sign in, register, connect. */
@@ -467,7 +479,10 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
     if (!idp) {
       let discovery;
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
-      catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account"); }
+      catch {
+        const remedy = linuxAutostartWarning(paths, home);
+        throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account", remedy ? { remedy } : undefined);
+      }
       if (!discovery.ok || "event" in discovery || !("signedInProviders" in discovery.result)) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account");
       const providers = discovery.result.signedInProviders ?? [];
       if (!providers.length) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
@@ -485,7 +500,8 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
         ? "Or open the Machines page in the Cotal Cloud dashboard, find this computer under Account computers, and turn on a space."
         : "You can also choose spaces for this computer in your provider's dashboard.",
     };
-    writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: { ...r, ...guidance } }, () => ({ sections: [
+    const target = { idp: idp! };
+    writeResult(presentation, { command: "daemon setup", target, result: { ...r, ...guidance }, warnings: setupAutostartWarnings(paths, home, r.unit, target) }, () => ({ sections: [
       { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.label || "Signed in"], ["Computer", r.computer]] },
         { kind: "lines", lines: [guidance?.message ?? `Spaces using this computer: ${r.spaces.join(", ")}`] }] },
       ...(guidance ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [guidance.next] }, { kind: "lines" as const, lines: [guidance.dashboard] }] }] : []),
@@ -510,13 +526,15 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   } catch (e) {
     throw asFailure(e);
   }
-  writeResult(presentation, { command: "daemon setup", target: { space }, result: r }, () => ({ sections: [
+  const target = { space };
+  const warnings = setupAutostartWarnings(paths, home, r.unit, target);
+  writeResult(presentation, { command: "daemon setup", target, result: r, warnings }, () => ({ sections: [
     { title: r.manager?.state === "answering" ? "Ready to launch" : "Connected", blocks: [
       { kind: "fields", rows: [["Space", r.space], ...(r.manager?.instanceId ? [["Manager instance", r.manager.instanceId] as [string, string]] : []), ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
         ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service: ${r.state}.`, tone: "hint" as const }] : []),
-        { text: `The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with ${codeSpan(daemonCommandCopy("service-status", home, [["--space", space]]))}, and close the connection with ${codeSpan(daemonCommandCopy("service-disconnect", home, [["--space", space]]))}.`, tone: "hint" as const },
+        { text: `${warnings.length ? "" : "The daemon runs as a user service, restarts on its own and reconnects after a restart. "}Read it with ${codeSpan(daemonCommandCopy("service-status", home, [["--space", space]]))}, and close the connection with ${codeSpan(daemonCommandCopy("service-disconnect", home, [["--space", space]]))}.`, tone: "hint" as const },
       ] },
     ] },
   ] }));

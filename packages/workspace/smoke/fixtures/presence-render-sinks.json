@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1163,
+    "total": 1164,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 941
+    "non-render/control": 942
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -44,6 +44,13 @@
       "anchor": "blockedDownRootRemedy(at, stop)",
       "class": "non-render/control",
       "rationale": "Down refusal remedy: names what blocks the stack root path and the stop to retry; a filesystem fact, not agent presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "downInOwningRoot(at, values)",
+      "class": "non-render/control",
+      "rationale": "Down dry-run refusal remedy: names the stop command to run from the folder that owns the stack; a registration and filesystem fact, not presence."
     },
     {
       "path": "implementations/cli/src/commands/ext.ts",
