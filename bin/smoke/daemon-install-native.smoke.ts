@@ -1061,13 +1061,15 @@ try {
           const repair = "Ask an administrator to run `sudo loginctl enable-linger smoke`, then run `systemctl --user enable --now cotal-daemon.service` yourself.";
           const beforeReceipt = readFileSync(receiptFile, "utf8");
           check("N8 linger refusal names administrator recovery without discarding the receipt", installed.output.includes("recorded unit was not enabled or started") && installed.output.includes(repair) && JSON.parse(beforeReceipt).unitSha256 === sha(readFileSync(unitPath)), installed);
+          const effectCount = effects().length;
           const plain = call("install", ["--plain"]);
           const repeated = call("install", ["--json"]);
           const status = call("status", ["--json"]);
           check("N8 retry completes without claiming linger was enabled", plain.status === 0 && plain.output.includes("Service recorded") && /^\s*Linger:\s+not enabled$/m.test(plain.output) && plain.output.includes(repair) && !plain.output.includes("enabled by this install") && !plain.output.includes("Already installed"), plain);
           check("N8 retry carries the warning in the existing JSON result envelope", repeated.status === 0 && JSON.parse(repeated.output).result.lingerEnabled === false && JSON.parse(repeated.output).warnings.some((warning: { message: string }) => warning.message.includes(repair)), repeated);
           check("N8 stopped status retains NOT_RUNNING and diagnoses autostart", status.status === 2 && JSON.parse(status.output).error.cause.code === "NOT_RUNNING" && JSON.parse(status.output).error.remedy.includes(repair), status);
-          check("N8 retry and status leave linger off", readFileSync(lingerFile, "utf8") === "Linger=no\n");
+          const retryEffects = effects().slice(effectCount);
+          check("N8 retry and status leave linger off without native mutations", retryEffects.length === 0 && readFileSync(lingerFile, "utf8") === "Linger=no\n", retryEffects);
           for (const [unitFileState, linger, note, command] of [
             ["enabled", "no", "will not keep running after logout", "sudo loginctl enable-linger smoke`"],
             ["enabled-runtime", "yes", "will not start automatically after a restart", "`systemctl --user enable --now cotal-daemon.service`"],
