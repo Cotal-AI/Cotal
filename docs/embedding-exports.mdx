@@ -24,6 +24,31 @@ stay registered. The reason argument and `PruneReason` type are removed. Callers
 workspace root exports, without loading the workstation command graph. The reader keeps its
 bounded descriptor read and platform-specific file checks. It caches no source or ownership result.
 
+## Native service execution records
+
+On Linux, a built Cotal child writes a private, create-only `.execution.json` beside its
+startup receipt. The existing startup publisher records the full instance and launch request,
+creation-pinned process, frozen logical/loaded entry paths and the running Node file identity.
+Startup and identity receipt schemas, Manager contracts and wire messages are unchanged.
+
+Workspace exports `serviceExecutionPath`, `publishServiceExecution` and `readServiceExecution`.
+The reader validates the closed record against the expected launch and process without resolving
+old source paths. A missing record returns `undefined`: older launches, development entries and
+unsupported platforms have no original-software custody record. A migration caller must refuse
+that absence rather than substitute its own current package. Malformed or mismatched records throw.
+
+A retained execution generation records the path, byte length and SHA-256 of its existing native
+`inventory.json`. A canonical installation records `generationInventory: null`; its paths do not
+prove the original package bytes. This is same-UID local evidence. A complete capture must still
+verify and retain the package and Node bytes, bind the broker executable and capture authority.
+No preservation, restore or migration activation route is enabled by this record.
+
+`pnpm smoke:service-execution:live` exercises the actual launcher, delivery and Manager children,
+reader refusal controls, ordinary restart conservation and the withheld migration routes. It needs
+built packages and `nats-server`, and retains its private fixture. For a prepared private package,
+pass `--binary <installed-entry>` and `--generation <native-generation-reference>` to the same
+smoke file to exercise a selected retained generation; that packaging variant is a manual check.
+
 ## Node connection signing
 
 Node endpoints, the Manager's standing service, goal-writer and session-ledger connections, and
