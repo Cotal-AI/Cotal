@@ -7,7 +7,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, surfaceInputs, type SurfaceFrame, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -86,7 +86,20 @@ let nextAppApplyTick = 0;
 let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
 let serviceAvailability: "stopped" | "not-set-up" | undefined;
+let stageBeforeService: Stage | undefined;
 let trayWord: SurfaceState["word"] | undefined;
+/** One reading of the status frame for the sidebar word, its dot, and the tray. */
+function readSurface(anyConnected: boolean): SurfaceState {
+  const frame = serviceStatus as (SurfaceFrame & { account?: ComputerAccount }) | undefined;
+  const account = computerAccount ?? frame?.account;
+  const rows = account ? computerSpaces(account) : [];
+  const refused = new Set(rows.filter(row => row.lastRefusal).map(row => row.space));
+  const managers = Array.isArray((serviceStatus as { managers?: unknown } | undefined)?.managers) ? (serviceStatus as { managers: { state?: unknown }[] }).managers : [];
+  const verified = [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space));
+  const registered = account?.mode === "account" || account?.mode === "sign-in-required";
+  const starting = !initialized || managers.some(item => item.state === "starting");
+  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && verified, registered, starting, verified), service: !initialized ? undefined : serviceAvailability });
+}
 function renderSurface(surface: SurfaceState): void {
   text("sidebar-status-word", surface.word);
   el("sidebar-status-dot").dataset.tone = surface.dot;
@@ -491,16 +504,7 @@ function showStage(next: Stage, focus = false): void {
   renderSettings();
   const finished = next === "finished";
   const anyConnected = [...connections].some(([space, value]) => value === "launch-ready" && !computerRows.get(space)?.lastRefusal);
-  const surface = surfaceState({
-    rows: computerAccount ? computerSpaces(computerAccount) : [],
-    anyConnected: !upgradeNeeded && anyConnected,
-    signInRequired: computerAccount?.mode === "sign-in-required",
-    service: !initialized || setupActive || loginActive ? undefined : serviceAvailability,
-    starting: !initialized || setupActive || loginActive || !serviceStatus && !serviceAvailability,
-    updating: !!serviceStatus?.generation,
-    diskFull: serviceStatus?.diskFull === true,
-    repairNeeded: !!serviceStatus?.recovery,
-  });
+  const surface = readSurface(!upgradeNeeded && anyConnected);
   renderSurface(surface);
   const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
   const signIn = next === "welcome" || next === "sign-in";
@@ -529,12 +533,10 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
-  const surfaceRecovery = surface.word === "Disk full" || surface.word === "Service stopped";
+  const issue = problem === "NOT_ANSWERING" ? problem : surface.word === "Disk full" ? "DISK_FULL" : serviceAvailability === "stopped" && !problem ? "SERVICE_STOPPED" : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const surfaceRecovery = issue === "DISK_FULL" || issue === "SERVICE_STOPPED";
   const networkLoss = surface.title === CONNECTION_COPY.offline.title || surface.title === CONNECTION_COPY.unreachable.title;
-  const recovery = surface.word === "Disk full" ? { title: surface.title, description: surface.description, action: "refresh", label: "Check again" }
-    : surface.word === "Service stopped" ? { title: surface.title, description: surface.description, action: "start", label: "Start" }
-    : issue && !networkLoss ? refusalView(issue, applications) : undefined;
+  const recovery = issue && !networkLoss ? refusalView(issue, applications) : undefined;
   if (recovery) {
     title = recovery.title;
     description = recovery.description;
@@ -707,6 +709,7 @@ function updateCountdown(): void {
   text("approval-expiry", remaining ? `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}` : "This code has expired.");
   el<HTMLButtonElement>("copy-code").disabled = remaining === 0;
   el<HTMLButtonElement>("open-approval").disabled = remaining === 0;
+  el<HTMLButtonElement>("copy-link").disabled = remaining === 0;
   if (!remaining && problem !== "EXPIRED") {
     problem = "EXPIRED";
     text("refusal-detail", "The approval code expired before sign-in was confirmed."); el("details").hidden = false;
@@ -717,6 +720,29 @@ function updateCountdown(): void {
 el("copy-code").addEventListener("click", () => {
   void navigator.clipboard.writeText(el("approval-code").textContent ?? "").then(() => { text("copy-code", "Copied"); text("announcer", "Approval code copied."); }).catch(() => notice("The code could not be copied. Select the code and copy it manually.", true));
 });
+async function openApprovalPage(): Promise<void> {
+  const url = approval, expires = approvalExpires, signingIn = loginActive;
+  if (!url || expires <= Date.now()) return;
+  try { await invoke("open_browser", { url }); }
+  catch (error) {
+    if (approval !== url || approvalExpires !== expires || expires <= Date.now()) return;
+    if (!signingIn) { refusal(error); return; }
+    if (!loginActive) return;
+    const help = el("approval-browser-help");
+    if (help.hidden) {
+      help.hidden = false;
+      announce(el("approval-browser-message").textContent ?? "");
+    }
+  }
+}
+el("copy-link").addEventListener("click", async () => {
+  const url = approval, expires = approvalExpires;
+  if (!loginActive || !url || expires <= Date.now() || el("approval-browser-help").hidden) return;
+  let message = "Approval link copied.";
+  try { await navigator.clipboard.writeText(url); }
+  catch { message = "The link could not be copied. Select the link and copy it manually."; }
+  if (loginActive && approval === url && approvalExpires === expires && expires > Date.now()) text("copy-link-status", message);
+});
 async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
   events.onmessage = (frame) => {
@@ -725,6 +751,9 @@ async function request(body: Request): Promise<Record<string, unknown>> {
     try {
       approval = approvalUrl(frame.prompt.verificationUriComplete);
       text("approval-code", String(frame.prompt.userCode ?? ""));
+      el("approval-browser-help").hidden = true;
+      text("approval-link", loginActive ? approval : "");
+      text("copy-link-status", "");
       const expiry = new Date(String(frame.prompt.expiresAt ?? ""));
       approvalExpires = expiry.valueOf();
       if (!Number.isFinite(approvalExpires)) throw new Error("The approval code has no valid expiry.");
@@ -735,7 +764,7 @@ async function request(body: Request): Promise<Record<string, unknown>> {
       el("approval").hidden = false;
       notice("");
       if (loginActive) showStage("sign-in");
-      if (approvalExpires > Date.now()) void invoke("open_browser", { url: approval }).catch(refusal);
+      void openApprovalPage();
     } catch (error) { refusal(error); }
   };
   const result = requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
@@ -790,7 +819,6 @@ async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void
   }
 }
 async function applyStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
-  if (current()) serviceAvailability = undefined;
   await showStatus(status, current);
   if (current()) updateService();
 }
@@ -828,6 +856,8 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   if (!current()) return;
   selectionPending = false;
   serviceStatus = status;
+  serviceAvailability = undefined;
+  if (stageBeforeService) { const back = stageBeforeService; stageBeforeService = undefined; if (!completedSetup) { listOpened = false; showStage(back); } }
   ready = status.state === "ready";
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
@@ -841,6 +871,9 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+  const frameAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(selectedSpace()));
+  const refusedSpaces = new Set((frameAccount ? computerSpaces(frameAccount) : []).filter(row => row.lastRefusal).map(row => row.space));
+  observedReadySpaces = observedReadySpaces.filter(name => !refusedSpaces.has(name));
   managerReasons.clear();
   if (Array.isArray(status.managers)) for (const item of status.managers) {
     if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
@@ -869,12 +902,13 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     else connections.delete(name);
   }
   if (connections.size && !editing && !linked) listOpened = true;
+  if (!space && !editing && !setupActive && Array.isArray(status.managers) && status.managers.some(item => item.state === "starting")) { listOpened = true; showStage("finished"); buttons(); return; }
   if (upgradeNeeded) {
     state("ready", space);
     showStage(stage);
     buttons(); return;
   }
-  if (space) {
+  if (space && !editing && !setupActive && !choosingSpace) {
     const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
     if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
     instances.delete(space);
@@ -896,7 +930,12 @@ function notSetUpYet(error: unknown): boolean {
   return !listOpened && error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed !== true;
 }
 function observeMissingService(error: unknown): void {
-  serviceAvailability = notSetUpYet(error) ? "not-set-up" : error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed === true && error.detail?.stopped === "by-you" ? "stopped" : undefined;
+  if (!(error instanceof DaemonRefusal) || error.code !== "NOT_RUNNING") { serviceAvailability = undefined; return; }
+  serviceAvailability = error.detail?.installed === true && error.detail?.stopped === "by-you" ? "stopped" : error.detail?.installed !== true ? "not-set-up" : undefined;
+}
+function showServiceWord(): boolean {
+  if (problem === "NOT_ANSWERING" || problem && !statusProblem) return false;
+  return Boolean(serviceAvailability && (serviceAvailability === "stopped" || listOpened));
 }
 function startStatusWatch(): void {
   if (!isTauri() || watchActive || watchStarting) return;
@@ -952,7 +991,9 @@ function startStatusWatch(): void {
     }
     if (!busy && !loginActive && !setupActive) {
       observeMissingService(error);
-      ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+      ready = false; serviceStatus = undefined; renderSettings();
+      if (showServiceWord()) { statusProblem = false; problem = undefined; upgradeNeeded = false; if (!listOpened) stageBeforeService = stage; listOpened = true; showStage("finished"); buttons(); return; }
+      state("unavailable");
       if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
@@ -974,7 +1015,9 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     observeMissingService(error);
     selectionPending = false;
-    ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+    ready = false; serviceStatus = undefined; renderSettings();
+    if (showServiceWord()) { statusProblem = false; problem = undefined; upgradeNeeded = false; if (!listOpened) stageBeforeService = stage; listOpened = true; showStage("finished"); buttons(); return; }
+    state("unavailable");
     // An error from an action stays until the person acts on it; a background check never replaces it.
     if (problem && !statusProblem) { buttons(); return; }
     if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
@@ -1051,7 +1094,12 @@ el("login-form").addEventListener("submit", (event) => {
       // The account switch stands; credential files of the previous account it could not delete are named.
       const kept = keptCredentialsNotice(result);
       if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
-    } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
+    } finally {
+      loginActive = false; approval = undefined;
+      if (countdown) clearInterval(countdown);
+      el("approval").hidden = true; el("approval-browser-help").hidden = true;
+      text("approval-link", ""); text("copy-link-status", "");
+    }
   });
 });
 el("recover").addEventListener("click", () => {
@@ -1064,10 +1112,14 @@ el("recover").addEventListener("click", () => {
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "disk") void action(async () => { clearDetails(); await refresh(); });
   else if (recovery === "start") void action(async () => {
     clearDetails();
     await request({ op: "start" });
-    await refresh();
+    const status = await request({ op: "status" });
+    await showStatus(status, () => true);
+    if (!ready) throw new Error("The background service is not ready.");
+    notice("");
   });
   else if (recovery === "install") void action(async () => {
     clearDetails();
@@ -1084,7 +1136,7 @@ async function startService(): Promise<void> {
   try { await request({ op: "install" }); }
   finally { progress = progressNames.map(() => "waiting"); renderProgress(); }
 }
-el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
+el("open-approval").addEventListener("click", () => void openApprovalPage());
 function beginSignIn(): void {
   if (busy) return;
   editing = true;

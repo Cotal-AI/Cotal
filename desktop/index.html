@@ -96,7 +96,15 @@
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
             <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button><button id="cloud-host" class="text-button" type="button" hidden>Use Cotal Cloud</button></div>
           </form>
-          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button>
+            <div id="approval-browser-help" hidden>
+              <p id="approval-browser-message" class="muted">Your browser didn't open. Open this link on any device to approve:</p>
+              <p id="approval-link"></p>
+              <button id="copy-link" class="text-button" type="button">Copy link</button>
+              <p id="copy-link-status" class="muted" role="status"></p>
+            </div>
+            <p class="muted">Do not share the approval link or code.</p>
+          </div>
           <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
         </div>
         <div id="space-panel" hidden><p id="no-other-spaces" class="muted" role="status"></p><label for="space">Space to connect</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="text-button" type="button">Use this space</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>

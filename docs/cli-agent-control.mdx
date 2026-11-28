@@ -43,6 +43,7 @@ When a single manager returns an empty list, Next checks the local default harne
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
 in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
+If `stop` or `attach` refuses multiple agent names, keep just one name in your original command so its space and Manager selector stay the same.
 If `stop`, `attach`, `input` or named `status` refuses an empty pin or a roster principal ID, look up
 the manager in the space and on the broker you selected. The refusal identifies that roster.
 When `stop` or `input` cannot find a named agent, its suggested roster keeps your space, broker,

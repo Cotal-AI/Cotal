@@ -74,7 +74,7 @@ export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
 export class SessionRecovery {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "connectorInventory" | "harnessResolution" | "seatStop">) {}
   private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   readSessionStatePath(path: string):
@@ -317,11 +317,15 @@ export class SessionRecovery {
         if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
         const unavailable = connector.launchUnavailable?.({ cwd: a.launch.cwd });
         if (unavailable !== undefined) throw new Error(unavailable);
+        await this.parts.connectorInventory.refreshConnectors(connector.name, true);
+        if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
+        const harness = this.parts.harnessResolution.launchHarness(connector);
+        if ("refusal" in harness) throw new Error(harness.refusal);
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
         // The seat starts again under the name it last showed, which `set-name` may have changed since
         // launch, and on the model it runs, which `set-model` may have switched. A seat labels itself
         // at its first launch only.
-        const named = { ...restart.opts, displayName: a.displayName, model: a.launch.model, variant: a.launch.variant, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined, autoName: undefined };
+        const named = { ...restart.opts, ...(harness.binaries ? { resolvedBinaries: harness.binaries } : {}), displayName: a.displayName, model: a.launch.model, variant: a.launch.variant, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined, autoName: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
         const policyEnv = modelPolicyEnv(loadCotalConfig(this.config.workspaceRoot, isTrustedProject), a.role);
         const spec = connector.buildLaunch(opts);

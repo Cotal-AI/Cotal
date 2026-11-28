@@ -390,12 +390,19 @@ the skip member while `spawn` lands on a sibling, the command was not run, and t
 re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
 When no manager takes the class queue, the broker answers an unpinned `spawn` with no
 responders, and the caller classifies that `not-executed` (SPEC 13.3).
-A launch, model catalog or status read rechecks available and unavailable applications on the
-Manager's PATH. When the first application becomes available, the Manager subscribes to class
-`spawn` and `launch` without restarting, and when none remains available it unsubscribes them. A manager that can launch some connectors keeps the class rail. If the queue hands it a
-harness its inventory marked unavailable, the refusal names `--on` because the standing serve
-credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
-prints it).
+A `status` read rechecks every declared connector row on the Manager's `PATH`, while a launch,
+preserved resume, supervised restart, model lookup or command listing rechecks only the requested
+connector. Once a connector becomes available, its resolved executable paths stay pinned and never
+switch to another copy on `PATH`; if a pinned file disappears or leaves `PATH`, the row becomes
+unavailable (naming any other copy now on `PATH`) until that pinned file returns or the Manager
+restarts. When the first application becomes available on a read or launch, the Manager subscribes
+to class `spawn` and `launch` without restarting, and when that read or launch observes none
+remaining available it unsubscribes them. A manager that can launch some connectors keeps the class
+rail. Wire `spawn` and `launch` refusals for an unavailable harness name `--on`, because the
+standing serve credential cannot read sibling inventories: an instance-pinned refusal adds the
+host remedy (restore a missing harness, restart the Manager for a moved copy, or run host setup)
+beside `--on`, while a class-rail refusal reports that this manager cannot launch that harness and
+tells the caller to pin a capable instance (the whole id, as `ps` prints it).
 
 ## Scatter liveness [#scatter-and-liveness]
 

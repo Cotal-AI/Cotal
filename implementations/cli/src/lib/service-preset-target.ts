@@ -222,7 +222,14 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   if (launch.adapter === WEB_SERVICE_ADAPTER && changed.includes("read-only") && merged["read-only"] === true && typeof merged["posting-creds"] === "string")
     throw new CommandFailure("refused", "CONFLICT", `--read-only would keep the saved ${row.name} definition's --posting-creds, and the dashboard posts only with --no-read-only; nothing was changed`, { target: { space, name: row.name }, remedy: `remove it with \`cotal service remove ${row.name} --space ${space} --yes\`, then run \`cotal service add ${row.name} --preset ${preset.name} --space ${space} --read-only\`` });
   if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, merged);
-  if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${shellWord(row.name)}`} --space ${shellWord(space)}\`, then start it again with the new ${shown}` });
+  if (running(space, row.name)) {
+    const preview = values["dry-run"];
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const verb = requested === "manager" ? "manager stop" : `service stop ${shellWord(row.name)}`;
+    const stop = codeSpan(`cotal ${verb}${targetWords({ space })}${preview ? " --dry-run" : ""}${output}`);
+    const remedy = preview ? `preview the stop with ${stop}. To apply the new settings, stop the service first, then repeat the original start without --dry-run` : `stop it first with ${stop}, then repeat the original start with the same options`;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy });
+  }
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);

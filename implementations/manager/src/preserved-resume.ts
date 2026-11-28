@@ -623,7 +623,7 @@ export class PreservedResume {
         return {
           ok: false,
           agents: preflight,
-          error: `${preflightFailures.length} retained agent${preflightFailures.length === 1 ? "" : "s"} failed preflight`,
+          error: `${preflightFailures.length} retained agent${preflightFailures.length === 1 ? "" : "s"} failed preflight: ${preflightFailures.map(({ name, reply }) => `${name}: ${reply.error ?? "preflight failed"}`).join("; ")}`,
         };
       // Only now, with the whole inventory through preflight, is an orphan reaped: a refused batch
       // leaves every seat as it found it.
@@ -871,6 +871,21 @@ export class PreservedResume {
     return undefined;
   }
 
+  /** Re-verify retained authority and connector executable availability before launching a prepared
+   *  batch entry across earlier seats' sequential readiness waits. */
+  private async recheckPreparedResume(entry: ManagerResumeAgent): Promise<string | undefined> {
+    let connector: Connector;
+    try {
+      await this.validateRetainedAuthority(entry);
+      connector = await this.resolveConnector(entry.launch.connector);
+    } catch (e) {
+      return rejectionText(e);
+    }
+    await this.parts.connectorInventory.refreshConnectors(connector.name, true);
+    const harness = this.parts.harnessResolution.launchHarness(connector);
+    return "refusal" in harness ? harness.refusal : undefined;
+  }
+
   /** Validate/relaunch one retained inventory entry. Called through resumePreserved so all records
    * pass the same preflight before the first child is exposed, and through restartSupervisedSeat
    * with the one record a crashed manager left (`supervised`). */
@@ -903,12 +918,8 @@ export class PreservedResume {
         return { ok: false, error: `${this.parts.namesCapacity.capacityRefusal(occupancy)}; same-principal resume refused` };
       const cached = prepared?.get(entry.name);
       if (!preflightOnly && cached) {
-        try {
-          // Do not trust the earlier batch preflight across another agent's sequential readiness wait.
-          await this.validateRetainedAuthority(entry);
-        } catch (e) {
-          return { ok: false, error: rejectionText(e) };
-        }
+        const refusal = await this.recheckPreparedResume(entry);
+        if (refusal !== undefined) return { ok: false, error: refusal };
         return this.launchPreparedResume(entry, cached, batchReserved, supervised);
       }
       try {

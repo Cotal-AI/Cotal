@@ -66,7 +66,7 @@ removed its credential. Duplicate names and `--instance` with multiple names are
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
 `TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Its next step is the folder
-where `cotal up` started a stack, or, when this machine has no stack started or registered at all,
+where `cotal up` started the intended stack. Repeat your original command there with its options unchanged. When this machine has no stack started or registered at all, the next step is
 `cotal up` in a project, as `cotal status` says. A bare `down` in such a folder refuses the same
 way, including with `--json` or `--plain`. Its JSON target names the current root rather than
 replacing the missing-stack diagnosis with an unsupported-output refusal. A root whose stack is
@@ -109,7 +109,7 @@ that stack without requesting agent retirement, run `cotal down --yes`. Pending 
 stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
 retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
-`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. After those services stop, run the suggested retry from the same project folder.
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. Each stop keeps `--plain` or `--json` when requested. After those services stop, run the suggested retry from the same project folder.
 It names the stack’s space and keeps the requested confirmation, agent handling, preview and output flags.
 A stop also refuses for a process record under the root that may front a process, such as a daemon an earlier release
 started; the message and the Next name each record's path and pid. A record whose process is gone,
@@ -145,8 +145,7 @@ they wait on, in the stack journal, where `reset store` lists them. A read that 
 with its reason and does not stop the `down`; the JSON receipt carries the record as
 `operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
-stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
-manager keeps running, then run `cotal down`. On Linux, when the owned broker is suspended by a
+stop, from a managed seat's shell too. From the stack's project folder, run the suggested startup command to restart the broker from its recorded inputs while the manager keeps running. Then run the suggested stop. It names the same space and keeps `--yes`, `--with-agents` and the requested output format. On Linux, when the owned broker is suspended by a
 signal such as SIGSTOP, `down --yes` rechecks its exact launch and process creation pin, sends
 SIGCONT, then continues the guarded stop. On an interactive terminal, `down` first asks permission
 to resume that broker so it can read the manager's impact, then asks for the usual stop confirmation.
@@ -460,8 +459,7 @@ After those checks, a retained bare apply refuses `LIFECYCLE_BLOCKED`, exit 2, b
 sweep while a service instance in the selected space still runs or cannot be verified, because the
 service depends on the broker the sweep stops. It stops nothing. As on a controller stack, bare
 `down` does not stop a service itself: the refusal names each instance with the
-`cotal service stop <name> --instance <id> --space <space> --yes` that stops it, then `cotal down`
-again. An instance whose process is already gone is skipped, and saved definitions stay. An
+`cotal service stop <name> --instance <id> --space <space> --yes` that stops it. After stopping the service, repeat the original shutdown command in the same project folder with its original options. An instance whose process is already gone is skipped, and saved definitions stay. An
 unreadable service record keeps the code of its read refusal. A retained native attempt, an
 unsettled request, a process that cannot be observed, or a record from another host, which bare
 `down` does not touch, refuses too, and the remedy names the command that inspects or stops it.
