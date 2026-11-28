@@ -11,6 +11,7 @@ import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { homeCotalDir, recordMesh, spaceSegment } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { openVerified, readLine } from "../daemon/client.js";
 import { exchangeDesktopRequest, parseDesktopRequest, readDesktopRequest, runDesktopBridge } from "../daemon/desktop.js";
 import { holdLifetime } from "../daemon/lifetime.js";
 import { serveDaemon, type RunningDaemon } from "../daemon/server.js";
@@ -51,6 +52,8 @@ for (const invalid of [
   check("daemon protocol rejects invalid migrateFrom", !parseRequest(JSON.stringify({ v: 1, id: "m2", op: "login-start", idp: invalid.idp, migrateFrom: invalid.migrateFrom })).ok);
 }
 check("spaces refresh remains a typed field", parseDesktopRequest({ op: "spaces", refresh: true }).op === "spaces");
+assert.equal(parseRequest(JSON.stringify({ v: 1, id: "app", op: "agent-app-install", appVersion: "1.0.0", name: "claude", url: "https://example.test" })).ok, false, "app mutation does not accept a caller URL");
+checks++;
 await assert.rejects(readDesktopRequest(Readable.from(["x".repeat(65537)]))); checks++;
 await assert.rejects(readDesktopRequest(Readable.from(['{"op":"status"}\n{"op":"install"}\n']))); checks++;
 check("one framed request is decoded", (await readDesktopRequest(Readable.from(['{"op":"status"}\n']))).op === "status");
@@ -150,6 +153,14 @@ try {
 
   check("missing daemon is not reported connected", absent.ok === false);
   daemon = await serveDaemon({ paths, version, peerUid: (sock) => peerCredentials(sock).uid });
+  const appPeer = await openVerified({ paths });
+  try {
+    appPeer.write(`${JSON.stringify({ v: 1, id: "app", op: "agent-app-install", appVersion: version, name: "claude" })}\n`);
+    const refused = JSON.parse(await readLine(appPeer, 5000));
+    check("the daemon socket never runs an installer directly", refused.ok === false && refused.error.code === "UNKNOWN_OP");
+  } finally { appPeer.destroy(); }
+  const refusedApp = await request({ op: "agent-app-install", name: "claude" });
+  check("the actual Desktop bridge refuses install against a foreground daemon without native provenance", refusedApp.ok === false && refusedApp.error.code === "LIFECYCLE_BLOCKED" && refusedApp.error.native?.code === "APP_FOREGROUND");
   const status = await request({ op: "status" });
   check("kernel-authenticated bridge reaches the actual daemon pid", status.ok === true && status.result.pid === process.pid);
   check("local readiness is explicit", status.result.state === "ready");

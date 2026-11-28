@@ -83,7 +83,7 @@ test("launch readiness, application retry and polling follow the selected space"
   };
   const button = (id: string) => doc.getElementById(id) as HTMLButtonElement;
   const title = () => doc.getElementById("connection-title")!.textContent;
-  const disconnectedTitle = () => doc.getElementById("connected-panel")!.hidden ? "Ready to connect" : managers.size ? "This computer is connected" : "Spaces using this computer";
+  const disconnectedTitle = () => doc.getElementById("connected-panel")!.hidden ? "Ready to connect" : managers.size ? "This computer is connected" : "This computer is connected to your account";
   const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
   const select = async (space: string) => {
     (doc.getElementById("space") as HTMLSelectElement).value = space;
@@ -202,8 +202,12 @@ test("launch readiness, application retry and polling follow the selected space"
     await releaseBeforeReselect();
     assert.equal(title(), disconnectedTitle(), "returning to the same space does not revive an old refresh");
     assert.equal(button("connect").disabled, false);
-    daemonVersion = "older";
+    managers.set("first", { space: "first", state: "refused", reason: "The space could not be verified.", next: "Run cotal daemon restart" });
     button("refresh").click(); await settle();
+    assert.equal(doc.getElementById("refusal-detail")!.textContent, "DEPENDENCY_UNAVAILABLE\nThe space could not be verified.");
+    managers.delete("first");
+    daemonVersion = "older";
+    button("recover").click(); await settle();
     assert.equal(button("connect").disabled, false, "an app replacement keeps stock setup available");
     assert.equal(title(), "Cotal was updated");
   } finally { win.close(); }
@@ -463,7 +467,8 @@ test("a set-up computer that loses its network stays on its screen and never run
     pushStatus!(statusFor("offline"));
     await settle();
     assert.equal(doc.getElementById("connection-title")!.textContent, "No internet connection", "the window names the lost connection");
-    assert.equal(doc.getElementById("tray-label")!.textContent, "Offline", "the pill names the lost connection");
+    assert.equal(doc.getElementById("sidebar-status-word")!.textContent, "Offline", "the sidebar names the lost connection");
+    assert.equal(doc.getElementById("sidebar-status-dot")!.dataset.tone, "problem");
     assert.equal(doc.querySelector("#journey")!.closest(".app") ? doc.querySelector(".app")!.classList.contains("later-open") : true, true, "the setup steps stay hidden");
     assert.equal(doc.getElementById("recovery-panel")!.hidden, true, "Try again is not offered for a lost connection");
     assert.deepEqual(tray.at(-1), { connected: false, label: "Offline" }, "the tray tooltip uses the pill's words");

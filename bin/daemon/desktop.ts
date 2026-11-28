@@ -15,7 +15,9 @@ import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, t
 import { runSetup } from "./setup.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
-import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
+import type { AgentAppRequest } from "./desktop-agent-apps.js";
+import { desktopAppRequest } from "./desktop-app-routing.js";
+import { withAppMutation } from "./agent-app-admission.js";
 
 export type DesktopRequest =
   | AgentRowRequest
@@ -252,8 +254,17 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     target = opts.resolveTarget();
     const { paths, home } = target;
     if (req.op === "log") { emit({ v: 1, event: "result", ok: true, result: readServiceLogTail(paths.state) }); return; }
-    if (req.op === "agent-apps" || req.op === "agent-app-install" || req.op === "agent-app-sign-in") { emit({ v: 1, event: "result", ok: true, result: await agentAppRequest(req, { paths, daemonHome: home, peerUid: opts.peerUid, peerPid: opts.peerPid, version: opts.version }, emit) }); return; }
-    if (req.op === "remove-service") { emit({ v: 1, event: "result", ok: true, result: await removeDesktopService(paths, home) }); return; }
+    if (req.op === "agent-apps" || req.op === "agent-app-install" || req.op === "agent-app-sign-in") {
+      const result = await desktopAppRequest({ paths, home, version: opts.version, peerUid: opts.peerUid, peerPid: opts.peerPid }, req,
+        line => emit({ v: 1, event: "agent-app-progress", ...(req.op === "agent-apps" ? {} : { name: req.name }), line }));
+      emit({ v: 1, event: "result", ok: true, result });
+      return;
+    }
+    if (req.op === "remove-service") {
+      const result = await withAppMutation(paths, () => removeDesktopService(paths, home));
+      emit({ v: 1, event: "result", ok: true, result });
+      return;
+    }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();
@@ -274,7 +285,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result: { ...result, ...omittedResult } });
       return;
     }
-    if (req.op === "install") {
+    if (req.op === "install") return await withAppMutation(paths, async () => {
       let existing = false;
       try { planUninstall(paths, home); existing = true; }
       catch (e) { if (!(e instanceof CommandFailure) || e.code !== "TARGET_NOT_FOUND") throw e; }
@@ -304,7 +315,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-    }
+    });
     if (req.op === "status-watch") {
       const sock = await openVerified({ ...client, timeoutMs: 5000 });
       type WatchOutcome =
