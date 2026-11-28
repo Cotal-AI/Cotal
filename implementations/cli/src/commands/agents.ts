@@ -978,7 +978,7 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
       const { root, space } = e.details;
       const sameServer = v.server === undefined || (typeof space === "string" && stoppedStack(root, space, v.server) !== undefined);
       const store = sameServer ? rootStoreProblem(root) : undefined;
-      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: { space: space ?? null, root }, remedy: store.remedy });
+      if (store) throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: { space: space ?? null, root }, remedy: store.remedy }));
     }
     if (isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && typeof e.target?.root === "string") {
       const { root, space } = e.target;
@@ -988,7 +988,7 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
         ? entry.root === root && brokerUrlKey(entry.server) === brokerUrlKey(v.server)
         : stopped && typeof space === "string" && stoppedStack(root, space, v.server) !== undefined);
       const store = sameServer && (stopped || entry?.origin === "up") ? rootStoreProblem(root) : undefined;
-      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
+      if (store) throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy }));
     }
     if (isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && e.target?.root === undefined && v.space !== undefined && v.server !== undefined) {
       // The explicit broker did not answer. Check the named local stack's retained address without dialing again.
@@ -997,7 +997,7 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
       if (isWorkspaceTargetError(local) && local.code === "not-started" && local.details.lastRun && local.details.root !== undefined
         && local.details.server !== undefined && brokerUrlKey(local.details.server) === brokerUrlKey(v.server)) {
         const store = rootStoreProblem(local.details.root);
-        if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
+        if (store) throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy }));
       }
     }
     // The exchange refused to pick one of your several live managers and named them, so each is
