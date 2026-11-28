@@ -1031,7 +1031,7 @@ function nextAfterSignIn(): void {
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
 el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
-el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
+el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP; showStage(stage); el("login").focus(); });
 el("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void action(async () => {
@@ -1088,7 +1088,7 @@ el("open-approval").addEventListener("click", () => { if (approval) void invoke(
 function beginSignIn(): void {
   if (busy) return;
   editing = true;
-  const provider = providers.get(selectedSpace()) ?? (!customHost && !linked ? computerAccount?.idpUrl : undefined);
+  const provider = providers.get(selectedSpace()) ?? (!customHost && !linked ? computerAccount?.idpUrl ?? COTAL_CLOUD_IDP : undefined);
   if (provider) el<HTMLInputElement>("provider").value = provider;
   customHost = !isCotalCloudIdp(el<HTMLInputElement>("provider").value);
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("sign-in", true);
