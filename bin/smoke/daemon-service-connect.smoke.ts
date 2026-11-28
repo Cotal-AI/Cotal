@@ -3257,6 +3257,56 @@ process.stdin.once('data', () => {
           }
           return;
         }
+        if (process.argv.includes("--current-update-repro")) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const caller = { versionSkew: (text: string) => text, roster: async () => [] };
+          const pin = { instanceId: manager.instanceId };
+          const call = (op: "start" | "managerStatus" | "ps" | "stop", args?: Record<string, unknown>) => askManager(caller, ON, target.server, op, args, target.auth, "owner", 40_000, pin);
+          const seatIdentity = (rows: unknown) => (rows as { pid: number; lifecycleUid: string }[]).map(({ pid, lifecycleUid }) => [pid, lifecycleUid]);
+          const started = await call("start", { name: "idle_update_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Owned updater regression, no model.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } });
+          assert.equal(started.ok, true, started.error);
+          const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+          await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+          try {
+            const status = await call("managerStatus");
+            assert.equal((status.data as { custody: string }).custody, "legacy");
+            assert.equal((status.data as { agentCount: number }).agentCount, 1);
+            const before = await call("ps");
+            assert.equal(before.ok, true, before.error);
+            assert.equal(seatIdentity(before.data).length, 1);
+            const updateEnv = { ...Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home,
+              COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` };
+            for (const mode of ["self", "plain", "pending"] as const) {
+              if (mode === "pending") {
+                const inventory = join(prefix, "extensions.json");
+                const manifest = JSON.parse(readFileSync(inventory, "utf8"));
+                manifest.extensions.push({ pkg: "@cotal-ai/tmux", version: "0.161.1", spec: "@cotal-ai/tmux@0.161.1", provides: [], commands: [], connectors: [] });
+                writeFileSync(inventory, JSON.stringify(manifest));
+              }
+              const command = [process.execPath, cliEntry, "update", ...(mode === "self" ? ["--self"] : [])].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+              const updating = spawn("script", ["-q", "-e", "-c", command, "/dev/null"], { cwd: root, env: updateEnv, stdio: ["pipe", "pipe", "pipe"], timeout: 75_000 });
+              let text = "", declined = false;
+              updating.stdout.on("data", chunk => { text += String(chunk); if (!declined && text.includes("[y/N]")) { declined = true; updating.stdin.write("N\n"); } });
+              updating.stderr.on("data", chunk => { text += String(chunk); });
+              const code = await new Promise<number | null>((resolve, reject) => { updating.once("error", reject); updating.once("close", resolve); });
+              assert.equal(code, mode === "pending" ? 1 : 0, text);
+              assert.equal(declined, mode === "pending", text);
+              assert.match(text, /no newer latest tag/);
+              assert.match(text, mode === "pending" ? /cannot preserve running agents/ : mode === "self" ? /installed package closure is current/ : /connector integrations refreshed/);
+              const after = await call("ps");
+              assert.equal(after.ok, true, after.error);
+              assert.deepEqual(seatIdentity(after.data), seatIdentity(before.data));
+              const daemonAfter = resultOf(await ask(paths.socket, { op: "status" }));
+              assert.equal(daemonAfter.pid, child.pid);
+              assert.equal(daemonAfter.managers.find((row: any) => row.instanceId === manager.instanceId)?.pid, manager.pid);
+              check(`update (${mode}) gives the expected admission result and preserves the daemon, Manager and seat`, true);
+            }
+          } finally {
+            await call("stop", { name: "idle_update_seat" });
+            await new Promise<void>(resolve => metadata.close(() => resolve()));
+          }
+          return;
+        }
         if (process.argv.includes("--update-stop-agents-repro")) {
           const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
           const caller = { versionSkew: (text: string) => text, roster: async () => [] };
