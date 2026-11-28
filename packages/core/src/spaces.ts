@@ -50,12 +50,13 @@ export interface ListSpacesOptions {
  *  short-lived connection (bare, or with `creds`) and closes it. Per-space stats are best-effort:
  *  a stream/bucket that can't be inspected just leaves its counts at 0. */
 export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInfo[]> {
+  const creds = opts.creds;
   const nc = await dialerFor(opts.servers ?? DEFAULT_SERVER)({
     servers: opts.servers ?? DEFAULT_SERVER,
     timeout: opts.timeoutMs ?? 2000,
     reconnect: false,
     maxReconnectAttempts: 0,
-    ...scopedConnectOpts(opts.creds),
+    ...scopedConnectOpts(creds),
   });
   try {
     const jsm = await jetstreamManager(nc);
@@ -69,7 +70,7 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
     const streamNames = new Set<string>();
     // scopedConnectOpts presents this exact static credential, and reconnect is disabled. Decode
     // it only after the broker accepts the connection, never as evidence of the space's mode.
-    const permissions = opts.creds ? spaceViewerPermissions(opts.creds) : undefined;
+    const permissions = creds ? spaceViewerPermissions(creds) : undefined;
     try {
       for await (const name of jsm.streams.names()) {
         streamNames.add(name);
@@ -98,7 +99,7 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
 
     for (const s of bySpace.values()) {
       const registryPresent = streamNames.has(`KV_${channelBucket(s.space)}`);
-      const mode = opts.creds && registryPresent ? await spaceViewerMode(nc, s.space) : "legacy";
+      const mode = creds && registryPresent ? await spaceViewerMode(nc, s.space) : "legacy";
       const chans = new Set<string>();
       const chat = chatStream(s.space);
       if (streamNames.has(chat)) {

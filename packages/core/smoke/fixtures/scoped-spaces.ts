@@ -28,6 +28,12 @@ export async function checkScopedSpaces(check: Check): Promise<void> {
     const want = (channels: number) => [{ space: f.space, agents: 0, channels, messages: 1 }];
     check("scoped enabled spaces counts only explicit plugin grants and never counts another plugin's retained rows", JSON.stringify(exact) === JSON.stringify(want(2)) &&
       JSON.stringify(chat) === JSON.stringify(want(1)), { exact, chat });
+    const mutable = { ...opts, creds: chatViewer };
+    const pinned = listSpaces(mutable);
+    mutable.creds = signed.creds;
+    const pinnedRows = await pinned;
+    check("spaces ignores a local credential change after starting its broker bind",
+      JSON.stringify(pinnedRows) === JSON.stringify(want(1)), pinnedRows);
     const authority = await readPluginChannelSpaceAuthority(f.jsm, f.space);
     check("core index exports the signer-side live reader, which reads an enabled epoch", authority.state.enabled && authority.state.epoch === 1 && authority.revision > 0, authority);
     await f.writeProjection({ enabled: false, epoch: 2 });

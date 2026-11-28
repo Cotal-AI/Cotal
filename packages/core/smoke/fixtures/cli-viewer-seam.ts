@@ -138,6 +138,13 @@ export async function checkCliViewerSeam(check: Check): Promise<void> {
     check("fresh viewer binds around the malformed projection without arming an EXT tap",
       !freshWire.isClosed() && fresh.pluginTaps.size === 0 && fresh.ep.channelRoutingMode() === undefined);
     await checkDegradedFeed(check, fixture, fresh, writer, legacyWriter, recipient.principal, "fresh viewer");
+    await fixture.writeProjection({ enabled: true, epoch: 2 });
+    await freshWire.reconnect();
+    const restored = await until(() => fresh.bound.length === 2 && freshWire.isClosed() && fresh.ep.channelRoutingMode() === "isolated");
+    if (restored) await fresh.bound[1].flush();
+    const after = await writer.multicast("EXT after projection recovers", { channel });
+    check("restored isolated projection re-arms the existing authorized EXT tap only on a fresh wire", restored &&
+      fresh.pluginTaps.size === 1 && fresh.pluginTaps.has(fresh.bound[1]) && await until(() => fresh.seen.has(after.id)));
   } finally {
     await fixture.close();
   }
