@@ -301,10 +301,10 @@ first-party extension whose entry file is missing, empty, or cannot load with it
 It reports a failed reinstall instead of declaring the installation current.
 In npm offline mode, a manual `cotal update --self` skips the release check and then runs the same
 connector reconcile as `cotal update`. It restores a missing or damaged bundled connector from the
-copy this CLI ships, and reinstalls a first-party extension recorded at this release when its
-install differs, using npm's existing cache. A tag, a range, or an omitted spec installs that exact
-version and records `pkg@version`. One connector that the prefix lock records but cannot prove makes
-the reconcile reinstall every bundled connector and every recorded first-party extension.
+copy this CLI ships. Every recorded package whose own install is intact stays out of that request
+and stays in the prefix. A damaged extension this CLI does not ship is named and left. A tag, a
+range, or an omitted spec installs that exact version and records `pkg@version` when the registry
+can be reached.
 On Linux and macOS, `cotal update --self` also removes abandoned extension staging copies
 from the selected connector configuration, even when the CLI is current. Both `cotal update`
 and `cotal update --self` check the previous retained configuration recorded by the selected

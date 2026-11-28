@@ -563,11 +563,11 @@ refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
 `cotal update --self` reports that the check was skipped and exits 0. It does not retry with network
 access or replace the CLI. A manual run then runs the same connector reconcile as `cotal update`.
-It restores a missing or damaged bundled connector from the copy this CLI ships, and reinstalls a
-first-party extension recorded at this release when its install differs, using npm's existing cache.
-A tag, a range, or an omitted spec installs that exact version and records `pkg@version`. One
-connector that the prefix lock records but cannot prove makes the reconcile reinstall every bundled
-connector and every recorded first-party extension. The reconcile does not stop agents or restart the daemon.
+It restores a missing or damaged bundled connector from the copy this CLI ships. Every recorded
+package whose own install is intact stays out of that request and stays in the prefix. A damaged
+extension this CLI does not ship is named and left. A tag, a range, or an omitted spec installs
+that exact version and records `pkg@version` when the registry can be reached. The reconcile does
+not stop agents or restart the daemon.
 Before the lookup, the updater can still recover an interrupted update or finish a pending
 extension promotion. It reports a completed promotion separately. Run the command with npm offline
 mode disabled to check for a newer release.

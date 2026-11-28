@@ -437,7 +437,14 @@ export interface InstalledExtensionPackage {
  *  not installed; one that cannot be reached or read throws, and one that is not JSON or has no version
  *  throws {@link CorruptExtensionPackageError}. Pass this snapshot through one load or add. */
 export function installedExtensionPackage(pkg: string): InstalledExtensionPackage | undefined {
-  const path = join(extensionPackageDir(pkg), "package.json");
+  return readInstalledExtensionPackage(pkg, extensionPackageDir(pkg));
+}
+
+/** The same read as {@link installedExtensionPackage} for a package inside a chosen prefix. The
+ *  post-install check runs while the stage is selected, and a checkout run resolves the selected
+ *  config to the live one, so the check reads the prefix it installed into. */
+export function readInstalledExtensionPackage(pkg: string, dir: string): InstalledExtensionPackage | undefined {
+  const path = join(dir, "package.json");
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");

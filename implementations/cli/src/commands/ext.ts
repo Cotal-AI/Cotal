@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, readInstalledExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { assertExtensionServiceInstancesStopped } from "../lib/service-instances.js";
@@ -284,7 +284,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; keep?: readonly string[]; checkCorePeer?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -328,12 +328,14 @@ export async function installExtensionSet(
       }
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
-    for (const request of requests) {
+    const kept = opts?.offline ? [...(opts.keep ?? [])] : [];
+    const installing = requests.filter(request => !kept.includes(request.pkg));
+    for (const request of installing) {
       if (packageNameFromSpec(request.spec, isPathSpec(request.spec)) !== request.pkg) throw new Error("extension set spec does not match its package");
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
     const mutationPath = extensionNpmMutationPath();
-    const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
+    const specs = installing.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
     const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
@@ -344,11 +346,11 @@ export async function installExtensionSet(
       throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
     }
     process.env.XDG_CONFIG_HOME = stage.config;
-    for (const request of requests) {
-      const meta = installedExtensionPackage(request.pkg);
+    for (const request of installing) {
+      const dir = join(npmPrefix, "node_modules", request.pkg);
+      const meta = readInstalledExtensionPackage(request.pkg, dir);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
       if (opts?.checkCorePeer) assertExtensionCorePeer(request.pkg, meta.peerDependencies?.["@cotal-ai/core"]);
-      const dir = extensionPackageDir(request.pkg);
       const entry = resolveExtensionEntry(dir, meta);
       if (!existsSync(entry)) {
         const path = codeSpan(`./${oneLine(relative(dir, entry).split(sep).join("/"))}`);
@@ -361,8 +363,8 @@ export async function installExtensionSet(
         throw new Error(`${message} Check the package with ${pack}, then include the entry in \`files\` or generate it before rerunning ${retry}.`);
       }
     }
-    const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
-    for (const request of requests) {
+    const invocation = installing.length > 1 || opts?.isolate ? selfArgv() : undefined;
+    for (const request of installing) {
       if (!invocation) {
         closing.push(...await verifyCandidate(request.pkg, request.spec, stage.prefix, loadExtensionsManifest().extensions, request.source === "seeded", false, console.error));
         continue;

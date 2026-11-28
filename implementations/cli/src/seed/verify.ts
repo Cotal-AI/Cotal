@@ -58,14 +58,18 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
     sources.set(file, source);
   }
   const files = [...sources.keys()].sort();
-  for (const [copy, label] of [[store, "the seed store copy"], [installed, "the installed copy"]] as const) {
+  const installedFiles = publishedFiles(shipped, files);
+  for (const [copy, label, expected] of [
+    [store, "the seed store copy", files],
+    [installed, "the installed copy", installedFiles],
+  ] as const) {
     const listed = payloadFiles(copy);
     if (typeof listed === "string") return `${label} ${listed}`;
     const have = [...listed].sort();
-    if (have.length !== files.length) return `${label} holds ${have.length} files, the shipped payload ${files.length}`;
-    for (let i = 0; i < files.length; i++) {
-      if (have[i] !== files[i]) return `${label} has ${have[i]} where the shipped payload has ${files[i]}`;
-      if (!sameBytes(sources.get(files[i])!, join(copy, files[i]))) return `${label} differs at ${files[i]}`;
+    if (have.length !== expected.length) return `${label} holds ${have.length} files, the shipped payload ${expected.length}`;
+    for (let i = 0; i < expected.length; i++) {
+      if (have[i] !== expected[i]) return `${label} has ${have[i]} where the shipped payload has ${expected[i]}`;
+      if (!sameBytes(sources.get(expected[i])!, join(copy, expected[i]))) return `${label} differs at ${expected[i]}`;
     }
   }
   return undefined;
@@ -109,6 +113,23 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   return probe.status === 0 ? undefined : "entry file failed to load";
 }
 
+/** Why this one recorded package is not intact, ignoring every other package in the prefix. */
+export function recordedPackageDiffers(entry: InstalledExtension): string | undefined {
+  let installed: ReturnType<typeof installedExtensionPackage>;
+  try {
+    installed = installedExtensionPackage(entry.pkg);
+  } catch {
+    return "corrupt package metadata on disk";
+  }
+  if (!installed) return "not installed on disk";
+  if (entry.version !== undefined && installed.version !== entry.version) return `installed at ${installed.version}, not ${entry.version}`;
+  const path = resolveExtensionEntry(extensionPackageDir(entry.pkg), installed);
+  const file = statSync(path, { throwIfNoEntry: false });
+  if (!file?.isFile()) return "entry file is missing";
+  if (file.size === 0) return "entry file is empty";
+  return undefined;
+}
+
 /**
  * Why the extensions prefix is not the tree its lock records, or undefined when every recorded
  * package is on disk at its recorded version. This is the same comparison npm makes before it
@@ -139,6 +160,29 @@ export function prefixLockDiffers(): string | undefined {
     if (actual !== recorded.version) return `${key} is ${String(actual)} on disk and ${recorded.version} in the prefix lock`;
   }
   return undefined;
+}
+
+/** The files npm copies into `node_modules` from this payload. A package with no `files` field copies
+ *  everything except the patterns npm always ignores. One that names entries copies those, plus the
+ *  files npm always includes. */
+function publishedFiles(root: string, files: readonly string[]): string[] {
+  let listed: unknown;
+  try {
+    listed = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { files?: unknown }).files;
+  } catch {
+    return [...files];
+  }
+  if (!Array.isArray(listed)) return [...files];
+  const patterns = [...listed.filter((item): item is string => typeof item === "string"), "package.json", "README*", "LICENSE*", "LICENCE*", "CHANGES*", "CHANGELOG*"];
+  return files.filter((file) => patterns.some((pattern) => publishedMatch(file, pattern.replaceAll("\\", "/"))));
+}
+
+function publishedMatch(file: string, pattern: string): boolean {
+  const name = file.split(sep).join("/");
+  if (pattern.endsWith("/")) return name.startsWith(pattern) || name === pattern.slice(0, -1);
+  if (!pattern.includes("*")) return name === pattern || name.startsWith(`${pattern}/`);
+  const body = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("**", "\0").replaceAll("*", "[^/]*").replaceAll("\0", ".*");
+  return new RegExp(`^(?:${body})$`).test(name) || name.startsWith(`${pattern.replace(/\/?\*.*$/, "")}/`);
 }
 
 /** The payload's regular files, sorted, relative to `root`, with nested `node_modules` and `.git`

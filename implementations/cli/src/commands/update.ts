@@ -53,7 +53,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
-import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
+import { operatorInstallDiffers, operatorUpdateSpec, recordedPackageDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
 import { reportCurrentConnectorState } from "./setup-current-connectors.js";
@@ -147,7 +147,7 @@ export interface UpdateRuntime {
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
-  reconcile(selfUpdate: boolean): Promise<void>;
+  reconcile(offline: boolean): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
   adoptUpdateChild?(): Promise<boolean | void>;
   /** The native updater can survive its daemon's restart and verify automatic activation. */
@@ -225,8 +225,8 @@ export const updateRuntime: UpdateRuntime = {
   preflightReplacement: async () => { assertReadableSeedState(); },
   refreshConnectors: async (report, selfUpdate) => { await refreshConnectorInstalls(report, selfUpdate); },
   refreshClients: refreshClientInstalls,
-  reconcile: async (selfUpdate) => {
-    await runSeed({ verify: true }, selfUpdate);
+  reconcile: async (offline) => {
+    await runSeed({ verify: true, offline });
     const completion = refreshOwnedCompletions();
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [
@@ -620,8 +620,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     const latest = latestVersion(rt);
     if (!latest.ok) {
       const code = await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
-      if (latest.offline && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection)
-        await rt.reconcile(true);
+      if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection)
+        await rt.reconcile(latest.offline === true);
       return code;
     }
     const upgrading = compareSemver(latest.version, current) > 0;
@@ -708,7 +708,7 @@ async function reconcileCurrent(
 
   let code: number;
   try {
-    const ok = await updateOperatorExtensions(rt, current);
+    const ok = await updateOperatorExtensions(rt, current, selfUpdate);
     if (ok && rt.env.COTAL_AUTO_UPDATE !== "1") {
       rt.out("Cotal updates the managed pi connector, not your standalone pi extension. If you copied it, wait for the update to succeed, then reinstall `@cotal-ai/pi` at the version shown by `cotal --version` and repeat the copy. See https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host");
     }
@@ -736,7 +736,7 @@ async function refreshClients(rt: UpdateRuntime): Promise<number> {
 
 /** Bring every first-party operator extension to `current`, under the update pass the caller holds,
  *  and say whether all of them are. */
-async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Promise<boolean> {
+async function updateOperatorExtensions(rt: UpdateRuntime, current: string, offline = false): Promise<boolean> {
   let ok = true;
   rt.out(c.bold("Operator extensions"));
   let entries: readonly InstalledExtension[];
@@ -754,7 +754,10 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
   for (const entry of entries) {
     const recordedSpec = typeof entry.spec === "string" ? ` (recorded spec: ${entry.spec})` : "";
     if (!entry.pkg.startsWith("@cotal-ai/")) {
-      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`));
+      const own = offline ? recordedPackageDiffers(entry) : undefined;
+      rt.out(c.dim(own === undefined
+        ? `${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`
+        : `${entry.pkg}@${entry.version}: ${own}. Offline update left it as it was${recordedSpec}`));
       continue;
     }
     let differs: string | undefined;
@@ -767,6 +770,11 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
     }
     if (differs === undefined) {
       rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation${recordedSpec}`));
+      continue;
+    }
+    if (offline) {
+      const own = recordedPackageDiffers(entry);
+      rt.out(c.dim(`${entry.pkg}: ${own ?? differs}. Offline update left it as it was${recordedSpec}`));
       continue;
     }
     rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));

@@ -62,7 +62,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
+import { prefixLockDiffers, recordedPackageDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -98,6 +98,8 @@ export interface SeedFlags {
   readonly force?: boolean;
   /** Reinstall only a built-in whose installed copy differs from the shipped payload. */
   readonly verify?: boolean;
+  /** Leave every intact recorded package out of the registry request. */
+  readonly offline?: boolean;
 }
 
 export interface ReconcileResult {
@@ -152,9 +154,9 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
-export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<void> {
+export async function runSeed(flags: SeedFlags): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
-  const result = await reconcile(mode, false, false, selfUpdate);
+  const result = await reconcile(mode, false, false, flags.offline === true);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
     return;
@@ -298,7 +300,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      }, checkInterrupted, resumeFirstSeed);
+      }, checkInterrupted, resumeFirstSeed, selfUpdate);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
@@ -414,7 +416,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean, selfUpdate = false): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -523,9 +525,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     staged.push({ name, pkg: SEEDED_EXTENSIONS[name].pkg, spec, version: generation, source: "seeded" });
   };
   // A verify run keeps a built-in only on proof. An interrupted or failed earlier run and a prefix
-  // that is not the tree its lock records each void that proof for every built-in at once, so the run
-  // reinstalls all of them the way `--force` does, and says why. Read when the first installed
-  // built-in asks, so a first boot with nothing installed yet reports no prefix at all.
+  // that is not the tree its lock records each void that proof for every built-in at once.
+  // An offline self-update skips that void and reinstalls a built-in only when its own install differs.
+  // Read when the first installed built-in asks, so a first boot with nothing installed yet reports no prefix at all.
   let voided: string | undefined;
   let voidedRead = false;
   const unverifiable = (): string | undefined => {
@@ -568,7 +570,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         refresh = false;
       }
       if (mode === "verify" && !refresh) {
-        const differs = unverifiable() ?? seededInstallDiffers(name, generation, entry);
+        const differs = (selfUpdate ? undefined : unverifiable()) ?? seededInstallDiffers(name, generation, entry);
         if (differs === undefined) {
           // Proven identical to the shipped payload. The reinstall it replaces also rebinds the shared
           // peers to this binary's copies, so a stale link is rebound here too, under the same locks.
@@ -603,12 +605,13 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined
     ),
   ).map((entry) => ({ pkg: entry.pkg, spec: operatorUpdateSpec(entry, generation), version: generation }));
+  const kept = selfUpdate ? intactRecordedPackages(builtIns) : [];
 
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
-    await installExtensionSet([...staged, ...operators]);
+    await installExtensionSet([...staged, ...(selfUpdate ? [] : operators)], console.error, selfUpdate ? { offline: true, keep: kept } : undefined);
     for (const entry of staged) verifyInstalled(entry.name, generation);
-    for (const entry of operators) verifyOperatorInstalled(entry.pkg, generation);
+    for (const entry of operators) reportOperator(entry.pkg, generation, selfUpdate);
   } else if (operators.length) {
     clearCursor();
     const { installExtensionSet } = await import("../commands/ext.js");
@@ -940,6 +943,19 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
   if (!entry) throw new Error(`extension ${pkg} was expected in the manifest after reconciliation but is absent`);
   const differs = operatorPackageDiffers(entry, generation);
   if (differs) throw new Error(`extension ${pkg} after reconciliation is ${differs}`);
+}
+
+/** Recorded packages an offline self-update leaves out of the registry request because their own install is intact. */
+function intactRecordedPackages(builtIns: ReadonlySet<string>): string[] {
+  return loadExtensionsManifest().extensions.flatMap((entry) =>
+    builtIns.has(entry.pkg) || recordedPackageDiffers(entry) !== undefined ? [] : [entry.pkg]);
+}
+/** An offline self-update cannot fetch a package that this CLI does not ship, so it names it and leaves it. */
+function reportOperator(pkg: string, generation: string, offline: boolean): void {
+  if (!offline) return verifyOperatorInstalled(pkg, generation);
+  const recorded = loadExtensionsManifest().extensions.find(item => item.pkg === pkg);
+  const differs = recorded ? operatorPackageDiffers(recorded, generation) : `${pkg} is not recorded`;
+  if (differs) console.error(c.yellow(`Offline update left ${pkg} as it was: ${differs}`));
 }
 
 /** The package's resolved entry file exists on disk. Used to
