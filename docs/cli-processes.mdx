@@ -706,7 +706,10 @@ When another Cotal installation runs the service, the plan moves it to this inst
 needs consent `takeover` and lists the agents that stop. When the service's status or an agent row
 cannot be read, the plan says any agents it runs stop. A move never replaces a newer installation, or
 one whose version Repair cannot read or compare: the step is then `cannot` and names updating this
-app. A move stops the recorded service through the same verified path as `uninstall`, but keeps every
+app. The exception is a recorded program that can't run where it is: one that no longer exists (an
+ejected disk image, say) or one under `/Volumes`, App Translocation or `~/Downloads`. Repair moves that
+service to this installation whatever its version. A move stops the recorded service through the
+same verified path as `uninstall`, but keeps every
 record in the daemon home: sign-in, this computer's account identity and each space's service records.
 It then installs this installation's service and waits for it to answer. If that service does not
 answer, the move puts the previous service back, starts it, and refuses with cause
