@@ -122,6 +122,12 @@ export class ManagerBoot {
   private get ep() { return this.deps.ep(); }
   private set ep(value: Manager["ep"]) { this.deps.setEp(value); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
+  /** Whether this instance's rails are served on a connected serve transport: the manager plane's
+   *  peer-readable liveness grade, also read by the owning machine daemon. */
+  serveBound(): boolean {
+    const s = this.parts.servePlane.serviceServe;
+    return Boolean(s?.handle) && !s!.nc.isClosed() && !this.transportDown.has(s!.nc);
+  }
   private get managerInstanceId() { return this.state.managerInstanceId!; }
   private set managerInstanceId(value: ManagerStartState["managerInstanceId"]) { this.state.managerInstanceId = value; }
   private get managerServeIdentity() { return this.deps.managerServeIdentity(); }
@@ -396,10 +402,7 @@ export class ManagerBoot {
     //
     // The lease row is never consulted and never sent: presence is the whole ask, and the row
     // carries the operator's workspace root and pid.
-    this.ep.serveLiveness("manager", () => {
-      const s = this.parts.servePlane.serviceServe;
-      return s?.handle && !s.nc.isClosed() && !this.transportDown.has(s.nc) ? "bound" : "unbound";
-    });
+    this.ep.serveLiveness("manager", () => this.serveBound() ? "bound" : "unbound");
     // Static §13.1: after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
     // comes up below, then the sweep overlaps the remaining registration work. Two-window

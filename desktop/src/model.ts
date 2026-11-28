@@ -14,7 +14,7 @@ export class DaemonRefusal extends Error {
 export function launchReady(manager: unknown): boolean {
   if (!manager || typeof manager !== "object") return false;
   const m = manager as Record<string, unknown>;
-  return m.state === "answering" && typeof m.instanceId === "string" && Array.isArray(m.connectors) && m.connectors.some((c) => c?.state === "available");
+  return m.state === "answering" && m.connection === undefined && typeof m.instanceId === "string" && Array.isArray(m.connectors) && m.connectors.some((c) => c?.state === "available");
 }
 
 export function machinesUrl(provider: string, spaceId: string, instanceId: string): string {
@@ -48,22 +48,30 @@ const SETTLED_SPACE_STATE: Record<string, string> = {
   unsupported: "Unsupported by this space",
   stopped: "Stopped",
 };
+/** A space whose Manager lost its connection. It reconnects by itself, so nobody needs to act. */
+const NETWORK_SPACE_STATE: Record<string, string> = {
+  offline: "No internet connection",
+  unreachable: "Can't reach this space",
+};
 const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this computer"];
 /** Whether this app has decided what to show for a state the daemon reports. */
 export function spaceStateKnown(observed: string): boolean {
-  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
+  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(NETWORK_SPACE_STATE, observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
 }
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
-  return SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
+  return NETWORK_SPACE_STATE[row.observed] ?? SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
 }
-export type ComputerSummary = "connected" | "attention" | "starting" | "idle";
-/** One answer for the window title and the tray, so the two cannot disagree. */
+export type ComputerSummary = "connected" | "offline" | "unreachable" | "attention" | "starting" | "idle";
+/** One answer for the window title and the tray, so the two cannot disagree. A lost connection comes
+ *  before other problems, because it can cause them. */
 export function computerSummary(rows: readonly ComputerSpace[], anyConnected: boolean): ComputerSummary {
   if (anyConnected) return "connected";
+  if (rows.some(row => row.observed === "offline")) return "offline";
+  if (rows.some(row => row.observed === "unreachable")) return "unreachable";
   if (rows.some(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed))) return "attention";
   if (rows.some(row => row.desired && row.observed !== "removed on this computer")) return "starting";
   return "idle";
@@ -164,6 +172,8 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "DAEMON_LOST": return { title: "The background service stopped", description: "It stopped before this could finish, so nothing was completed. This clears when the service is running again.", action: "refresh", label: "Check status" };
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
+    case "OFFLINE": return { title: "No internet connection", description: "Cotal reconnects by itself when this computer is back online.", action: "refresh", label: "Check again" };
+    case "SPACE_UNREACHABLE": return { title: "Can't reach your space", description: "Cotal reconnects by itself when the space answers again. Details shows the reason.", action: "refresh", label: "Check again" };
     case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
