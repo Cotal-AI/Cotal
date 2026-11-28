@@ -1,6 +1,7 @@
 /** Disposable real user-auth space for desktop service acceptance. No external account or model. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,22 +23,62 @@ class MemoryStore {
   async create(key, value) { if (this.values.has(key)) return false; this.values.set(key, value); return true; }
   async delete(key) { this.values.delete(key); }
 }
-/** The caller selects the machine home before entering; this helper never redirects its registry. */
-export async function createFixtureSpace({ root, machineHome, runtime, node, env }) {
-  assert.equal(homeCotalDir(), machineHome, 'fixture registry must use the caller-selected machine home');
-  const space = 'desktop-upgrade-fixture';
+export async function startFixtureAuthority({ root, brokerBinary, deviceSignIn = false }) {
+  const space = deviceSignIn ? 'desktop-clean-install' : 'desktop-upgrade-fixture';
   const participant = join(root, 'participant');
   const authState = join(root, 'authority');
   const storeDir = join(root, `${SMOKE_BROKER_TOKEN}desktop-upgrade`);
   for (const folder of [root, participant, authState, storeDir]) mkSecretDir(folder);
   const key = await generateKeyPair('EdDSA');
   const jwk = { ...await exportJWK(key.publicKey), kid: 'fixture' };
-  const session = 'disposable-desktop-upgrade-session';
-  let origin;
+  const session = randomUUID();
+  const device = randomUUID();
+  let origin, catalog, publicUrl;
+  const computers = new Set();
+  let desired = false;
   const idp = createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (deviceSignIn && req.url === '/api/auth/device/code' && req.method === 'POST') {
+      const approval = `${origin}/approve`;
+      res.end(JSON.stringify({ device_code: device, user_code: 'LOCAL', verification_uri: approval, verification_uri_complete: approval, expires_in: 120, interval: 1 })); return;
+    }
+    if (deviceSignIn && req.url === '/api/auth/device/token' && req.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks).toString();
+      if (body.includes(device)) { res.end(JSON.stringify({ access_token: session, expires_in: 3600 })); return; }
+      res.writeHead(400); res.end('{}'); return;
+    }
+    if (deviceSignIn && req.url === '/approve') { res.end('{}'); return; }
+    if (deviceSignIn && req.url === '/machines' && req.method === 'GET' && computers.size === 1) {
+      // This disposable dashboard has one computer and one space. Opening it enables the space.
+      desired = true; res.end('{}'); return;
+    }
+    const computer = deviceSignIn && /^\/api\/cli\/machines\/([^/]+)(\/spaces)?$/.exec(req.url ?? '');
+    if (computer && req.headers.authorization === `Bearer ${session}`) {
+      const [, id, spaces] = computer;
+      if (req.method === 'PUT' && !spaces) {
+        req.resume(); computers.add(id);
+        res.end(JSON.stringify({ v: 1, machine: { id, lastSeenAt: new Date().toISOString() } })); return;
+      }
+      if (req.method === 'GET' && spaces && computers.has(id)) {
+        res.end(JSON.stringify({ ...catalog, machineId: id, revision: desired ? 1 : 0,
+          spaces: desired ? catalog.spaces : [], bindingRevisions: desired ? { [space]: 1 } : {} })); return;
+      }
+    }
+    if (deviceSignIn && req.url === '/catalog' && req.headers.authorization === `Bearer ${session}`) { res.end(JSON.stringify(catalog)); return; }
+    if (deviceSignIn && publicUrl && req.url?.startsWith('/authority/')) {
+      try {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const answer = await fetch(`${publicUrl}${req.url.slice('/authority'.length)}`, { method: req.method, headers: { 'content-type': 'application/json' }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+        res.writeHead(answer.status); res.end(Buffer.from(await answer.arrayBuffer()));
+      } catch { res.writeHead(502); res.end('{}'); }
+      return;
+    }
     if (req.url === '/api/auth/jwks') { res.end(JSON.stringify({ keys: [jwk] })); return; }
     if (req.url === '/api/auth/token' && req.headers.authorization === `Bearer ${session}`) {
+      if (deviceSignIn) res.setHeader('link', '</catalog>; rel="https://cotal.ai/relations/space-catalog"');
       const token = await new SignJWT({ email: 'fixture@example.test' }).setProtectedHeader({ alg: 'EdDSA', kid: 'fixture' }).setIssuer(origin).setAudience(origin).setSubject('fixture-owner').setIssuedAt().setExpirationTime('1h').sign(key.privateKey);
       res.end(JSON.stringify({ token })); return;
     }
@@ -60,7 +101,9 @@ export async function createFixtureSpace({ root, machineHome, runtime, node, env
   const servers = `nats://127.0.0.1:${port}`;
   const config = join(storeDir, 'server.conf');
   writeFileSync(config, serverConfig(broker, [account], { transport: { kind: 'plaintext' }, port, storeDir, maxPayload: 1024 * 1024, extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
-  const child = spawn(process.env.NATS_SERVER_BIN ?? 'nats-server', ['-c', config], { stdio: 'ignore', windowsHide: true });
+  const child = spawn(brokerBinary, ['-c', config], { stdio: 'ignore', windowsHide: true });
+  let brokerError;
+  child.on('error', error => { brokerError = error; });
   const release = teardownOnSignal(child, storeDir);
   let service, delivery;
   const close = async () => {
@@ -71,10 +114,13 @@ export async function createFixtureSpace({ root, machineHome, runtime, node, env
     release();
   };
   try {
-    for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await delay(100);
+    for (let i = 0; i < 100 && !(await isReachable(servers)); i++) {
+      if (brokerError) throw new Error(`The fixture broker could not start: ${brokerError.code ?? 'unknown error'}`);
+      await delay(100);
+    }
     assert.ok(await isReachable(servers), 'Fixture broker must answer');
     await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), 'provisioner') });
-    service = await startAuthService({ context: { accountPublicKey: auth.account.pub, lifecycleUid: mintLifecycleUid() }, space, servers, store, storeIdentity: store.identity, stateDir: authState, publicFace: { port: 0, trustedProxy: false } });
+    service = await startAuthService({ context: { accountPublicKey: auth.account.pub, lifecycleUid: mintLifecycleUid() }, space, servers, store, storeIdentity: store.identity, stateDir: authState, publicFace: { port: 0, trustedProxy: false }, ...(deviceSignIn ? { quiet: true } : {}) });
     const deliveryStore = new MemoryStore();
     deliveryStore.identity = { kind: 'injected', coordinate: 'desktop-upgrade-delivery' };
     const composition = { injected: true };
@@ -83,7 +129,22 @@ export async function createFixtureSpace({ root, machineHome, runtime, node, env
     await deliveryStore.put(membershipObserverCredsKey(space, composition), await mintMembershipObserverCreds(auth, newIdentity()));
     await deliveryStore.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(auth, newIdentity()));
     delivery = await startDeliveryService({ context: { accountPublicKey: auth.account.pub, lifecycleUid: mintLifecycleUid() }, space, servers, store: deliveryStore, storeIdentity: deliveryStore.identity, stateDir: join(root, 'delivery') });
-    const discovery = await (await fetch(`${service.publicUrl.replace(/\/$/, '')}/.well-known/cotal-mesh`)).json();
+    publicUrl = service.publicUrl.replace(/\/$/, '');
+    const discovery = await (await fetch(`${publicUrl}/.well-known/cotal-mesh`)).json();
+    if (deviceSignIn) {
+      const endpoints = Object.fromEntries(Object.entries(discovery.userAuth.endpoints).map(([key, url]) => [key, typeof url === 'string' && url.startsWith(publicUrl) ? `${origin}/authority${url.slice(publicUrl.length)}` : url]));
+      const registration = { ...discovery, server: servers, tlsRequired: false, userAuth: { ...discovery.userAuth, endpoints } };
+      catalog = { v: 1, account: { idpUrl, issuer: origin, sub: 'fixture-owner' }, spaces: [{ id: space, slug: space, name: 'Desktop acceptance', kind: 'personal', role: 'owner', registration }] };
+    }
+    return { space, participant, discovery, servers, idpUrl, session, close };
+  } catch (error) { await close(); throw error; }
+}
+
+/** The caller selects the machine home before entering; this helper never redirects its registry. */
+export async function createFixtureSpace({ root, machineHome, runtime, node, env }) {
+  assert.equal(homeCotalDir(), machineHome, 'fixture registry must use the caller-selected machine home');
+  const { space, participant, discovery, servers, idpUrl, session, close } = await startFixtureAuthority({ root, brokerBinary: process.env.NATS_SERVER_BIN ?? 'nats-server' });
+  try {
     const state = userAuthStateDir(participant, space); mkSecretDir(state);
     const sentinel = join(state, 'sentinel.creds'); writeFileSync(sentinel, discovery.sentinelCreds, { mode: 0o600 });
     recordMesh({ space, server: servers, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), root: participant, mode: 'user', origin: 'manual', userAuth: { ...discovery.userAuth, remote: true, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });

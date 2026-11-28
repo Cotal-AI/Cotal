@@ -521,6 +521,128 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*-setup.exe.sig
           if-no-files-found: error
           retention-days: 7
+  clean-install-linux:
+    needs: native-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Keep the unfinished bootstrap check advisory until clean installs and upgrades pass.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [deb, rpm]
+        cell: [first-install, upgrade]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-validation-Linux-X64
+          path: ${{ runner.temp }}/candidate
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --workspace-concurrency=2 --filter cotal-ai... build
+      - name: Run the packaged desktop journey in a clean container
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORMAT: ${{ matrix.format }}
+          OLD_VERSION: ${{ matrix.cell == 'upgrade' && '0.177.0' || '' }}
+        run: |
+          set -euo pipefail
+          downloads="$RUNNER_TEMP/downloads"
+          node desktop/e2e/clean-install-assets.mjs "$downloads" "$FORMAT" "$OLD_VERSION"
+          mapfile -t candidate < <(find "$RUNNER_TEMP/candidate" -name "*.$FORMAT")
+          [ "${#candidate[@]}" -eq 1 ]
+          old=''
+          if [ -n "$OLD_VERSION" ]; then old=$(find "$downloads" -name "*.$FORMAT"); fi
+          bash desktop/e2e/clean-install-linux.sh "$FORMAT" "${candidate[0]}" "$old" "$downloads/nats-server-v2.15.1-linux-amd64/nats-server"
+  clean-install-macos:
+    needs: native-build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+        cell: [first-install, upgrade]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-validation-macOS-${{ runner.arch }}
+          path: ${{ runner.temp }}/candidate
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --workspace-concurrency=2 --filter cotal-ai... build
+      - name: Run the packaged desktop journey without system tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_VERSION: ${{ matrix.cell == 'upgrade' && '0.177.0' || '' }}
+        run: |
+          set -euo pipefail
+          downloads="$RUNNER_TEMP/downloads"
+          node desktop/e2e/clean-install-assets.mjs "$downloads" dmg "$OLD_VERSION"
+          candidate=$(find "$RUNNER_TEMP/candidate" -name '*.dmg')
+          old=''
+          if [ -n "$OLD_VERSION" ]; then old=$(find "$downloads" -name '*.dmg'); fi
+          broker=$(find "$downloads" -type f -name nats-server)
+          bash desktop/e2e/clean-install-macos.sh "$candidate" "$old" "$broker"
+  clean-install-windows:
+    needs: native-build
+    runs-on: windows-2022
+    timeout-minutes: 35
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: [first-install, '0.162.0', '0.177.0']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-validation-Windows-X64
+          path: ${{ runner.temp }}/candidate
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: pnpm install --frozen-lockfile
+      - name: Build the local acceptance fixture
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          call pnpm --workspace-concurrency=2 --filter cotal-ai... build
+      - name: Run the packaged desktop journey without system tools
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_VERSION: ${{ matrix.cell != 'first-install' && matrix.cell || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloads = Join-Path $env:RUNNER_TEMP 'downloads'
+          node desktop/e2e/clean-install-assets.mjs $downloads exe $env:OLD_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $candidate = @(Get-ChildItem "$env:RUNNER_TEMP/candidate" -Recurse -Filter '*-setup.exe')
+          if ($candidate.Count -ne 1) { throw 'Expected one candidate setup program.' }
+          $old = if ($env:OLD_VERSION) { Join-Path $downloads "Cotal_$($env:OLD_VERSION)_x64-setup.exe" } else { '' }
+          $broker = (Get-ChildItem $downloads -Recurse -Filter 'nats-server.exe').FullName
+          ./desktop/e2e/clean-install-windows.ps1 $candidate[0].FullName $old $broker
   updater-arm:
     if: inputs.updater_apply
     uses: ./.github/workflows/desktop-mac-updater.yml
@@ -598,10 +720,9 @@ jobs:
             ${{ runner.temp }}/win-updater-result/
           if-no-files-found: error
           retention-days: 7
-  # Each platform's installers attach as soon as its build stages them, so a slow macOS notarization
-  # never holds back Windows and Linux. When every build has ended, any platform without installers fails
-  # this job by name.
+  # This only stages the draft and its update feed. A required clean-install job must succeed before it runs.
   release:
+    needs: [clean-install-linux, clean-install-macos, clean-install-windows]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 240

@@ -55,3 +55,21 @@ test("hosted Mac proof is explicit, ARM first, and uses immutable shared fixture
   const upload = steps.findIndex(step => step.name === 'Upload built desktop packages');
   assert.ok(guard >= 0 && upload > guard, 'actual executable production-config check precedes upload');
 });
+
+test("desktop release waits for native first-install and upgrade acceptance", () => {
+  const { jobs } = parse(readFileSync(new URL("../../.github/workflows/desktop.yml", import.meta.url), "utf8"));
+  const checks = ["clean-install-linux", "clean-install-macos", "clean-install-windows"];
+  assert.deepEqual(jobs.release.needs, checks);
+  for (const name of checks) {
+    const job = jobs[name];
+    assert.equal(job.needs, "native-build");
+    assert.equal(job.strategy["fail-fast"], false);
+    assert.ok(job.strategy.matrix.cell.includes("first-install"));
+    assert.ok(job.steps.some((step: { with?: { name?: string } }) => step.with?.name?.startsWith("desktop-validation-")));
+  }
+  assert.deepEqual(jobs[checks[0]!].strategy.matrix.format, ["deb", "rpm"]);
+  assert.deepEqual(jobs[checks[0]!].strategy.matrix.cell, ["first-install", "upgrade"]);
+  assert.deepEqual(jobs[checks[1]!].strategy.matrix.runner, ["macos-15", "macos-15-intel"]);
+  assert.deepEqual(jobs[checks[1]!].strategy.matrix.cell, ["first-install", "upgrade"]);
+  assert.deepEqual(jobs[checks[2]!].strategy.matrix.cell, ["first-install", "0.162.0", "0.177.0"]);
+});
