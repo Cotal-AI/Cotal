@@ -92,6 +92,14 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement,
 export function shownAgentName(name: string): string {
   return name.trim() ? name : "(unnamed)";
 }
+export function runningAgentNamesInSpaces(status: Record<string, unknown>, spaces?: readonly string[]): string[] | undefined {
+  try {
+    const inventory = agentInventory(status);
+    if (!inventory.available || (!spaces && inventory.unreadable.length)) return spaces ? [] : undefined;
+    const scope = spaces ? new Set(spaces) : undefined;
+    return inventory.agents.filter(a => a.state === "running" && (!scope?.size || scope.has(a.space))).map(a => `${shownAgentName(a.name)} (${a.application})`);
+  } catch { return spaces ? [] : undefined; }
+}
 export function applicationName(value: string): string {
   return ({ "claude-code": "Claude Code", claude: "Claude Code", codex: "Codex", jcode: "Jcode", opencode: "OpenCode", pi: "pi", hermes: "Hermes" } as Record<string, string>)[value] ?? value;
 }

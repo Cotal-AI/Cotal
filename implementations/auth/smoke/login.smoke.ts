@@ -1082,13 +1082,13 @@ console.log("E) hostile-IdP responses");
   const logoutHome = mkdtempSync(join(tmpdir(), "cotal-logout-"));
   saveIdpSession(logoutHome, soBase, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
   // Asynchronous, so this process's sign-out server can answer the child.
-  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean; daemonNotice?: string } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
-    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, "--json", ...args],
+  const cli = (...args: string[]) => new Promise<{ status: number | null; stdout: string; envelope?: { outcome?: string; noOp?: boolean; result?: { serverRevoked?: boolean; localLoginCleared?: boolean; localLogin?: string; daemonNotice?: string } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
+    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, ...(args.includes("--plain") ? [] : ["--json"]), ...args],
       { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
       (error, stdout, stderr) => {
         let envelope;
         try { envelope = JSON.parse(stdout); } catch { envelope = undefined; }
-        done({ status: error ? (typeof error.code === "number" ? error.code : null) : 0, envelope, stderr: stderr.slice(0, 400) });
+        done({ status: error ? (typeof error.code === "number" ? error.code : null) : 0, stdout, envelope, stderr: stderr.slice(0, 400) });
       });
   });
   const before = signOuts;
@@ -1099,11 +1099,11 @@ console.log("E) hostile-IdP responses");
   check("logout --local clears the login without contacting the provider",
     local.status === 0 && local.envelope?.result?.serverRevoked === false && local.envelope.result.localLoginCleared === true && loadIdpSession(logoutHome, soBase) === undefined && signOuts === before + 1, { local, signOuts, before });
   const absent = await cli("--local");
-  for (const [label, reply] of [["cleared", local], ["already absent", absent]] as const) {
-    const notice = reply.envelope?.result?.daemonNotice ?? "";
-    check(`logout ${label} explains the service proof and both retirement choices`, reply.status === 0
-      && notice.includes("own service proof") && notice.includes("service-disconnect") && notice.includes("dashboard"));
-  }
+  check("logout cleared omits stale daemonNotice", local.status === 0 && local.envelope?.result?.daemonNotice === undefined, local);
+  check("logout already absent reports no-op without stale daemonNotice", absent.status === 0 && absent.envelope?.outcome === "no-op" && absent.envelope.result?.localLogin === "absent" && absent.envelope.result.daemonNotice === undefined, absent);
+  saveIdpSession(logoutHome, soBase, { token: "cached-login-2", expiresAt: Date.now() / 1000 + 600 });
+  const plainLocal = await cli("--local", "--plain");
+  check("logout --local --plain prints computer sign-out guidance without service-disconnect step", plainLocal.status === 0 && plainLocal.stdout.includes("Signed out on this computer") && plainLocal.stdout.includes("Sign in again to use this computer from your spaces.") && !plainLocal.stdout.includes("service-disconnect"), plainLocal);
   so.close();
 }
 

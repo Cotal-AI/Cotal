@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
-import { agentInventory, renderAgents, runningFor, shortFolder, shownAgentName } from "../src/agents.js";
+import { agentInventory, applicationName, renderAgents, runningAgentNamesInSpaces, runningFor, shortFolder, shownAgentName } from "../src/agents.js";
 const agent: { name: string; application: string; cwd: string; startedAt: string; state: string; model?: string } = { name: "writer", application: "codex", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" };
 const read = (space: string, agents = [agent]) => ({ space, state: "read", agents });
 test("none and unavailable are distinct", () => {
@@ -89,4 +89,22 @@ test("exited agents render with Exited status in the agent row", () => {
     renderAgents({ agents: [read("team", [{ ...agent, state: "exited" }])] }, root);
     assert.equal(root.querySelector(".agent-time")?.textContent, "Exited");
   } finally { globalThis.document = prior; dom.window.close(); }
+});
+test("running agent names filter by space, ignore exited agents, and refuse partial inventory", () => {
+  assert.equal(applicationName("claude"), "Claude Code");
+  assert.equal(applicationName("codex"), "Codex");
+  assert.equal(runningAgentNamesInSpaces({}), undefined);
+  assert.equal(runningAgentNamesInSpaces({ agents: [read("team"), { space: "other", state: "unreadable" }] }), undefined);
+  const status = {
+    agents: [
+      read("team", [agent, { ...agent, name: "done", state: "exited" }]),
+      read("other", [{ ...agent, name: "reviewer", application: "claude" }]),
+    ],
+  };
+  const all = runningAgentNamesInSpaces(status);
+  assert.equal(all?.length, 2);
+  assert.deepEqual(all, ["reviewer (Claude Code)", "writer (Codex)"]);
+  const teamOnly = runningAgentNamesInSpaces(status, ["team"]);
+  assert.equal(teamOnly?.length, 1);
+  assert.deepEqual(teamOnly, ["writer (Codex)"]);
 });

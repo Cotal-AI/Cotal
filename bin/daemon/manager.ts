@@ -12,8 +12,8 @@ import {
 } from "@cotal-ai/core";
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
-import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { loadIdpSession, preflightManagerAuthorityRoute, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
+import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, loginRecoveryCommand, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFailure, managerFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
@@ -110,7 +110,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
-  const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
+  const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve|service-disconnect)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
   let runtimeTask: Promise<string> | undefined;
@@ -198,6 +198,19 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const view = rawStatus(space);
     return { ...view, ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
   };
+  const cleanupRemedy = (space: string, instanceId: string | undefined, idpUrl?: string): string => {
+    const entry = findMesh(space);
+    const idp = idpUrl ?? entry?.userAuth?.idp.url;
+    if (idp && !loadIdpSession(home, idp)) {
+      return `run \`${loginRecoveryCommand(idp)}\`, then retry \`cotal daemon service-disconnect --space ${space}\``;
+    }
+    if (!entry) {
+      return `sign in and run \`cotal sync\` to restore ${space}'s registration, then retry \`cotal daemon service-disconnect --space ${space}\``;
+    }
+    return instanceId
+      ? `inspect the registration, then run \`cotal endpoint deregister manager ${instanceId} --space ${space} --yes\``
+      : `inspect the recorded Manager identity for ${space}, then remove its registration with \`cotal endpoint deregister manager <instance-id> --space ${space} --yes\``;
+  };
   const rawStatus = (space: string): HostedManager => {
     const current = live.get(space);
     const invalid = recordError(space);
@@ -208,7 +221,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       space, restarts: 0, instanceId: cleanup.instanceId,
       state: cleanup.phase === "unknown" ? "refused" : "stopped", registrationCleanup: cleanup.phase,
       reason: cleanup.phase === "unknown" ? "Manager registration removal is unconfirmed; no automatic request will be repeated" : "Manager stopped here; registration cleanup pending",
-      next: `inspect the registration, then run \`cotal endpoint deregister manager ${cleanup.instanceId} --space ${space} --yes\``,
+      next: cleanupRemedy(space, cleanup.instanceId),
     };
     if (existsSync(refusalFile(space))) {
       const saved = JSON.parse(readFileSync(refusalFile(space), "utf8")) as HostedManager;
@@ -798,6 +811,45 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     abortGenerationRestart,
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
+    async preflightDisconnect(space: string): Promise<void> {
+      const invalid = recordError(space);
+      if (invalid) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", invalid, command(`run \`cotal daemon setup --space ${space}\` to repair its hosting records`));
+      const l = live.get(space);
+      if (l?.starting) await l.starting;
+      const view = status(space);
+      let cleanup = readManagerCleanup(home, space);
+      if (view.registrationCleanup === "unknown" || cleanup?.phase === "unknown") {
+        throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager registration removal is unconfirmed; no automatic request was repeated", command(cleanupRemedy(space, view.instanceId ?? cleanup?.instanceId)));
+      }
+      let instanceId = view.instanceId ?? cleanup?.instanceId;
+      try {
+        const { remoteManagerClient } = await import("@cotal-ai/manager");
+        instanceId = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space) ?? instanceId;
+      } catch {
+        throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "the recorded Manager identity could not be read; its registration may be left behind", command(cleanupRemedy(space, instanceId)));
+      }
+      if (!instanceId) return;
+      if (!cleanup) {
+        const entry = findMesh(space);
+        if (!entry || entry.mode !== "user" || !entry.userAuth) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager registration is left behind; its original cleanup authority is unavailable", command(cleanupRemedy(space, instanceId)));
+        const storeIdentity = workspaceSecretStore(entry.root).identity;
+        if (storeIdentity.kind !== "fs") throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager cleanup requires its original filesystem store identity", command(cleanupRemedy(space, instanceId, entry.userAuth.idp.url)));
+        cleanup = { version: 1, space, root: entry.root, provider: entry.userAuth.provider, storeIdentity, instanceId, phase: "pending" };
+      }
+      if (cleanup.instanceId && cleanup.instanceId !== instanceId) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager cleanup identity differs from its recorded instance", command(cleanupRemedy(space, instanceId)));
+      try { validateManagerCleanupAuthority(cleanup); }
+      catch { throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager registration cleanup is pending; its original authority is unavailable or changed", command(cleanupRemedy(space, instanceId))); }
+      const provider = registry.has("auth-provider", cleanup.provider) ? registry.resolve<AuthProvider>("auth-provider", cleanup.provider) : undefined;
+      if (!provider?.deregisterEndpoint) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager registration cleanup is pending; guarded removal is unsupported for its recorded provider", command(cleanupRemedy(space, instanceId)));
+      try {
+        const { idpUrl } = await preflightManagerAuthorityRoute(workspaceSecretStore(cleanup.root), userAuthStateDir(cleanup.root, space, { readOnly: true }), space);
+        const session = loadIdpSession(home, idpUrl);
+        if (!session) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", `not signed in to ${idpUrl}; Manager registration cleanup requires an active sign-in`, command(cleanupRemedy(space, instanceId, idpUrl)));
+      } catch (error) {
+        if (error instanceof HostedManagerRefusal) throw error;
+        throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Manager registration cleanup authority could not be verified before sign-out", command(cleanupRemedy(space, instanceId)));
+      }
+    },
     async disconnect(space: string, options?: { account?: boolean }) {
       // A crash during child shutdown must not restore a withdrawn hosting intent.
       const intent = daemonManagerIntentFile(space, home);
@@ -814,9 +866,11 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       }
       const held = l ?? { view: status(space), stopping: true, failures: 0 };
       let instanceId = held.view.instanceId ?? readManagerCleanup(home, space)?.instanceId;
-      const remedy = () => instanceId
-        ? `inspect the registration, then run \`cotal endpoint deregister manager ${instanceId} --space ${space} --yes\``
-        : `inspect the recorded Manager identity for ${space}, then remove its registration with \`cotal endpoint deregister manager <instance-id> --space ${space} --yes\``;
+      let knownIdpUrl: string | undefined;
+      let authMissing = false;
+      const remedy = () => authMissing && knownIdpUrl
+        ? `run \`${loginRecoveryCommand(knownIdpUrl)}\`, then retry \`cotal daemon service-disconnect --space ${space}\``
+        : cleanupRemedy(space, instanceId, knownIdpUrl);
       const incomplete = (reason: string): never => {
         live.set(space, held);
         refuse(held, reason, remedy());
@@ -869,6 +923,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           if (isCommandFailure(error) && error.outcome === "refused") {
             writeManagerCleanup(home, { ...cleanup, phase: "pending" });
             held.view = { ...held.view, registrationCleanup: "pending" };
+            if (error.code === "AUTH_REQUIRED") {
+              authMissing = true;
+              try {
+                knownIdpUrl = (await preflightManagerAuthorityRoute(workspaceSecretStore(cleanup.root), userAuthStateDir(cleanup.root, space, { readOnly: true }), space)).idpUrl;
+              } catch { knownIdpUrl = findMesh(space)?.userAuth?.idp.url; }
+            }
           }
           return incomplete(`Manager registration is left behind; guarded removal did not confirm its deletion: ${safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 400)}`);
         }

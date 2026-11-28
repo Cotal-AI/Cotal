@@ -61,8 +61,12 @@ pub enum DesktopRequest {
     },
     #[serde(rename = "login")]
     Login { idp: String },
-    #[serde(rename = "logout")]
-    Logout { idp: String },
+    #[serde(rename = "logout", rename_all = "camelCase")]
+    Logout {
+        idp: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_agents: Option<bool>,
+    },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
     #[serde(rename = "space-recover")]
@@ -110,7 +114,7 @@ impl DesktopRequest {
                     return Err("Invalid release version.".into());
                 }
             }
-            Self::Login { idp } | Self::Logout { idp } | Self::Setup { idp, .. } => {
+            Self::Login { idp } | Self::Logout { idp, .. } | Self::Setup { idp, .. } => {
                 let u = browser_url(idp)?;
                 if u.query().is_some() || u.fragment().is_some() {
                     return Err("A provider URL cannot contain a query or fragment.".into());
@@ -273,6 +277,10 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<DesktopRequest>(input).is_err());
         }
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"logout","idp":"https://example.com/api/auth"}"#).unwrap().validate().is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"logout","idp":"https://example.com/api/auth","stopAgents":true}"#).unwrap().validate().is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"logout","idp":"https://example.com/api/auth","stopAgents":"yes"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"logout","idp":"https://example.com/api/auth","local":true}"#).is_err());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"agent-apps"}"#).unwrap().validate().is_ok());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"agent-apps","refresh":true}"#).unwrap().validate().is_ok());
         for (name, valid) in [("claude", true), ("connector-2", true), ("", false), ("-x", false), ("Claude", false), ("a b", false), ("../x", false), (&"a".repeat(65)[..], false)] {

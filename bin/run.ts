@@ -88,6 +88,7 @@ await runCli(registry, argv, {
     if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
     else await importing(...(Object.keys(surfaces) as Surface[]))();
     if (word === "update") await import("./daemon/update-entry.js");
+    if (word === "logout" && !help) await import("./daemon/logout-entry.js");
 
     // Handle a closed pipe or a failed file write before any command emits output.
     process.stdout.on("error", stdoutError);

@@ -700,6 +700,7 @@
   "cli:logout--json": "current:logout --json",
   "cli:logout--local": "current:logout --local",
   "cli:logout--plain": "current:logout --plain",
+  "cli:logout--stop-agents": "current:logout --stop-agents",
   "cli:manager": "current:manager",
   "cli:manager install": "current:manager install",
   "cli:manager logs": "current:manager logs",

@@ -31,7 +31,9 @@
 .settings-card.account-outcome-view > :not(.settings-heading):not(:has(#account-outcome)) { display: none; }
 .account-outcome-view #settings-account, .account-outcome-view #settings-spaces, .account-outcome-view .account-actions:has(#settings-signout) { display: none; }
 .account-outcome-view #account-outcome { max-height: 250px; color: var(--ink); }
-.settings-row #account-outcome-back { max-width: none; margin-top: 8px; }
+#account-outcome-details { margin-top: 8px; }
+#account-outcome-detail { margin: 4px 0 0; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.settings-row #account-outcome-retry, .settings-row #account-outcome-back { max-width: none; margin-top: 8px; }
 .settings-card #settings-message { margin: var(--s-1) 0 0; }
 .update-banner { display: flex; align-items: center; gap: var(--s-1); background: var(--t-gold); color: var(--gold-ink); border: 2px solid var(--ink); border-radius: var(--r-md); padding: var(--s-1) var(--s-2); margin-bottom: var(--s-2); font-size: var(--t-label); }
 .connection-card:has(#update-banner:not([hidden])) #connection-icon { display: none; }
