@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, 
 import { join } from "node:path";
 import { processGroupMembers, protectedLocalDirectory, recoveryProcessStartToken } from "@cotal-ai/workspace";
 
+const gateFileName = /^update-posix-gate\.m[jt]s$/;
 const npmCacheName = /^cotal-update-npm-[a-zA-Z0-9]{6}$/;
 const reconcileCacheName = /^cotal-update-reconcile-[a-zA-Z0-9]{6}$/;
 
@@ -22,17 +23,25 @@ function removeExpiredCompileScratch(scratch: string, mtimeMs: number, removeRec
   if (mtimeMs >= cutoff) return false;
   const entries = readdirSync(scratch);
   const compile = "node-compile-cache";
-  if (!entries.includes(compile) || entries.length > 2) return false;
+  const pinnedGates = entries.filter(name => gateFileName.test(name));
+  const others = entries.filter(name => name !== compile && !gateFileName.test(name));
+  if (!entries.includes(compile) || others.length > 1) return false;
+  const uid = process.getuid?.();
+  for (const gate of pinnedGates) {
+    const gateInfo = lstatSync(join(scratch, gate));
+    if (!gateInfo.isFile() || gateInfo.mtimeMs >= cutoff || (uid !== undefined && (gateInfo.uid !== uid || (gateInfo.mode & 0o077) !== 0))) return false;
+  }
   const cache = join(scratch, compile);
   const info = lstatSync(cache);
   if (!info.isDirectory() || info.mtimeMs >= cutoff || !idleCompileTree(cache, cutoff)) return false;
 
-  const npm = entries.find(name => name !== compile);
+  const npm = others[0];
   if (npm !== undefined) {
     if (process.platform !== "linux" || !reconcileCacheName.test(npm)) return false;
     const reconcile = join(scratch, npm);
     if (lstatSync(reconcile).mtimeMs >= cutoff || !removeReconcileCache(reconcile)) return false;
   }
+  for (const gate of pinnedGates) rmSync(join(scratch, gate), { force: true });
   rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   rmdirSync(scratch);
   return true;
@@ -106,7 +115,7 @@ export function collectUpdateCaches(parent: string): void {
         if (!info.isDirectory() || (uid !== undefined && !privateDirectory(info, uid))) continue;
         protectedLocalDirectory(scratch, "the update cache");
         if (removeExpiredCompileScratch(scratch, info.mtimeMs, removeReconcileCache)) continue;
-        if (recorded && sweep(scratch) && readdirSync(scratch).every(name => name === "node-compile-cache"))
+        if (recorded && sweep(scratch) && readdirSync(scratch).every(name => name === "node-compile-cache" || gateFileName.test(name)))
           rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
       }
       catch { /* Another command can retire its scratch during the scan. */ }

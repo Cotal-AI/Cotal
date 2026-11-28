@@ -71,6 +71,8 @@ import {
   runNpm,
   runProcess,
   runGlobalProcess,
+  pinPosixGateIfNeeded,
+  withPosixGateScratch,
   latestNotAvailable,
   failure,
   message,
@@ -322,7 +324,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   let continuation: string | undefined;
   try {
     for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
-    continuation = await (args.values.self === true ? withWindowsUpdateIdentity(() => updateInstallation(args, rt)) : updateInstallation(args, rt));
+    continuation = await withPosixGateScratch(scratch, () => args.values.self === true ? withWindowsUpdateIdentity(() => updateInstallation(args, rt)) : updateInstallation(args, rt));
   } finally {
     for (const { env, values } of previous) for (const [key, value] of Object.entries(values)) {
       if (value === undefined) delete env[key];
@@ -452,9 +454,11 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
     if (startup && (decision.action === "wait" || decision.action === "active" || decision.action === "restore" && record.phase === "paused")) return;
     if (decision.action !== "restore") throw new CommandFailure("refused", decision.action === "active" ? "LIFECYCLE_BLOCKED" : decision.action === "wait" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE", decision.instruction, { native: { code: decision.action === "active" ? "UPDATE_RECOVERY_OWNER_ACTIVE" : decision.action === "wait" ? "UPDATE_RECOVERY_OBSERVATION_WAIT" : "UPDATE_RECOVERY_INSPECTION_FAILED" }, ...(decision.action === "active" ? {} : { remedy: "follow the recovery instruction above, then run `cotal update --self`" }) });
     if (!record.owner) return;
-    try {
-      if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
-      writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
+    return await withPosixGateScratch(undefined, async () => {
+      try {
+        if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
+        pinPosixGateIfNeeded(rt.env);
+        writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
       const snapshot = snapshotUpdateClosure(record.snapshot);
       const completedRollback = !record.execution && !startup && record.phase === "paused" && record.installed === record.previous
         && record.renames !== undefined && record.renames.length > 0 && record.renames.every(entry => entry.done);
@@ -512,10 +516,11 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
         rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
         return { entry, version: record.previous };
       } finally { releaseGlobal(); }
-    } catch (error) {
-      writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
-      throw error;
-    }
+      } catch (error) {
+        writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
+        throw error;
+      }
+    });
   } finally { release(); }
 }
 
@@ -643,7 +648,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     }
     if (upgrading) {
       reportConnectorAccessRestored(rt, permissionsRestored);
-      const code = await upgradeAndReconcile(latest.version, current, rt, target, preflightChanged, !permissionsRestored);
+      const code = await withPosixGateScratch(undefined, () => upgradeAndReconcile(latest.version, current, rt, target, preflightChanged, !permissionsRestored));
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
@@ -846,6 +851,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let repairedSelection = false, selectionAccessRestored = false;
   const releaseChecksStarted = Date.now();
   try {
+    pinPosixGateIfNeeded(rt.env);
     const release = await waitForReleasePreflight(targetVersion, current, rt, () => {
       try {
         repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line), () => { selectionAccessRestored = true; });
