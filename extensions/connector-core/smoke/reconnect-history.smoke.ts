@@ -164,12 +164,20 @@ async function checkInterruptedReplay(manager: CotalEndpoint, publisher: CotalEn
   const during = await duringFirst;
   const between = await publisher.multicast("posted while unjoined", { channel: "replay.retry.c0" });
   let overlap: string | undefined;
-  consumers.confirmChatSub = async () => {
-    await confirm();
+  const held = holdJoinRebuild(agent, undefined, async () => {
     overlap = (await publisher.multicast("live before retry frontier", { channel: "replay.retry.c2" })).id;
     await until(() => live.includes(overlap!), "the confirmed retry subscription must receive the overlap post live");
-  };
-  const retry = await join();
+  });
+  const retrying = Promise.resolve(join());
+  try {
+    await Promise.race([held.nullWindow, retrying.then(result => { throw new Error(result.text); })]);
+    await nextTurn();
+    assert.equal(agent.ep["conn"].channelKv, undefined);
+  } finally {
+    held.release();
+  }
+  await held.rebuilt();
+  const retry = await retrying;
   consumers.confirmChatSub = confirm;
   const delivered = [...replayed, ...live];
   const gapCopies = [during.id, between.id].map(id => delivered.filter(seen => seen === id).length);
@@ -189,7 +197,7 @@ async function checkInterruptedReplay(manager: CotalEndpoint, publisher: CotalEn
     "retry must finish replay without re-emitting any delivered post");
   const after = await publisher.multicast("posted after retry", { channel: "replay.retry.c0" });
   await until(() => live.includes(after.id), "the successful join must receive live posts");
-  assert(!live.includes(between.id), "the post sent while unjoined must arrive as history");
+  assert(!live.includes(between.id), "the post sent while unjoined must not arrive on the live tail");
   const pages: number[] = [];
   const rows = await agent.ep["history"].collectHistory(chatSubject(space, "*", "*", family), { seq: 1 }, {
     limit: 257,
@@ -250,17 +258,7 @@ async function checkPendingJoin(
   await agent.stop();
 }
 
-async function checkJoinDuringRebuild(
-  manager: CotalEndpoint, publisher: CotalEndpoint, variant: "inflight" | "failed-dial" | "retained",
-) {
-  const channel = `replay.control.${variant}`;
-  const retained: string[] = [];
-  if (variant === "retained") {
-    for (let i = 0; i < 5; i++) retained.push((await publisher.multicast(`retained ${i}`, { channel })).id);
-  }
-  const agent = await wideReader(manager, `join-${variant}`, []);
-  await agent.start();
-  assert.equal(agent.channelInfo(channel).replay, variant === "retained");
+function holdJoinRebuild(agent: MeshAgent, failedDial?: Error, afterConfirm?: () => Promise<void>) {
   const consumers = agent.ep["consumers"];
   const credentials = agent.ep["credentials"];
   const connection = agent.ep["connection"];
@@ -276,8 +274,7 @@ async function checkJoinDuringRebuild(
     await releaseRebuild;
     await close(nc);
   };
-  const failedDial = new Error("probe: first dial refused");
-  if (variant === "failed-dial") {
+  if (failedDial) {
     connection.connectAndBind = async () => {
       connection.connectAndBind = bind;
       throw failedDial;
@@ -287,9 +284,29 @@ async function checkJoinDuringRebuild(
   consumers.confirmChatSub = async () => {
     await confirm();
     consumers.confirmChatSub = confirm;
+    if (afterConfirm) await afterConfirm();
     rebuild = agent.ep.reconnect().catch((error: unknown) => error);
     await nullWindow;
   };
+  return {
+    nullWindow,
+    release() { resumeRebuild(); credentials.closeWithoutLibraryReconnect = close; },
+    async rebuilt() { assert(rebuild); assert.equal(await rebuild, failedDial); },
+  };
+}
+
+async function checkJoinDuringRebuild(
+  manager: CotalEndpoint, publisher: CotalEndpoint, variant: "inflight" | "failed-dial" | "retained",
+) {
+  const channel = `replay.control.${variant}`;
+  const retained: string[] = [];
+  if (variant === "retained") {
+    for (let i = 0; i < 5; i++) retained.push((await publisher.multicast(`retained ${i}`, { channel })).id);
+  }
+  const agent = await wideReader(manager, `join-${variant}`, []);
+  await agent.start();
+  assert.equal(agent.channelInfo(channel).replay, variant === "retained");
+  const held = holdJoinRebuild(agent, variant === "failed-dial" ? new Error("probe: first dial refused") : undefined);
   const deliveries: { id: string; historical: boolean }[] = [];
   agent.ep.on("message", (message, _delivery, meta) => {
     if (message.channel === channel) deliveries.push({ id: message.id, historical: meta.historical });
@@ -299,18 +316,16 @@ async function checkJoinDuringRebuild(
   const joining = Promise.resolve(tool.run(agent, agent.config, { channel })).finally(() => { settled = true; });
   let settledWhileHeld: boolean;
   try {
-    await Promise.race([nullWindow, joining.then(result => { throw new Error(result.text); })]);
+    await Promise.race([held.nullWindow, joining.then(result => { throw new Error(result.text); })]);
     // Let the confirmed join take its next step while dialing is still held by the gate.
     await nextTurn();
     assert.equal(agent.ep["conn"].channelKv, undefined, "the rebuild must still be between connections");
     assert(!agent.joinedChannels().includes(channel));
     settledWhileHeld = settled;
   } finally {
-    resumeRebuild();
-    credentials.closeWithoutLibraryReconnect = close;
+    held.release();
   }
-  assert(rebuild);
-  assert.equal(await rebuild, variant === "failed-dial" ? failedDial : undefined);
+  await held.rebuilt();
   const result = await joining;
   console.log(`join during held rebuild ${variant}: ${JSON.stringify({ settledWhileHeld, result, joined: agent.joinedChannels(), historical: deliveries.length })}`);
   const expectedBackfill = retained.length ? `Backfilled ${retained.length} earlier messages` : "Backfilled";
