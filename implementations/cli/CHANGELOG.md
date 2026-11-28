@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.185.1
+
+### Patch Changes
+
+- 6a8b9c7: Keep the requested output format in the inventory command suggested when no endpoint instance answers a contract read.
+- 63a58eb: Record the permission refusal when update cannot use the config folder's parent. Keep the path and repair instructions local.
+- @cotal-ai/core@0.185.1
+  - @cotal-ai/seat@0.185.1
+  - @cotal-ai/workspace@0.185.1
+
 ## 0.185.0
 
 ### Patch Changes
