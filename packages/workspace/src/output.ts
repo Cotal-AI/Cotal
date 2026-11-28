@@ -188,8 +188,9 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
 /** The space one command run resolved, as {@link recordOperationSpace} set it, the note
  *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
  *  {@link recordOperationWarning} recorded. {@link recordOperationContext} names the selected command
- *  and its resolved target. `quiet` keeps warnings off stderr. */
-export interface OperationScope { command?: string; target?: unknown; space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
+ *  and its resolved target. `reportedFailure` holds the classification of a failure the command
+ *  reported itself instead of throwing. `quiet` keeps warnings off stderr. */
+export interface OperationScope { command?: string; target?: unknown; space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean; reportedFailure?: Pick<CommandFailure, "outcome" | "code"> }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -200,9 +201,9 @@ export function runOperation<T>(scope: OperationScope, body: () => T): T {
   return operationScope.run(scope, body);
 }
 
-/** Record a selected command or a resolved target for failures after execution starts. Pass only
- *  validated, non-secret target metadata. Outside {@link runOperation} this does nothing. */
-export function recordOperationContext(context: Pick<OperationScope, "command" | "target">): void {
+/** Record a selected command, resolved target or self-reported failure classification. Pass only
+ *  validated, non-secret metadata. Outside {@link runOperation} this does nothing. */
+export function recordOperationContext(context: Pick<OperationScope, "command" | "target" | "reportedFailure">): void {
   const scope = operationScope.getStore();
   if (scope) Object.assign(scope, context);
 }

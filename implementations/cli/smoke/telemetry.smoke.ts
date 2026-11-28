@@ -87,6 +87,14 @@ const MINIMAL = [...COMMON, "command", "outcome", "exitCode", "durationMs"];
 const REGULAR = [...MINIMAL, "account", "subcommand", "flags", "errorCode", "errorMessage", "errorStack", "interactive", "shell", "terminal"];
 const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMethod", "connectors", "extensions", "runtimes", "meshes", "hostedMesh", "uptimeDays"];
 
+{
+  const s = sandbox(), file = "fixture-private-workflow.cotal.js";
+  writeFileSync(join(s.project, file), "const = ;");
+  const r = await s.run(["run", "validate", file, "--json"]), event = r.sent.find(row => row.event === "command");
+  check("invalid workflow findings stay local while telemetry matches the refusal", r.status === 1 && r.envelope?.outcome === "refused" && r.stdout.includes("SCHEMA_INVALID") && r.stdout.includes(file) &&
+    event?.outcome === "refused" && event.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(file), shown(r));
+}
+
 // ---- regular: the first command of the day sends the install event, then its own ----
 {
   const s = sandbox();
