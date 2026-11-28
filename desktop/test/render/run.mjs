@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import axe from "axe-core";
 import { nativeStub, scenarios } from "./fixtures.mjs";
 
-const root = resolve(fileURLToPath(new URL("../../dist/", import.meta.url)));
+const root = resolve(process.env.RENDER_DIST ?? fileURLToPath(new URL("../../dist/", import.meta.url)));
 const output = resolve(process.env.SHOTS ?? "test/render/artifacts");
 const config = JSON.parse(await readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 await mkdir(output, { recursive: true });
