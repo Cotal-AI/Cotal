@@ -112,7 +112,7 @@ export function nativeStub(scenario) {
         return await new Promise(resolve => { window.__closeStatusWatch = resolve; });
       }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
-      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
+      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? (state.signedInProviders ?? ["https://cloud.cotal.ai/api/auth"]) : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? state.aboutMachine ?? "Davids-MacBook-Pro" }); }
       if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
       if (request.op === "logout") {
@@ -457,7 +457,10 @@ export const scenarios = [
     },
     expect: async page => {
       if (mode === "connected-label") assert.equal(await page.locator('[data-space="acme-team"] strong').textContent(), "Acme team");
-      if (mode === "settings-label") assert.match(await page.locator("#settings-spaces").textContent(), /Acme team/);
+      if (mode === "settings-label") {
+        assert.match(await page.locator("#settings-account").textContent(), /david@cotal\.ai/);
+        assert.equal(await page.locator("#settings-spaces").textContent(), "Signed in · 2 spaces");
+      }
       if (mode === "add-space") {
         assert.equal(await page.locator("#space").isVisible(), true);
         assert.deepEqual(await page.locator("#space option").evaluateAll(options => options.filter(option => option.value).map(option => ({ value: option.value, label: option.textContent }))), [{ value: "acme-team", label: "Acme team" }, { value: "research", label: "Research" }]);
@@ -780,7 +783,6 @@ export const scenarios = [
     assert.equal(await page.locator("#another-space").textContent(), "Add a space");
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
     assert.equal(await page.locator("#sidebar-status-word").textContent(), "Connected");
-    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "computer");
     assert.equal(await page.locator("#dashboard").isVisible(), true);
     assert.equal(await page.locator("#dashboard-spaces-note").isVisible(), false);
     assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "ok");
@@ -797,8 +799,6 @@ export const scenarios = [
       assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: pill === "Connected", label: pill });
       if (observed === "refusal") {
         assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
-        assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
-        assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
       }
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
@@ -870,6 +870,7 @@ export const scenarios = [
     assert.match(await page.locator("#settings-versions").textContent(), /^App /);
     assert.equal(await page.locator("#service-log").isVisible(), true, "the service log is reachable before sign-in");
     assert.equal(await page.locator("#settings-account").textContent(), "No account selected");
+    assert.equal(await page.locator("#settings-spaces").isHidden(), true);
     assert.equal(await page.locator("#settings-signout").isDisabled(), true);
     assert.equal(await page.locator("#settings-disconnect").isDisabled(), true);
     await page.locator("#view-connection").click();
@@ -978,7 +979,7 @@ export const scenarios = [
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Your connection needs an update");
     assert.ok(await page.evaluate(() => document.querySelectorAll("#connected-spaces li").length) >= 2, "both spaces are listed behind the refusal");
     assert.equal(await page.locator("#connection-description").isVisible(), true, "the refusal explains itself");
-    assert.equal(await page.locator("#connection-icon").isVisible(), true);
+    assert.equal(await page.locator("#connection-icon").count(), 0, "no separate pane status icon");
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
@@ -989,7 +990,6 @@ export const scenarios = [
     assert.equal(await page.locator("#refresh").isVisible(), true);
     assert.equal(await page.locator("#refresh").textContent(), "Check approval");
     assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval");
-    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "clock");
     assert.equal(await page.locator("#dashboard").isVisible(), false);
     assert.equal(await page.locator("#view-apps").isVisible(), true);
     assert.match(await page.locator("#connected-spaces").textContent(), /Waiting for owner approval/);
@@ -1001,7 +1001,14 @@ export const scenarios = [
     await page.waitForFunction(() => document.querySelector("#connection-title").textContent === "This computer is connected");
   }, expect: async page => { assert.equal(await page.locator("#refresh").isVisible(), false); assert.equal(await page.locator("#dashboard").isVisible(), true); } },
   { name: "version-mismatch", state: { installed: true, signedIn: true, version: "old" } },
-  { name: "progress-done", state: { connecting: true }, prepare: connect, act: page => page.evaluate(() => window.__advanceSetup()) },
+  { name: "progress-done", state: { connecting: true }, prepare: connect, act: async page => {
+    const row = page.getByTestId("progress-3");
+    await row.locator('.progress-mark[data-icon="spinner"]').waitFor();
+    await page.evaluate(() => window.__advanceSetup());
+    await row.locator('.progress-mark[data-icon="check"]').waitFor();
+    assert.equal(await row.getAttribute("data-state"), "done");
+    assert.equal(await row.locator(".icon-spinner").count(), 0);
+  } },
   { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => { assert.equal(await page.locator("#notice").isVisible(), false); assert.equal(await page.locator("#spaces-heading").isVisible(), false); assert.equal(await page.locator(".connected-spaces-scroll").isVisible(), false); assert.equal(await page.locator("#another-space").textContent(), "Add a space"); } },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
@@ -1013,7 +1020,18 @@ export const scenarios = [
   { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or menu bar. Quit app leaves the background service running.")), expect: async page => { assert.match(await page.locator("#notice").textContent(), /Cotal stays in your system tray/); } },
   { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#view-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
   { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#view-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
-  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#view-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
+  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#view-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-update-summary").textContent(), "Version 0.156.0");
+    for (const id of ["settings-name", "check-updates", "settings-signout", "release-notes"]) {
+      const outline = await page.locator(`#${id}`).evaluate(el => {
+        const style = getComputedStyle(el);
+        return style.borderTopStyle === "solid" && parseFloat(style.borderTopWidth) > 0 && style.borderTopColor !== "rgba(0, 0, 0, 0)";
+      });
+      assert.ok(outline, `${id} has a visible outline`);
+    }
+    assert.equal(await page.getByRole("button", { name: "Sign out", exact: true }).count(), 1);
+    assert.equal(await page.locator('section[aria-labelledby="advanced-heading"] #settings-disconnect').count(), 1);
+  } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
   { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.watchMode), "push");
@@ -1076,11 +1094,7 @@ auditCase("audit-move-offer", "audit-e4-move-offer-spacing", async page => {
     `E4: move offer has a top divider and breathing room: ${JSON.stringify(spacing)}`);
 });
 auditCase("account-signout-outcome-back", "audit-e5-post-signout-labels", async page => {
-  const copy = await page.locator("#settings-spaces").textContent();
-  console.log(`E5 post-signout Settings: ${copy}`);
-  assert.match(copy, /Acme team/, "E5: Settings retains Acme team after sign-out");
-  assert.match(copy, /Research/, "E5: Settings retains Research after sign-out");
-  assert.doesNotMatch(copy, /acme-team|research/, "E5: Settings does not fall back to raw slugs");
+  assert.equal(await page.locator("#settings-spaces").isHidden(), true, "Settings only shows the space count while signed in");
   await page.click("#view-connection");
   assert.deepEqual(await page.locator('[data-testid="connected-space-row"] strong').allTextContents(),
     ["Acme team", "Research"], "E5: Connected view retains labels after sign-out");

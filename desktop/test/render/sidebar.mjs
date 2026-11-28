@@ -5,6 +5,12 @@ const panes = [
   ["apps", "#apps-title"],
   ["settings", "#settings-title"],
 ];
+const firstGroups = { connection: "#spaces-heading", apps: "#apps-group-heading", settings: "#computer-heading" };
+const cloud = "https://cotal.cloud/api/auth";
+const readyCloud = {
+  signedInProviders: [cloud],
+  catalogSpaces: [{ space: "acme-team", label: "Acme team", idp: cloud, mode: "user", catalogId: "sp_acme", kind: "team", role: "owner" }],
+};
 const states = [
   ["welcome", "#sign-in-panel"],
   ["waiting", "#approval"],
@@ -58,6 +64,26 @@ async function assertTopAligned(page, name, title) {
   return heading.y;
 }
 
+async function paneDescription(page, name, titleY) {
+  const description = page.getByRole("tabpanel").locator(".pane-description:visible");
+  assert.equal(await description.count(), 1, `${name}: one visible pane description`);
+  assert.ok((await description.textContent()).trim(), `${name}: description is not empty`);
+  const box = await description.boundingBox();
+  assert.ok(box, `${name}: visible description has geometry`);
+  closeTo(box.y - titleY, 39.2, `${name}: shared title-to-description offset`);
+  return box;
+}
+
+async function firstGroupTop(page, name, pane) {
+  const group = page.getByRole("tabpanel").locator(`${firstGroups[pane]}:visible`);
+  assert.equal(await group.count(), 1, `${name}: first populated group is visible`);
+  const top = await group.evaluate(el => {
+    return el.getBoundingClientRect().top + parseFloat(getComputedStyle(el).paddingTop);
+  });
+  closeTo(top, 146.7, `${name}: first group top`);
+  return top;
+}
+
 async function assertPaneReachable(page, name) {
   const geometry = await page.locator("main").evaluate(main => {
     const box = main.getBoundingClientRect();
@@ -109,9 +135,9 @@ export function sidebarScenarios(fixtures) {
     const original = fixtures.find(fixture => fixture.name === state);
     assert.ok(original, `missing Connection fixture: ${state}`);
     const name = `sidebar-${state}-${pane}`;
-    let connectionY;
+    let connectionY, connectionDescriptionY, connectionGroupY;
     return {
-      ...original, name, state: { ...original.state, aboutMachine: "Studio computer" },
+      ...original, name, state: { ...original.state, aboutMachine: "Studio computer", ...(state === "ready" ? readyCloud : {}) },
       async act(page) {
         await original.act?.(page);
         await page.locator(`${stage}:visible`).waitFor();
@@ -122,6 +148,8 @@ export function sidebarScenarios(fixtures) {
           });
         }
         connectionY = await assertTopAligned(page, `${name}: initial Connection`, page.locator("#connection-title"));
+        connectionDescriptionY = (await paneDescription(page, name, connectionY)).y;
+        if (state === "ready") connectionGroupY = await firstGroupTop(page, name, "connection");
         if (pane !== "connection") await page.click(`#view-${pane}`);
         if (pane === "apps") await page.locator("#app-list .app-row").first().waitFor();
       },
@@ -133,9 +161,25 @@ export function sidebarScenarios(fixtures) {
         if (pane !== "connection") assert.equal(await page.locator("#journey").isVisible(), false, `${name}: no journey outside Connection`);
         const titleY = await assertTopAligned(page, name, title);
         closeTo(titleY, connectionY, `${name}: same title y as Connection`);
+        const description = await paneDescription(page, name, titleY);
+        closeTo(description.y, connectionDescriptionY, `${name}: same description y as Connection`);
+        if (state === "ready") {
+          const groupY = await firstGroupTop(page, name, pane);
+          closeTo(groupY, connectionGroupY, `${name}: same first group y as Connection`);
+          if (pane === "connection") {
+            const actions = page.locator("#connected-panel > #connected-actions:first-child");
+            assert.equal(await actions.locator("#dashboard:visible, #another-space:visible").count(), 2, `${name}: both Connection actions follow the description`);
+            const action = await actions.boundingBox();
+            assert.ok(action && action.y >= description.y + description.height - 1 && action.y + action.height <= groupY + 1,
+              `${name}: Connection actions lie between the description and the Spaces group`);
+          }
+        }
         await assertSurface(page, state);
         await assertPaneReachable(page, name);
-        if (state === "ready" && pane === "settings") await assertScrollAndReset(page, name);
+        if (state === "ready" && pane === "settings") {
+          assert.equal(await page.locator("#settings-spaces:visible").textContent(), "Signed in · 1 space");
+          await assertScrollAndReset(page, name);
+        }
       },
     };
   }));

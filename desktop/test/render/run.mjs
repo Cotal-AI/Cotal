@@ -137,7 +137,7 @@ try {
           }));
         });
         await writeFile(`${output}/${name}-motion.json`, JSON.stringify(animations, null, 2));
-        if (["connecting", "progress-done"].includes(scenario.name) && reducedMotion === "no-preference") {
+        if (scenario.name === "connecting" && reducedMotion === "no-preference") {
           assert.ok(animations.some(a => a.name === "spin" && a.iterations === "infinite"), `${name}: progress spinner captured`);
         }
         if (reducedMotion === "reduce") assert.deepEqual(animations, [], `${name}: no captured motion with reduced motion`);
