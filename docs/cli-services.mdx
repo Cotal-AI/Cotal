@@ -49,6 +49,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--follow` | logs: keep reading |
 
 `service list` takes no definition name. If you supply one, the suggested list command keeps your space and output format.
+`service status` and `service logs` need a name. If you omit it or the name is unknown, the CLI suggests a listing in the same space and output format.
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
