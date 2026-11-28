@@ -4,6 +4,10 @@ import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync } fr
 import { basename } from "node:path";
 const context = JSON.parse(readFileSync(process.env.DAEMON_UNIT_FIXTURE, "utf8"));
 const args = process.argv.slice(2);
+function rememberFileState(state) {
+  context.unitFileState = state;
+  writeFileSync(process.env.DAEMON_UNIT_FIXTURE, `${JSON.stringify(context)}\n`);
+}
 function changeDuringLinger(phase) {
   if (context.changeSourceDuringLinger === phase) writeFileSync(context.publication[0], "changed unit\n");
   if (context.changeDirectoryDuringLinger === phase) chmodSync(context.config, 0o777);
@@ -67,7 +71,16 @@ if (basename(process.argv[1]) === "loginctl") {
     appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
     process.exit(1);
   }
+  if (operation === "enable" || operation === "disable") rememberFileState(operation === "enable" ? "enabled" : "disabled");
+  if (operation === "stop" && context.failStop) {
+    appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
+    process.exit(1);
+  }
   if (operation === "stop" && context.changeSourceDuringStop) appendFileSync(context.changeSourceDuringStop, "\n# changed during stop\n");
+  if (operation === "start" && context.failStart) {
+    appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
+    process.exit(1);
+  }
   if (operation === "start" && context.nativeEntry) {
     spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {
       cwd: context.home,

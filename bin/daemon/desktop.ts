@@ -9,7 +9,7 @@ import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSet
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
-import { applyInstall, applyUninstall, installationOwner, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, installationOwner, installedDaemonIdentity, personStopped, planUninstall, preflightInstalledDaemon, startInstalled, stopInstalled } from "./install.js";
 import { nativeDaemonLog, previousNativeDaemonLog } from "./native-log.js";
 import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
@@ -27,7 +27,8 @@ export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
-  | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
+  | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "start"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "start"]
+  | { readonly op: "stop"; readonly confirm?: boolean; readonly agents?: readonly string[] }
   | { readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
@@ -57,9 +58,9 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
       || !Array.isArray(o.consent) || o.consent.length > REPAIR_CONSENTS.length || !o.consent.every(item => (REPAIR_CONSENTS as readonly unknown[]).includes(item))) throw new Error("invalid repair approval");
     return { op: "repair-apply", digest: o.digest, consent: [...new Set(o.consent as RepairConsent[])] };
   }
-  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check", "start"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
+  const fields = o.op === "stop" ? ["op", "confirm", "agents"] : o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-policy") {
     if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
@@ -90,7 +91,12 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     if (typeof o.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(o.name)) throw new Error("invalid application name");
     return { op: o.op, name: o.name };
   }
-  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" };
+  if (o.op === "stop") {
+    if (o.confirm !== undefined && o.confirm !== true) throw new Error("invalid stop confirmation");
+    if (o.agents !== undefined && (!Array.isArray(o.agents) || o.agents.some((name) => typeof name !== "string" || name.length === 0 || name.length > 256))) throw new Error("invalid stop agent list");
+    return { op: "stop", ...(o.confirm === true ? { confirm: true } : {}), ...(o.agents !== undefined ? { agents: o.agents as string[] } : {}) };
+  }
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" | "start" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -135,6 +141,11 @@ interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "peerPid">
 function serviceInstalled(target: ReturnType<DesktopBridgeOptions["resolveTarget"]>): boolean {
   try { planUninstall(target.paths, target.home); return true; }
   catch { return false; }
+}
+
+/** True only when the person stopped the service. A disabled unit on its own is not enough. */
+function intentionalStop(target: ReturnType<DesktopBridgeOptions["resolveTarget"]>): boolean {
+  return personStopped(target.paths);
 }
 
 /** Read only a startup refusal line written during this install attempt, never an earlier launch's log. */
@@ -222,6 +233,59 @@ async function removeDesktopService(paths: QueryOptions["paths"], home: string |
   return { state: removed.state, unit: removed.unit };
 }
 
+/** Names of agents the daemon reports as running, plus a space whose Manager is still launching. Undefined when that list cannot be read. */
+async function runningAgentNames(paths: QueryOptions["paths"], opts: Pick<DesktopBridgeOptions, "peerUid" | "peerPid">): Promise<string[] | undefined> {
+  let reply;
+  try { reply = await queryDaemon({ paths, peerUid: opts.peerUid, peerPid: opts.peerPid }); }
+  catch (error) {
+    if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return [];
+    return undefined;
+  }
+  if (!reply.ok) return undefined;
+  const names: string[] = [];
+  for (const manager of reply.result.managers ?? []) if (manager.state === "starting") names.push(`Manager for ${manager.space}`);
+  for (const inventory of reply.result.agents ?? []) {
+    if (inventory.state !== "read") return undefined;
+    for (const agent of inventory.agents) if (agent.state === "running") names.push(agent.name);
+  }
+  return names;
+}
+
+/**
+ * One request each way for the app. `stop` turns automatic start off and then stops the recorded
+ * service. While agents are running, or a Manager is still launching, it names them and changes
+ * nothing unless `confirm` is true and names that same list. A name that joined after the preview
+ * is named again and is not stopped. `start` turns automatic start back on and starts it. Neither
+ * removes the installation.
+ */
+async function servicePower(req: Extract<DesktopRequest, { op: "stop" | "start" }>, paths: QueryOptions["paths"], home: string | undefined, opts: Pick<DesktopBridgeOptions, "peerUid" | "peerPid">) {
+  if (req.op === "start") {
+    const started = await startInstalled(paths, home, undefined, undefined, true);
+    return { state: "start-requested", unit: started.unit };
+  }
+  const agents = await runningAgentNames(paths, opts);
+  if (agents === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read, so the background service was not stopped");
+  if (agents.length || req.confirm === true) {
+    const named = req.agents;
+    const same = named !== undefined && named.length === agents.length && named.every((name, index) => name === agents[index]);
+    if (req.confirm !== true || !same) return { state: "needs-confirm", agents };
+  }
+  const fresh = await runningAgentNames(paths, opts);
+  if (fresh === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped");
+  const unchanged = fresh.length === agents.length && fresh.every((name, index) => name === agents[index]);
+  if (!unchanged) return { state: "needs-confirm", agents: fresh };
+  try {
+    const stopped = await stopInstalled(paths, home, fresh, () => runningAgentNames(paths, opts));
+    return { state: "stopped", unit: stopped.unit, agents: stopped.agents };
+  } catch (error) {
+    if (error instanceof CommandFailure && error.code === "CONFLICT" && error.native?.code === "AGENTS_CHANGED") {
+      const listed = error.native.detail && typeof error.native.detail === "object" ? (error.native.detail as { agents?: unknown }).agents : undefined;
+      if (Array.isArray(listed)) return { state: "needs-confirm", agents: listed.map(String) };
+    }
+    throw error;
+  }
+}
+
 /** Run one app operation through the stock local client. Closing the UI never stops the service. */
 export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void> {
   const output = opts.output ?? process.stdout;
@@ -276,6 +340,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result });
       return;
     }
+    if (req.op === "stop" || req.op === "start") { emit({ v: 1, event: "result", ok: true, result: await servicePower(req, paths, home, opts) }); return; }
     if (req.op === "repair-plan" || req.op === "repair-apply") {
       const repair = { paths, daemonHome: home, version: opts.version, peerUid: opts.peerUid, peerPid: opts.peerPid, report: (line: string) => emit({ v: 1, event: "repair-progress", line }) };
       emit({ v: 1, event: "result", ok: true, result: req.op === "repair-plan" ? await planRepair(repair) : await applyRepair({ ...repair, digest: req.digest, consent: req.consent }) });
@@ -315,7 +380,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         return;
       }
       startedAt = Date.now();
-      if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }));
+      if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }), true);
       else applyInstall(paths, home, omittedRelativePathEntries);
       const deadline = Date.now() + 15_000;
       for (;;) {
@@ -484,13 +549,16 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : daemonConnectionLost(e) ? "DAEMON_LOST" : "OPERATION_FAILED";
     // The app tells a stopped service (offer Start service) from one not set up yet (sign-in sets it up).
     const stoppedService = code === "NOT_RUNNING" && target !== undefined && serviceInstalled(target);
+    const stoppedByYou = stoppedService && (req.op === "status" || req.op === "status-watch") && target !== undefined && intentionalStop(target);
     const notAnswering = e instanceof CommandFailure && (req.op === "setup" || req.op === "install") && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING";
     const refusal = notAnswering && target && startedAt !== undefined ? attemptStartupRefusal(target.paths.state, startedAt) : undefined;
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
     const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
     const baseMessage = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
       : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install" || req.op === "remove-service" || req.op.startsWith("agent-app") || req.op.startsWith("repair-")) ? e.message
-      : code === "NOT_RUNNING" ? (stoppedService
+      : code === "NOT_RUNNING" ? (stoppedByYou
+        ? "You stopped the background service. Start it to run agents on this computer again."
+        : stoppedService
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
@@ -501,7 +569,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const message = (req.op === "setup" || req.op === "install") && omittedRelativePathEntries.length
       ? `${baseMessage}${baseMessage.endsWith(".") ? "" : "."} Left out relative PATH entries: ${omittedRelativePathEntries.join(", ")}.`
       : baseMessage;
-    emit({ v: 1, event: "result", ok: false, error: { code, message, ...(stoppedService ? { detail: { installed: true } } : {}),
+    emit({ v: 1, event: "result", ok: false, error: { code, message, ...(stoppedService ? { detail: { installed: true, ...(stoppedByYou ? { stopped: "by-you" } : {}) } } : {}),
       ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install" || req.op.startsWith("agent-app") || req.op.startsWith("repair-")) ? { remedy: notAnswering ? "choose Repair." : e.remedy, native: e.native } : {}),
     } });
   }

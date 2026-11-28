@@ -366,6 +366,34 @@ try {
     check("a receipt naming another label refuses CONFLICT", code(() => service.remove({ ...receipt, unit: "com.example.other" })) === "CONFLICT");
     check("a receipt naming another plist refuses CONFLICT", code(() => service.remove({ ...receipt, unitPath: join(home, "other.plist") })) === "CONFLICT");
     check("and neither reached launchd nor removed the plist", r.calls.length === 0 && lstatSync(plist).isFile());
+    let disabled = false;
+    const power = recorder((call) => {
+      if (call.args[0] === "print") return { status: 0 };
+      if (call.args[0] === "disable") disabled = true;
+      if (call.args[0] === "enable") disabled = false;
+      if (call.args[0] === "print-disabled") return { status: 0, stdout: `disabled services = {\n\t"${label}" => ${disabled ? "disabled" : "false"}\n}\n` };
+      return { status: 0 };
+    });
+    const powerService = launchAgentService(power.run, () => originalJob);
+    await powerService.stop(receipt);
+    check("macOS stop disables the job and then boots it out", power.calls.map((call) => call.args[0]).join(" ") === "print disable print print-disabled print bootout", power.calls);
+    power.calls.length = 0;
+    powerService.start(receipt, true);
+    check("macOS start enables the stopped job and then kickstarts it", power.calls.map((call) => call.args[0]).join(" ") === "print print-disabled enable print kickstart", power.calls);
+    power.calls.length = 0;
+    disabled = true;
+    let failEnable = true;
+    const failedEnable = recorder((call) => {
+      if (call.args[0] === "print") return { status: 0 };
+      if (call.args[0] === "enable" && failEnable) return { status: 1, detail: "enable failed" };
+      if (call.args[0] === "enable") disabled = false;
+      if (call.args[0] === "print-disabled") return { status: 0, stdout: `disabled services = {\n\t"${label}" => ${disabled ? "disabled" : "false"}\n}\n` };
+      return { status: 0 };
+    });
+    const failedService = launchAgentService(failedEnable.run, () => originalJob);
+    let enableFailure = "";
+    try { failedService.start(receipt, true); } catch (error) { enableFailure = error instanceof CommandFailure ? error.message : String(error); }
+    check("a macOS enable that fails does not start the job and leaves it disabled", enableFailure.includes("enable failed") && !failedEnable.calls.some((call) => call.args[0] === "kickstart" || call.args[0] === "bootstrap") && failedService.isEnabled?.(receipt) === false, { enableFailure, calls: failedEnable.calls.map((call) => call.args[0]) });
     printStatus = 113;
 
     const failing = recorder((c) => c.args[0] === "bootstrap" ? { status: 5, detail: "Bootstrap failed: 5: Input/output error" } : { status: c.args[0] === "print" ? 113 : 0 });
@@ -566,11 +594,12 @@ try {
 
     let nativeFailure = false;
     let keepRunning = false;
+    let ignoreDisable = false;
     const refreshRunner = recorder(c => {
       if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
       if (c.file.endsWith("powershell.exe")) return { stdout: JSON.stringify(task) };
       if (nativeFailure) return { status: 1, detail: "ambiguous native result" };
-      if (c.args.includes("/DISABLE")) task.enabled = false;
+      if (c.args.includes("/DISABLE") && !ignoreDisable) task.enabled = false;
       if (c.args.includes("/ENABLE")) task.enabled = true;
       if (c.args[0] === "/End" && !keepRunning) task.instances = 0;
       if (c.args[0] === "/Run") task.instances = 1;
@@ -582,8 +611,45 @@ try {
     const refreshService = scheduledTaskService(refreshRunner.run);
     const runningTask = { present: true, ...security, state: "Running", actions: 1, ...recorded, enabled: true, instances: 1 };
     task = { ...runningTask, state: "Disabled", enabled: false, instances: 0 };
-    refreshService.start(receipt);
-    check("starting a disabled owned zero-instance task enables before Run", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}`);
+    check("a plain start leaves a disabled idle task disabled", code(() => refreshService.start(receipt, false)) === "CONFLICT" && schtasks(refreshRunner.calls) === "" && task.enabled === false);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, state: "Disabled", enabled: false, instances: 1 };
+    check("an explicit resume with an instance running refuses", code(() => refreshService.start(receipt, true)) === "CONFLICT" && schtasks(refreshRunner.calls) === "" && task.enabled === false);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, state: "Disabled", enabled: false, instances: 0 };
+    refreshService.start(receipt, true);
+    check("the person's start enables the disabled idle task and runs it", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}` && task.enabled === true && task.instances === 1);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, enabled: true, instances: 1 };
+    refreshService.prepareStop(receipt);
+    const prepared = refreshRunner.calls;
+    const disableAt = prepared.findIndex((call) => call.file.endsWith("schtasks.exe") && call.args[0] === "/Change" && call.args.includes("/DISABLE"));
+    const confirmed = prepared.slice(disableAt + 1).some((call) => call.file.endsWith("powershell.exe") && call.env?.COTAL_DAEMON_TASK_INSTANCES === "1");
+    check("the person's stop disables and confirms before it ends", disableAt >= 0 && confirmed && !prepared.some((call) => call.args[0] === "/End") && task.enabled === false && task.instances === 1, prepared);
+    refreshRunner.calls.length = 0;
+    await refreshService.finishStop(receipt);
+    const finished = refreshRunner.calls;
+    const endAt = finished.findIndex((call) => call.file.endsWith("schtasks.exe") && call.args[0] === "/End");
+    const disabledBeforeEnd = finished.slice(0, endAt).some((call) => call.file.endsWith("powershell.exe") && call.env?.COTAL_DAEMON_TASK_INSTANCES === "1");
+    check("the person's stop ends the task only after it is disabled", endAt > 0 && disabledBeforeEnd && !finished.some((call) => call.args.includes("/DISABLE")) && task.enabled === false && task.instances === 0, finished);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, enabled: true, instances: 1 };
+    ignoreDisable = true;
+    let unconfirmed = "";
+    try { refreshService.prepareStop(receipt); } catch (error) { unconfirmed = error instanceof CommandFailure ? error.message : String(error); }
+    ignoreDisable = false;
+    check("a disable that does not confirm is not ended", unconfirmed.includes("did not confirm disabled") && !refreshRunner.calls.some((call) => call.args[0] === "/End") && task.enabled === true, unconfirmed);
+    refreshRunner.calls.length = 0;
+    let endedEnabled = "";
+    try { await refreshService.finishStop(receipt); } catch (error) { endedEnabled = error instanceof CommandFailure ? error.message : String(error); }
+    check("an enabled task is not ended", endedEnabled.includes("not disabled, so it was not ended") && !refreshRunner.calls.some((call) => call.args[0] === "/End"), endedEnabled);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, enabled: true, instances: 1 };
+    await refreshService.stop(receipt);
+    check("Windows stop disables the task and then ends it", schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE | /End /TN ${name}` && task.enabled === false && task.instances === 0, refreshRunner.calls);
+    refreshRunner.calls.length = 0;
+    await refreshService.start(receipt, true);
+    check("Windows start enables the stopped task and then runs it", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}` && task.enabled === true && task.instances === 1, refreshRunner.calls);
     refreshRunner.calls.length = 0;
     task = { ...runningTask };
     await refreshService.pause(receipt);
@@ -598,6 +664,12 @@ try {
     check("refresh refuses missing instance evidence", await asyncCode(() => refreshService.pause(receipt)) === "TARGET_UNAVAILABLE" && schtasks(refreshRunner.calls) === "");
     task = { ...runningTask };
     keepRunning = true;
+    task = { ...runningTask, enabled: false, instances: 1 };
+    refreshRunner.calls.length = 0;
+    let endMessage = "";
+    try { await refreshService.finishStop(receipt); } catch (error) { endMessage = error instanceof CommandFailure ? error.message : String(error); }
+    check("an end that leaves an instance says automatic start is already off", endMessage.includes("automatic start is already off") && endMessage.includes("cotal daemon stop") && !endMessage.includes("cotal daemon start") && task.enabled === false, endMessage);
+    task = { ...runningTask };
     check("Disabled state alone cannot prove End completed", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN");
     refreshRunner.calls.length = 0;
     check("resume refuses a still-running disabled task", code(() => refreshService.resume(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");

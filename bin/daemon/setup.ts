@@ -152,7 +152,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
   }
   if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
     // A start failure is not evidence that no installation was recorded.
-    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts));
+    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts), true);
     detail = `${unit} is already installed; its owned service received a start request`;
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);

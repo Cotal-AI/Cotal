@@ -78,6 +78,8 @@ export interface UnitReceipt {
 
 import { readReceipt, unitReceiptFile } from "./install-receipt.js";
 export { unitReceiptFile } from "./install-receipt.js";
+import { clearPersonStop, personStopped } from "./service-stop.js";
+export { clearPersonStop, personStopped, startInstalled, stopInstalled } from "./service-stop.js";
 
 /** `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for an explicit daemon home, derived
  *  the same way its socket directory is so the two always agree. */
@@ -215,7 +217,15 @@ export interface NativeService {
   check(receipt: UnitReceipt): void;
   stopped(receipt: UnitReceipt): boolean;
   isEnabled?(receipt: UnitReceipt): boolean;
-  start(receipt: UnitReceipt): void;
+  start(receipt: UnitReceipt, resume?: boolean): void;
+  /** Turn off automatic start, then stop the job. The source and receipt stay. */
+  stop(receipt: UnitReceipt): Promise<void> | void;
+  /** Windows only: turn automatic start back on after a stop that never asked the daemon to exit. */
+  enable?(receipt: UnitReceipt): void;
+  /** Windows only: confirm automatic start is off before the daemon is asked to exit. */
+  prepareStop?(receipt: UnitReceipt): void;
+  /** Windows only: end the disabled task after the daemon has exited. */
+  finishStop?(receipt: UnitReceipt): Promise<void>;
   restart(receipt: UnitReceipt, reload?: boolean): void;
   remove(receipt: UnitReceipt, preserveSource?: boolean): void;
 }
@@ -285,6 +295,10 @@ export function linuxAutostartWarning(paths: DaemonPaths, daemonHome?: string, s
     const state = result.status === 0 ? result.stdout.trim() : undefined;
     if (linger && state === "enabled") return;
     if (state === "disabled" || state === "enabled-runtime") {
+      if (personStopped(paths)) {
+        const lingerNote = linger ? "" : ` Linger is off, so it will not keep running after logout. Ask an administrator to run ${codeSpan(enableLingerCommand(user))}.`;
+        return `The service is not enabled at boot and will not start automatically after a restart.${lingerNote} Run ${codeSpan(daemonCommandCopy("start", daemonHome))}.`;
+      }
       return `The service is not enabled at boot and will not start automatically after a restart.${linger ? ` Run ${codeSpan(enableUnitCommand(receipt.unit))}.` : ` Linger is off, so it will not keep running after logout. ${lingerRepair(user, receipt.unit)}`}`;
     }
     if (!linger && state === "enabled") return `Linger is off, so the service will not keep running after logout or start at boot before you log in. Ask an administrator to run ${codeSpan(enableLingerCommand(user))}.`;
@@ -320,7 +334,9 @@ function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): vo
   assertNoServiceRepair(paths);
   const existing = readReceipt(paths);
   if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
-    remedy: `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
+    remedy: personStopped(paths)
+      ? `start it again with ${codeSpan(daemonCommandCopy("start", daemonHome))}`
+      : `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
   });
 }
 
@@ -388,7 +404,7 @@ interface InstallResult extends InstallPlan {
  * leaves a unit `uninstall` can find and remove, never an enabled unit nothing records.
  */
 export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined, omittedRelativePathEntries?: readonly string[]): InstallResult {
-  if (process.platform !== "darwin" && process.platform !== "linux") return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries);
+  if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries);
   // First-time Linux setup must confirm the service manager before creating daemon state.
   if (process.platform === "linux" && !existsSync(paths.state)) planInstall(paths, daemonHome);
   mkSecretDir(paths.state);
@@ -406,6 +422,7 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
     service.publish(plan);
     writeReceipt(paths, { v: 1, mechanism: plan.mechanism, unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     service.register(plan);
+    clearPersonStop(paths);
     const { mechanism, unit, unitPath, sha256, user, restart, wantedBy } = plan;
     return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted, state: "installed" };
   }
@@ -418,6 +435,7 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
     mkSecretDir(paths.state);
     writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     submitSystemdUnitControl("start", plan.unit);
+    clearPersonStop(paths);
     return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
   }
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
@@ -440,10 +458,11 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);
+  clearPersonStop(paths);
   return { ...plan, lingerEnabled: true, ...omitted, state: "installed" };
 }
 
-interface UninstallPlan {
+export interface UninstallPlan {
   readonly mechanism: ServiceMechanism;
   readonly unit: string;
   readonly unitPath: string;
@@ -473,7 +492,7 @@ function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undef
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false, repairing = false, missingReceipt?: () => CommandFailure): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
+export function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false, repairing = false, missingReceipt?: () => CommandFailure): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
   if (!repairing) assertNoServiceRepair(paths);
   const service = nativeService(run);
   const saved = readReceipt(paths);
@@ -561,19 +580,6 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   };
 }
 
-/** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
-export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
-  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
-  try {
-  assertDesktopSetupComplete();
-  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
-  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service) service.start(receipt);
-  else submitSystemdUnitControl("start", plan.unit);
-  return plan;
-  } finally { lock?.release(); }
-}
-
 /** Start only an enabled, same-installation POSIX unit or LaunchAgent during update, never overriding an operator disable. */
 export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: string | undefined): Promise<{ started: boolean; unit: string; state: string }> {
   const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
@@ -584,7 +590,7 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
   if (!identity.same) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon source names another installation (${identity.installed}); update did not start it`);
   const { receipt, plan, service } = recorded;
   if (service) {
-    if (service.isEnabled && !service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
+    if (!service.isEnabled?.(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
     service.start(receipt);
     return { started: true, unit: plan.unit, state: "enabled" };
   }
@@ -1003,8 +1009,15 @@ interface WindowsAutomaticRestart {
   readonly exited: () => boolean;
 }
 
-/** Restart the recorded Windows task only after the pinned daemon lifetime exits. */
-async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+/** Restart the recorded Windows task only after the pinned daemon lifetime exits. A person's start
+ *  that was not proven ends disabled, and the marker stays because nothing started. */
+export function disableFailedPersonStart(paths: Pick<DaemonPaths, "state">, task: { prepareStop(receipt: UnitReceipt): unknown }, receipt: UnitReceipt, startOnly: boolean): boolean {
+  if (!startOnly || !personStopped(paths)) return false;
+  try { task.prepareStop(receipt); return true; }
+  catch { return false; }
+}
+
+export async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart, resume = false): Promise<UninstallPlan> {
   const remaining = (limit: number): number => {
     if (!automatic) return limit;
     const left = automatic.deadline - Date.now();
@@ -1112,9 +1125,11 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
         // The replacement must acquire the lock itself. Never Run while holding exclusion.
         exclusion.release(); exclusion = undefined;
-        progress("enabling and starting the verified owned scheduled task");
+        progress(startOnly ? "starting the verified owned scheduled task" : "enabling and starting the verified owned scheduled task");
         if (automatic && !pauseAttempted) task.startEnabled(receipt);
-        else task.start(receipt);
+        // A pause this restart made itself is not the person's stop. resume refuses anything but the disabled idle task that pause left.
+        else if (pauseAttempted) task.resume(receipt);
+        else task.start(receipt, resume);
       } else if (!(startOnly || automatic) || native.instances !== 1 || native.enabled !== true) {
         throw new Error("the owned task is absent or still has native instances");
       }
@@ -1144,9 +1159,10 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       }
     }
   } catch (error) {
-    let recovery = "ownership is ambiguous; the task was not enabled";
+    const stoppedAgain = disableFailedPersonStart(paths, task, receipt, startOnly);
+    let recovery = startOnly ? "the start was not proven" : "ownership is ambiguous; the task was not enabled";
     try {
-      if (!pauseAttempted) throw new Error("no task pause was attempted");
+      if (!pauseAttempted) throw new Error(startOnly ? "a start does not pause the task" : "no task pause was attempted");
       task.inspect(receipt);
       recovery = await recoverPausedTask({
         pendingEnd: task.pendingEnd,
@@ -1169,7 +1185,8 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         enable() { task.enable(receipt); },
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
+    const restartRemedy = "inspect `cotal daemon status` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection";
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? undefined : restartRemedy, cause: startOnly ? (stoppedAgain ? "disabled" : "enabled") : undefined });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }
 
@@ -1219,6 +1236,7 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     rmSync(plan.unitPath, { force: true });
     if (!service) submitSystemdUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
+    clearPersonStop(paths);
     return { ...plan, state: "removed" as const, removedServiceRecords };
   });
 }
