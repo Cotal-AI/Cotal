@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, parseCommandArgs, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure, runOperation, shellPath } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
@@ -329,13 +329,60 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       && String(f.remedy).startsWith("read the run with `cotal run show`, or list the runs with `cotal run`, before trying again"), { outcome: f.outcome, code: f.code, message: f.message });
   }
   // The describe before a read was answered on the same rail, so the rail and skew wording does not
-  // apply: the read failed, and running it again is safe.
-  for (const command of ["run-status", "run-ps"]) {
-    const read = unansweredHostFailure(command, "s", sent(command));
-    c(`${command} published and unanswered failed, exit 5, and names neither the rail nor a restart`,
+  // apply: one run failed, and reading it again is safe. A list that misses its budget may miss it
+  // again, so the remedy names one page of the same list, with the flags the caller already passed.
+  {
+    const read = unansweredHostFailure("run-status", "s", sent("run-status"));
+    c("run-status published and unanswered failed, exit 5, and names neither the rail nor a restart",
       read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
       && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
       && !read.message.includes("disjoint at the broker") && read.remedy === "a read changes nothing, so it is safe to run again", { outcome: read.outcome, code: read.code, message: read.message });
+  }
+  {
+    const read = unansweredHostFailure("run-ps", "s", sent("run-ps"), { space: "s", server: "nats://127.0.0.1:4222", creds: "op.creds", endpoint: "manager", json: true });
+    const page = "a list that misses its budget may miss it again; `cotal run --page --on <instance> --space s --server 'nats://127.0.0.1:4222' --creds '<file>' --endpoint manager --json` reads one page. <instance> is one `cotal ps` names, and a page needs a manager at contract revision 29 or later";
+    c("run-ps published and unanswered failed, exit 5, and names a page of the same list",
+      read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
+      && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
+      && !read.message.includes("disjoint at the broker") && read.remedy === page && !String(read.remedy).includes("op.creds"), { outcome: read.outcome, code: read.code, message: read.message, remedy: read.remedy });
+  }
+  {
+    const hidden = unansweredHostFailure("run-ps", "s", sent("run-ps"), { server: "nats://sample:private-token@localhost:4222", creds: "private-caller.creds" });
+    c("a list remedy keeps the caller's flags and prints neither a credentials path nor a server that carries credentials",
+      !String(hidden.remedy).includes("private-token") && !String(hidden.remedy).includes("private-caller.creds")
+      && String(hidden.remedy).includes("--creds '<file>'") && !String(hidden.remedy).includes("--server"), hidden.remedy);
+  }
+  // The printed page is parsed as the command line parses it, then accepted by the page grammar.
+  // `--plain` is not kept: a page refuses it.
+  {
+    const run = registry.resolve("command", "run") as Command;
+    const instance = "m".repeat(26);
+    const commandOf = (remedy: string | undefined) => remedy?.match(/`([^`]+)`/)?.[1]?.replace("<instance>", instance);
+    const accepted = (values: Record<string, string | boolean>) => {
+      const remedy = unansweredHostFailure("run-ps", "s", sent("run-ps"), values).remedy;
+      const command = commandOf(remedy);
+      if (command === undefined) return { remedy, accepted: false };
+      let parsed: ReturnType<typeof parseCommandArgs>;
+      try { parsed = parseCommandArgs(run, command.split(/\s+/).slice(2)); } catch (e) { return { remedy, command, accepted: false, error: String(e) }; }
+      let grammar: unknown;
+      try { grammar = workflowArguments(parsed); } catch (e) { grammar = e; }
+      return { remedy, command, parsed, grammar, accepted: !(grammar instanceof Error) };
+    };
+    for (const [name, values, kept] of [
+      ["neither", {}, ""],
+      ["--json", { json: true }, " --json"],
+      ["--plain", { plain: true }, ""],
+    ] as const) {
+      const got = accepted({ space: "s", server: "nats://127.0.0.1:4222", endpoint: "manager", ...values });
+      const expected = `cotal run --page --on ${instance} --space s --server 'nats://127.0.0.1:4222' --endpoint manager${kept}`;
+      c(`the page named for a ${name} list parses and the page form accepts it`,
+        got.accepted === true && got.command === expected && !(got.command ?? "").includes("--plain"), got);
+    }
+  }
+  {
+    const paged = unansweredHostFailure("run-ps", "s", sent("run-ps"), { page: true });
+    c("a page that itself drew no reply keeps the retry a read of one run gets",
+      paged.outcome === "failed" && paged.code === "OPERATION_FAILED" && paged.remedy === "a read changes nothing, so it is safe to run again", paged.remedy);
   }
   const readDescribed = unansweredHostFailure("run-ps", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
     [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));

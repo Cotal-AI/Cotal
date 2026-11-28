@@ -98,7 +98,12 @@ A `start`, `resume`, `answer` or `amend` whose request went out and drew no repl
 deadline is also unknown, exit 3, and is not retried, because the manager may have recorded it. Read
 the run with `cotal run show` or list the runs with `cotal run` before running it again. A list or
 `show` whose request drew no reply fails with `OPERATION_FAILED`, exit 5: the manager answered on the
-same rail just before, so it runs, and a read is safe to run again. When no manager answered before
+same rail just before, so it runs, and a read of one run is safe to run again. A list that misses
+its budget may miss it again. `cotal run --page --on <instance>` reads one page. `<instance>` is one
+`cotal ps` names, and a page needs a manager at contract revision 29 or later. The suggested command keeps
+`--space`, `--server`, `--endpoint`, and `--json` when the caller passed it. A page is JSON and takes no
+`--plain`, so that flag is not kept. `--creds` prints as `<file>`.
+A server address that carries credentials is left out. When no manager answered before
 the request went out, or none was subscribed to receive it, the verb refuses `TARGET_UNAVAILABLE`,
 exit 2.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the

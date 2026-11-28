@@ -21,6 +21,7 @@ import {
   walkKvEntries,
   lastKvEntries,
   recordsBucket,
+  endpointToken,
   decodeEntry,
   assertIdToken,
   endpointNameOf,
@@ -438,13 +439,26 @@ export const cotalLangRunHost: RunHost = {
   listPage: listRunPage,
 
   async list(planes: RunHostPlanes, req: { endpoint?: string }): Promise<RunListRow[]> {
-    // The list form of the operator credential holds a batched Direct Get of the records stream
-    // (#5854). One STREAM.MSG.GET per stored message grows past the caller's fixed budget once a
-    // space holds a few hundred lifetime runs. A page is 1024 messages, so the records of those
-    // runs are a handful of round trips. The walk still carries every value a row needs.
+    // A name that is not DNS-shaped matches no recorded endpoint. The open-mesh list answers with no
+    // rows, the same answer a name that is DNS-shaped and unrecorded gets, rather than an internal error.
+    let endpoint: string;
+    try {
+      endpoint = req.endpoint === undefined ? "*" : endpointToken(req.endpoint);
+    } catch {
+      return [];
+    }
+    // The list form holds a batched Direct Get of the records stream. One filter names
+    // one record family, and the batch API takes one filter, so the three families a row is made of
+    // are three reads. A space's other records are not read. A page is 1024 messages, so a
+    // few hundred runs are one round trip per family and more are one per page.
     let records: KvEntry[];
     try {
-      records = await lastKvEntries(planes.kv);
+      const [specs, statuses, programs] = await Promise.all([
+        lastKvEntries(planes.kv, `run.${endpoint}.*.spec`),
+        lastKvEntries(planes.kv, `run.${endpoint}.*.status`),
+        lastKvEntries(planes.kv, `program.${endpoint}.*`),
+      ]);
+      records = [...specs, ...statuses, ...programs];
     } catch (error) {
       const subject = `$JS.API.DIRECT.GET.KV_${recordsBucket(planes.space)}`;
       if (error instanceof PermissionViolationError && error.operation === "publish" && error.subject === subject)
@@ -454,27 +468,9 @@ export const cotalLangRunHost: RunHost = {
           "Upgrading only the manager does not update grants issued by the auth service.");
       throw error;
     }
-    const specs = new Map<string, { endpoint: string; runId: string; entry: KvEntry }>();
-    const statuses = new Map<string, KvEntry>();
-    const programs = new Map<string, KvEntry>();
-    for (const entry of records) {
-      if (entry.operation === "DEL" || entry.operation === "PURGE") continue;
-      const parts = entry.key.split(".");
-      if (parts.length !== 4 && parts.length !== 3) continue;
-      const kind = parts[0];
-      if (kind !== "run" && kind !== "program") continue;
-      const endpoint = endpointNameOf(parts[1]!);
-      const runId = assertIdToken(parts[2]!, "runId");
-      if (req.endpoint !== undefined && endpoint !== req.endpoint) continue;
-      const id = `${endpoint}/${runId}`;
-      if (kind === "program") {
-        if (parts.length !== 3) continue;
-        programs.set(id, entry);
-        continue;
-      }
-      if (parts[3] === "spec") specs.set(id, { endpoint, runId, entry });
-      else if (parts[3] === "status") statuses.set(id, entry);
-    }
+    const specs = runEntries(records, "spec");
+    const statuses = runEntries(records, "status");
+    const programs = runEntries(records, "program");
     // Revocation lives in the admission bucket, which the records walk does not see. One walk of
     // its markers, beside the records. A marker that cannot be read is that run's
     // revocationUnreadable, never a missing marker and never a failure of the whole list.
@@ -494,7 +490,7 @@ export const cotalLangRunHost: RunHost = {
     const rows: RunListRow[] = [];
     for (const [id, run] of specs) {
       let spec = decodeEntry<RunSpecValue>(run.entry, run.entry.key);
-      const statusEntry = statuses.get(id);
+      const statusEntry = statuses.get(id)?.entry;
       let st = statusEntry === undefined ? undefined : decodeEntry<RunStatusValue>(statusEntry, statusEntry.key);
       if (st !== undefined && (!Number.isSafeInteger(st.observedSpecRevision) || st.observedSpecRevision < 0 || st.observedSpecRevision > run.entry.revision)) {
         // Keep the canonical validation and bounded freshness repair for a mismatched pair.
@@ -504,7 +500,7 @@ export const cotalLangRunHost: RunHost = {
         spec = record.spec.value;
         st = record.status?.value;
       }
-      const programEntry = programs.get(id);
+      const programEntry = programs.get(id)?.entry;
       const program = programEntry === undefined ? undefined : parseRunProgram(decodeEntry(programEntry, programEntry.key), programEntry.key);
       const lineage = spec.forkedFrom;
       rows.push({
@@ -520,6 +516,23 @@ export const cotalLangRunHost: RunHost = {
     return rows;
   },
 };
+
+/** The run each entry belongs to. The batch filter already chose the three record families, so a
+ *  key that is none of them is skipped. */
+function runEntries(entries: readonly KvEntry[], field: "spec" | "status" | "program"): Map<string, { endpoint: string; runId: string; entry: KvEntry }> {
+  const out = new Map<string, { endpoint: string; runId: string; entry: KvEntry }>();
+  for (const entry of entries) {
+    if (entry.operation === "DEL" || entry.operation === "PURGE") continue;
+    const parts = entry.key.split(".");
+    const run = parts[0] === "run" && parts.length === 4 && parts[3] === field;
+    const program = parts[0] === "program" && parts.length === 3 && field === "program";
+    if (!run && !program) continue;
+    const endpoint = endpointNameOf(parts[1]!);
+    const runId = assertIdToken(parts[2]!, "runId");
+    out.set(`${endpoint}/${runId}`, { endpoint, runId, entry });
+  }
+  return out;
+}
 
 /** One revocation marker from the admission walk, or undefined for a key that is not one.
  *  A marker this reader cannot parse is that run's unread revocation, not a missing marker. */

@@ -28,7 +28,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, type ConsumerAPI, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { Bucket } from "@nats-io/kv/internal";
-import { IncompleteKvScan, isReachable, liveKvEntries, liveKvValues, walkKvEntries } from "../src/index.js";
+import { IncompleteKvScan, isReachable, lastKvEntries, liveKvEntries, liveKvValues, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -687,6 +687,39 @@ try {
       valuesErr instanceof TypeError && hValues.counts.deleteOwnConsumer === 0 && hValues.counts.onConsumer === 0,
       { err: String(valuesErr), counts: hValues.counts },
     );
+  }
+
+  // A filtered batched Direct Get. `Nats-Num-Pending` counts messages that still match the batch's
+  // `next_by_subj` (ADR-31, Response headers: "the number of messages left in the stream matching
+  // the batch parameters"), not every later stream message. The last message here does not match,
+  // so reading the header as "stream messages left" would start another page. More than one page of
+  // matching keys, with non-matching keys between them and after the last match, costs one request
+  // per page of matches and no more.
+  {
+    const jsmb = await jetstreamManager(nc);
+    const batch = await kvm.create("batch_filter", { history: 1 });
+    const matching = 1025;
+    for (let i = 0; i < matching; i++) {
+      await batch.put(`skip.${i}`, enc("x"));
+      await batch.put(`keep.${i}`, enc(`v${i}`));
+    }
+    await batch.put("keep.0", enc("rewritten"));
+    await batch.delete("keep.gone");
+    await batch.put("skip.tail", enc("after"));
+    const before = (await jsmb.streams.info("KV_batch_filter")).state.consumer_count;
+    const outBefore = nc.stats().outMsgs;
+    const read = await lastKvEntries(batch, "keep.>");
+    const requests = nc.stats().outMsgs - outBefore;
+    const after = (await jsmb.streams.info("KV_batch_filter")).state.consumer_count;
+    const byKey = new Map(read.map((e) => [e.key, e]));
+    const once = read.length === byKey.size && [...byKey.keys()].every((key) => key.startsWith("keep."));
+    check("the filtered batch returns each matching key once, including a rewrite and a delete marker",
+      once && read.length === matching + 1 && byKey.get("keep.0")?.string() === "rewritten" && byKey.get("keep.gone")?.operation === "DEL"
+      && byKey.get("keep.1")?.string() === "v1" && !byKey.has("skip.tail"), { keys: read.length, distinct: byKey.size });
+    check("the filtered batch costs one request per page of matching keys", requests === Math.ceil((matching + 1) / 1024), requests);
+    check("the filtered batch creates no consumer", after === before, { before, after });
+    check("a filter matching nothing is one request in a bucket past one page",
+      (await lastKvEntries(batch, "zzz.>")).length === 0);
   }
 
   await nc.close();

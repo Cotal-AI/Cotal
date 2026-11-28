@@ -363,19 +363,23 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
 const DIRECT_BATCH = 1024;
 
 /**
- * The last entry of every key in `kv`, DEL and PURGE markers included, read WITHOUT a consumer.
+ * The last entry of every key `filter` matches, DEL and PURGE markers included, read WITHOUT a
+ * consumer. `filter` defaults to `>`, the whole bucket. A wildcard names one subject family, and
+ * keys it does not match are not read.
  *
- * Batched Direct Gets walk the bucket's subjects in sequence order (`next_by_subj` over the whole
- * bucket), {@link DIRECT_BATCH} messages a request, so a bucket of K keys costs ceil(K / 1024) round
- * trips and K messages. It exists for readers that must leave nothing on the broker: a watch's or a
+ * Batched Direct Gets walk the matching subjects in sequence order (`next_by_subj`),
+ * {@link DIRECT_BATCH} messages a request, so K matching keys cost ceil(K / 1024) round trips and
+ * K messages. It exists for readers that must leave nothing on the broker: a watch's or a
  * scan's consumer outlives its reader by the five-minute inactive threshold nats.js gives it whenever
  * the reader's profile holds no CONSUMER.DELETE (#691), and one per read piles up until the broker
  * refuses new consumers on the bucket (#4091). `multi_last` would answer in one request but refuses a
  * bucket of more than 1024 keys ("too many results", measured on nats-server 2.15.1).
  *
  * A key rewritten during the walk only moves to a higher sequence, so the walk still reaches it, and
- * the greatest revision per key wins, as in {@link walkKvLatest}. Each message reports how many are
- * still behind it; the walk ends at 0 or when the broker has nothing at or after the cursor, and a
+ * the greatest revision per key wins, as in {@link walkKvLatest}. Each message's `Nats-Num-Pending`
+ * counts messages that still match this batch's `next_by_subj`, not later messages of any subject
+ * (ADR-31, Response headers: "the number of messages left in the stream matching the batch
+ * parameters"). The walk ends at 0 or when the broker has nothing at or after the cursor, and a
  * page that ends with neither throws {@link IncompleteKvScan} instead of returning a short list.
  *
  * Each completed page releases its native reply subscription immediately, without waiting for the
@@ -385,7 +389,7 @@ const DIRECT_BATCH = 1024;
  * `PermissionViolationError` as soon as the broker reports it. A read whose connection closes
  * before its page is answered fails at the close: the close cancels the page's native timeout.
  */
-export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
+export async function lastKvEntries(kv: KV, filter = ">"): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
     throw new Error(`lastKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`);
   const bucket: Bucket = kv;
@@ -410,16 +414,16 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
           // path keeps each completed reply subscription until the five-second timeout.
           await new Promise<void>((resolve, reject) => {
             bucket.jsm.direct.getBatch(bucket.stream, {
-              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>`,
+              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.${filter}`,
               callback: (done, sm) => {
                 if (done) {
                   done.err ? reject(done.err) : resolve();
                   return;
                 }
                 try {
-                  const e = bucket.smToEntry(sm);
-                  const prior = latest.get(e.key);
-                  if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+                  const entry = bucket.smToEntry(sm);
+                  const prior = latest.get(entry.key);
+                  if (prior === undefined || entry.revision >= prior.revision) latest.set(entry.key, entry);
                   last = sm.seq;
                   pending = sm.pending;
                 } catch (e) {

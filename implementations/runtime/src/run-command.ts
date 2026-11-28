@@ -738,10 +738,12 @@ const UNCONFIRMED_REMEDY = "read the run with `cotal run show`, or list the runs
  *  published and then went unanswered followed a describe the manager answered on the same rail,
  *  so the manager runs: a read failed, and a start, resume, answer or amend may have been recorded,
  *  because the manager does not stop when the caller stops waiting, so it is unknown. */
-export function unansweredHostFailure(command: string, space: string, e: EpEnvelopeError): CommandFailure {
+export function unansweredHostFailure(command: string, space: string, e: EpEnvelopeError, values: RunValues = {}): CommandFailure {
   const options = { target: { space }, native: { code: e.code } };
-  if (e.outcome === "unknown" && (command === "run-status" || command === "run-ps"))
+  if (e.outcome === "unknown" && (command === "run-status" || (command === "run-ps" && values.page === true)))
     return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: "a read changes nothing, so it is safe to run again" });
+  if (e.outcome === "unknown" && command === "run-ps")
+    return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: runPageRemedy(values) });
   if (e.outcome === "unknown")
     return new CommandFailure("unknown", "OPERATION_UNKNOWN", `${e.code}: ${e.message}; the manager may already have recorded it`, { ...options, remedy: UNCONFIRMED_REMEDY });
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { ...options, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
@@ -907,7 +909,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
     // No answer is not a usage error. Only this machine's records can name a manager that runs and
     // does not answer, and `cotal status` reads them.
-    if (e instanceof EpEnvelopeError && unansweredRequest(e)) throw unansweredHostFailure(command, t.space, e);
+    if (e instanceof EpEnvelopeError && unansweredRequest(e)) throw unansweredHostFailure(command, t.space, e, values);
     if (e instanceof EpEnvelopeError) {
       console.error(`${e.code}: ${e.message}`);
       process.exit(1);
@@ -1097,6 +1099,17 @@ function retryFlag(flag: string, value: string | undefined): string {
   const word = oneLine(value) === value ? shellPath(value)
     : `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
   return ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+}
+
+/** A page of the same list. `<instance>` is one `cotal ps` names, from contract revision 29 on.
+ *  `--creds` stays a placeholder, a credentialled server is left out, and `--plain` is not printed:
+ *  a page is JSON and refuses it. */
+function runPageRemedy(values: RunValues): string {
+  const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+  const shown: RunValues = { ...values, ...(values.creds !== undefined ? { creds: "<file>" } : {}), ...(privateServer ? { server: undefined } : {}) };
+  const flags = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, shown[flag])).join("");
+  const output = values.json ? " --json" : "";
+  return `a list that misses its budget may miss it again; ${codeSpan(`cotal run --page --on <instance>${flags}${output}`)} reads one page. <instance> is one \`cotal ps\` names, and a page needs a manager at contract revision 29 or later`;
 }
 
 /** A step key the run has no open request at, answered with the open keys whose step name it matches,
