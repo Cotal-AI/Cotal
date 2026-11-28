@@ -70,7 +70,11 @@ export async function startEnabledPluginSpace() {
     };
     await writeAuthority({ version: 1, enabled: true, epoch: 1 });
     const registry = await openChannelRegistry(wire, space);
-    await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 1 }));
+    const writeProjection = async (state: unknown) => {
+      await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify(state));
+    };
+    const enableLegacyReplay = () => writeChannelConfig(registry, hiddenChannel, { replay: true });
+    await writeProjection({ enabled: true, epoch: 1 });
     await writeChannelConfig(registry, hiddenChannel, { deliveryClass: "durable", replay: false });
     await writeChannelConfig(registry, chatChannel, { deliveryClass: "live", replay: true, replayWindow: "1h" });
     const provisioner = endpoint({ creds: provisionerCreds, channels: [], consume: false, registerPresence: false, watchPresence: false,
@@ -128,9 +132,9 @@ export async function startEnabledPluginSpace() {
       await removePluginHistory();
       await setupSpaceStreams({ servers, space, creds: provisionerCreds, pluginChannels: true });
       await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 2 })));
-      await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 2 }));
+      await writeProjection({ enabled: true, epoch: 2 });
     };
-    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory, writeAuthority,
+    return { servers, space, auth, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory, writeAuthority, writeProjection, enableLegacyReplay,
       recreatePluginHistoryAtNextEpoch, provisioner, jsm, close };
   } catch (error) {
     await close();

@@ -12,14 +12,12 @@ import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg,
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
-import { projectChannelGrants } from "./channel-grants.js";
-import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
+import { admittedPluginReadChannels, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import type { ChannelMember } from "./endpoint-options.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
-import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, patternInAllow, subjectMatches } from "./subjects.js";
 import type { ChannelConfig, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
@@ -301,13 +299,12 @@ export class EndpointSubscriptions {
     if (this.conn.nc !== nc) throw new Error("connection changed while listing channels");
     const channels = new Set<string>([...counts.keys(), ...this.channelRegistry.channelConfigs.keys()]);
     const isolated = this.conn.pluginChannelsEnabled;
-    if (isolated) for (const channel of channels) {
+    if (isolated || this.parts.connection.viewerProjectionUnavailable()) for (const channel of channels) {
       if (isRoutedPluginChannel(true, channel)) channels.delete(channel);
     }
     const permissions = this.parts.connection.admittedPluginPermissions(nc);
     if (permissions) {
-      const grants = projectChannelGrants(permissions, { space: this.identity.space, mode: "isolated" })
-        .read.filter(({ kind }) => kind === PLUGIN_CHANNEL_ROOT).map(({ channel }) => channel);
+      const grants = admittedPluginReadChannels(this.identity.space, permissions);
       for (const grant of grants) channels.add(grant);
       for (const channel of [...(this.identity.allowSubscribe ?? []), ...this.identity.channels, ...this.delivery.plane3Channels.keys()]) {
         if (isRoutedPluginChannel(true, channel) && patternInAllow(grants, channel, true)) channels.add(channel);

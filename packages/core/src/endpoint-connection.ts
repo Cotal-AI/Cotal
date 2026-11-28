@@ -13,6 +13,7 @@ import { OBSERVER_CONN_NAME_PREFIX, type EndpointIdentity } from "./endpoint-ide
 import type { EndpointParts } from "./endpoint-parts.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { openChannelRegistry } from "./channels.js";
+import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { drainAndClose } from "./connection-cleanup.js";
 import { withDeadline } from "./deadline.js";
 import { bearerRenewalDeadlineMs, RepeatedRefusal, dialerFor, authOpts, describeStatusError, expiryAwareErrorEvent, isAuthRejection, kvWatchConsumer } from "./endpoint-dial.js";
@@ -24,7 +25,7 @@ import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBindi
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { readPluginChannelRouteProjection } from "./plugin-channel-projection.js";
-import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
+import { PLUGIN_CHANNEL_ROOT, parsePluginChannelSubject } from "./plugin-channel-route.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { channelBucket, presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
@@ -87,6 +88,7 @@ export class EndpointConnection {
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
   private readonly projectionWires = new WeakMap<NatsConnection, ReturnType<typeof watchNativeConnection>>();
+  private readonly projectionReads = new WeakMap<NatsConnection, symbol>();
   private readonly admittedProjection = new WeakMap<NatsConnection, NativeConnectionBinding & { permissions?: IssuedSubjectPermissions }>();
   private readonly presentedPermissions = new WeakMap<NatsConnection, () => IssuedSubjectPermissions | undefined>();
 
@@ -111,11 +113,13 @@ export class EndpointConnection {
     }
     const { serverId, cid } = wire.binding();
     const permissions = this.presentedPermissions.get(nc)?.();
+    const read = Symbol();
+    this.projectionReads.set(nc, read);
     const result = await readPluginChannelRouteProjection(nc, this.identity.space).then(
       (projection) => ({ projection }),
       (error: unknown) => ({ error }),
     );
-    if (this.lifecycle.stopped || this.conn.nc !== nc) return false;
+    if (this.lifecycle.stopped || this.conn.nc !== nc || this.projectionReads.get(nc) !== read) return false;
     // This status reader keeps moving while the endpoint's status handler awaits the KV read.
     try {
       const current = wire.binding();
@@ -124,6 +128,7 @@ export class EndpointConnection {
       return false;
     }
     if ("error" in result) {
+      if (this.isProjectionViewer()) return this.withoutViewerProjection(nc, result.error);
       if (optional && isPermissionDenied(result.error)) return this.withoutViewerProjection(nc);
       throw result.error;
     }
@@ -134,6 +139,10 @@ export class EndpointConnection {
     this.conn.pluginChannelsEnabled = enabled;
     this.conn.pluginChannelEpoch = epoch;
     this.admittedProjection.set(nc, { serverId, cid, permissions });
+    if (this.degradedViewerWires.delete(nc) && enabled) {
+      this.pendingViewerTaps.add(nc);
+      this.restoreViewerTaps(nc);
+    }
     return true;
   }
 
@@ -142,8 +151,55 @@ export class EndpointConnection {
     return permission !== undefined && !issuedPermitsSubject(permission, `$JS.API.STREAM.MSG.GET.KV_${channelBucket(this.identity.space)}`);
   }
 
-  private withoutViewerProjection(nc: NatsConnection): true {
-    if (this.admittedProjection.has(nc)) throw new Error("channel routing projection access changed; a full endpoint bind is required");
+  private readonly degradedViewerWires = new WeakSet<NatsConnection>();
+  private readonly pendingViewerTaps = new WeakSet<NatsConnection>();
+  private viewerProjectionRetry?: ReturnType<typeof setTimeout>;
+
+  private isProjectionViewer(): boolean {
+    return this.identity.card.kind === "endpoint" && this.identity.readChannelRoutingProjection === true && !this.identity.doConsume;
+  }
+
+  viewerProjectionUnavailable(): boolean {
+    return this.isProjectionViewer() && this.channelRoutingMode() === undefined;
+  }
+
+  requireKnownViewerRoute(channel: string): void {
+    if (isRoutedPluginChannel(true, channel) && this.viewerProjectionUnavailable())
+      throw new Error("plugin channel routing projection is unavailable");
+  }
+
+  private scheduleViewerProjectionRetry(nc: NatsConnection, delay = 250): void {
+    clearTimeout(this.viewerProjectionRetry);
+    this.viewerProjectionRetry = undefined;
+    if (!this.degradedViewerWires.has(nc) || this.projectionReadKnownDenied(nc)) return;
+    const timer = setTimeout(() => {
+      if (this.viewerProjectionRetry !== timer || this.lifecycle.stopped || this.conn.nc !== nc || !this.conn.nativeBound) return;
+      void this.validatePluginChannelProjection(nc).then((settled) => {
+        if (!settled || this.viewerProjectionRetry !== timer || this.lifecycle.stopped || this.conn.nc !== nc || !this.conn.nativeBound) return;
+        this.scheduleViewerProjectionRetry(nc, Math.min(2 * delay, 4_000));
+      }).catch((error: Error) => {
+        if (!this.lifecycle.stopped && this.conn.nc === nc) this.emitRecoverable(error);
+      });
+    }, delay);
+    this.viewerProjectionRetry = timer;
+    timer.unref();
+  }
+
+  private restoreViewerTaps(nc: NatsConnection): void {
+    if (this.conn.nc !== nc || this.channelRoutingMode() !== "isolated" || !this.pendingViewerTaps.delete(nc)) return;
+    for (const tap of this.taps) {
+      if (parsePluginChannelSubject(tap.subject)?.space === this.identity.space) this.bindTap(tap);
+    }
+  }
+
+  private withoutViewerProjection(nc: NatsConnection, cause?: unknown): true {
+    if (this.admittedProjection.delete(nc))
+      throw new Error("channel routing projection access changed; a full endpoint bind is required", { cause });
+    if (this.isProjectionViewer()) {
+      this.conn.pluginChannelsEnabled = false;
+      this.conn.pluginChannelEpoch = undefined;
+      this.degradedViewerWires.add(nc);
+    }
     return true;
   }
 
@@ -471,6 +527,7 @@ export class EndpointConnection {
     // armPlane3 after a successful first bind and lands stop() in that window (#1028).
     // Shared-line reasoning is no longer the rebuild proof.
     if (this.lifecycle.stopped) return;
+    if (this.conn.nc) this.scheduleViewerProjectionRetry(this.conn.nc);
     this.emit("connection", { connected: true });
     if (this.conn.nc) {
       for (const follower of this.delivery.activeGoalFollowers) {
@@ -487,8 +544,10 @@ export class EndpointConnection {
 
   /** Subscribe one {@link tap} on the current connection; with none, the next bind subscribes it. */
   private bindTap(tap: (typeof this.taps)[number]): void {
-    if (!this.conn.nc) return;
-    const sub = this.conn.nc.subscribe(tap.subject);
+    const nc = this.conn.nc;
+    if (!nc || (this.isProjectionViewer() && (this.channelRoutingMode() !== "isolated" || this.pendingViewerTaps.has(nc)) &&
+        parsePluginChannelSubject(tap.subject)?.space === this.identity.space)) return;
+    const sub = nc.subscribe(tap.subject);
     this.delivery.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
@@ -500,7 +559,8 @@ export class EndpointConnection {
           decoded = undefined;
         }
         const parsed = parseSubject(m.subject);
-        if (parsed?.kind === PLUGIN_CHANNEL_ROOT && (this.channelRoutingMode() !== "isolated" || decoded === undefined)) continue;
+        if (parsed?.kind === PLUGIN_CHANNEL_ROOT && (this.conn.nc !== nc || this.channelRoutingMode() !== "isolated" || decoded === undefined)) continue;
+        if (parsed?.kind === "chat" && this.viewerProjectionUnavailable() && isRoutedPluginChannel(true, parsed.rest)) continue;
         if (decoded !== undefined && (parsed?.kind === PLUGIN_CHANNEL_ROOT || parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
           if (!isFromSubjectSender(decoded, parsed)) continue;
           // A message whose parts cannot be read is dropped, as history drops it (#7060).
@@ -691,6 +751,8 @@ export class EndpointConnection {
           // The library re-subscribed on a connection the broker authorized again: re-run the check.
           this.parts.principalServe.rebindPrincipalServes(true);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
+          this.restoreViewerTaps(nc);
+          this.scheduleViewerProjectionRetry(nc);
           for (const follower of this.delivery.activeGoalFollowers) {
             follower.reconnected(nc);
           }
@@ -831,6 +893,8 @@ export class EndpointConnection {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   clearConnectionScoped(): void {
+    clearTimeout(this.viewerProjectionRetry);
+    this.viewerProjectionRetry = undefined;
     this.conn.pluginChannelsEnabled = false;
     this.conn.pluginChannelEpoch = undefined;
     if (this.cred.authExpiryReconnectTimer) {
@@ -996,6 +1060,8 @@ export class EndpointConnection {
   async stopOnce(): Promise<void> {
     if (this.conn.nc) this.parts.credentials.disableLibraryReconnect(this.conn.nc);
     this.lifecycle.stopped = true;
+    clearTimeout(this.viewerProjectionRetry);
+    this.viewerProjectionRetry = undefined;
     for (const follower of this.delivery.activeGoalFollowers) {
       follower.cancel();
     }

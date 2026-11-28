@@ -131,8 +131,7 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane">) {}
-
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "connection" | "consumers" | "controlPlane">) {}
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
    *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
@@ -149,6 +148,7 @@ export class EndpointHistory {
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryMessage[]> {
+    this.parts.connection.requireKnownViewerRoute(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind !== "chat") {
       const limit = opts?.limit ?? 100;
@@ -185,6 +185,7 @@ export class EndpointHistory {
   }
 
   private async channelHistoryRows(channel: string, opts?: ChannelHistoryPageOptions, family = false): Promise<{ items: HistoryRow[]; complete: boolean }> {
+    this.parts.connection.requireKnownViewerRoute(channel);
     assertValidChannel(channel);
     if (!isConcreteChannel(channel) && !(family && isChannelFamily(channel)))
       throw new Error("channelHistoryPage requires one concrete channel");
@@ -309,6 +310,7 @@ export class EndpointHistory {
       // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
       // it too, and it fails loud rather than serving a channel nobody asked for.
       assertValidChannel(channel);
+      this.parts.connection.requireKnownViewerRoute(channel);
       const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
       const subject = route.subject("*", "*");
       if (route.kind === "chat") return [subject];
@@ -1022,6 +1024,7 @@ export class EndpointHistory {
   }
 
   async channelFrontier(channel: string): Promise<number> {
+    this.parts.connection.requireKnownViewerRoute(channel);
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind === "chat") return this.parts.consumers.chatFrontier();
     await this.parts.consumers.manager();
@@ -1147,6 +1150,7 @@ export class EndpointHistory {
   ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
     if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
+    this.parts.connection.requireKnownViewerRoute(channel);
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);

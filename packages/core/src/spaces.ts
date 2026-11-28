@@ -1,19 +1,23 @@
 // listSpaces — discover the spaces present on a NATS server, with light per-space stats.
 // A space materializes as JetStream streams (CHAT_/DM_/TASK_<space>) plus a presence KV bucket
 // (cotal_presence_<space>); we read those names back to enumerate spaces. This works on an
-// open/dev mesh — one server, every space's streams visible to a bare connection. Under auth a
-// server hosts a single account/space, so this is really an open-mode admin capability.
+// open/dev mesh — one server, every space's streams visible to a bare connection. Scoped signed
+// viewers can instead verify the space named by their own CHAT metadata grant.
 
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
+import { JetStreamApiCodes, JetStreamApiError, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { DEFAULT_SERVER, dialerFor } from "./endpoint.js";
-import { CHANNEL_DEFAULTS_KEY, channelBucket, chatStream, isPrincipalOwnerToken, parseSubject, isTransferStream, mintLifecycleUid, isPresenceRow } from "./subjects.js";
+import { CHANNEL_DEFAULTS_KEY, channelBucket, chatStream, isPrincipalOwnerToken, parseSubject, isTransferStream, mintLifecycleUid, isPresenceRow, presenceBucket, token } from "./subjects.js";
 import { decodeChannelEntry } from "./channels.js";
+import { admittedPluginReadChannels, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isEventChannel } from "./event-channel.js";
+import { importNativeSubjectPermissions, type IssuedSubjectPermissions } from "./issued-authority.js";
+import { isPermissionDenied } from "./permission-denied.js";
+import { readPluginChannelRouteProjection } from "./plugin-channel-projection.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { pluginChannelStream } from "./plugin-channel-route.js";
-import { idFromCreds, newIdentity } from "./identity.js";
+import { credsClaims, idFromCreds, newIdentity } from "./identity.js";
 import { mintCreds, type SpaceAuth } from "./provision.js";
 import { lastKvEntries } from "./kv-scan.js";
 
@@ -32,8 +36,9 @@ function scopedConnectOpts(creds?: string): Record<string, unknown> {
 export interface SpaceInfo {
   space: string;
   agents: number; // agent presence records, excluding endpoints
-  channels: number; // distinct configured or retained chat channels, excluding events
-  messages: number; // total chat messages
+  channels: number; // distinct visible channels, excluding events
+  /** Retained CHAT messages. Reserved plugin names count only when routing is known to be legacy. */
+  messages: number;
 }
 
 export interface ListSpacesOptions {
@@ -46,12 +51,13 @@ export interface ListSpacesOptions {
  *  short-lived connection (bare, or with `creds`) and closes it. Per-space stats are best-effort:
  *  a stream/bucket that can't be inspected just leaves its counts at 0. */
 export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInfo[]> {
+  const creds = opts.creds;
   const nc = await dialerFor(opts.servers ?? DEFAULT_SERVER)({
     servers: opts.servers ?? DEFAULT_SERVER,
     timeout: opts.timeoutMs ?? 2000,
     reconnect: false,
     maxReconnectAttempts: 0,
-    ...scopedConnectOpts(opts.creds),
+    ...scopedConnectOpts(creds),
   });
   try {
     const jsm = await jetstreamManager(nc);
@@ -63,10 +69,20 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
     };
 
     const streamNames = new Set<string>();
-    for await (const name of jsm.streams.names()) {
-      streamNames.add(name);
-      const m = /^CHAT_(.+)$/.exec(name);
-      if (m) get(m[1]);
+    // scopedConnectOpts presents this exact static credential, and reconnect is disabled. Decode
+    // it only after the broker accepts the connection, never as evidence of the space's mode.
+    const permissions = creds ? spaceViewerPermissions(creds) : undefined;
+    try {
+      for await (const name of jsm.streams.names()) {
+        streamNames.add(name);
+        const m = /^CHAT_(.+)$/.exec(name);
+        if (m) get(m[1]);
+      }
+    } catch (error) {
+      if (!isPermissionDenied(error) || !permissions) throw error;
+      const scoped = await listScopedEnabledSpaces(nc, jsm, permissions);
+      if (scoped.length === 0) throw error;
+      return scoped;
     }
 
     // Presence KV per space → count agents using the roster's card kind.
@@ -76,55 +92,28 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
         const m = /^cotal_presence_(.+)$/.exec(st.bucket);
         if (!m) continue;
         const s = get(m[1]);
-        try {
-          for (const entry of await lastKvEntries(await kvm.open(st.bucket))) {
-            if (entry.operation !== "PUT") continue;
-            try {
-              const row = entry.json<unknown>();
-              if (isPresenceRow(row, entry.key) && row.card.kind === "agent") s.agents++;
-            } catch {
-              /* skip malformed JSON without discarding other presence rows */
-            }
-          }
-        } catch {
-          /* leave agent count at 0 if this bucket can't be inspected */
-        }
+        s.agents = await countSpaceAgents(kvm, st.bucket);
       }
     } catch {
       /* no KV access (restricted creds) — leave agent counts at 0 */
     }
 
     for (const s of bySpace.values()) {
+      const registryPresent = streamNames.has(`KV_${channelBucket(s.space)}`);
+      const mode = creds && registryPresent ? await spaceViewerMode(nc, s.space) : "legacy";
       const chans = new Set<string>();
       const chat = chatStream(s.space);
       if (streamNames.has(chat)) {
         try {
           const info = await jsm.streams.info(chat, { subjects_filter: ">" });
-          s.messages = info.state.messages;
-          for (const subject of Object.keys(info.state.subjects ?? {})) {
-            const p = parseSubject(subject);
-            if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner) && !isEventChannel(p.rest)) chans.add(p.rest);
-          }
+          s.messages = countChatChannels(info.state, chans, mode);
         } catch {
           /* message totals and retained channels are best-effort */
         }
       }
-      const bucket = channelBucket(s.space);
-      if (streamNames.has(`KV_${bucket}`)) {
-        try {
-          for (const entry of await lastKvEntries(await kvm.open(bucket))) {
-            if (entry.operation !== "PUT" || entry.key === CHANNEL_DEFAULTS_KEY || isEventChannel(entry.key)) continue;
-            try {
-              decodeChannelEntry(entry);
-              chans.add(entry.key);
-            } catch {
-              /* skip invalid channel config without discarding other channels */
-            }
-          }
-        } catch {
-          /* keep retained channels if the registry can't be inspected */
-        }
-      }
+      if (registryPresent) await addConfiguredChannels(kvm, s.space, chans, mode);
+      if (mode === "isolated" && permissions)
+        for (const channel of admittedPluginReadChannels(s.space, permissions)) chans.add(channel);
       s.channels = chans.size;
     }
 
@@ -132,6 +121,79 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
   } finally {
     await nc.close();
   }
+}
+
+type SpaceViewerMode = "legacy" | "isolated" | undefined;
+
+function spaceViewerPermissions(creds: string): IssuedSubjectPermissions | undefined {
+  try {
+    const nats = credsClaims(creds).nats;
+    if (nats?.sub !== undefined)
+      return importNativeSubjectPermissions({ ...(nats.pub === undefined ? {} : { pub: nats.pub }), sub: nats.sub });
+  } catch { /* unrecognized permission claims do not supply plugin rows */ }
+  return undefined;
+}
+
+async function spaceViewerMode(nc: NatsConnection, space: string): Promise<SpaceViewerMode> {
+  try { return (await readPluginChannelRouteProjection(nc, space)).enabled ? "isolated" : "legacy"; }
+  catch { return undefined; }
+}
+
+function countChatChannels(state: { messages: number; subjects?: Record<string, number> }, channels: Set<string>, mode: SpaceViewerMode): number {
+  let ordinaryMessages = 0;
+  for (const [subject, count] of Object.entries(state.subjects ?? {})) {
+    const parsed = parseSubject(subject);
+    if (parsed?.kind !== "chat" || (mode !== "legacy" && isRoutedPluginChannel(true, parsed.rest))) continue;
+    ordinaryMessages += count;
+    if (isPrincipalOwnerToken(parsed.owner) && !isEventChannel(parsed.rest)) channels.add(parsed.rest);
+  }
+  return mode === "legacy" ? state.messages : ordinaryMessages;
+}
+
+async function addConfiguredChannels(kvm: Kvm, space: string, channels: Set<string>, mode: SpaceViewerMode): Promise<void> {
+  try {
+    for (const entry of await lastKvEntries(await kvm.open(channelBucket(space)))) {
+      if (entry.operation !== "PUT" || entry.key === CHANNEL_DEFAULTS_KEY || isEventChannel(entry.key) ||
+          (mode !== "legacy" && isRoutedPluginChannel(true, entry.key))) continue;
+      try { decodeChannelEntry(entry); channels.add(entry.key); }
+      catch { /* skip invalid config without discarding other channels */ }
+    }
+  } catch { /* the credential may see retained CHAT but not the registry */ }
+}
+
+async function countSpaceAgents(kvm: Kvm, bucket: string): Promise<number> {
+  let agents = 0;
+  try {
+    for (const entry of await lastKvEntries(await kvm.open(bucket))) {
+      if (entry.operation !== "PUT") continue;
+      try {
+        const row = entry.json<unknown>();
+        if (isPresenceRow(row, entry.key) && row.card.kind === "agent") agents++;
+      } catch { /* skip malformed presence */ }
+    }
+  } catch { /* not all viewers can inspect presence */ }
+  return agents;
+}
+
+async function listScopedEnabledSpaces(nc: NatsConnection, jsm: JetStreamManager, permissions: IssuedSubjectPermissions): Promise<SpaceInfo[]> {
+  if (permissions.publish.allow.mode !== "patterns") return [];
+  const prefix = `$JS.API.STREAM.INFO.${chatStream("").slice(0, -1)}`;
+  const kvm = new Kvm(nc);
+  const rows: SpaceInfo[] = [];
+  for (const grant of permissions.publish.allow.patterns) {
+    if (!grant.startsWith(prefix)) continue;
+    const space = grant.slice(prefix.length);
+    if (!space || token(space) !== space || await spaceViewerMode(nc, space) !== "isolated") continue;
+    // The scope hint is not a grant: this read must succeed on the same admitted wire before
+    // naming a space, and plugin counts never inspect EXT or the names it retains.
+    const state = (await jsm.streams.info(chatStream(space), { subjects_filter: ">" })).state;
+    const channels = new Set(admittedPluginReadChannels(space, permissions));
+    const messages = countChatChannels(state, channels, "isolated");
+    await addConfiguredChannels(kvm, space, channels, "isolated");
+    const agents = await countSpaceAgents(kvm, presenceBucket(space));
+    rows.push({ space, agents, channels: channels.size, messages });
+  }
+  return rows.sort((a, b) => a.space.localeCompare(b.space));
 }
 
 async function listTransferStreams(nc: NatsConnection, space: string): Promise<string[]> {

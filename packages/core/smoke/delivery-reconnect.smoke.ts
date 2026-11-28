@@ -36,6 +36,8 @@ import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
 import { isConsumerNotFound, isStreamNotFound } from "../src/jetstream-missing.js";
 import { startEnabledPluginSpace } from "./fixtures/enabled-plugin-space.js";
 import { checkEnabledUnreadableAuthority, checkPluginFirstFanout, checkPluginJoinReplay } from "./fixtures/plugin-join-replay.js";
+import { checkCliViewerSeam } from "./fixtures/cli-viewer-seam.js";
+import { checkScopedSpaces, checkOpenSpaces } from "./fixtures/scoped-spaces.js";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -1123,6 +1125,9 @@ try {
   await checkPluginFirstFanout(check);
   await checkEnabledUnreadableAuthority(check);
   await checkLateDeliveryAuthority();
+  await checkCliViewerSeam(check);
+  await checkScopedSpaces(check);
+  await checkOpenSpaces(check);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
