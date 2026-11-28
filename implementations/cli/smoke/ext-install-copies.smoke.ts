@@ -149,6 +149,15 @@ function main(): void {
       const removed = cli(["ext", "remove", siblingName], offline);
       if (removed.status !== 0) console.error(removed.stderr.trim());
       check("remove: a package with leading underscores in its scope and name is removed offline with an empty npm cache", removed.status === 0);
+      const dotted = "@.cotal-test/copy-remove";
+      const meta = join(sibling, "package.json");
+      writeFileSync(meta, JSON.stringify({ ...JSON.parse(readFileSync(meta, "utf8")), name: dotted }));
+      assert.equal(cli(["ext", "add", sibling]).status, 0);
+      const listed = JSON.parse(cli(["ext", "list", "--json"]).stdout).result.items as { pkg: string }[];
+      const item = listed.find(row => row.pkg === dotted);
+      assert.ok(item, "the dotted scope is listed under its installed name");
+      assert.equal(cli(["ext", "remove", item.pkg], offline).status, 0);
+      assert.ok(!existsSync(join(prefix, "node_modules", dotted)));
       check("remove: unrelated built-in remains a copy", !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
       check("remove: unrelated built-in bytes are unchanged", digest(join(kept, "dist", "index.js")) === before);
       check("remove: operated package is absent", !existsSync(join(prefix, "node_modules", siblingName)));
