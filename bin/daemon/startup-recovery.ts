@@ -2,29 +2,32 @@
  * Startup update-recovery detection and post-start systemd recovery verification.
  *
  * When an interrupted update leaves a restorable `update-recovery.json` record and a native
- * `daemon serve` starts, `serve()` runs `recoverInterruptedUpdate(..., true)` before opening
- * `daemon.sock` or calling `systemd-notify --ready`. That recovery spawns a bound `cotal update`
- * reconcile child, then throws so the native supervisor restarts the restored binary.
+ * `daemon serve` starts on Linux, `serve()` runs `recoverInterruptedUpdate(..., true)` before
+ * opening `daemon.sock` or calling `systemd-notify --ready`. That recovery spawns a bound
+ * `cotal update` reconcile child, then throws so the native supervisor restarts the restored
+ * binary.
  *
  * Two rules keep that recovery deadlock-free without weakening ordinary update or service-start
  * guarantees:
  *
- *  1. The reconcile child skips `waitForInstalledGeneration` only when its parent is a verified
- *     native `daemon serve` actively restoring that exact transaction. Waiting inside `daemon serve`
- *     before `daemon.sock` exists cannot succeed; foreground `cotal daemon serve` and `cotal update`
- *     children keep the wait.
+ *  1. On Linux, the reconcile child skips `waitForInstalledGeneration` only when its parent is a
+ *     verified native `daemon serve` actively restoring that exact transaction. Waiting inside
+ *     `daemon serve` before `daemon.sock` exists cannot succeed. Foreground `cotal daemon serve`,
+ *     `cotal update` children, and macOS and Windows keep the wait.
  *
- *  2. `systemctl --user start` derives its call timeout from the unit's `TimeoutStartSec` plus a
- *     5-second margin. When `systemctl --user start` exits non-zero only because startup recovery
- *     intentionally exited after restoring the previous CLI, the caller waits up to `TimeoutStartSec`
- *     for `Restart=always` to bring up the restored daemon, gated on exact before/after proof on
- *     `<home>/update-recovery.json`.
+ *  2. `systemctl --user start` for an installed daemon uses a 65-second call timeout derived from
+ *     the unit's `TimeoutStartSec=60` plus a 5-second margin. When `systemctl --user start` fails
+ *     only because startup recovery intentionally exited after restoring the previous CLI, the
+ *     caller waits up to `TimeoutStartSec` for `Restart=always` to bring up the restored daemon at
+ *     that exact `previous` version, gated on before/after proof on `<home>/update-recovery.json`.
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  acquireLockAsync,
+  claimUpdateClosureAccess,
   CommandFailure,
   homeCotalDir,
   readLocalRecordSource,
@@ -32,7 +35,8 @@ import {
   recoveryDisposition,
   recoveryOwner,
   recoveryProcessStartToken,
-  withSuspendedUpdateClosureAccess,
+  type AcquireOptions,
+  type HeldLock,
   type UpdateRecovery,
 } from "@cotal-ai/workspace";
 import { queryDaemon } from "./client.js";
@@ -50,78 +54,139 @@ export const DAEMON_SYSTEMD_START_TIMEOUT_MS =
   (DAEMON_SYSTEMD_START_TIMEOUT_SEC + DAEMON_SYSTEMD_START_CALL_MARGIN_SEC) * 1000;
 /** Maximum wait for `Restart=always` to bring up the restored daemon after proven startup recovery. */
 export const DAEMON_SYSTEMD_RECOVERY_WAIT_MS = DAEMON_SYSTEMD_START_TIMEOUT_SEC * 1000;
-/** Sockets whose service just completed startup update-recovery to a restored CLI version. */
-const startupRecoveredSockets = new Set<string>();
 
-/** Mark a daemon socket as having completed startup update-recovery during a native service start. */
-export function markDaemonStartupRecovered(socket: string): void {
-  startupRecoveredSockets.add(socket);
+export interface DaemonClosureScope {
+  suspend<T>(fn: () => Promise<T>): Promise<T>;
+  release(): void;
 }
 
-/** Consume any startup-recovery marker for `socket` before checking `opts.version`. */
-export function consumeDaemonStartupRecovered(socket: string): boolean {
-  return startupRecoveredSockets.delete(socket);
+export interface DaemonClosureScopeDeps {
+  readonly claim?: typeof claimUpdateClosureAccess;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
-/** Read a live parent process's argument tokens, or `undefined` when unavailable. */
+/**
+ * Claim `.update-closure.lock` for a `bin/daemon/` caller (`setup.ts`) so `startSystemdDaemonUnit`
+ * can suspend that single claim during proven startup recovery without exposing a public workspace
+ * symbol or risking a double-release if re-acquisition fails.
+ */
+let activeDaemonClosureScope: DaemonClosureScope | undefined;
+
+export function claimSuspendableDaemonClosure(deps: DaemonClosureScopeDeps = {}): DaemonClosureScope {
+  const claim = deps.claim ?? claimUpdateClosureAccess;
+  const env = deps.env ?? process.env;
+  let releaseUnderlying: (() => void) | undefined = claim();
+  const previousScope = activeDaemonClosureScope;
+  const scope: DaemonClosureScope = {
+    async suspend<T>(fn: () => Promise<T>): Promise<T> {
+      if (!releaseUnderlying || env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") return await fn();
+      const drop = releaseUnderlying;
+      releaseUnderlying = undefined;
+      drop();
+      let failed = false;
+      try {
+        return await fn();
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally {
+        try {
+          releaseUnderlying = claim(true);
+        } catch (reacquireError) {
+          if (!failed) {
+            const detail = reacquireError instanceof Error ? reacquireError.message : String(reacquireError);
+            throw new CommandFailure(
+              "refused",
+              "DEPENDENCY_UNAVAILABLE",
+              `could not reacquire the Cotal update closure lock after native daemon recovery (${detail})`,
+              { remedy: "wait for any active Cotal update to finish, inspect `cotal daemon status`, and run the command again" },
+            );
+          }
+        }
+      }
+    },
+    release(): void {
+      if (activeDaemonClosureScope === scope) activeDaemonClosureScope = previousScope;
+      const drop = releaseUnderlying;
+      releaseUnderlying = undefined;
+      drop?.();
+    },
+  };
+  activeDaemonClosureScope = scope;
+  return scope;
+}
+
+export interface SuspendServiceLockDeps {
+  readonly acquire?: (path: string, opts?: AcquireOptions) => Promise<HeldLock>;
+}
+
+/**
+ * Acquire `service-repair.lock` with a `suspend` helper that releases the lock around a proven
+ * recovery wait and converts any re-acquisition timeout into a clean `CommandFailure` refusal.
+ */
+export async function claimSuspendableServiceRepairLock(
+  lockPath: string,
+  enabled = process.platform === "darwin" || process.platform === "linux",
+  deps: SuspendServiceLockDeps = {},
+): Promise<{ suspend<T>(fn: () => Promise<T>): Promise<T>; release(): void }> {
+  const acquire = deps.acquire ?? acquireLockAsync;
+  let lock: HeldLock | undefined = enabled ? await acquire(lockPath) : undefined;
+  return {
+    async suspend<T>(fn: () => Promise<T>): Promise<T> {
+      if (!lock) return await fn();
+      const drop = lock;
+      lock = undefined;
+      drop.release();
+      let failed = false;
+      try {
+        return await fn();
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally {
+        try {
+          lock = await acquire(lockPath);
+        } catch (reacquireError) {
+          if (!failed) {
+            const detail = reacquireError instanceof Error ? reacquireError.message : String(reacquireError);
+            throw new CommandFailure(
+              "refused",
+              "DEPENDENCY_UNAVAILABLE",
+              `could not reacquire the daemon service lock after native daemon recovery (${detail})`,
+              { remedy: "inspect `cotal daemon status` and retry once the other daemon service operation finishes" },
+            );
+          }
+        }
+      }
+    },
+    release(): void {
+      const drop = lock;
+      lock = undefined;
+      drop?.release();
+    },
+  };
+}
+
+/** Read a live Linux parent process's argument tokens from `/proc/<ppid>/cmdline`, or `undefined`. */
 export function readParentArgv(ppid: number, platform: NodeJS.Platform = process.platform): string[] | undefined {
-  if (!Number.isSafeInteger(ppid) || ppid <= 0) return undefined;
-  if (platform === "linux") {
-    try {
-      const raw = readFileSync(`/proc/${ppid}/cmdline`, "utf8");
-      const tokens = raw.split("\0");
-      if (tokens.at(-1) === "") tokens.pop();
-      return tokens.length ? tokens : undefined;
-    } catch {
-      return undefined;
-    }
+  if (platform !== "linux" || !Number.isSafeInteger(ppid) || ppid <= 0) return undefined;
+  try {
+    const raw = readFileSync(`/proc/${ppid}/cmdline`, "utf8");
+    const tokens = raw.split("\0");
+    if (tokens.at(-1) === "") tokens.pop();
+    return tokens.length ? tokens : undefined;
+  } catch {
+    return undefined;
   }
-  if (platform === "darwin") {
-    const res = spawnSync("/bin/ps", ["-p", String(ppid), "-o", "command="], {
-      encoding: "utf8",
-      timeout: 5_000,
-      maxBuffer: 64 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    if (res.error || res.status !== 0) return undefined;
-    const line = res.stdout.trim();
-    return line ? line.split(/\s+/) : undefined;
-  }
-  if (platform === "win32") {
-    const root = process.env.SystemRoot ?? "C:\\Windows";
-    const ps = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const script =
-      `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [Text.Encoding]::UTF8; ` +
-      `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${ppid}' -Property CommandLine; ` +
-      `if ($null -ne $p -and $null -ne $p.CommandLine) { [Console]::Out.Write($p.CommandLine) }`;
-    const res = spawnSync(ps, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
-      encoding: "utf8",
-      timeout: 10_000,
-      maxBuffer: 256 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    if (res.error || res.status !== 0) return undefined;
-    const line = res.stdout.trim();
-    if (!line) return undefined;
-    return [...line.matchAll(/"([^"]*)"|([^\s"]+)/g)].map((match) => match[1] ?? match[2]!);
-  }
-  return undefined;
 }
 
-/** Whether `argv` belongs to a `daemon serve` (or Windows packaged `--daemon` / `daemon-native`) host, never `update`. */
+/** Whether Linux `argv` belongs to a `daemon serve` host, never `update`. */
 export function isDaemonServeArgv(argv: readonly string[] | undefined, platform: NodeJS.Platform = process.platform): boolean {
-  if (!argv || argv.length === 0) return false;
+  if (platform !== "linux" || !argv || argv.length === 0) return false;
   for (let i = 0; i < argv.length - 1; i++) {
     if (argv[i] === "daemon" && argv[i + 1] === "serve") {
       return !argv.slice(0, i).includes("update");
     }
-  }
-  if (platform === "win32") {
-    const exe = win32.basename(argv[0]!).toLowerCase();
-    if (exe === "cotal-desktop.exe" && argv[1] === "--daemon") return true;
-    if (argv.some((token) => /^daemon-native\.[cm]?[jt]s$/i.test(win32.basename(token)))) return true;
   }
   return false;
 }
@@ -136,17 +201,18 @@ export interface StartupRecoveryParentDeps {
 }
 
 /**
- * True only when this bound reconcile child's parent is a native `daemon serve` running startup
- * update recovery (`COTAL_DAEMON_NATIVE_SERVICE === "1"`, `phase === "restoring"`, live `owner`
- * matching `process.ppid` and its start token, and parent argv proving `daemon serve`).
+ * True on Linux only when this bound reconcile child's parent is a native `daemon serve` running
+ * startup update recovery (`COTAL_DAEMON_NATIVE_SERVICE === "1"`, `phase === "restoring"`, live
+ * `owner` matching `process.ppid` and its start token, and parent argv proving `daemon serve`).
  */
 export function nativeStartupUpdateRecoveryParent(
   beforeWriteRecovery?: UpdateRecovery,
   deps: StartupRecoveryParentDeps = {},
 ): boolean {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "linux") return false;
   const env = deps.env ?? process.env;
   const ppid = deps.ppid ?? process.ppid;
-  const platform = deps.platform ?? process.platform;
   if (env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return false;
   if (!Number.isSafeInteger(ppid) || ppid <= 0 || env.COTAL_UPDATE_PARENT !== String(ppid)) return false;
   let record = beforeWriteRecovery;
@@ -156,13 +222,12 @@ export function nativeStartupUpdateRecoveryParent(
   }
   if (!record || record.phase !== "restoring") return false;
   const owner = recoveryOwner(record);
-  if (!owner || owner.pid !== ppid) return false;
+  if (!owner || owner.pid !== ppid || !owner.start) return false;
   if (env.COTAL_UPDATE_CLOSURE_NONCE !== undefined && owner.nonce !== env.COTAL_UPDATE_CLOSURE_NONCE) return false;
   let liveStart: string | undefined;
   try { liveStart = (deps.ownerStart ?? recoveryProcessStartToken)(ppid); }
   catch { return false; }
-  if (liveStart === undefined) return false;
-  if (owner.start !== "" ? liveStart !== owner.start : platform !== "win32") return false;
+  if (liveStart === undefined || liveStart !== owner.start) return false;
   if (env.COTAL_UPDATE_CLOSURE_START !== undefined && env.COTAL_UPDATE_CLOSURE_START !== "" && owner.start !== env.COTAL_UPDATE_CLOSURE_START) return false;
   const argv = (deps.parentArgv ?? ((pid: number) => readParentArgv(pid, platform)))(ppid);
   return isDaemonServeArgv(argv, platform);
@@ -171,6 +236,7 @@ export function nativeStartupUpdateRecoveryParent(
 /** Evidence captured before `systemctl --user start` that startup recovery will run and exit. */
 export interface PreStartRestorableProof {
   readonly recoveryPath: string;
+  readonly previousVersion: string;
   readonly priorMainPid: number;
   readonly priorLifetime: ReturnType<typeof readLifetimeRecord>;
 }
@@ -224,6 +290,7 @@ export function capturePreStartRestorableProof(
   if (!parsed || typeof parsed !== "object") return undefined;
   const candidate = parsed as UpdateRecovery;
   if (candidate.v !== 1 || (candidate.phase !== "replacing" && candidate.phase !== "verified-ready")) return undefined;
+  if (typeof candidate.previous !== "string" || !candidate.previous) return undefined;
   if (typeof candidate.snapshot !== "string" || !candidate.snapshot) return undefined;
   if (!recoveryOwner(candidate)) return undefined;
   const disposition = recoveryDisposition(candidate, Date.now(), opts.lookupOwner ?? recoveryProcessStartToken);
@@ -233,6 +300,7 @@ export function capturePreStartRestorableProof(
   const shown = parseSystemdMainPid(run, unit, env);
   return {
     recoveryPath,
+    previousVersion: candidate.previous,
     priorMainPid: shown?.mainPid ?? 0,
     priorLifetime: readLifetimeRecord(paths.lock),
   };
@@ -248,9 +316,12 @@ export function hasPostStartClearedTombstone(recoveryPath: string): boolean {
   catch { return false; }
 }
 
+export type SystemdStartRefusalStyle = "unit-control" | "daemon-restart";
+
 export interface SystemdStartupRecoveryWaitDeps {
   readonly run?: NativeRun;
   readonly serviceEnv?: NodeJS.ProcessEnv;
+  readonly refusalStyle?: SystemdStartRefusalStyle;
   readonly waitMs?: number;
   readonly pollMs?: number;
   readonly query?: typeof queryDaemon;
@@ -258,11 +329,53 @@ export interface SystemdStartupRecoveryWaitDeps {
   readonly birth?: typeof processBirth;
 }
 
+function unconfirmedStartFailure(style: SystemdStartRefusalStyle, unit: string, detail?: string): CommandFailure {
+  if (style === "unit-control") {
+    return new CommandFailure(
+      "unknown",
+      "OPERATION_UNKNOWN",
+      "the native start request did not confirm completion; it was not retried",
+      { target: { unit, operation: "start" } },
+    );
+  }
+  return new CommandFailure(
+    "unknown",
+    "OPERATION_UNKNOWN",
+    `the native daemon start did not confirm completion (${detail ?? ""}); it was not retried`,
+    { target: { unit }, remedy: "correct the native service error, then run `cotal daemon start`" },
+  );
+}
+
+function invokeControlStart(unit: string, env: NodeJS.ProcessEnv, timeoutMs: number): { status: number | null; detail: string; failed: boolean } {
+  const result = spawnSync("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", unit], {
+    env,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    maxBuffer: 32 * 1024,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    return { status: result.status, detail: "", failed: true };
+  }
+  return { status: 0, detail: "", failed: false };
+}
+
 /**
- * Run `systemctl --user start <unit>` with the derived 65s call timeout. On non-zero exit, wait up
- * to 60s only when pre-start restorable proof and post-start raw `null` tombstone both hold;
- * succeed only when `MainPID` is a new live process, `daemon.sock` answers, and
- * `readUpdateRecovery() === undefined`. Otherwise throw the exact unretried refusal.
+ * Run `systemctl --user start <unit>` with the derived 65s call timeout.
+ *
+ * - `refusalStyle === "unit-control"` (default for `startInstalled` and `startEnabledInstalled`)
+ *   preserves `submitSystemdUnitControl("start", unit)`'s exact `OPERATION_UNKNOWN` message,
+ *   `target: { unit, operation: "start" }`, and exit code `3` on every failure, including timeouts
+ *   and signals.
+ * - `refusalStyle === "daemon-restart"` (`restartInstalled`) preserves `nativeRun`'s
+ *   `DEPENDENCY_UNAVAILABLE` timeout/signal refusal and `restartInstalled`'s `OPERATION_UNKNOWN`
+ *   non-zero status refusal.
+ *
+ * When pre-start restorable proof holds, both `.update-closure.lock` (if held via
+ * `claimSuspendableDaemonClosure`) and `service-repair.lock` (if passed via `suspendServiceLock`)
+ * are suspended across `systemctl --user start` AND the post-start recovery wait so neither lock is
+ * held across the up-to-60s wait. On proven recovery, returns `{ recoveredVersion: previous }`.
  */
 export async function startSystemdDaemonUnit(
   paths: DaemonPaths,
@@ -273,67 +386,88 @@ export async function startSystemdDaemonUnit(
     readonly lookupOwner?: (pid: number) => string | undefined;
     readonly suspendServiceLock?: <T>(fn: () => Promise<T>) => Promise<T>;
   } = {},
-): Promise<boolean> {
-  const run = deps.run ?? nativeRun;
+): Promise<{ readonly recoveredVersion?: string }> {
+  const style = deps.refusalStyle ?? "unit-control";
+  const inspectRun = deps.run ?? nativeRun;
   const env = deps.serviceEnv ?? daemonUserServiceEnv();
   const preProof = capturePreStartRestorableProof(paths, daemonHome, unit, {
     homeDir: deps.homeDir,
-    run,
+    run: inspectRun,
     serviceEnv: env,
     lookupOwner: deps.lookupOwner,
   });
-  const invokeStart = () => run("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", unit], env, DAEMON_SYSTEMD_START_TIMEOUT_MS);
-  const runSuspended = async () => withSuspendedUpdateClosureAccess(async () => invokeStart());
-  const result = preProof
-    ? await (deps.suspendServiceLock ? deps.suspendServiceLock(runSuspended) : runSuspended())
-    : invokeStart();
-  if (result.status === 0) return false;
-  const unconfirmed = () =>
-    new CommandFailure(
-      "unknown",
-      "OPERATION_UNKNOWN",
-      `the native daemon start did not confirm completion (${result.detail}); it was not retried`,
-      { target: { unit }, remedy: "correct the native service error, then run `cotal daemon start`" },
-    );
-  if (!preProof || !hasPostStartClearedTombstone(preProof.recoveryPath)) throw unconfirmed();
-  const waitMs = deps.waitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
-  const pollMs = deps.pollMs ?? 200;
-  const query = deps.query ?? queryDaemon;
-  const readRec = deps.readRecovery ?? readUpdateRecovery;
-  const birth = deps.birth ?? processBirth;
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    try {
-      if (readRec() === undefined && hasPostStartClearedTombstone(preProof.recoveryPath)) {
-        const shown = parseSystemdMainPid(run, unit, env);
-        if (shown && shown.activeState === "active" && shown.mainPid > 0 && shown.mainPid !== preProof.priorMainPid) {
-          const lifetime = readLifetimeRecord(paths.lock);
-          const freshLifetime =
-            Boolean(lifetime?.start) &&
-            lifetime!.pid === shown.mainPid &&
-            birth(lifetime!.pid) === lifetime!.start &&
-            !(preProof.priorLifetime?.pid === lifetime!.pid && preProof.priorLifetime?.start === lifetime!.start);
-          if (freshLifetime) {
-            const reply = await query({ paths, timeoutMs: Math.min(2_000, Math.max(250, deadline - Date.now())) });
-            if (
-              reply.ok &&
-              reply.result.pid === shown.mainPid &&
-              reply.result.protocol === DAEMON_PROTOCOL_VERSION &&
-              birth(shown.mainPid) === lifetime!.start &&
-              readRec() === undefined
-            ) {
-              markDaemonStartupRecovered(paths.socket);
-              return true;
+
+  const runStartAndWait = async (): Promise<{ readonly recoveredVersion?: string }> => {
+    let startFailed = false;
+    let startDetail = "";
+    if (style === "unit-control" && !deps.run) {
+      const outcome = invokeControlStart(unit, env, DAEMON_SYSTEMD_START_TIMEOUT_MS);
+      startFailed = outcome.failed;
+      startDetail = outcome.detail;
+    } else if (style === "unit-control") {
+      try {
+        const outcome = deps.run!("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", unit], env, DAEMON_SYSTEMD_START_TIMEOUT_MS);
+        startFailed = outcome.status !== 0;
+        startDetail = outcome.detail;
+      } catch {
+        throw unconfirmedStartFailure("unit-control", unit);
+      }
+    } else {
+      const outcome = inspectRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", unit], env, DAEMON_SYSTEMD_START_TIMEOUT_MS);
+      startFailed = outcome.status !== 0;
+      startDetail = outcome.detail;
+    }
+
+    if (!startFailed) return {};
+    const unconfirmed = () => unconfirmedStartFailure(style, unit, startDetail);
+    if (!preProof || !hasPostStartClearedTombstone(preProof.recoveryPath)) throw unconfirmed();
+
+    const waitMs = deps.waitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
+    const pollMs = deps.pollMs ?? 200;
+    const query = deps.query ?? queryDaemon;
+    const readRec = deps.readRecovery ?? readUpdateRecovery;
+    const birth = deps.birth ?? processBirth;
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      try {
+        if (readRec() === undefined && hasPostStartClearedTombstone(preProof.recoveryPath)) {
+          const shown = parseSystemdMainPid(inspectRun, unit, env);
+          if (shown && shown.activeState === "active" && shown.mainPid > 0 && shown.mainPid !== preProof.priorMainPid) {
+            const lifetime = readLifetimeRecord(paths.lock);
+            const freshLifetime =
+              Boolean(lifetime?.start) &&
+              lifetime!.pid === shown.mainPid &&
+              birth(lifetime!.pid) === lifetime!.start &&
+              !(preProof.priorLifetime?.pid === lifetime!.pid && preProof.priorLifetime?.start === lifetime!.start);
+            if (freshLifetime) {
+              const reply = await query({ paths, timeoutMs: Math.min(2_000, Math.max(250, deadline - Date.now())) });
+              if (
+                reply.ok &&
+                reply.result.pid === shown.mainPid &&
+                reply.result.version === preProof.previousVersion &&
+                reply.result.protocol === DAEMON_PROTOCOL_VERSION &&
+                birth(shown.mainPid) === lifetime!.start &&
+                readRec() === undefined
+              ) {
+                return { recoveredVersion: preProof.previousVersion };
+              }
             }
           }
         }
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal && (error.code === "NOT_RUNNING" || error.code === "PEER_NOT_LOCK_OWNER"))) {
+          if (Date.now() >= deadline) throw unconfirmed();
+        }
       }
-    } catch (error) {
-      if (!(error instanceof EndpointRefusal && (error.code === "NOT_RUNNING" || error.code === "PEER_NOT_LOCK_OWNER"))) {
-        if (Date.now() >= deadline) throw unconfirmed();
-      }
+      if (Date.now() >= deadline) throw unconfirmed();
+      await delay(Math.min(pollMs, Math.max(1, deadline - Date.now())));
     }
-    if (Date.now() >= deadline) throw unconfirmed();
-    await delay(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-  }
+  };
+
+  if (!preProof) return await runStartAndWait();
+  const suspendClosure = <T>(fn: () => Promise<T>): Promise<T> =>
+    activeDaemonClosureScope ? activeDaemonClosureScope.suspend(fn) : fn();
+  return await (deps.suspendServiceLock
+    ? deps.suspendServiceLock(() => suspendClosure(runStartAndWait))
+    : suspendClosure(runStartAndWait));
 }
