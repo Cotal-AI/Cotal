@@ -636,6 +636,7 @@ function showStage(next: Stage, focus = false): void {
   el("other-host").hidden = customHost || linked;
   el("cloud-host").hidden = !customHost || linked || loginActive;
   el("change-space").hidden = !addingSpace;
+  el("footer-note").hidden = stopped;
   text("footer-note", finished ? "Closing this window keeps your connection running." : "You choose when to connect this computer.");
   const stages: Stage[] = ["welcome", "sign-in", "connect", "finished"];
   for (const item of document.querySelectorAll<HTMLElement>("#journey li")) {

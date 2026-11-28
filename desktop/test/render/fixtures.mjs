@@ -1000,6 +1000,8 @@ export const scenarios = [
     assert.equal(await page.locator("#tray-label").textContent(), "Service stopped");
     assert.equal(await page.locator("#journey").isVisible(), false);
     assert.equal(await page.locator("#details").isVisible(), false);
+    assert.equal(await page.locator("#footer-note").isVisible(), false);
+    assert.equal(await page.locator(".connection-card").evaluate(el => el.classList.contains("has-refusal")), false);
     assert.equal(await page.evaluate(() => window.__renderState.stoppedStatusChecks), 1);
     await start.click();
     await page.waitForFunction(() => typeof window.__releaseStartStatus === "function");
