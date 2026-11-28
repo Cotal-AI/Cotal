@@ -24,12 +24,15 @@ import type { NatsConnection, PermissionViolationError } from "@nats-io/transpor
  *  this does too: across a stopped serve, a stopped endpoint and a new endpoint for the lifecycle. */
 const promptsSeqs = new Map<string, number>();
 
+/** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
+ *  would subscribe the same subject and both answer one request (SPEC 13.21). */
+const principalServers = new Map<string, PrincipalServeIntent>();
+
 /** What the principal-serve component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on the
  *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. A peer part
  *  is read from the parts record at call time. */
 export interface EndpointPrincipalServeDeps {
-  principalServers: () => Map<string, PrincipalServeIntent>;
   emitRecoverable: (err: Error) => void;
   requireLifecycleUid: (what: string) => string;
   notLiveMsg: () => string;
@@ -47,7 +50,7 @@ export class EndpointPrincipalServe {
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointPrincipalServeDeps, private readonly parts: Pick<EndpointParts, "presence">) {}
 
-  private get principalServers() { return this.deps.principalServers(); }
+  private get principalServers() { return principalServers; }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }

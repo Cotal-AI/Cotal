@@ -28,6 +28,8 @@ import {
   rootNamesNoSpace,
   SPACE_NAME_MAX,
   spaceNameTooLong,
+  DAEMON_ENDPOINT_BOOTSTRAPS,
+  parseServeEndpoints,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveSpace } from "../lib/status.js";
@@ -494,4 +496,18 @@ export function assertSelectionNotMoved(root: string, space: string): void {
     target: { root, space: current, preparedRoot: prepared.root },
     remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
   });
+}
+
+/** `--serve`: the endpoints the delivery daemon also serves, or `undefined` when not given. Parsed
+ *  before anything starts, so an unknown name is refused without touching a broker. An open mesh runs
+ *  no delivery daemon and a manifest launch renders no daemon flags, so either combination is refused,
+ *  never dropped. */
+export function parseUpServe(values: { serve?: string; open?: boolean; file?: string }): string[] | undefined {
+  if (values.serve === undefined) return undefined;
+  let serve: string[];
+  try { serve = parseServeEndpoints(values.serve); }
+  catch (e) { throw new FlagValueRefusal(`${(e as Error).message}, so nothing was started`, `name ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(" or ")}`); }
+  if (values.open) throw new FlagValueRefusal("--serve needs the delivery daemon, and an open mesh (--open) runs none, so nothing was started", "drop --serve, or drop --open to start an auth mesh");
+  if (values.file) throw new FlagValueRefusal("--serve cannot be combined with --file/-f: a manifest launch does not take it, so nothing was started", "drop --serve, or start the mesh without -f");
+  return serve;
 }

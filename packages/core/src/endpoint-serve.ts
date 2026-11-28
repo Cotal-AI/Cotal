@@ -408,9 +408,12 @@ async function runRequest<P extends ParsedEpRequest | ParsedEpPrincipalRequest, 
     // treatment. The replacement fits by construction — its message is one integer and a
     // bounded string — and `resource-exhausted` matches the §13.4 fact preflight, which refuses
     // an over-`max_payload` acceptance loudly rather than spilling it.
+    const limit = nc.info?.max_payload;
     const refused: EndpointReply = {
       v: 1, id: reply.id, ok: false,
-      error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped`, ...(outcome !== undefined ? { outcome } : {}) },
+      error: { code: "resource-exhausted", message: typeof limit === "number" && bytes.length > limit
+        ? `the broker's payload limit is too small: the serialized reply is ${bytes.length} bytes and the broker's max_payload is ${limit}; a reply that cannot be published is refused loudly, never dropped`
+        : `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped`, ...(outcome !== undefined ? { outcome } : {}) },
     };
     nc.publish(replySubject, enc.encode(JSON.stringify(refused)));
   }

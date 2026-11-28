@@ -6,7 +6,7 @@ import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, parseEndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
-import { epCall, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
+import { epCall, type EpArgsFit, type EpVerbTarget, type EpAttributedReply } from "./endpoint-call.js";
 import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, assertLifecycleToken, type EpCaller, type EpRoute, type IssuedCaller } from "./endpoint-subjects.js";
 
 export const dec = new TextDecoder(), enc = new TextEncoder();
@@ -230,6 +230,8 @@ export async function invokeCommand(
     /** The issued caller this one call rides, in place of the describe's: a registry listing rides
      *  its listing generation (SPEC 13.15). It must name the describe's triple. */
     caller?: IssuedCaller;
+    /** Size the args inside each attempt against that attempt's own frame (see {@link EpArgsFit}). */
+    fitArgs?: EpArgsFit;
   },
 ): Promise<EpAttributedReply> {
   const resolved = service.commands.get(command);
@@ -298,6 +300,7 @@ export async function invokeCommand(
   }, {
     deadlineMs: deadline - Date.now(),
     signal: opts.signal,
+    ...(opts.fitArgs ? { fitArgs: opts.fitArgs } : {}),
     currentEpoch: opts.currentEpoch ?? describeBound,
     // What the currency hook returns decides how a stale-epoch refusal is worded and marked: the
     // describe-bound default is this handle's own bind (a responder ahead of it is a successor and

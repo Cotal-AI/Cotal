@@ -157,13 +157,22 @@ export function buildRequest(
 }
 
 /** The bytes one call puts on the wire before any header: its subject plus its serialized body, built
- *  by {@link buildRequest} itself, so it cannot disagree with what is sent. A caller sizing a chunk
- *  measures with this for the exact args of the call it is about to make (E6): the envelope depends on
- *  the caller's names, the instance it binds and a sequence that grows digits as a transfer proceeds. */
-export function requestFrameBytes(space: string, route: EpRoute, op: EpVerbOp): number {
-  const req = buildRequest(space, route, op, { replyExpected: true });
+ *  by {@link buildRequest} itself, so it cannot disagree with what is sent. `deadlineMs` is serialized
+ *  into the body, so it is measured with the value the attempt sends. */
+export function requestFrameBytes(space: string, route: EpRoute, op: EpVerbOp, deadlineMs?: number): number {
+  const req = buildRequest(space, route, op, { replyExpected: true, ...(deadlineMs !== undefined ? { deadlineMs } : {}) });
   return new TextEncoder().encode(req.subject).byteLength + req.body.byteLength;
 }
+
+/** Headroom under `max_payload` for the headers a request carries. */
+export const EP_REQUEST_HEADER_ALLOWANCE = 256;
+
+/** Sizes one attempt's args against its own frame (E6, E21). Called INSIDE the attempt, once per
+ *  attempt (a re-issue or a re-resolve measures again), with `measure(args)` the bytes that attempt
+ *  would put on the wire for `args` (its real route, bind, caller, nonce length and deadline) and
+ *  `budget` the connection's `max_payload` less {@link EP_REQUEST_HEADER_ALLOWANCE}. Returns the args to
+ *  send; throws to refuse before anything is published. */
+export type EpArgsFit = (measure: (args: Record<string, unknown>) => number, budget: number) => Record<string, unknown>;
 
 // Node clamps a `setTimeout` delay beyond 2^31-1 ms (~24.8 days) to 1ms, so an over-large deadline
 // would fire IMMEDIATELY (an unbounded budget masquerading as a huge one). Bound every budget to the
@@ -421,12 +430,18 @@ export async function epCall(
   space: string,
   route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number },
   op: EpVerbOp,
-  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry"; signal?: AbortSignal },
+  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry"; signal?: AbortSignal; fitArgs?: EpArgsFit },
 ): Promise<EpAttributedReply> {
   opts.signal?.throwIfAborted();
   const deadlineMs = assertDeadline(opts.deadlineMs);
   if (route.mode === "one" && opts.currentEpoch === undefined)
     throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2, the stale-reply rejection rule)");
+  if (opts.fitArgs) {
+    const max = nc.info?.max_payload;
+    if (typeof max !== "number" || !Number.isSafeInteger(max) || max <= 0)
+      throw new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command}: the connection reports no payload limit, so the request cannot be sized; nothing was sent`, undefined, "not-executed");
+    op = { ...op, args: opts.fitArgs((args) => requestFrameBytes(space, route, { ...op, args }, deadlineMs), max - EP_REQUEST_HEADER_ALLOWANCE) };
+  }
   const req = buildRequest(space, route, op, { replyExpected: true, deadlineMs });
   const expect = route.mode === "inst" ? { instanceId: route.instanceId, epoch: route.epoch } : undefined;
   const started = Date.now();

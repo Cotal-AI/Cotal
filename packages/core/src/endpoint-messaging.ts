@@ -23,6 +23,10 @@ import {
 } from "./subjects.js";
 import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js";
 
+/** The options of a multicast: the concrete channel (default: the first concrete one joined), parts,
+ *  thread and context links, and mentions. */
+export interface MulticastOptions { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] }
+
 /** What the messaging component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointMessagingDeps {
@@ -41,10 +45,7 @@ export class EndpointMessaging {
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
   /** Multicast: broadcast to everyone on a channel. */
-  async multicast(
-    text: string,
-    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
-  ): Promise<CotalMessage> {
+  async multicast(text: string, opts?: MulticastOptions): Promise<CotalMessage> {
     return (await this.multicastWithAck(text, opts)).msg;
   }
 
@@ -54,10 +55,7 @@ export class EndpointMessaging {
    *  grants nothing. `seq`, not the message id, is the handle, because JetStream reads by sequence or
    *  by subject and never by message id. `duplicate` is true when the broker's dedupe window answered
    *  a retry of the same message id with the earlier entry's sequence. */
-  async multicastWithAck(
-    text: string,
-    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
-  ): Promise<{ msg: CotalMessage; seq: number; duplicate: boolean }> {
+  async multicastWithAck(text: string, opts?: MulticastOptions): Promise<{ msg: CotalMessage; seq: number; duplicate: boolean }> {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
     // itself be a wildcard subscription like `team.>`). On no channels there is NO default: refuse

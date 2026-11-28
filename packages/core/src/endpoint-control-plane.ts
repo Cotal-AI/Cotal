@@ -525,7 +525,7 @@ export class EndpointControlPlane {
       }
       return svc;
     };
-    const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
+    const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}), ...(opts.fitArgs ? { fitArgs: opts.fitArgs } : {}) };
     const invokeResolved = (service: ResolvedService, signal?: AbortSignal): Promise<EpAttributedReply> => {
       signal?.throwIfAborted();
       const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;

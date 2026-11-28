@@ -2,11 +2,11 @@
  * Client methods for the `artifacts` endpoint (A1, plan section 7): thin delegators over one endpoint's
  * `invokeService`. Server code lives in the delivery daemon; core holds the wire contract and this.
  *
- *  - `putArtifact` stages, sends and commits bytes, sizing every chunk from the ACTUAL serialized request
- *    the real call builder produces for that very call (E6): the envelope depends on the caller's names,
- *    the instance it binds and a sequence that grows digits as the transfer proceeds, so no constant can
- *    stand in for it. A call that cannot carry one raw byte under the broker's limit refuses before any
- *    publish.
+ *  - `putArtifact` stages, sends and commits bytes, sizing every chunk inside the ACTUAL attempt that
+ *    sends it (E6, E21): the envelope depends on the caller's names, the instance it binds, the deadline
+ *    and a sequence that grows digits as the transfer proceeds, and a re-issue may change any of them,
+ *    so the attempt measures its own frame. A call that cannot carry one raw byte under the broker's
+ *    limit refuses before any publish.
  *  - `fetchArtifact` reads chunks until the daemon says the artifact is complete, then verifies the
  *    digest of what arrived. Bytes that do not hash to the digest asked for are never returned.
  *  - `listArtifacts`, `confirmAttach`, `pinArtifact`: one call each.
@@ -20,23 +20,17 @@ import {
   type ArtifactsFetchBeginOutput, type ArtifactsFetchChunkOutput, type ArtifactsListInput, type ArtifactsListOutput,
   type ArtifactsPutBeginOutput, type ArtifactsPutCommitOutput,
 } from "./artifacts-contract.js";
-import { requestFrameBytes, type EpAttributedReply } from "./endpoint-call.js";
-import type { ResolvedService } from "./endpoint-caller.js";
+import type { EpArgsFit, EpAttributedReply } from "./endpoint-call.js";
 import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode } from "./endpoint-error.js";
 
 /** What these methods need from a connected endpoint. `CotalEndpoint` satisfies it. */
 export interface ArtifactsCaller {
   readonly space: string;
-  readonly maxPayload: number;
-  invokeService(endpoint: string, command: string, args?: Record<string, unknown>, opts?: { deadlineMs?: number }): Promise<EpAttributedReply>;
-  describeService(endpoint: string, opts?: { deadlineMs?: number }): Promise<ResolvedService>;
+  invokeService(endpoint: string, command: string, args?: Record<string, unknown>, opts?: { deadlineMs?: number; fitArgs?: EpArgsFit }): Promise<EpAttributedReply>;
 }
 
-/** Headroom under `max_payload` for the headers the client adds to a request. */
-const HEADER_ALLOWANCE = 256;
-
-async function call<T>(ep: ArtifactsCaller, command: string, args: Record<string, unknown>): Promise<T> {
-  const { reply } = await ep.invokeService(ARTIFACTS_ENDPOINT, command, args);
+async function call<T>(ep: ArtifactsCaller, command: string, args: Record<string, unknown>, fitArgs?: EpArgsFit): Promise<T> {
+  const { reply } = await ep.invokeService(ARTIFACTS_ENDPOINT, command, args, fitArgs ? { fitArgs } : undefined);
   if (!reply.ok) {
     const err = reply.error;
     // A code outside the closed set (a newer responder) is reported as `internal`, never trusted as one.
@@ -46,22 +40,16 @@ async function call<T>(ep: ArtifactsCaller, command: string, args: Record<string
   return reply.data as T;
 }
 
-/** The largest raw byte count whose `put-chunk` request fits the broker's limit, measured on the real
- *  frame for this `uploadId` and `seq`. Throws when not even one byte fits. */
-export function fitPutChunk(ep: Pick<ArtifactsCaller, "space" | "maxPayload">, service: ResolvedService, uploadId: string, seq: number, maxRaw: number): number {
+/** The largest raw byte count, at most `maxRaw`, whose `put-chunk` request fits `budget`, where
+ *  `frame(raw)` is the bytes the actual attempt would send carrying `raw` bytes. Throws, before
+ *  anything is sent, when not even one byte fits. This is the measuring function each `put-chunk`
+ *  attempt runs inside `epCall` (E21), with that attempt's own frame and the connection's limit. */
+export function fitPutChunk(frame: (raw: number) => number, budget: number, maxRaw: number): number {
   // The contract bounds one chunk; a larger ask is clamped to it, never sent.
   maxRaw = Math.min(maxRaw, ARTIFACT_CHUNK_MAX);
   if (maxRaw < 1) throw new RangeError(`fitPutChunk: maxRaw must be at least 1, got ${maxRaw}`);
-  const resolved = service.commands.get(ARTIFACTS_PUT_CHUNK_COMMAND);
-  if (resolved === undefined) throw new EpEnvelopeError("not-found", `${ARTIFACTS_ENDPOINT} does not serve ${ARTIFACTS_PUT_CHUNK_COMMAND}`, undefined, "not-executed");
-  const budget = ep.maxPayload - HEADER_ALLOWANCE;
-  const frame = (raw: number) => requestFrameBytes(ep.space, { mode: "one" }, {
-    endpoint: ARTIFACTS_ENDPOINT, command: ARTIFACTS_PUT_CHUNK_COMMAND, contract: resolved.contract, caller: service.caller,
-    args: { uploadId, seq, data: Buffer.alloc(raw).toString("base64") },
-    bind: { instanceId: service.responder.instanceId, epoch: service.responder.epoch },
-  });
   if (frame(1) > budget)
-    throw new EpEnvelopeError("resource-exhausted", `put-chunk: the broker's ${ep.maxPayload}-byte message limit cannot carry one raw byte of this upload (one byte frames to ${frame(1)} bytes); nothing was sent`, undefined, "not-executed");
+    throw new EpEnvelopeError("resource-exhausted", `put-chunk: the broker's message limit leaves ${budget} bytes for a request and one raw byte of this upload frames to ${frame(1)}; nothing was sent`, undefined, "not-executed");
   if (frame(maxRaw) <= budget) return maxRaw;
   let lo = 1, hi = maxRaw;
   while (lo < hi) {
@@ -72,18 +60,24 @@ export function fitPutChunk(ep: Pick<ArtifactsCaller, "space" | "maxPayload">, s
 }
 
 /** Commit `bytes` to the artifact store. Returns the digest and size the daemon verified. The bytes are
- *  not yet visible to anyone: publish a reference with `multicastWithAck` and confirm it. */
+ *  not yet visible to anyone: publish a reference with `multicastWithAck` and confirm it.
+ *
+ *  Each `put-chunk` is sized INSIDE its own attempt (E21): the call layer hands {@link fitPutChunk} the
+ *  frame that attempt would send (its route, bind, caller, nonce and deadline) and the connection's
+ *  limit, and a re-resolved or re-issued attempt measures again. */
 export async function putArtifact(ep: ArtifactsCaller, bytes: Uint8Array, meta: { name: string; mediaType: string }): Promise<ArtifactsPutCommitOutput> {
   const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  const service = await ep.describeService(ARTIFACTS_ENDPOINT);
   const { uploadId } = await call<ArtifactsPutBeginOutput>(ep, ARTIFACTS_PUT_BEGIN_COMMAND, { name: meta.name, mediaType: meta.mediaType, size: bytes.byteLength, digest });
   let offset = 0, seq = 0;
   while (offset < bytes.byteLength) {
-    // Re-measured on every call: the frame for chunk 10 is a byte longer than the frame for chunk 9.
-    const take = fitPutChunk(ep, service, uploadId, seq, Math.min(ARTIFACT_CHUNK_MAX, bytes.byteLength - offset));
-    const data = Buffer.from(bytes.subarray(offset, offset + take)).toString("base64");
-    await call(ep, ARTIFACTS_PUT_CHUNK_COMMAND, { uploadId, seq, data });
-    offset += take;
+    let sent = 0;
+    const rest = Math.min(ARTIFACT_CHUNK_MAX, bytes.byteLength - offset);
+    const slice = (n: number) => Buffer.from(bytes.subarray(offset, offset + n)).toString("base64");
+    await call(ep, ARTIFACTS_PUT_CHUNK_COMMAND, { uploadId, seq, data: slice(rest) }, (measure, budget) => {
+      sent = fitPutChunk((raw) => measure({ uploadId, seq, data: slice(raw) }), budget, rest);
+      return { uploadId, seq, data: slice(sent) };
+    });
+    offset += sent;
     seq += 1;
   }
   return call<ArtifactsPutCommitOutput>(ep, ARTIFACTS_PUT_COMMIT_COMMAND, { uploadId });

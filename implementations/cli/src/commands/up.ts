@@ -9,7 +9,6 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
-  rmdirSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -84,8 +83,6 @@ import {
   recordOperationWarning,
   NATS_PIDFILE,
   terminalWidth,
-  DAEMON_ENDPOINT_BOOTSTRAPS,
-  parseServeEndpoints,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveAuthProvider } from "../lib/auth-proc.js";
@@ -182,6 +179,7 @@ import {
   serviceEndpointsArgs,
   folderSpace,
   assertSelectionNotMoved,
+  parseUpServe,
 } from "./up-args.js";
 import {
   startUserAuthService,
@@ -205,7 +203,7 @@ import {
   belowPresenceSafeBroker,
 } from "./up-detach.js";
 import { holdForegroundListener } from "./up-foreground-listener.js";
-import { createUpControlDirectory, withUpProjectTrust } from "./up-project-trust.js";
+import { createUpControlDirectory, removeEmptyRecords, withUpProjectTrust } from "./up-project-trust.js";
 import { controllerStackNative, manifestFileRefusal, upManifest } from "./up-manifest.js";
 import {
   printRestoreReceipt,
@@ -483,16 +481,6 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     finally { if (root) restoreUpCwd(previousCwd); }
   } finally {
     if (inheritedLock && !adopted) releaseMaintenanceLock(inheritedLock);
-  }
-}
-
-/** Remove the `.cotal` a failed `up` made for a fresh folder when the run wrote nothing in it. One
- *  that holds anything stays, as the run's records. */
-function removeEmptyRecords(path: string): void {
-  try { rmdirSync(path); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOTEMPTY" && code !== "EEXIST") console.error(c.yellow(`! ${path} was left in place (${code ?? "an error"})`));
   }
 }
 
@@ -974,16 +962,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   const noManager = Boolean(values["no-manager"]);
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
-  // `--serve`: the endpoints the delivery daemon also serves. Parsed before anything starts, so an
-  // unknown name is refused without touching a broker. An open mesh runs no delivery daemon and a
-  // manifest launch renders no daemon flags, so either combination is refused, never dropped.
-  let serve: string[] | undefined;
-  if (values.serve !== undefined) {
-    try { serve = parseServeEndpoints(values.serve); }
-    catch (e) { throw new FlagValueRefusal(`${(e as Error).message}, so nothing was started`, `name ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(" or ")}`); }
-    if (values.open) throw new FlagValueRefusal("--serve needs the delivery daemon, and an open mesh (--open) runs none, so nothing was started", "drop --serve, or drop --open to start an auth mesh");
-    if (values.file) throw new FlagValueRefusal("--serve cannot be combined with --file/-f: a manifest launch does not take it, so nothing was started", "drop --serve, or start the mesh without -f");
-  }
+  const serve = parseUpServe(values);
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   const logFile = values["log-file"] === undefined ? undefined : resolve(values["log-file"]);
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", values["logfile-size-limit"]);
