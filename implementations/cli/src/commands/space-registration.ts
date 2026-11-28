@@ -66,6 +66,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
 import { removeStep } from "../lib/registry-errors.js";
+import { showSpaceCommand } from "../lib/space-show-command.js";
 import { displayCmd, displayRemedy, selfArgv } from "../lib/self-exec.js";
 import { adoptionRefusal, adoptStackJournal, goneStackRoot, journalRecordedElsewhere, readStackJournal, releaseStackDefinitions, runningStackRoles, stackRootGone, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { pruneEmptyServiceSpace } from "../lib/service-process.js";
@@ -175,12 +176,6 @@ function take<T>(check: Check<T>, target: unknown): T {
 
 const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: string): CommandFailure =>
   new CommandFailure("refused", code, message, { target, ...(remedy ? { remedy } : {}) });
-
-function showSpaceCommand(name: string, presentation: Presentation): string {
-  const cli = presentation === "json" ? "cotal" : displayCmd({ fromAnyFolder: true });
-  const format = presentation === "rich" ? "" : ` --${presentation}`;
-  return codeSpan(`${cli} space show${name.startsWith("-") ? `${format} -- ${shellWord(name)}` : ` ${shellWord(name)}${format}`}`);
-}
 
 /** The registration a name already has when a new one added by hand may replace it. A prepared
  *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
