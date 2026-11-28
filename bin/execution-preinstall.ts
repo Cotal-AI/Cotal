@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { readExecutionPreinstall, type ExecutionPreinstallRequest } from "./daemon/execution-preinstall.js";
 
 /** A declared side-effect-free entry, not ordinary CLI startup or connector reconciliation. */
-export async function executionPreinstall(input: string | undefined): Promise<void> {
+export async function executionPreinstall(input: string | undefined, output: (line: string) => void | Promise<void> = line => { process.stdout.write(line); }): Promise<void> {
   if (!input || Buffer.byteLength(input) > 64 * 1024) throw new Error("invalid execution pre-install request");
   const request = JSON.parse(input) as ExecutionPreinstallRequest;
   if (!request || request.v !== 1 || typeof request.nonce !== "string" || !/^[a-f0-9]{32}$/.test(request.nonce) ||
@@ -15,10 +15,16 @@ export async function executionPreinstall(input: string | undefined): Promise<vo
       Object.entries(request.flags).some(([key, value]) => !["space", "server", "creds", "on"].includes(key) || typeof value !== "string"))
     throw new Error("invalid execution pre-install request");
   const result = await readExecutionPreinstall({ ...request, installedEntry: realpathSync.native(request.installedEntry) });
-  process.stdout.write(`COTAL_PREINSTALL_RESULT ${JSON.stringify({ v: 1, nonce: request.nonce, installedEntry: request.installedEntry, ...result })}\n`);
+  await output(`COTAL_PREINSTALL_RESULT ${JSON.stringify({ v: 1, nonce: request.nonce, installedEntry: request.installedEntry, ...result })}\n`);
 }
 
 if (process.argv[1] && pathToFileURL(realpathSync.native(process.argv[1])).href === import.meta.url) {
-  try { await executionPreinstall(process.argv[2]); }
+  try {
+    await executionPreinstall(process.argv[2], line => new Promise<void>((resolve, reject) => {
+      process.stdout.write(line, error => error ? reject(error) : resolve());
+    }));
+    // A timed-out read may still own a transport. The single receipt has been flushed.
+    process.exit(0);
+  }
   catch (error) { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; }
 }

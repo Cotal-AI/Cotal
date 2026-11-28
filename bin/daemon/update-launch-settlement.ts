@@ -56,6 +56,7 @@ export async function waitForHostedLaunches(
     if (remaining() <= 0) throw timedOut();
     if (!launches?.reserved) {
       const status = await read(Math.min(3_000, remaining()));
+      if (remaining() <= 0) throw timedOut();
       if (status?.instanceId !== instanceId) throw new Error(`Manager ${space} identity changed while checking launch settlement`);
       const reserved = status.stopImpact?.reservedLaunches;
       if (reserved === undefined || reserved === 0) return status;
