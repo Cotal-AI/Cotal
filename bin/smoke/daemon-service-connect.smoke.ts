@@ -89,7 +89,7 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -137,7 +137,8 @@ const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
 const claudeWakeLateRepro = process.argv.includes("--claude-wake-late-repro");
-const claudeWakeOnly = claudeWakeLateRepro || process.argv.includes("--claude-wake-only");
+const claudeCurrentUpdate = process.argv.includes("--claude-current-update");
+const claudeWakeOnly = claudeWakeLateRepro || process.argv.includes("--claude-wake-only") || claudeCurrentUpdate;
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -241,7 +242,7 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 // ---------- owned sandbox ----------
 const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-intent") ? "dcomp-" : process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
 chmodSync(root, 0o700);
-const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
+const home = join(root, claudeCurrentUpdate ? "home with spaces" : "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 process.env.DO_NOT_TRACK = "1";
@@ -2021,12 +2022,34 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         delete env.COTAL_SKIP_CONNECTOR_SEED;
         env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       }
+      let claudeUpdateEntry: string | undefined;
       if (claudeWakeOnly) {
+        if (claudeCurrentUpdate) {
+          const globalPrefix = join(root, "Cotal CLI");
+          const installed = join(globalPrefix, "lib/node_modules/cotal-ai");
+          const pack = spawnSync(process.execPath, [join(repo, "bin/scripts/copy-seeded-connectors.mjs")], { cwd: repo, env, encoding: "utf8", timeout: 120_000 });
+          assert.equal(pack.status, 0, pack.stdout + pack.stderr);
+          for (const item of ["dist", "package.json", "seeded-connectors"]) cpSync(join(repo, "bin", item), join(installed, item), { recursive: true });
+          const scope = join(installed, "node_modules/@cotal-ai");
+          mkdirSync(scope, { recursive: true });
+          for (const name of readdirSync(join(repo, "bin/node_modules/@cotal-ai"))) {
+            if (name !== "cli") symlinkSync(join(repo, "bin/node_modules/@cotal-ai", name), join(scope, name));
+          }
+          symlinkSync(join(repo, "bin/node_modules/jose"), join(installed, "node_modules/jose"));
+          for (const item of ["dist", "package.json"]) cpSync(join(repo, "implementations/cli", item), join(scope, "cli", item), { recursive: true });
+          symlinkSync(join(repo, "implementations/cli/node_modules"), join(scope, "cli/node_modules"));
+          claudeUpdateEntry = join(installed, "dist/cotal.js");
+          mkdirSync(join(globalPrefix, "bin"));
+          symlinkSync(claudeUpdateEntry, join(globalPrefix, "bin", "cotal"));
+          env.PATH = `${join(globalPrefix, "bin")}:${env.PATH}`;
+          seedUnitReceipt(claudeUpdateEntry, true);
+          delete env.COTAL_ALLOW_CHECKOUT_SEED;
+        }
         const claudeBin = join(root, "claude-bin");
         mkdirSync(claudeBin);
         writeFileSync(join(claudeBin, claudeWakeLateRepro ? "claude.pending" : "claude"), `#!${process.execPath}
-const { existsSync, readFileSync, writeFileSync } = require('node:fs');
-const { join } = require('node:path');
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const { spawn } = require('node:child_process');
 const [family, group, action, ...tail] = process.argv.slice(2);
 const home = ${JSON.stringify(home)};
@@ -2035,7 +2058,14 @@ if (family === '--version') { console.log('2.1.327 (Claude Code)'); return; }
 if (family === 'plugin') {
   const enabled = existsSync(join(home, 'claude-installed'));
   if (group === 'marketplace' && action === 'list') console.log('[]');
-  else if (group === 'install') writeFileSync(join(home, 'claude-installed'), '');
+  else if (group === 'install') {
+    writeFileSync(join(home, 'claude-installed'), '');
+    if (${claudeCurrentUpdate}) {
+      const cache = join(home, '.claude', 'plugins');
+      mkdirSync(cache, { recursive: true });
+      writeFileSync(join(cache, 'installed_plugins.json'), JSON.stringify({ plugins: { 'cotal@cotal-mesh': [{}] } }));
+    }
+  }
   else if (group === 'list') console.log(JSON.stringify(enabled ? [{ id: 'cotal@cotal-mesh', scope: 'user', enabled, readFromFolder: plugin }] : []));
   else if (group !== 'marketplace' && group !== 'update') process.exit(99);
   return;
@@ -2054,6 +2084,15 @@ if (family === 'mcp' && group === 'add') {
   return;
 }
 const argv = process.argv.slice(2);
+if (${claudeCurrentUpdate}) {
+  const pluginRoot = argv[argv.indexOf('--plugin-dir') + 1];
+  const types = join(pluginRoot, '.claude-plugin', 'types');
+  for (const file of [join(pluginRoot, 'tsconfig.json'), ...['.gitignore', 'tsconfig.json', 'claude-code/index.d.ts', 'claude-code-mcp/index.d.ts', 'claude-code-tools/index.d.ts'].map(name => join(types, name))]) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, 'Claude fixture output');
+  }
+  writeFileSync(join(home, 'claude-generated-plugin-root'), pluginRoot);
+}
 writeFileSync(join(home, 'claude-launch-entered'), '');
 const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]);
 const user = JSON.parse(readFileSync(join(home, '.claude.json'))).mcpServers.cotal;
@@ -2067,11 +2106,11 @@ process.stdin.once('data', () => {
   seat.once('exit', code => process.exit(code ?? 1));
 });
 `, { mode: 0o700 });
-        writeFileSync(join(home, "reject-claude-registration"), "");
+        if (!claudeCurrentUpdate) writeFileSync(join(home, "reject-claude-registration"), "");
         env.PATH = `${claudeBin}:${env.PATH}`;
         if (claudeWakeLateRepro) assert.equal((spawnSync("claude", ["--version"], { env }).error as NodeJS.ErrnoException | undefined)?.code, "ENOENT");
         env.COTAL_NO_UPDATE_CHECK = "1";
-        const seeded = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+        const seeded = spawnSync(process.execPath, [claudeUpdateEntry ?? join(repo, "bin/dist/cotal.js"), "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
         assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
         env.COTAL_SKIP_CONNECTOR_SEED = "1";
       }
@@ -2195,7 +2234,7 @@ process.stdin.once('data', () => {
           writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
         }
       }
-      let cliEntry = process.env.CUSTODY_RELEASE_ENTRY ?? join(repo, "bin", "dist", "cotal.js");
+      let cliEntry = claudeUpdateEntry ?? process.env.CUSTODY_RELEASE_ENTRY ?? join(repo, "bin", "dist", "cotal.js");
       let cliNode = process.execPath;
       const npmRun = async (args: string[]) => {
         const child = spawn("npm", args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -2312,10 +2351,11 @@ process.stdin.once('data', () => {
         let recoveryRestarts = 0;
         const launch = () => spawn(cliNode, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
+        let errors = "";
         const attach = () => {
           child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
-          let errors = "";
-          child.stderr.on("data", chunk => { errors += String(chunk); if (upgrading) console.log("owned daemon", String(chunk)); });
+          errors = "";
+          child.stderr.on("data", chunk => { errors = (errors + String(chunk)).slice(-4000); if (upgrading) console.log("owned daemon", String(chunk)); });
           child.once("exit", code => {
             if (process.argv.includes("--rollback-busy-repro") && code !== 0 && errors.includes("restart the daemon with the restored CLI")) {
               check("RB simulated supervisor restarts only after single recovery clears journal", recoveryRestarts++ === 0 && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null);
@@ -2324,9 +2364,12 @@ process.stdin.once('data', () => {
           });
         };
         attach();
-        for (let i = 0; i < (process.argv.includes("--rollback-busy-repro") ? 1200 : 100); i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        for (let i = 0; i < (process.argv.includes("--rollback-busy-repro") ? 1200 : 100); i++) {
+          if (child.exitCode !== null || child.signalCode !== null) break;
+          try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); }
+        }
         await killAndAwaitExit(child, "SIGTERM");
-        throw new Error("shipped daemon did not answer");
+        throw new Error(`shipped daemon did not answer${errors ? `: ${errors.trim()}` : ""}`);
       };
       if (process.argv.includes("--setup-no-connectors-repro")) {
         writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["cotal-owned-missing-harness"],buildLaunch:()=>{throw new Error("unavailable connector must not launch")}});`);
@@ -3159,6 +3202,89 @@ process.stdin.once('data', () => {
           const view = await status();
           const userConfig = join(home, ".claude.json");
           const remedy = `cotal daemon setup --space ${ON}`;
+          if (claudeCurrentUpdate) {
+            assert.equal(setup.code, 0, setup.err);
+            const launched = await launch(view.instanceId);
+            assert.equal(launched.code, 0, launched.out + launched.err);
+            const receipt = JSON.parse(launched.out).result;
+            assert.equal(receipt.readiness, "joined");
+            const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+            await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+            env.npm_config_registry = `http://127.0.0.1:${(metadata.address() as AddressInfo).port}`;
+            try {
+              const seat = async () => {
+                const result = await run("ps", "--space", ON, "--on", view.instanceId, "--json");
+                assert.equal(result.code, 0, result.out + result.err);
+                const row = JSON.parse(result.out).result.items.find((item: { name: string }) => item.name === "daemon_claude_wake");
+                assert.ok(row?.pid && row.lifecycleUid);
+                return [row.pid, row.lifecycleUid];
+              };
+              const before = await seat();
+              const pluginRoot = readFileSync(join(home, "claude-generated-plugin-root"), "utf8");
+              const types = join(pluginRoot, ".claude-plugin", "types");
+              assert.ok(existsSync(join(types, "claude-code", "index.d.ts")));
+              const sameSeat = async () => {
+                assert.deepEqual(await seat(), before);
+                const currentManager = await status();
+                assert.equal(currentManager.pid, view.pid);
+                assert.equal(currentManager.instanceId, view.instanceId);
+                assert.equal(resultOf(await ask(paths.socket, { op: "status" })).pid, child.pid);
+              };
+              const currentUpdate = async (args: string[], expected: RegExp) => {
+                const result = await run("update", ...args);
+                assert.equal(result.code, 0, result.out + result.err);
+                assert.doesNotMatch(result.out + result.err, /cannot preserve running agents|Stop these agents/);
+                assert.match(result.out, expected);
+                await sameSeat();
+                check(`current update ${args.join(" ")} preserves the joined Claude connector seat`, true);
+              };
+              for (const file of [undefined, join(types, "future-editor-metadata.json")]) {
+                if (file) writeFileSync(file, "{}\n");
+                await currentUpdate([], /connector integrations refreshed/);
+                await currentUpdate(["--self"], /installed package closure is current/);
+                const checked = await run("update", "--check", "--json");
+                assert.equal(checked.code, 0, checked.out + checked.err);
+                const { result } = JSON.parse(checked.out);
+                assert.equal(result.current, fixtureVersion);
+                assert.equal(result.latest, fixtureVersion);
+                assert.equal(result.updateAvailable, false);
+                assert.equal(result.installationChanged, false);
+                assert.equal(result.processesRestarted, false);
+                await sameSeat();
+                assert.ok(existsSync(join(types, "claude-code", "index.d.ts")));
+                if (file) assert.equal(readFileSync(file, "utf8"), "{}\n");
+                const refreshed = join(home, "claude-plugin", "cotal", ".claude-plugin");
+                assert.ok(existsSync(join(refreshed, "plugin.json")));
+                assert.ok(!existsSync(join(refreshed, "types")), "refresh does not copy Claude's generated editor metadata");
+              }
+              const shipped = join(pluginRoot, "hooks", "hooks.json");
+              const original = readFileSync(shipped);
+              for (const [file, plant] of [
+                [join(types, "unexpected.js"), (file: string) => writeFileSync(file, "")],
+                [join(types, "linked.d.ts"), (file: string) => symlinkSync(shipped, file)],
+                [join(pluginRoot, "unshipped.json"), (file: string) => writeFileSync(file, "{}")],
+                [shipped, (file: string) => writeFileSync(file, `${original.toString()}\n`)],
+              ] as const) {
+                plant(file);
+                try {
+                  for (const args of [[], ["--self"]]) {
+                    const changed = await run("update", ...args);
+                    assert.equal(changed.code, 1, changed.out + changed.err);
+                    assert.match(changed.out + changed.err, /cannot preserve running agents/);
+                    await sameSeat();
+                  }
+                } finally {
+                  if (file === shipped) writeFileSync(shipped, original);
+                  else rmSync(file);
+                }
+              }
+              check("only Claude's unshipped generated files are ignored by update", true);
+            } finally {
+              await run("stop", "daemon_claude_wake", "--space", ON, "--on", view.instanceId, "--json");
+              await new Promise<void>(resolve => metadata.close(() => resolve()));
+            }
+            return;
+          }
           if (claudeWakeLateRepro) {
             const inventory = (manager: typeof view) => manager.connectors.find((row: any) => row.agent === "claude");
             const sameManager = (manager: typeof view) => manager.state === "answering" && manager.pid === view.pid && manager.instanceId === view.instanceId;
@@ -3256,6 +3382,69 @@ process.stdin.once('data', () => {
                 && seats.items.some((row: any) => row.name === "retired_runtime_seat" && typeof row.lifecycleUid === "string"), seats);
           } finally {
             renameSync(`${app}.retired`, app);
+          }
+          return;
+        }
+        if (process.argv.includes("--current-update-repro")) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const caller = { versionSkew: (text: string) => text, roster: async () => [] };
+          const pin = { instanceId: manager.instanceId };
+          const call = (op: "start" | "managerStatus" | "ps" | "stop", args?: Record<string, unknown>) => askManager(caller, ON, target.server, op, args, target.auth, "owner", 40_000, pin);
+          const seatIdentity = (rows: unknown) => (rows as { pid: number; lifecycleUid: string }[]).map(({ pid, lifecycleUid }) => [pid, lifecycleUid]);
+          const started = await call("start", { name: "idle_update_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Owned updater regression, no model.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } });
+          assert.equal(started.ok, true, started.error);
+          const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+          await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+          try {
+            const status = await call("managerStatus");
+            assert.equal((status.data as { custody: string }).custody, "legacy");
+            assert.equal((status.data as { agentCount: number }).agentCount, 1);
+            const before = await call("ps");
+            assert.equal(before.ok, true, before.error);
+            assert.equal(seatIdentity(before.data).length, 1);
+            const updateEnv = { ...Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home,
+              COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` };
+            for (const mode of ["self", "plain", "nonterminal", "seed-pending", "pending"] as const) {
+              const seedStamp = join(root, "config", "cotal", "seed", "stamp.json");
+              const pending = mode === "pending" || mode === "seed-pending";
+              const nonterminal = mode === "nonterminal";
+              if (nonterminal) rmSync(unitReceiptFile(paths));
+              if (mode === "seed-pending") writeFileSync(seedStamp, JSON.stringify({ generation: "0.0.1" }));
+              if (mode === "pending") {
+                const inventory = join(prefix, "extensions.json");
+                const manifest = JSON.parse(readFileSync(inventory, "utf8"));
+                manifest.extensions.push({ pkg: "@cotal-ai/tmux", version: "0.161.1", spec: "@cotal-ai/tmux@0.161.1", provides: [], commands: [], connectors: [] });
+                writeFileSync(inventory, JSON.stringify(manifest));
+              }
+              const args = [cliEntry, "update", ...(mode === "self" ? ["--self"] : [])];
+              const command = [process.execPath, ...args].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+              const updating = nonterminal
+                ? spawn(process.execPath, args, { cwd: root, env: updateEnv, stdio: ["ignore", "pipe", "pipe"], timeout: 75_000 })
+                : spawn("script", ["-q", "-e", "-c", command, "/dev/null"], { cwd: root, env: updateEnv, stdio: ["pipe", "pipe", "pipe"], timeout: 75_000 });
+              let text = "", declined = false;
+              updating.stdout.on("data", chunk => { text += String(chunk); if (!declined && text.includes("[y/N]")) { declined = true; updating.stdin?.write("N\n"); } });
+              updating.stderr.on("data", chunk => { text += String(chunk); });
+              const code = await new Promise<number | null>((resolve, reject) => { updating.once("error", reject); updating.once("close", resolve); });
+              assert.equal(code, pending ? 1 : 0, text);
+              assert.equal(declined, pending, text);
+              assert.match(text, /no newer latest tag/);
+              assert.match(text, pending ? /cannot preserve running agents/ : mode === "self" ? /installed package closure is current/ : /connector integrations refreshed/);
+              if (nonterminal) assert.match(text, /no recorded user service, left running/);
+              if (mode === "seed-pending") {
+                assert.equal(JSON.parse(readFileSync(seedStamp, "utf8")).generation, "0.0.1", "declining leaves pending seed work untouched");
+                writeFileSync(seedStamp, JSON.stringify({ generation: fixtureVersion }));
+              }
+              const after = await call("ps");
+              assert.equal(after.ok, true, after.error);
+              assert.deepEqual(seatIdentity(after.data), seatIdentity(before.data));
+              const daemonAfter = resultOf(await ask(paths.socket, { op: "status" }));
+              assert.equal(daemonAfter.pid, child.pid);
+              assert.equal(daemonAfter.managers.find((row: any) => row.instanceId === manager.instanceId)?.pid, manager.pid);
+              check(`update (${mode}) gives the expected admission result and preserves the daemon, Manager and seat`, true);
+            }
+          } finally {
+            await call("stop", { name: "idle_update_seat" });
+            await new Promise<void>(resolve => metadata.close(() => resolve()));
           }
           return;
         }

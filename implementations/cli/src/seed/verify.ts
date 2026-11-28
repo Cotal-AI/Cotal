@@ -14,6 +14,15 @@ export function seededPeerLinksCurrent(pkg: string): boolean {
     realpathSync(join(extensionPackageDir(pkg), "node_modules", peer)) === realpathSync(hostPackageDir(peer)));
 }
 
+const claudeTypesDir = join(".claude-plugin", "types");
+
+/** Claude writes editor metadata here at launch. The plugin manifest, hooks and Node entry points
+ * live outside this directory. The caller still verifies shipped files and rejects all symlinks. */
+function isGeneratedClaudeMetadata(file: string): boolean {
+  return file === "tsconfig.json" || file === join(claudeTypesDir, ".gitignore") ||
+    (file.startsWith(claudeTypesDir + sep) && /(?:\.d\.[cm]?ts|\.json)$/.test(file));
+}
+
 /**
  * Why `cotal update` still has to reinstall a seeded built-in that is recorded at this generation, or
  * undefined when its installed copy is proven to be the payload this binary ships.
@@ -61,7 +70,9 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   for (const [copy, label] of [[store, "the seed store copy"], [installed, "the installed copy"]] as const) {
     const listed = payloadFiles(copy);
     if (typeof listed === "string") return `${label} ${listed}`;
-    const have = [...listed].sort();
+    const have = (name === "claude" && copy === installed
+      ? listed.filter(file => sources.has(file) || !isGeneratedClaudeMetadata(file))
+      : listed).sort();
     if (have.length !== files.length) return `${label} holds ${have.length} files, the shipped payload ${files.length}`;
     for (let i = 0; i < files.length; i++) {
       if (have[i] !== files[i]) return `${label} has ${have[i]} where the shipped payload has ${files[i]}`;
