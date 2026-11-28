@@ -623,7 +623,7 @@ export class PreservedResume {
         return {
           ok: false,
           agents: preflight,
-          error: `${preflightFailures.length} retained agent${preflightFailures.length === 1 ? "" : "s"} failed preflight`,
+          error: `${preflightFailures.length} retained agent${preflightFailures.length === 1 ? "" : "s"} failed preflight: ${preflightFailures.map(({ name, reply }) => `${name}: ${reply.error ?? "preflight failed"}`).join("; ")}`,
         };
       // Only now, with the whole inventory through preflight, is an orphan reaped: a refused batch
       // leaves every seat as it found it.

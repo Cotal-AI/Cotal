@@ -362,10 +362,10 @@ export class SeatLaunch {
     if (route === "inst") {
       if (clean.startsWith("Claude wake channel setup failed:"))
         return `${clean}, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
-      if (clean.includes(" - not found"))
-        return `${clean}. Restore the harness on this host, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
       if (clean.includes("(restart this Manager to use it)"))
         return `${clean}. Restart this Manager to use the copy now on PATH, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+      if (clean.includes(" - not found"))
+        return `${clean}. Restore the harness on this host, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
     }
     return `${clean}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
   }

@@ -713,7 +713,7 @@ try {
         }
       }
 
-      // 2. Wire `models`, wire `harness-commands`, wire launch-first `spawn`, and deterministic stale-rail window across two Managers.
+      // 2. Wire `models`, wire `harness-commands`, wire launch-first `spawn`, and stale-rail window within 40 tries across two Managers.
       {
         const space = "wire-surfaces-and-routing";
         const firstBin = join(root, "wire-first-bin");
@@ -770,7 +770,7 @@ try {
             { missingCmds: missingCmds.reply, commandsCalled, cmdsStoredRow },
           );
 
-          // Wire launch-first spawn (no status read before spawn) + deterministic stale-rail window across two Managers.
+          // Wire launch-first spawn (no status read before spawn) + stale-rail window within 40 tries across two Managers.
           writeFileSync(firstExec, script, { mode: 0o700 });
           await callFirst("status");
           saveExtensionsManifest({
@@ -850,7 +850,7 @@ try {
               if (r.reply.ok && r.responder.instanceId === secondId) secondWinsAfterDrop++;
             }
             check(
-              "real stale-rail window deterministically hits the stale manager once (not-executed, names found copy, drops classSpawn) and routes all subsequent spawns to the healthy sibling",
+              "real stale-rail window hits the stale manager once within 40 tries (not-executed, names found copy, drops classSpawn) and routes all subsequent spawns to the healthy sibling",
               staleRefusals === 1 && staleRefusalMessage === classUnavailableError(firstMovedToSecondReason) &&
                 classEnabledAfterDrop === false && firstStoredAfterDrop?.state === "unavailable" &&
                 firstStoredAfterDrop.reason === firstMovedToSecondReason && Object.keys(firstStoredAfterDrop.binaries).length === 0 &&
@@ -922,15 +922,14 @@ try {
               args: { attemptId: "attempt_single", inventory: singleInventory },
             },
             { deadlineMs: 5000 });
-          const directResume = await singleMgr.resumePreserved(singleInventory);
           const singleRow = SM.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
           check(
-            "wire single resume-preserved refuses preflight when binary moved after boot, naming the found copy and restart remedy without launching or keeping reservations",
-            singleReply.reply.ok === false && singleReply.reply.error.message === "1 retained agent failed preflight" &&
-              directResume.ok === false && directResume.agents[0]?.reply.error === movedReason(resumeExec, movedResumeExec) &&
+            "wire single resume-preserved refuses preflight when binary moved after boot, naming the found copy and restart remedy on the wire without launching or keeping reservations",
+            singleReply.reply.ok === false &&
+              singleReply.reply.error.message === `1 retained agent failed preflight: res-a: ${movedReason(resumeExec, movedResumeExec)}` &&
               SM.stats.spawnCalls === 0 && SM.view.agents.size === 0 && SM.view.namesCapacity.reservedCount === 0 &&
               singleRow?.state === "unavailable" && singleRow.reason === movedReason(resumeExec, movedResumeExec),
-            { singleReply: singleReply.reply, directResume, stats: { ...SM.stats }, reserved: SM.view.namesCapacity.reservedCount, singleRow },
+            { singleReply: singleReply.reply, stats: { ...SM.stats }, reserved: SM.view.namesCapacity.reservedCount, singleRow },
           );
         } finally {
           await singleMgr.stop({ withAgents: true });
@@ -1152,7 +1151,73 @@ try {
         }
       }
 
-      // 6. `ServePlane` closed-connection no-op AND redial window resync when availability changes while `dialServeConnection` is in flight.
+      // 6. Multi-binary connector with one moved binary and one missing binary on a pinned Manager: inst suffix checks the moved marker before not found.
+      {
+        const space = "mixed-moved-and-missing";
+        const multiFirstDir = join(root, "multi-first");
+        const multiSecondDir = join(root, "multi-second");
+        mkdirSync(multiFirstDir, { recursive: true, mode: 0o700 });
+        mkdirSync(multiSecondDir, { recursive: true, mode: 0o700 });
+        const firstMultiA = join(multiFirstDir, executable("multi-a"));
+        const secondMultiA = join(multiSecondDir, executable("multi-a"));
+        const firstMultiB = join(multiFirstDir, executable("multi-b"));
+        writeFileSync(firstMultiA, script, { mode: 0o700 });
+        writeFileSync(secondMultiA, script, { mode: 0o700 });
+        writeFileSync(firstMultiB, script, { mode: 0o700 });
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", "multi-probe.md"), "---\nname: multi-probe\nagent: boot-multi\n---\n");
+        const multiConnector: Connector = {
+          kind: "connector",
+          name: "boot-multi",
+          requires: ["multi-a", "multi-b"],
+          buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["multi-a"] ?? "multi-a", args: [] }),
+        };
+        registry.register(multiConnector);
+        saveExtensionsManifest({
+          extensions: [
+            {
+              pkg: "@fixture/boot-multi",
+              version: "1.0.0",
+              spec: ".",
+              provides: [{ kind: "connector", name: "boot-multi" }],
+              commands: [],
+              connectors: [{ name: "boot-multi", requires: ["multi-a", "multi-b"], eventPlane: false }],
+            },
+          ],
+        });
+        process.env.PATH = `${multiFirstDir}${process.platform === "win32" ? ";" : ":"}${multiSecondDir}`;
+        const multiMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+        const MM = instrumentManager(multiMgr, firstMultiA);
+        await multiMgr.start();
+        const multiId = MM.view.managerStatusData().instanceId;
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        try {
+          rmSync(firstMultiA);
+          rmSync(firstMultiB);
+          const mixedSpawn = await epCall(nc, space,
+            { mode: "inst", instanceId: multiId, epoch: MM.view.servePlane.serviceServe?.grant.epoch ?? 0 },
+            { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "multi-probe", agent: "boot-multi", events: false } },
+            { deadlineMs: 5000 });
+          const expectedMixedReason =
+            `boot-multi harness needs pinned multi-a (${firstMultiA}) on PATH - found ${secondMultiA} instead (restart this Manager to use it); ` +
+            `boot-multi harness needs pinned multi-b (${firstMultiB}) on PATH - not found (no fallback to another copy on PATH)`;
+          const multiRow = MM.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-multi");
+          check(
+            "pinned spawn on a multi-binary connector with one moved and one missing binary gives the restart suffix instead of Restore the harness",
+            multiRow?.state === "unavailable" && Object.keys(multiRow.binaries).length === 0 &&
+              multiRow.reason === expectedMixedReason &&
+              mixedSpawn.reply.ok === false && mixedSpawn.reply.error.outcome === "not-executed" &&
+              mixedSpawn.reply.error.message === instMovedError(expectedMixedReason) &&
+              MM.stats.spawnCalls === 0 && MM.stats.reserveCalls === 0,
+            { multiRow, mixedSpawn: mixedSpawn.reply, stats: { ...MM.stats } },
+          );
+        } finally {
+          await nc.close();
+          await multiMgr.stop({ withAgents: true });
+        }
+      }
+
+      // 7. `ServePlane` closed-connection no-op AND redial window resync when availability changes while `dialServeConnection` is in flight.
       {
         saveExtensionsManifest({
           extensions: [
@@ -1278,5 +1343,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-if (pass !== 57) throw new Error(`expected 57 checks, ran ${pass}`);
+if (pass !== 58) throw new Error(`expected 58 checks, ran ${pass}`);
 console.log(`\n${pass} checks passed`);
