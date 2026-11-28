@@ -880,8 +880,10 @@ A host without the route reports account computers unsupported and keeps per-spa
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
 When another account holds a local space connection, the daemon does not transfer it automatically.
 Status names the holding account's sign-in address when the retained identity is known.
+The app's space row does not show that address. It says "This space is set up under another
+sign-in on this computer." with **Remove**.
 If the holding account is signed out or three consecutive account-computer
-polls fail, the space row can offer **Use signed-in account**.
+polls fail, the space row offers **Move to this account**.
 Cancel leaves custody unchanged. Confirmation requires a fresh, available catalog registration
 for the space from the signed-in account and rechecks the holder before moving custody.
 A holder that answers again clears its failure count and cannot be replaced through a stale
@@ -1001,7 +1003,7 @@ Adding a space requires its own confirmation. Owner approval appears in that spa
 The app reports This computer is connected only with an answering registered Manager and an
 available connector. Open dashboard is the primary action on that screen and on later opens.
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
-reports, while original diagnostics and exact refusals remain under Details. Missing applications
+reports. Details shows the service's code and message without command lines. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
 
 In the desktop app, **Connection**, **Agent apps**, and **Settings** are separate views. You can
@@ -1103,11 +1105,13 @@ Manager state stays under the daemon's own per-space directory. Its `manager.log
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
 A successful pinned Manager status probe clears a superseded `lastRefusal` from current status.
-A Manager that exits before readiness reports its exit code or signal and its last stderr line.
+A Manager that exits before readiness reports its exit code or signal as its `reason`, and
+`lastExit` adds its last stderr line. A Manager's `reason` never holds a command or a web address:
+the step to take is in `next`, which the app does not show.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
 step. Status emits a PID only for a retained child, never from a saved refusal record.
-An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
-and its next step. Hosted repair commands carry `--daemon-home <dir>` when the daemon has an
+An expired or revoked daemon session says so in the refusal and names
+`cotal daemon login --idp <url>` in its next step. Hosted repair commands carry `--daemon-home <dir>` when the daemon has an
 explicit home. Status also includes `logError` if logging fails. The daemon checks the child's
 parent IPC channel every five to six seconds without an auth callout. Three consecutive missing
 answers make recovery eligible. Recovery restarts a live child only after its native preservation

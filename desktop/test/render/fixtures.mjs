@@ -163,6 +163,7 @@ export function nativeStub(scenario) {
       }
       if (request.op === "login") {
         state.loginRequests = [...(state.loginRequests ?? []), request];
+        state.logins = (state.logins ?? 0) + 1;
         if (state.loginLost) return fail("DAEMON_LOST", "The background service stopped before this could finish, so it did not complete. Try again when the service is running.");
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
@@ -463,17 +464,78 @@ export const scenarios = [
     name: `custody-recovery-${confirm ? "confirm" : "cancel"}`,
     state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected", lastRefusal: "The local space connection is held by https://old.example/api/auth.", custodyRecovery: { holder: "https://old.example/api/auth", candidate: "b".repeat(64) } }] } },
     expect: async page => {
-      const button = page.getByRole("button", { name: /^Use signed-in account for / });
+      const button = page.getByRole("button", { name: /^Move to this account for / });
       await button.waitFor();
-      assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /old.example/);
-      page.once("dialog", dialog => confirm ? dialog.accept() : dialog.dismiss());
+      assert.equal(await page.locator('[data-testid="connected-space-row"] small').last().textContent(), "This space is set up under another sign-in on this computer.");
+      assert.doesNotMatch(await page.locator('[data-testid="connected-space-row"]').textContent(), /old\.example|https?:/);
+      let asked = "";
+      page.once("dialog", dialog => { asked = dialog.message(); return confirm ? dialog.accept() : dialog.dismiss(); });
       await button.click();
+      assert.equal(asked, "Move Acme team to the account you're signed in with?");
       if (confirm) await page.waitForFunction(() => window.__renderState.accountRequests.some(row => row.op === "space-recover"));
       assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "space-recover")), confirm ? [
         { op: "space-recover", space: "acme-team", candidate: "b".repeat(64), holder: "https://old.example/api/auth" },
       ] : []);
     },
   })),
+  // One scenario per row state a saved refusal can produce. Each row shows one plain sentence and one
+  // button that acts, and nothing in the window carries a service sentence, address or command.
+  ...[
+    { state: "held", saved: ["The local space connection is held by https://cloud.cotal.ai/api/auth.", "The local space connection is held by https://cloud.cotal.ai/api/auth."], text: "This space is set up under another sign-in on this computer.", label: "Remove" },
+    { state: "no-app", saved: ["no available application"], text: "No agent app is installed.", label: "Set up agent apps" },
+    { state: "sign-in", saved: ["not-signed-in"], text: "Sign in again to use this space.", label: "Sign in" },
+    { state: "starting", saved: ["Manager is not answering"], text: "Starting this space. Cotal keeps trying by itself.", label: "Check again", managerReason: "Manager exited (code 1)" },
+    { state: "unreachable", saved: ["unreachable"], text: "Can't reach this space. Cotal keeps trying by itself.", label: "Check again" },
+    { state: "removal-failed", saved: ["disconnect refused; inspect daemon status before retrying"], text: "Couldn't remove this space from this computer. Cotal keeps trying by itself.", label: "Check again" },
+    { state: "unknown", saved: ["NEVER_SEEN_REFUSAL: run `cotal daemon setup --space acme-team`"], text: "Can't connect this space.", label: "Check again" },
+  ].map(({ state, saved, text, label, managerReason }) => ({
+    name: `space-row-${state}`,
+    state: { installed: true, signedIn: true, multiple: saved.length > 1, account: { mode: "account", hostSupport: "supported", spaces: saved.map((lastRefusal, index) => ({ space: index ? "research" : "acme-team", desired: true, observed: "not-requested", lastRefusal })) }, ...(managerReason ? { managers: [{ space: "acme-team", state: "starting", restarts: 1, reason: managerReason, next: "read `cotal daemon status --space acme-team`; the daemon will retry" }] } : {}) },
+    expect: async page => {
+      const rows = page.locator('[data-testid="connected-space-row"]');
+      await rows.first().waitFor();
+      assert.equal(await rows.count(), saved.length);
+      for (let index = 0; index < saved.length; index++) {
+        assert.equal(await rows.nth(index).locator("small").last().textContent(), text);
+        assert.deepEqual(await rows.nth(index).locator("button").allTextContents(), [label]);
+      }
+      assert.doesNotMatch(await page.locator("main").textContent(), /`|\bcotal [a-z]|https?:\/\/|held by|inspect |\bManager\b/);
+      const statusReads = await page.evaluate(() => window.__renderState.statusRequests ?? 0);
+      if (label === "Remove") {
+        let asked = "";
+        page.once("dialog", dialog => { asked = dialog.message(); return dialog.dismiss(); });
+        await rows.first().locator("button").click();
+        assert.equal(asked, "Remove Acme team from this computer? Agents from this space stop running here.");
+        assert.equal(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "service-disconnect").length), 0, "Cancel removes nothing");
+        return;
+      }
+      await rows.first().locator("button").click();
+      if (label === "Check again") await page.waitForFunction(count => (window.__renderState.statusRequests ?? 0) > count, statusReads);
+      if (label === "Sign in") await page.waitForFunction(() => window.__renderState.logins === 1);
+      if (label === "Set up agent apps") await page.locator("#apps-panel:not([hidden])").waitFor();
+      if (label !== "Remove") assert.equal(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "service-disconnect").length), 0, "a fixing button never removes the space");
+    },
+  })),
+  { name: "single-space-manager-details", state: { installed: true, signedIn: true, connected: true, managers: [{ space: "acme-team", state: "refused", restarts: 0, reason: "the space refused remote supervision", next: "run `cotal daemon login --idp https://cloud.cotal.ai/api/auth`, correct the reported cause, then run `cotal daemon setup --space acme-team`" }] }, expect: async page => {
+    await page.locator("#details:not([hidden])").waitFor();
+    assert.equal(await page.locator("#refusal-detail").textContent(), "MANAGER_UNAVAILABLE\nThe agent host for this space stopped. The background service said: the space refused remote supervision");
+    assert.doesNotMatch(await page.locator("main").textContent(), /`|\bcotal [a-z]|https?:\/\//);
+  } },
+  { name: "details-address-for-terminal", state: { installed: true, signedIn: true, connected: true }, act: async page => {
+    await page.locator("#connected-panel:visible").waitFor();
+    await page.evaluate(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) => command === "daemon_request" && (args.request.op === "status" || args.request.op === "status-watch")
+        ? Promise.resolve({ v: 1, event: "result", ok: false, error: { code: "UNREACHABLE", message: "the service stopped at https://cloud.cotal.ai/api/auth" } })
+        : invoke(command, args);
+    });
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await page.click("#open-settings"); await page.click("#open-settings");
+    await page.locator("#recovery-panel:visible").waitFor();
+  }, expect: async page => {
+    assert.doesNotMatch(await page.locator("#refusal-detail").textContent(), /https?:\/\//);
+    assert.doesNotMatch(await page.locator("main").textContent(), /cloud\.cotal\.ai\/api/);
+  } },
   { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },
     act: page => page.click('#view-settings'), expect: async page => { assert.match(await page.locator('#settings-update-summary').textContent(), /An app operation is still running/); } },
   { name: 'mac-apply-visible', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0' } },
