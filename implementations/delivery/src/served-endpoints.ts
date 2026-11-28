@@ -30,6 +30,9 @@ export interface ServedEndpointContext {
   store: SecretStore;
   /** The daemon's delivery endpoint: the live read ACL by alias rides its connection. */
   delivery: Pick<CotalEndpoint, "aclForAlias">;
+  /** The daemon's delivery connection's JetStream manager, for the leader reads the delivery
+   *  credential holds (confirm-attach's chat entry). Throws before the first adoption. */
+  deliveryJsm: () => JetStreamManager;
   log: (line: string) => void;
 }
 
@@ -48,6 +51,9 @@ export function parseServeFlag(raw: string | undefined, catalog: ServedEndpointC
 export class ServedEndpoints {
   private readonly binders = new Map<string, DaemonEndpointBinder>();
 
+  /** The daemon's delivery connection's JetStream manager, as the last adoption handed it over. */
+  private deliveryJsm: JetStreamManager | undefined;
+
   constructor(private readonly opts: {
     space: string;
     servers: string;
@@ -59,7 +65,13 @@ export class ServedEndpoints {
     delivery: Pick<CotalEndpoint, "aclForAlias">;
     log: (line: string) => void;
   }) {
-    const ctx: ServedEndpointContext = { space: opts.space, servers: opts.servers, tls: opts.tls, store: opts.store, delivery: opts.delivery, log: opts.log };
+    const ctx: ServedEndpointContext = {
+      space: opts.space, servers: opts.servers, tls: opts.tls, store: opts.store, delivery: opts.delivery, log: opts.log,
+      deliveryJsm: () => {
+        if (this.deliveryJsm === undefined) throw new Error("the delivery connection has not handed over its JetStream manager yet");
+        return this.deliveryJsm;
+      },
+    };
     for (const name of opts.names) {
       const factory = opts.catalog[name];
       if (factory === undefined) throw new Error(`delivery: no served endpoint named ${name}`);
@@ -81,8 +93,10 @@ export class ServedEndpoints {
   }
 
   /** delivery-admin `adoptEndpointCreds`: re-read the endpoint's material and bind it. `jsm` is the
-   *  daemon's own connection's manager; the bind's gate and spec reads ride it. */
+   *  daemon's own connection's manager; the bind's gate and spec reads ride it, and so do the handlers'
+   *  delivery-connection reads (confirm-attach's chat entry), through {@link ServedEndpointContext.deliveryJsm}. */
   async adopt(endpoint: string, adoptionOpId: string, jsm: JetStreamManager): Promise<ServeState> {
+    this.deliveryJsm = jsm;
     const binder = this.binder(endpoint);
     const { store, space } = this.opts;
     const [creds, instanceId, serveId] = await Promise.all([

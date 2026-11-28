@@ -97,5 +97,16 @@ console.log("4. the issuance doors refuse the artifact profiles (S13)");
   }
 }
 
+console.log("5. the delivery profile reads one chat entry by sequence, and gains nothing on the artifact stores (S3, S9)");
+{
+  const CHAT = "CHAT_artgrant";
+  const del = rows("delivery");
+  const chatGets = del.pub.filter((r) => r.includes(".MSG.GET.") && r.includes("CHAT"));
+  c("the delivery profile holds exactly one chat message get, the single-seq read confirm-attach uses",
+    chatGets.length === 1 && chatGets[0] === `$JS.API.STREAM.MSG.GET.${CHAT}`, chatGets);
+  c("the delivery profile holds no row on the object store or the index buckets",
+    !del.pub.some((r) => r.startsWith("$O.") || r.includes(OBJ) || INDEX_BUCKETS.some((b) => r.includes(b))), del.pub.filter((r) => r.includes("art")));
+}
+
 console.log(`\nartifact-grant-shape: ${ok} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -584,6 +584,11 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     // this stream and already reads all of it.
     `$JS.API.CONSUMER.CREATE.${CHAT}`,
     `$JS.API.CONSUMER.CREATE.${CHAT}.>`,
+    // `confirm-attach` (A1, S3) reads the ONE chat entry the caller names by its acknowledged sequence,
+    // to check the caller published the artifact reference it confirms. A strict subset of the consume
+    // power above: the daemon already reads every chat entry through the fan-out. It sits behind one
+    // sealed helper in the delivery daemon that returns the subject and parts only.
+    `$JS.API.STREAM.MSG.GET.${CHAT}`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${CHAT}.>`,
     `$JS.API.CONSUMER.INFO.${CHAT}.>`,
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.>`,
