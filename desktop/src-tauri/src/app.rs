@@ -244,36 +244,27 @@ fn set_update_notice(app: AppHandle, version: Option<String>) -> Result<(), Stri
     item.set_enabled(version.is_some()).map_err(|e| e.to_string())
 }
 
-/// The tray menu shows the word the window computed, plus how many agents are running. It never
-/// reads the connection state from the frame, so an account poll's failure cannot change it.
 fn write_tray(app: &AppHandle, frame: &Value) -> Result<(), String> {
-    let word = app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
     let agents = crate::presence::agent_count(frame);
     *app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")? = agents.clone();
-    let status = crate::presence::tray_menu(Some(word.as_str()).filter(|value| !value.is_empty()), &agents);
-    app.state::<TrayStatus>().0.set_text(&status).map_err(|error| error.to_string())
+    let word = app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
+    let menu = crate::presence::tray_menu(&word, &agents);
+    app.state::<TrayStatus>().0.set_text(&menu).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn set_connection_state(app: AppHandle, connected: bool, lost: Option<String>, label: Option<String>) -> Result<(), String> {
-    if let Some(text) = label.as_deref().filter(|value| !value.is_empty()) {
-        *app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")? = text.to_string();
-        let agents = app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
-        let menu = crate::presence::tray_menu(Some(text), &agents);
-        app.state::<TrayStatus>().0.set_text(&menu).map_err(|error| error.to_string())?;
-    }
+fn set_connection_state(app: AppHandle, connected: bool, label: String) -> Result<(), String> {
+    // Keep the connection argument in the command contract. The label alone drives the tray copy.
+    let _ = connected;
+    let word = crate::presence::tray_word(&label);
+    *app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")? = word.to_string();
+    let agents = app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
+    let menu = crate::presence::tray_menu(word, &agents);
+    app.state::<TrayStatus>().0.set_text(&menu).map_err(|error| error.to_string())?;
     let tray = app
         .tray_by_id("machine")
         .ok_or("The system tray is unavailable.")?;
-    let known = ["Connected", "Offline", "Can't connect", "Sign in required", "Needs attention", "Starting", "Ready", "Not connected", "Checking connection"];
-    let status = match (label.as_deref().filter(|value| known.contains(value)), lost.as_deref()) {
-        (Some(text), _) => text,
-        (_, Some("offline")) => "offline",
-        (_, Some("unreachable")) => "can't connect",
-        (_, _) if connected => "connected",
-        _ => "not connected",
-    };
-    tray.set_tooltip(Some(format!("Cotal: {status}")))
+    tray.set_tooltip(Some(format!("Cotal: {word}")))
     .map_err(|_| "The tray status could not be updated.".into())
 }
 
@@ -381,7 +372,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
             app.manage(native_presence::load(app.handle())?);
-            let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
+            let status = MenuItem::with_id(app, "status", "Starting", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
@@ -404,7 +395,7 @@ pub fn run() {
             TrayIconBuilder::with_id("machine")
                 .icon(icon)
                 .menu(&menu)
-                .tooltip("Cotal: not connected")
+                .tooltip("Cotal: Starting")
                 .show_menu_on_left_click(true)
                 .on_tray_icon_event(|tray, event| {
                     if matches!(

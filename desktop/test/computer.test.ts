@@ -40,7 +40,7 @@ test("window title and tray share one summary of the listed spaces", () => {
   assert.equal(computerSummary([{ ...row, observed: "not-requested" }], false), "starting");
   assert.equal(computerSummary([{ ...row, observed: "stopping" }], false), "starting");
   assert.equal(computerSummary([{ ...row, observed: "refused" }], false), "attention");
-  assert.equal(computerSummary([row, { ...row, space: "other", observed: "disconnected" }], false), "attention");
+  assert.equal(computerSummary([row, { ...row, space: "other", observed: "disconnected" }], false), "starting");
   // The row shows the saved refusal, so the title and tray must not say Starting.
   assert.equal(computerSummary([{ ...row, lastRefusal: "Manager is not answering" }], false), "attention");
   assert.equal(computerSummary([{ ...row, observed: "refused" }], true), "connected");
