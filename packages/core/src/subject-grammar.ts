@@ -12,6 +12,11 @@ export function spacePrefix(space: string): string {
   return `${ROOT}.${token(space)}`;
 }
 
+/** Stream capturing `chat.>`: multicast backlog and history. */
+export function chatStream(space: string): string {
+  return `CHAT_${token(space)}`;
+}
+
 /** The key of the data part that marks a delivery daemon's notice that a channel post mentioned an
  *  agent who may not read the channel (SPEC §8). */
 export const MENTION_NOTICE_KEY = "cotalMentionNotice";

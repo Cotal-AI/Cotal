@@ -2,16 +2,18 @@ import { anycastBucket, assertInboxConnId, chatStream, fanoutDurable, inboxStrea
 import { epAuthBucket, epfStreamName, epjStreamName, eprStreamName, eptReqStreamName, eptStreamName, epwStreamName, timerWriterDurable } from "./endpoint-binding.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
+import { PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
 
 /** The stock idle-work census and its one-shot credential use these same resource coordinates.
  * Retained DM/DLV mail is deliberately absent: unread mail is not runnable work. */
-export function spaceQuiescenceResources(space: string) {
+export function spaceQuiescenceResources(space: string, pluginChannels = false) {
   const auth = epAuthBucket(space);
   const records = recordsBucket(space);
   const requiredConsumers = [
     { stream: chatStream(space), name: fanoutDurable() },
     { stream: inboxStream(space), name: readerDurable() },
     { stream: eptReqStreamName(space), name: timerWriterDurable(space) },
+    ...(pluginChannels ? [{ stream: pluginChannelStream(space), name: PLUGIN_FANOUT_DURABLE }] : []),
   ];
   const workQueues = [taskStream(space), epwStreamName(space)];
   const ingressStreams = [epjStreamName(space), eprStreamName(space)];
@@ -29,8 +31,8 @@ export function spaceQuiescenceResources(space: string) {
 
 /** Read-only host observation grants. No consumer creation, message consumption, ACK, write,
  * stream mutation or direct/follower authority read is available to this one-shot credential. */
-export function spaceQuiescenceReaderGrants(space: string, inbox: string): { pub: { allow: string[] }; sub: { allow: string[] } } {
-  const resources = spaceQuiescenceResources(space);
+export function spaceQuiescenceReaderGrants(space: string, inbox: string, pluginChannels = false): { pub: { allow: string[] }; sub: { allow: string[] } } {
+  const resources = spaceQuiescenceResources(space, pluginChannels);
   const connId = assertInboxConnId(inbox);
   return {
     pub: { allow: [

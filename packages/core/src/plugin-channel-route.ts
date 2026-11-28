@@ -1,5 +1,4 @@
-import { ROOT, assertValidChannel, assertValidRole, chatSubject, ownerToken, spacePrefix, token } from "./subject-grammar.js";
-import { chatStream } from "./subjects.js";
+import { ROOT, assertValidChannel, assertValidRole, chatStream, chatSubject, ownerToken, spacePrefix, token } from "./subject-grammar.js";
 
 export const PLUGIN_CHANNEL_ROOT = "ext";
 

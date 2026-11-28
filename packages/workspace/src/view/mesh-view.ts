@@ -2,7 +2,10 @@
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, DeliveryClass, EndpointRef, MembershipChange, MembershipSnapshot, Presence, PresenceStatus, TransportState } from "@cotal-ai/core";
-import { deliveryOf, chatWildcard, isEventChannel, partsToText } from "@cotal-ai/core";
+import { PLUGIN_CHANNEL_ROOT, channelRoute, deliveryOf, chatWildcard, isEventChannel, parseSubject, partsToText, subjectPatternCovers } from "@cotal-ai/core";
+import { observerChannelTapSubjects } from "./observer.js";
+
+const isReservedChannel = (channel: string) => channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
 
 // ---- the model the surfaces render -----------------------------------------
 
@@ -269,7 +272,6 @@ export class MeshView extends EventEmitter {
     super();
     this.window = opts.window ?? DEFAULT_WINDOW;
     this.tapSubject = opts.tapSubject;
-    // DMs are hidden only when the tap is narrowed to the chat subtree.
     this.chatOnly = opts.tapSubject === chatWildcard(ep.space);
   }
 
@@ -288,12 +290,15 @@ export class MeshView extends EventEmitter {
     if (this.stopped) return;
     this.bound = true;
     this.setRoster(this.ep.getRoster());
-    this.ep.tap(
-      (subject, msg) => {
-        if (msg) this.ingest(subject, msg);
-      },
-      this.tapSubject ? { subject: this.tapSubject } : undefined,
-    );
+    const receive = (subject: string, msg: CotalMessage | undefined) => {
+      if (msg) this.ingest(subject, msg);
+    };
+    const subjects = this.chatOnly ? observerChannelTapSubjects(this.ep) : undefined;
+    if (subjects !== undefined) {
+      for (const subject of subjects) this.ep.tap(receive, { subject });
+    } else {
+      this.ep.tap(receive, this.tapSubject ? { subject: this.tapSubject } : undefined);
+    }
     void this.prefill();
     void this.refreshChannels();
     void this.startMembership();
@@ -374,6 +379,26 @@ export class MeshView extends EventEmitter {
     this.dirty = true;
   }
 
+  private scopeMembership(snapshot: MembershipSnapshot): MembershipSnapshot {
+    if (this.ep.channelRoutingMode() === "legacy") return snapshot;
+    const members = snapshot.members.flatMap((row) => {
+      const live = row.live.filter(this.channelVisible), durable = row.durable.filter(this.channelVisible);
+      return live.length || durable.length || (!row.live.length && !row.durable.length) ? [{ ...row, live, durable }] : [];
+    });
+    return { ...snapshot, members };
+  }
+
+  private channelVisible = (channel: string): boolean => {
+    if (!isReservedChannel(channel)) return true;
+    const mode = this.ep.channelRoutingMode();
+    if (mode === "legacy") return true;
+    if (mode !== "isolated" || !this.chatOnly) return false;
+    try {
+      const { subject } = channelRoute(this.ep.space, "*", "*", channel, mode);
+      return (observerChannelTapSubjects(this.ep) ?? []).some((grant) => subjectPatternCovers(grant, subject));
+    } catch { return false; }
+  };
+
   /** Discard local chat for one channel, or all chat if no channel is given, after a confirmed purge. */
   discardChatHistory(channel?: string): void {
     this.chatPrefillDiscards?.add(channel);
@@ -387,14 +412,15 @@ export class MeshView extends EventEmitter {
 
   snapshot(): MeshSnapshot {
     const channels = [...this.channelCounts]
+      .filter(([channel]) => this.channelVisible(channel))
       .map(([channel, messages]) => ({ channel, messages, arrivals: this.arrivals.get(channel) ?? 0, deliveryClass: this.ep.channelDeliveryClass(channel) }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
     return {
       agents: this.roster.filter((p) => p.card.kind === "agent"),
       endpoints: this.roster.filter((p) => p.card.kind !== "agent"),
       channels,
-      feed: this.feed.slice(),
-      membership: { ...this.membership },
+      feed: this.feed.filter((entry) => entry.channel === undefined || this.channelVisible(entry.channel)),
+      membership: { ...this.membership, ...(this.membership.snapshot ? { snapshot: this.scopeMembership(this.membership.snapshot) } : {}) },
       rates: { msgsPerSec: this.msgsPerSec, activity: this.bucketCounts.slice() },
       status: {
         connected: this.bound && this.transport,
@@ -427,7 +453,10 @@ export class MeshView extends EventEmitter {
  *  from.name is sender-chosen display text, not identity (#1399): the roster is the only writer
  *  of id→name, so a spoofed name can never re-key a thread or a label. */
   private ingest(subject: string, msg: CotalMessage): void {
-    const kind = deliveryOf(subject);
+    const parsed = parseSubject(subject);
+    if (parsed?.kind === PLUGIN_CHANNEL_ROOT && (this.ep.channelRoutingMode() !== "isolated" || !this.channelVisible(parsed.rest))) return;
+    if (parsed?.kind === "chat" && isReservedChannel(parsed.rest) && this.ep.channelRoutingMode() !== "legacy") return;
+    const kind = parsed?.kind === PLUGIN_CHANNEL_ROOT ? "chat" : deliveryOf(subject);
     if (!kind) return;
     const now = Date.now();
     this.recentTs.push(now);
@@ -439,7 +468,7 @@ export class MeshView extends EventEmitter {
       ts: msg.ts,
       from: msg.from,
       delivery: kind === "anycast" ? "anycast" : "multicast", // "chat" → multicast
-      channel: kind === "anycast" ? undefined : msg.channel,
+      channel: kind === "anycast" ? undefined : parsed?.kind === PLUGIN_CHANNEL_ROOT ? parsed.rest : msg.channel,
       toService: kind === "anycast" ? msg.toService : undefined,
       // MARKED, NEVER DROPPED. The channel-list filter below keeps event channels out of the tab
       // strip and out of the history prefill, for a cost reason; the live feed is a different
@@ -550,7 +579,7 @@ export class MeshView extends EventEmitter {
     // fetch would enumerate every one of them, issue a `channelHistory` round trip each, and then
     // throw the results away: unbounded work to display nothing. That is a performance defect
     // rather than a cosmetic one, which is why it is filtered here and not in the loop below.
-    const chat = chans.filter((c) => !isEventChannel(c.channel) && !discarded.has(c.channel));
+    const chat = chans.filter((c) => !isEventChannel(c.channel) && !discarded.has(c.channel) && this.channelVisible(c.channel));
     const batches = await Promise.all(
       chat.map((c) =>
         this.ep.channelHistory(c.channel, { limit: HISTORY_LIMIT }).catch(() => [] as CotalMessage[]),
@@ -560,7 +589,7 @@ export class MeshView extends EventEmitter {
     const history: FeedEntry[] = [];
     for (const msgs of batches)
       for (const msg of msgs) {
-        if (!msg.channel || discarded.has(msg.channel) || (msg.id && this.seen.has(msg.id))) continue;
+        if (!msg.channel || !this.channelVisible(msg.channel) || discarded.has(msg.channel) || (msg.id && this.seen.has(msg.id))) continue;
         if (msg.id) this.seen.add(msg.id);
         history.push({
           id: msg.id,
@@ -619,7 +648,7 @@ export class MeshView extends EventEmitter {
     // the strip on this poll instead of lingering with its last count.
     const next = new Map<string, number>();
     for (const { channel, messages } of chans)
-      if (!isEventChannel(channel)) next.set(channel, messages);
+      if (!isEventChannel(channel) && this.channelVisible(channel)) next.set(channel, messages);
     this.channelCounts = next;
     for (const channel of this.arrivals.keys()) if (!next.has(channel)) this.arrivals.delete(channel);
     this.dirty = true;

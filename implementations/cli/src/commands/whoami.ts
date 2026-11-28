@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { chatSubjectPrefix, credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
+import { PLUGIN_CHANNEL_ROOT, chatSubjectPrefix, credsClaims, decodeChannelGrantClaims, dlvStream, dmStream, importNativeSubjectPermissions, issuedPermitsPattern, principalKey, resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
 import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceErrorParts, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -190,17 +190,22 @@ export async function whoami(args: ParsedArgs): Promise<void> {
 
 /** The channels a credential's allowed subjects reach on the space's chat plane: `all` for the whole
  *  plane, else the channel of each `chat.<owner>.<actor>.<channel>` row. */
-function chatChannels(rows: readonly string[], space: string): Grant {
+function chatChannels(rows: readonly string[], space: string, excludes: readonly string[]): Grant {
   const chat = chatSubjectPrefix(space);
   const channels: string[] = [];
   for (const row of rows) {
-    if (!row.startsWith(chat)) continue;
+    if (!row.startsWith(chat) || excludes.includes(row)) continue;
     const parts = row.slice(chat.length).split(".");
     const channel = parts.slice(2).join(".");
     if (parts.slice(0, 2).includes(">") || channel === ">") return "all";
     if (channel) channels.push(channel);
   }
   return [...new Set(channels)];
+}
+
+function withPluginClaims(chat: Grant, plugins: readonly string[]): Grant {
+  if (plugins.length === 0) return chat;
+  return [...new Set([...(chat === "all" ? [">"] : chat), ...plugins])];
 }
 
 /** {@link WhoamiCredentialResult} for one credential file, read as every `--creds` file is read. */
@@ -214,6 +219,10 @@ async function whoamiCredential(path: string, presentation: Presentation): Promi
   const owner = tag("owner"), actor = tag("actor");
   const pub = nats.pub?.allow ?? [], sub = nats.sub?.allow ?? [];
   const space = spaceInCreds(creds) ?? null;
+  const permissions = importNativeSubjectPermissions({ ...(nats.pub ? { pub: nats.pub } : {}), ...(nats.sub ? { sub: nats.sub } : {}) });
+  const channelClaims = space === null ? undefined : decodeChannelGrantClaims(permissions, space);
+  const pluginRead = channelClaims?.read.filter((row) => row.kind === PLUGIN_CHANNEL_ROOT && issuedPermitsPattern(permissions.subscribe, row.subject));
+  const pluginPost = channelClaims?.post.filter((row) => row.kind === PLUGIN_CHANNEL_ROOT && row.owner === owner && row.actor === actor && issuedPermitsPattern(permissions.publish, row.subject));
   let lifecycleUid: string | null = null;
   if (space !== null && owner !== undefined && actor !== undefined) {
     let name: string | undefined;
@@ -240,8 +249,8 @@ async function whoamiCredential(path: string, presentation: Presentation): Promi
     expiresAt: iso(claims.exp),
     expired: typeof claims.exp === "number" && claims.exp * 1000 <= Date.now(),
     revokedAt: iso(revokedAt),
-    read: space === null ? null : chatChannels(sub, space),
-    post: space === null ? null : chatChannels(pub, space),
+    read: space === null ? null : withPluginClaims(chatChannels(sub, space, channelClaims?.deny.subscribe ?? []), pluginRead?.map((row) => row.channel) ?? []),
+    post: space === null ? null : withPluginClaims(chatChannels(pub, space, channelClaims?.deny.publish ?? []), pluginPost?.map((row) => row.channel) ?? []),
     dms,
   };
   if (space !== null) recordOperationSpace(space);

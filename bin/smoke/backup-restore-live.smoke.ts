@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, dmDurableConfig, dmStream, eventPayloadStream, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, standaloneConnectOpts, taskStream, type PersistentConsumerCheckpoint, type SpaceAuth } from "@cotal-ai/core";
+import { canonicalBackupStreamConfig, openRecordsBucket, pluginFanoutDurableConfig, recordsBucket, spacePluginStreams } from "@cotal-ai/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { DeliverPolicy, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
+import { DeliverPolicy, jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
@@ -38,6 +39,9 @@ import {
   startIsolatedBroker,
 } from "../../implementations/cli/src/lib/isolated-broker.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { openSigned } from "../../packages/core/smoke/_snapshot-ack.js";
+import { PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelSubject } from "../../packages/core/src/plugin-channel-route.js";
+import { PLUGIN_CHANNEL_SPACE_STATE_KEY, pluginChannelSpaceStateSubject } from "../../packages/core/src/plugin-channel-space-state.js";
 
 process.env.DO_NOT_TRACK = "1";
 
@@ -2193,6 +2197,83 @@ function preparedBackupGuidance(): void {
   }
 }
 
+async function pluginHistoryScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-plugin-backup-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-plugin-backup-home-")));
+  const { env, sandbox } = sandboxRun(root, home);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "plugin_history_backup";
+  const [history] = spacePluginStreams(space);
+  const artifact = join(root, "plugin-backup");
+  const run = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(process.execPath, [join(worktree, "bin", "dist", "cotal.js"), ...args], options);
+  };
+  const must = (...args: string[]) => {
+    const result = run(...args);
+    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+    return result;
+  };
+  try {
+    must("up", "--detach", "--server", server, "--space", space);
+    const older = join(root, "before-plugin-history");
+    must("down", "--preserve-state");
+    must("backup", "create", older, "--json");
+    must("up", "--detach");
+    const auth = loadSoleSpaceAuth(authDir(root));
+    assert.ok(auth);
+    must("send", "-c", "general", "keep this chat post", "--json");
+    const provisioner = newIdentity(), author = newIdentity();
+    const subject = pluginChannelSubject(space, provisioner.id, author.id, `${PLUGIN_CHANNEL_ROOT}.alpha.work`);
+    const records = recordsBucket(space);
+    const fixture = () => openSigned(server, auth, "plugin_backup_fixture", {
+      pub: { allow: ["$JS.API.INFO", `$JS.API.STREAM.CREATE.${history}`, `$JS.API.STREAM.INFO.${history}`,
+        `$JS.API.STREAM.INFO.KV_${records}`, `$JS.API.STREAM.INFO.${chatStream(space)}`, `$JS.API.CONSUMER.CREATE.${history}.>`,
+        `$JS.API.CONSUMER.INFO.${history}.${PLUGIN_FANOUT_DURABLE}`, pluginChannelSpaceStateSubject(space), subject] },
+      sub: { allow: ["_INBOX_plugin_backup_fixture.>"] },
+    });
+    const seed = await fixture();
+    try {
+      const manager = await jetstreamManager(seed);
+      await manager.streams.add(canonicalBackupStreamConfig(space, history!));
+      await manager.consumers.add(history!, pluginFanoutDurableConfig(space));
+      await (await openRecordsBucket(seed, space)).put(PLUGIN_CHANNEL_SPACE_STATE_KEY, JSON.stringify({ version: 1, epoch: 1, enabled: true }));
+      const published = await jetstream(seed).publish(subject, new Uint8Array([42]));
+      assert.equal(published.stream, history);
+    } finally { await seed.close(); }
+    const refusesWith = (reason: RegExp, ...args: string[]) => {
+      const result = run(...args);
+      assert.notEqual(result.status, 0, `${args.join(" ")} unexpectedly succeeded`);
+      assert.match(`${result.stdout}\n${result.stderr}`, reason);
+    };
+    const refuses = (...args: string[]) => refusesWith(/this release does not support enabled plugin channels/, ...args);
+    refuses("history", "limit", "--plain");
+    refuses("history", "limit", "--per-sender", "50", "--yes", "--plain");
+    refuses("history", "clear", "--yes", "--plain");
+    refuses("clean", "history", "--force");
+    refusesWith(/plugin channel state is unsupported or could not be verified/, "space", "delete", space, "--dry-run", "--plain");
+    const reader = await fixture();
+    try {
+      const manager = await jetstreamManager(reader);
+      assert.equal((await manager.streams.info(history!)).state.messages, 1);
+      assert.equal((await manager.streams.info(chatStream(space))).state.messages, 1);
+    } finally { await reader.close(); }
+    must("down", "--preserve-state");
+    refuses("backup", "create", artifact, "--plain");
+    assert.equal(existsSync(artifact), false);
+    refuses("backup", "restore", older, "--plain");
+    assert.equal(readMaintenanceJournal(root)?.state, "ready");
+    console.log("plugin history: the built CLI refuses the enabled epoch and leaves the preserved cut ready");
+  } finally {
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+await pluginHistoryScenario();
+if (process.argv.includes("--plugin-history-only")) process.exit(0);
 preparedBackupGuidance();
 await missingPidfileListenerScenario();
 await undisplayableBackupRetryScenario();

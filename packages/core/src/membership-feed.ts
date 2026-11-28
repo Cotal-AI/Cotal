@@ -622,13 +622,14 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // keep the last good state untouched and don't stamp the heartbeat. Self-heals on the next full poll.
     if (!complete) return;
     const durable = durableFromMembers(await membersView.refresh());
+    const sharedRows = (rows: Set<string> | undefined) => [...(rows ?? [])].sort();
     const observedAt = Date.now();
 
     // Merge per agent: CONNZ live patterns ∪ durable concrete channels. An agent with neither is omitted.
     const next = new Map<string, ChannelMembership>();
     for (const id of new Set<string>([...live.keys(), ...durable.keys()])) {
-      const liveArr = [...(live.get(id) ?? [])].sort();
-      const durableArr = [...(durable.get(id) ?? [])].sort();
+      const liveArr = sharedRows(live.get(id));
+      const durableArr = sharedRows(durable.get(id));
       if (liveArr.length === 0 && durableArr.length === 0) continue;
       next.set(id, { live: liveArr, durable: durableArr, observedAt });
     }

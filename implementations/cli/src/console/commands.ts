@@ -9,6 +9,7 @@ import { consoleLabel } from "./label.js";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
 import type { ManagerReply, ControlOp, ManagedRow, PsReply } from "@cotal-ai/workspace/control";
+import { namedChannelMode } from "../lib/transient.js";
 
 export interface CommandCtx {
   ep: CotalEndpoint;
@@ -107,6 +108,7 @@ export const COMMANDS: ConsoleCommand[] = [
       }
       if (!text.trim()) return ctx.notify("usage: msg [#channel] <text>");
       if (!(await ctx.ensureParticipant())) return;
+      namedChannelMode(ctx.ep.channelRoutingMode(), channel, ctx.ep.space);
       await ctx.ep.multicast(text, { channel, mentions: mentionsIn(text) });
       ctx.notify(`→ #${channel}`);
     },

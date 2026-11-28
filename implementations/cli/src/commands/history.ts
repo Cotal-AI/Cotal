@@ -1,4 +1,4 @@
-import { CotalEndpoint, formatChatAge, parseSubject, partsToText, spacePrefix, chatSubject, chatSubjectPrefix, chatWildcard, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, PLUGIN_CHANNEL_ROOT, channelInAllow, channelRoute, classifyChannel, decodeChannelGrantClaims, formatChatAge, importNativeSubjectPermissions, isChannelFamily, isStreamNotFound, parseSubject, partsToText, projectChannelGrants, spacePrefix, chatSubjectPrefix, chatWildcard, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
 import {
   brokerAddressForDisplay,
@@ -38,6 +38,7 @@ import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
 import { streamsAbsent } from "../lib/space-streams.js";
+import { hasPluginChannelRoot, namedChannelMode } from "../lib/transient.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -229,12 +230,27 @@ const denial = (e: unknown): boolean => /permission|not authori[sz]ed|read acl|m
  *  names. One that may create no chat consumer at all reads no channel: no UID, and no channels. Any
  *  other shape, and a user bearer, gets `undefined`; a bearer's own lifecycle comes with the
  *  connection. */
-function credentialReader(conn: Connection): { lifecycleUid: string | undefined; channels: string[] } | undefined {
+function credentialReader(conn: Connection, mode?: ReturnType<CotalEndpoint["channelRoutingMode"]>): { lifecycleUid: string | undefined; channels: string[] } | undefined {
   if (conn.creds === undefined || conn.bearer !== undefined) return undefined;
-  const allow = credsClaims(conn.creds).nats?.pub?.allow ?? [];
+  const nats = credsClaims(conn.creds).nats ?? {};
+  const allow = nats.pub?.allow ?? [];
   const create = `$JS.API.CONSUMER.CREATE.${chatStream(conn.space)}`;
   if (allow.some((row) => subjectMatches(row, create))) return undefined;
-  const actor = idFromCreds(conn.creds), filter = chatSubjectPrefix(conn.space, { owner: "*", actor: "*" });
+  const actor = idFromCreds(conn.creds);
+  const principal = { owner: DEV_OWNER, actor };
+  const permissions = historySubjectPermissions(nats);
+  const claims = decodeChannelGrantClaims(permissions, conn.space, principal).history;
+  const hasPluginReader = claims.some((row) => row.kind === PLUGIN_CHANNEL_ROOT);
+  const hint = hasPluginReader ? oneLifecycle(claims) : undefined;
+  if (mode === "isolated") {
+    const lifecycleUid = oneLifecycle(claims);
+    if (lifecycleUid === undefined) return { lifecycleUid, channels: [] };
+    const scope = { space: conn.space, principal: { ...principal, lifecycleUid } };
+    const routed = projectChannelGrants(permissions, { ...scope, mode }).history;
+    const chat = projectChannelGrants(permissions, { ...scope, mode: "legacy" }).history.filter((row) => !hasPluginChannelRoot(row.channel));
+    return { lifecycleUid, channels: [...new Set([...chat, ...routed].map((row) => row.channel))] };
+  }
+  const filter = chatSubjectPrefix(conn.space, { owner: "*", actor: "*" });
   let lifecycleUid: string | undefined;
   const channels: string[] = [];
   for (const row of allow) {
@@ -246,8 +262,17 @@ function credentialReader(conn: Connection): { lifecycleUid: string | undefined;
     const subject = tail.join(".");
     if (subject.startsWith(filter)) channels.push(subject.slice(filter.length));
   }
-  if (lifecycleUid !== undefined) return { lifecycleUid, channels };
+  if (hasPluginReader || lifecycleUid !== undefined) return { lifecycleUid: hasPluginReader ? hint : lifecycleUid, channels };
   return allow.some((row) => row.startsWith(`${create}.`) || subjectMatches(row, `${create}.reader`)) ? undefined : { lifecycleUid, channels };
+}
+
+function oneLifecycle(rows: readonly { lifecycleUid: string }[]): string | undefined {
+  const uids = new Set(rows.map((row) => row.lifecycleUid));
+  return uids.size === 1 ? uids.values().next().value : undefined;
+}
+
+function historySubjectPermissions({ pub, sub }: NonNullable<ReturnType<typeof credsClaims>["nats"]>) {
+  return importNativeSubjectPermissions({ ...(pub ? { pub } : {}), ...(sub ? { sub } : {}) });
 }
 
 /** The channels a credential's history grant names, as a refusal quotes them. */
@@ -342,6 +367,7 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
     channels: [],
     consume: false,
     registerPresence: false,
+    readChannelRoutingProjection: true,
     omitFromLiveMembership: true,
     // A DM carries only its recipient's principal, so the roster names a recipient that sent nothing.
     watchPresence: Boolean(v.dms),
@@ -356,10 +382,15 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
   }
   let stopping = false;
   try {
+    const mode = ep.channelRoutingMode();
+    if (channel !== undefined) namedChannelMode(mode, channel, conn.space);
+    if (mode === "isolated" && channel !== undefined && classifyChannel(channel).kind === PLUGIN_CHANNEL_ROOT && since?.kind === "seq")
+      throw usage("a chat stream sequence cannot select plugin history; give --since a time");
+    const chatCursor = mode === "isolated" && channel === undefined && since?.kind === "seq";
     // A follow taps before it reads, so nothing sent between the read and the tap is lost; the
     // snapshot and the live feed are reconciled by message id.
-    const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms), reader?.channels, target) : undefined;
-    const { result, warnings } = await readWindow(ep, conn, { channel, dms: Boolean(v.dms), limit, since, from: v.from, grep: v.grep, target }).catch((e: unknown) => {
+    const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms), historyTapSubjects(conn, channel, mode, chatCursor, reader?.channels), target) : undefined;
+    const { result, warnings } = await readWindow(ep, conn, { channel, dms: Boolean(v.dms), limit, since, from: v.from, grep: v.grep, target }, mode).catch((e: unknown) => {
       if (e instanceof CommandFailure) throw e;
       throw new CommandFailure("failed", "OPERATION_FAILED", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });
     });
@@ -404,11 +435,14 @@ interface WindowRequest {
   readonly target: unknown;
 }
 
-export async function readWindow(ep: CotalEndpoint, conn: Connection, req: WindowRequest): Promise<{ result: HistoryResult; warnings: OutputWarning[] }> {
+export async function readWindow(ep: CotalEndpoint, conn: Connection, req: WindowRequest, mode?: ReturnType<CotalEndpoint["channelRoutingMode"]>): Promise<{ result: HistoryResult; warnings: OutputWarning[] }> {
   const warnings: OutputWarning[] = [];
   const user = conn.mode === "user";
+  const isolated = mode === "isolated";
+  const plugin = (channel: string) => isolated && classifyChannel(channel).kind === PLUGIN_CHANNEL_ROOT;
+  const namedPlugin = req.channel !== undefined && plugin(req.channel);
   // A credential that reads one channel at a time reads as a user-auth identity does.
-  const reader = user ? undefined : credentialReader(conn);
+  const reader = user ? undefined : credentialReader(conn, mode);
   if (user && req.dms)
     throw new CommandFailure("refused", "PERMISSION_DENIED", "DM history is readable only with the space signer's audit credential; a user-auth identity holds no DM read grant", { target: req.target });
   if (reader && req.dms)
@@ -422,7 +456,10 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // failure there is a part not read; reading every channel needs it to know what to read.
   let listed: { channel: string; messages: number }[] | undefined;
   try {
-    listed = await ep.listChannels();
+    if (!namedPlugin) {
+      listed = await ep.listChannels();
+      if (mode === undefined) listed = listed.filter(({ channel }) => !hasPluginChannelRoot(channel));
+    }
   } catch (e) {
     if (req.channel === undefined) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not list the channels of ${conn.space}: ${(e as Error).message}`, { target: req.target });
@@ -430,13 +467,14 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     }
     warnings.push({ code: "CHANNELS_UNREAD", target: req.target, message: `the channel list could not be read, so its retained count is unknown: ${(e as Error).message}` });
   }
-  const channels = req.channel !== undefined ? [req.channel] : (listed ?? []).map((row) => row.channel);
+  const channels = req.channel !== undefined ? [req.channel] : (listed ?? []).map((row) => row.channel)
+    .filter((channel) => !isolated || (!isChannelFamily(channel) && (req.since?.kind !== "seq" || !plugin(channel))));
 
   let read: HistoryItem[] = [];
   let olderRetained: boolean | null = null;
   let previousSeq: number | undefined;
   const denied: string[] = [];
-  if (!user && !reader) {
+  if (!user && !reader && !namedPlugin) {
     let rows: { channel: string; seq: number; msg: CotalMessage }[];
     try {
       // One extra matching post locates the boundary even when other channels interleave.
@@ -447,6 +485,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       if (/wildcard|not a valid channel|channel name/i.test((e as Error).message)) throw usage((e as Error).message);
       throw e;
     }
+    if (mode === undefined || (isolated && req.channel !== undefined)) rows = rows.filter((row) => !hasPluginChannelRoot(row.channel));
     if (rows.length > req.limit) previousSeq = rows.shift()?.seq;
     read = rows.map((row) => itemOf(row.msg, { seq: row.seq, channel: row.channel }));
     const retained = listed ? listed.filter((row) => channels.includes(row.channel)).reduce((sum, row) => sum + row.messages, 0) : undefined;
@@ -480,9 +519,10 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     let incomplete = false;
     for (const ch of channels) {
       // A credential whose own grant leaves the channel out is told what it does grant, unread.
-      if (reader && !reader.channels.some((granted) => subjectMatches(granted, ch))) {
+      if (reader && !channelInAllow(reader.channels, ch, isolated)) {
         if (req.channel !== undefined)
-          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${grantedText(reader.channels)}`, { target: req.target, remedy: `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` });
+          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${grantedText(reader.channels)}`, { target: req.target,
+            ...(namedPlugin ? {} : { remedy: `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` }) });
         denied.push(ch);
         continue;
       }
@@ -492,6 +532,8 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
         if (!page.complete) incomplete = true;
       } catch (e) {
         if (req.channel !== undefined) {
+          if (namedPlugin && isStreamNotFound(e))
+            throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected plugin channel's history stream is not on the broker", { target: req.target });
           if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read #${ch} in ${conn.space}: ${(e as Error).message}`, { target: req.target });
           throw e;
         }
@@ -506,27 +548,8 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     read = read.slice(-req.limit);
   }
 
-  let retention: HistoryResult["retention"] = null;
-  let chat: boolean | undefined;
-  let lastSeq: number | undefined;
-  try {
-    const held = await ep.chatRetention();
-    chat = held.stream;
-    lastSeq = held.lastSeq;
-    const names = new Map(read.filter((item) => item.from.name.trim()).map((item) => [item.from.id, item.from.name]));
-    retention = {
-      perSender: held.perSender,
-      maxAgeMs: held.maxAgeMs,
-      oldestAt: held.oldestAt,
-      gaps: held.perSender === null
-        ? []
-        : held.senders
-            .filter((s) => channels.includes(s.channel) && s.messages >= held.perSender!)
-            .map((s) => ({ channel: s.channel, sender: s.sender, name: names.get(s.sender) ?? null, retained: s.messages })),
-    };
-  } catch (e) {
-    warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
-  }
+  const { retention, chat, lastSeq } = namedPlugin ? { retention: null, chat: undefined, lastSeq: undefined }
+    : await readChatRetention(ep, channels, read, warnings, req.target);
 
   // A missing chat stream means channel history is gone. Direct messages are on their own stream.
   // A --dms read that already holds one must keep it: refusing here discards that message and tells
@@ -587,9 +610,42 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   };
 }
 
+async function readChatRetention(ep: CotalEndpoint, channels: readonly string[], read: readonly HistoryItem[], warnings: OutputWarning[], target: unknown) {
+  try {
+    const held = await ep.chatRetention();
+    const names = new Map(read.filter((item) => item.from.name.trim()).map((item) => [item.from.id, item.from.name]));
+    const retention: HistoryResult["retention"] = {
+      perSender: held.perSender,
+      maxAgeMs: held.maxAgeMs,
+      oldestAt: held.oldestAt,
+      gaps: held.perSender === null ? [] : held.senders
+        .filter((s) => channels.includes(s.channel) && s.messages >= held.perSender!)
+        .map((s) => ({ channel: s.channel, sender: s.sender, name: names.get(s.sender) ?? null, retained: s.messages })),
+    };
+    return { retention, chat: held.stream, lastSeq: held.lastSeq };
+  } catch (e) {
+    warnings.push({ code: "RETENTION_UNREAD", target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
+    return { retention: null, chat: undefined, lastSeq: undefined };
+  }
+}
+
+function historyTapSubjects(conn: Connection, channel: string | undefined, mode: ReturnType<CotalEndpoint["channelRoutingMode"]>, chatOnly: boolean, granted: readonly string[] | undefined): Set<string> {
+  const { space, creds } = conn;
+  if (channel !== undefined) return new Set([channelRoute(space, "*", "*", channel, mode ?? "legacy").subject]);
+  if (mode === "isolated" && creds !== undefined && !conn.bearer) {
+    const permissions = historySubjectPermissions(credsClaims(creds).nats ?? {});
+    const chat = projectChannelGrants(permissions, { space, mode: "legacy" }).read.filter((row) => !hasPluginChannelRoot(row.channel));
+    const routed = projectChannelGrants(permissions, { space, mode }).read.filter((row) => !chatOnly || row.kind === "chat");
+    return new Set([...chat, ...routed].map((row) => row.subject));
+  }
+  if (granted === undefined) return new Set([chatWildcard(space)]);
+  return new Set(granted.filter((ch) => mode !== undefined || !hasPluginChannelRoot(ch))
+    .map((ch) => channelRoute(space, "*", "*", ch, mode ?? "legacy").subject));
+}
+
 /** The live half of `--follow`: taps the selection's subjects and records connection gaps.
  *  A dropped connection whose credential can no longer connect ends it with that credential's refusal. */
-function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean, granted: readonly string[] | undefined, target: unknown) {
+function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean, channelSubjects: ReadonlySet<string>, target: unknown) {
   const queue: { item?: HistoryItem; gap?: string; error?: string; lost?: true }[] = [];
   let wake: (() => void) | undefined;
   const push = (entry: { item?: HistoryItem; gap?: string; error?: string; lost?: true }) => {
@@ -597,9 +653,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
     wake?.();
   };
   const prefix = spacePrefix(conn.space);
-  const chatSubjects = new Set(channel !== undefined ? [chatSubject(conn.space, "*", "*", channel)]
-    : granted === undefined ? [chatWildcard(conn.space)] : granted.map((ch) => chatSubject(conn.space, "*", "*", ch)));
-  if (chatSubjects.size === 0)
+  if (channelSubjects.size === 0)
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not follow channel history in ${conn.space}: its history grant is no channel`, { target, remedy: "use a credential that grants read access to the channel you want to follow" });
   let down = false;
   const edge = (connected: boolean) => {
@@ -626,7 +680,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   let tapRefusal: CommandFailure | undefined;
   ep.on("error", (e: Error) => {
     const permission = e instanceof PermissionViolationError ? e : e.cause;
-    if (channel === undefined && permission instanceof PermissionViolationError && permission.operation === "subscription" && chatSubjects.has(permission.subject)) {
+    if (channel === undefined && permission instanceof PermissionViolationError && permission.operation === "subscription" && channelSubjects.has(permission.subject)) {
       tapRefusal ??= new CommandFailure("refused", "PERMISSION_DENIED", `this credential could not open the live channel feed in ${conn.space}: ${permission.message}`, { target, remedy: "name a channel this credential can read when following history" });
       wake?.();
     } else push({ error: e.message });
@@ -634,10 +688,12 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   const receive = (subject: string, msg: CotalMessage | undefined) => {
     if (!msg) return;
     const p = parseSubject(subject);
-    if (p?.kind === "chat") push({ item: itemOf(msg, { channel: p.rest }) });
+    if (p?.kind === "chat" && hasPluginChannelRoot(p.rest) && ep.channelRoutingMode() !== "legacy") return;
+    if (p?.kind === "chat" || (p?.kind === PLUGIN_CHANNEL_ROOT && ep.channelRoutingMode() === "isolated"))
+      push({ item: itemOf(msg, { channel: p.rest }) });
     else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });
   };
-  for (const subject of chatSubjects) ep.tap(receive, { subject });
+  for (const subject of channelSubjects) ep.tap(receive, { subject });
   if (dms) ep.tap((subject, msg) => { if (msg && parseSubject(subject)?.kind === "inst") push({ item: itemOf(msg, {}) }); }, { subject: `${prefix}.inst.>` });
 
   return {

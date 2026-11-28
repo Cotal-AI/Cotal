@@ -9,16 +9,19 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { withDeadline } from "./deadline.js";
+import { endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { authenticatedMessage, kindFromParsed, isUsableMessageId, isFromSubjectSender, dmOnlyDelivery } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { DmDurableMissingError, type DmOnlyOptions, DmBindRefusedError } from "./endpoint-options.js";
 import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { taskDurableConfig } from "./streams.js";
-import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, chatSubject } from "./subjects.js";
+import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, subjectMatches } from "./subjects.js";
 import type { MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
+
+const PLUGIN_RECENT_RECEIPTS = 8192;
 
 /** What the consumers component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
@@ -44,6 +47,10 @@ export class EndpointConsumers {
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
    *  signal now that there is no per-instance chat durable. */
   private firstConnect = true;
+  private readonly pluginHistoryFrontiers = new Map<string, { seq: number; epoch: number | undefined }>();
+  private readonly pluginReceipts = new Map<string, Set<string>>();
+  private pluginReceiptEpoch?: number;
+  private pluginHistoryRecovery?: Promise<void>;
   /** The refusals a channel's live subscription callback received. nats.js hands a subscription
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
@@ -61,6 +68,11 @@ export class EndpointConsumers {
   /** Whether a live chat subscription's own callback already received this refusal. */
   ownsChatSubRefusal(err: PermissionViolationError): boolean {
     return this.chatSubRefusals.has(err);
+  }
+
+  pluginReplayFence(channel: string): () => boolean {
+    const sub = this.delivery.chatSubs.get(channel);
+    return () => sub !== undefined && this.delivery.chatSubs.get(channel) === sub && !this.lifecycle.stopped;
   }
 
   /** Lazily obtain a JetStream manager — so a non-consuming endpoint (e.g. the supervisor,
@@ -109,21 +121,30 @@ export class EndpointConsumers {
     // self-join, the delivery daemon's fan-out writer + trusted reader deliver via the `dlv_<id>` pump
     // above; open dev mode is live-only — the durable plane needs the daemon's trusted reader, the
     // security boundary). Per-
-    // channel history is the explicit replay-gated backfill, on FIRST connect only; a reconnect reopens
-    // the subs without re-backfilling (the durable backstop redelivers any missed window via dlv).
+    // channel history is replay-gated backfill. Reconnect uses the existing CHAT backstop and the
+    // plugin history position only when it belongs to this route epoch.
     if (this.identity.channels.length) {
-      // Arm the per-channel join watermarks BEFORE opening the subs: the backfill reads <= frontier and
-      // the core-sub delivers > frontier, so they never overlap (first connect). On reconnect we reopen
-      // without arming/backfilling.
-      const armed = this.firstConnect ? await this.armJoin(this.identity.channels) : undefined;
+      const plugin = (channel: string) => isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
+      const armed = await this.armJoin(this.firstConnect ? this.identity.channels.filter((ch) => !plugin(ch)) : []);
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      if (armed) await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
+      if (this.firstConnect) {
+        for (const ch of this.identity.channels.filter(plugin)) {
+          const stillJoined = this.pluginReplayFence(ch);
+          if (!stillJoined()) continue;
+          const frontier = await this.parts.history.pluginJoinFrontier(ch);
+          if (frontier !== undefined && stillJoined()) armed.set(ch, frontier);
+        }
+        await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
+      } else {
+        await this.recoverPluginChannels();
+      }
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
     // later leave can tombstone the §7 boundary; idempotent on relaunch. Open mode has no Plane-3.
-    if (this.firstConnect && this.authed && this.identity.channels.length) await this.parts.bootMemberships.armBootDurableMemberships();
+    if (this.firstConnect && this.authed && this.identity.channels.length)
+      await this.parts.bootMemberships.armBootDurableMemberships((channel) => isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel));
     this.firstConnect = false;
 
     // Anycast: a shared work-queue consumer for our role — one instance grabs each task.
@@ -138,6 +159,71 @@ export class EndpointConsumers {
         );
       }
       await this.pump(taskStream(this.identity.space), taskDurable(this.identity.card.role), this.authed ? { takeRole: this.identity.card.role } : {});
+    }
+  }
+
+  rememberPluginHistory(channel: string, frontier: number): void {
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !this.delivery.chatSubDenied.has(channel))
+      this.pluginHistoryFrontiers.set(channel, { seq: frontier, epoch: this.conn.pluginChannelEpoch });
+  }
+
+  /** A live core message has no stream sequence. Coalesce by authenticated subject and ID
+   * instead of moving the recovery cursor past rows that might never have been delivered. */
+  recordPluginReceipt(channel: string, subject: string, id: string): boolean {
+    if (id === "") return true;
+    if (this.pluginReceiptEpoch !== this.conn.pluginChannelEpoch) {
+      this.pluginReceiptEpoch = this.conn.pluginChannelEpoch;
+      this.pluginReceipts.clear();
+    }
+    const key = JSON.stringify([subject, id]);
+    let receipts = this.pluginReceipts.get(channel);
+    if (!receipts) this.pluginReceipts.set(channel, receipts = new Set());
+    if (receipts.has(key)) return false;
+    let first = true;
+    for (const other of this.pluginReceipts.values()) {
+      if (other !== receipts && other.has(key)) { first = false; break; }
+    }
+    receipts.add(key);
+    if (receipts.size > PLUGIN_RECENT_RECEIPTS) receipts.delete(receipts.values().next().value!);
+    return first;
+  }
+
+  /** Pin the recent live receipts during replay, so replay itself cannot evict a live overlap. */
+  pluginReceiptSnapshot(channel: string): ReadonlySet<string> {
+    return new Set(this.pluginReceiptEpoch === this.conn.pluginChannelEpoch ? this.pluginReceipts.get(channel) : undefined);
+  }
+
+  recoverPluginChannels(stillCurrent: () => boolean = () => true): Promise<void> {
+    const nc = this.conn.nc;
+    const epoch = this.conn.pluginChannelEpoch;
+    const onSameRoute = () => this.conn.nc === nc && this.conn.pluginChannelEpoch === epoch &&
+      this.conn.pluginChannelsEnabled && !this.lifecycle.stopped && stillCurrent();
+    const previous = this.pluginHistoryRecovery?.catch(() => {});
+    const recovery = Promise.resolve(previous).then(() => this.recoverPluginHistoryWindows(onSameRoute));
+    this.pluginHistoryRecovery = recovery;
+    const clear = () => { if (this.pluginHistoryRecovery === recovery) this.pluginHistoryRecovery = undefined; };
+    void recovery.then(clear, clear);
+    return recovery;
+  }
+
+  private async recoverPluginHistoryWindows(stillCurrent: () => boolean): Promise<void> {
+    for (const channel of [...this.identity.channels]) {
+      if (!stillCurrent()) return;
+      if (!isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
+      const from = this.pluginHistoryFrontiers.get(channel);
+      const replayFence = this.pluginReplayFence(channel);
+      const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
+      if (!stillJoined()) continue;
+      const through = await this.parts.history.pluginJoinFrontier(channel);
+      if (through === undefined || !stillJoined()) continue;
+      if (!from || from.epoch !== this.conn.pluginChannelEpoch) {
+        // No usable position yet: finish replay with the join policy, not an unbounded recovery from zero.
+        await this.parts.history.backfillPluginJoin(channel, through, stillJoined);
+        continue;
+      }
+      if (through <= from.seq) continue;
+      const complete = await this.parts.history.recoverPluginHistory(channel, from.seq, through, stillJoined);
+      if (complete && stillJoined()) this.pluginHistoryFrontiers.set(channel, { ...from, seq: through });
     }
   }
 
@@ -338,9 +424,14 @@ export class EndpointConsumers {
   subscribeChat(channel: string): void {
     if (!this.conn.nc || this.delivery.chatSubs.has(channel)) return;
     this.delivery.chatSubDenied.delete(channel);
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
-    const sub = this.conn.nc.subscribe(subject, {
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    const subject = route.subject("*", "*");
+    const nc = this.conn.nc;
+    const epoch = this.conn.pluginChannelEpoch;
+    const sub = nc.subscribe(subject, {
       callback: (err, m) => {
+        if (route.kind !== "chat" && (this.conn.nc !== nc || !this.conn.pluginChannelsEnabled ||
+          this.conn.pluginChannelEpoch !== epoch || this.delivery.chatSubs.get(channel) !== sub || this.lifecycle.stopped)) return;
         if (err) {
           // async sub.allow refusal (or sub error): the live feed for this channel is dead — never a
           // leak (the broker refused it). Drop the channel from local joined state even if it was
@@ -351,6 +442,8 @@ export class EndpointConsumers {
           if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
           this.delivery.chatSubDenied.add(channel);
           this.delivery.chatSubs.delete(channel);
+          this.pluginHistoryFrontiers.delete(channel);
+          this.pluginReceipts.delete(channel);
           const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
             this.identity.channels.splice(i, 1);
@@ -369,7 +462,8 @@ export class EndpointConsumers {
           return;
         }
         const parsed = parseSubject(m.subject);
-        if (!parsed || parsed.kind !== "chat" || hasStoredOrigin(m.headers)) return;
+        if (!parsed || parsed.kind !== route.kind || !subjectMatches(subject, m.subject) || hasStoredOrigin(m.headers)) return;
+        if (route.kind === "chat" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, parsed.rest)) return;
         let msg: CotalMessage;
         try {
           msg = m.json<CotalMessage>();
@@ -380,6 +474,7 @@ export class EndpointConsumers {
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.identity.card.id) return; // our own echo
+        if (route.kind !== "chat" && !this.recordPluginReceipt(channel, m.subject, msg.id)) return;
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
@@ -392,6 +487,8 @@ export class EndpointConsumers {
 
   /** Close a channel's core subscription (manager-free leave). */
   unsubscribeChat(channel: string): void {
+    this.pluginHistoryFrontiers.delete(channel);
+    this.pluginReceipts.delete(channel);
     const sub = this.delivery.chatSubs.get(channel);
     if (sub) {
       try {

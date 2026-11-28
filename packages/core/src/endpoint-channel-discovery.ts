@@ -17,9 +17,11 @@ import {
   decodeChannelEntry,
 } from "./channels.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
+import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
+import { PLUGIN_CHANNEL_PROJECTION_KEY } from "./plugin-channel-projection.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
@@ -87,19 +89,19 @@ export class EndpointChannelDiscovery {
 
   /** This channel's registry config from the local cache (undefined if unset). */
   getChannelConfig(channel: string): ChannelConfig | undefined {
-    return this.channelRegistry.channelConfigs.get(channel);
+    return isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) ? undefined : this.channelRegistry.channelConfigs.get(channel);
   }
 
   /** Effective replay-on-join policy for a channel: per-channel override ?? space default ??
    *  true. Reads the live cache, so it reflects runtime registry edits. */
   channelReplay(channel: string): boolean {
-    return effectiveReplay(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults);
+    return effectiveReplay(this.getChannelConfig(channel), this.channelRegistry.channelDefaults);
   }
 
   /** Effective replay window for a channel (per-channel override ?? space default), or undefined
    * for the full retained window. Only meaningful when {@link channelReplay} is true. */
   channelReplayWindow(channel: string): string | undefined {
-    return this.channelRegistry.channelConfigs.get(channel)?.replayWindow ?? this.channelRegistry.channelDefaults.replayWindow;
+    return this.getChannelConfig(channel)?.replayWindow ?? this.channelRegistry.channelDefaults.replayWindow;
   }
 
   /** A channel's effective replay policy read straight from the registry bucket, for a caller that
@@ -113,7 +115,8 @@ export class EndpointChannelDiscovery {
     let defaults: ChannelDefaults | undefined;
     try {
       [cfg, defaults] = await Promise.all([
-        isConcreteChannel(channel) ? readChannelConfig(kv, channel) : Promise.resolve(undefined),
+        isConcreteChannel(channel) && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)
+          ? readChannelConfig(kv, channel) : Promise.resolve(undefined),
         readChannelDefaults(kv),
       ]);
     } catch (e) {
@@ -127,7 +130,7 @@ export class EndpointChannelDiscovery {
    *  from the live watch cache — drives the non-gating delivery-health surface (only durable-class
    *  channels have a Plane-3 backstop to report on). */
   channelDeliveryClass(channel: string): DeliveryClass {
-    return effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults);
+    return effectiveDeliveryClass(this.getChannelConfig(channel), this.channelRegistry.channelDefaults);
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
@@ -151,11 +154,13 @@ export class EndpointChannelDiscovery {
   }
 
   private handleChannelEntry(e: KvEntry): void {
+    if (e.key === PLUGIN_CHANNEL_PROJECTION_KEY) return;
     // Cleared before the decode, so an entry that does not decode resolves to the default as the
     // fresh registry reads do.
     const isDefaults = e.key === CHANNEL_DEFAULTS_KEY;
     if (isDefaults) this.channelRegistry.channelDefaults = {};
     else this.channelRegistry.channelConfigs.delete(e.key);
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, e.key)) return;
     if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
       if (isDefaults) this.channelRegistry.channelDefaults = decodeChannelEntry(e);

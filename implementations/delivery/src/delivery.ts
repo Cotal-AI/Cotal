@@ -678,6 +678,7 @@ async function runStartedDelivery(
   // delivery-admin rail's `reloadCreds` (explicit class-2 adoption) also reloads the membership feed's
   // rw connection via this hook.
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
+    readPluginChannelAuthority: true,
     reloadMembershipCreds: async (expected?: string) => {
       if (!membership) {
         // Absent feed: a FAILURE when the renewal owner EXPECTED a membership generation (it re-signed

@@ -20,7 +20,7 @@
  */
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect as connectSocket, createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -32,7 +32,9 @@ import {
   CHANNEL_DEFAULTS_KEY,
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
+  PLUGIN_CHANNEL_ROOT,
   channelBucket,
+  channelRoute,
   chatStream,
   chatSubject,
   createSpaceAuth,
@@ -42,6 +44,7 @@ import {
   dmStream,
   idFromCreds,
   isReachable,
+  listSpaces,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -58,8 +61,9 @@ import {
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 import { execWords } from "../src/lib/exec-words.js";
-import { clean, nodePty } from "./_console-pty.js";
+import { clean, ConsoleSession, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 
@@ -163,6 +167,368 @@ async function checkDottedHistory(): Promise<void> {
   check("history with DMs selects the newest rows across the split channel windows",
     tail.status === 0 && tailRows.length === 2000 && tailRows.every((item, i) => item.seq === i + 3)
       && tail.envelope?.result?.window.olderRetained === true, shown(tail));
+}
+
+async function checkDisabledPluginNameHistory(): Promise<void> {
+  const channel = `${PLUGIN_CHANNEL_ROOT}.linear.legacy`;
+  const writer = await connect({ servers: openServers });
+  const args = ["history", channel, "--space", dottedSpace, "--json"];
+  try {
+    const js = jetstream(writer);
+    const post = (destination: string, text: string) => js.publish(chatSubject(dottedSpace, "local", "legacy", destination), JSON.stringify({
+      id: text, ts: Date.now(), space: dottedSpace, from: { id: "local.legacy", name: "legacy" },
+      channel: destination, parts: [{ kind: "text", text }],
+    }));
+    const before = await post(channel, "legacy before cursor");
+    const between = await post("ordinary", "interleaved ordinary channel");
+    const after = await post(channel, "legacy after cursor");
+    const cursor = before.seq;
+    check("with plugin channels off, an ext name shares the ordinary CHAT sequence", between.seq === cursor + 1 && after.seq === cursor + 2);
+    const result = await run([...args, "--since", String(cursor)]);
+    const items = result.envelope?.result?.items;
+    check("with plugin channels off, named history resumes from the same CHAT sequence",
+      result.status === 0 && items?.length === 1 && items[0]?.seq === cursor + 2 && items[0].text === "legacy after cursor", shown(result));
+    const live = follow([...args, "--follow", "--since", String(cursor)]);
+    try {
+      const ready = await live.until((line) => line.includes('"type":"snapshot"'));
+      await post("ordinary", "outside legacy follow");
+      const sent = await run(["send", "-c", channel, "inside legacy follow", "--space", dottedSpace, "--json"]);
+      const event = await live.until((line) => line.includes('"text":"inside legacy follow"'));
+      check("with plugin channels off, send and follow use the legacy channel and not another CHAT channel",
+        ready && sent.status === 0 && sent.envelope?.outcome === "ok" && event && !live.lines.some((line) => line.includes("outside legacy follow")),
+        { sent: shown(sent), lines: live.lines });
+    } finally {
+      await killAndAwaitExit(live.child, "SIGINT");
+    }
+    const watch = follow(["watch", "--view", "channels", "--space", dottedSpace, "--json"]);
+    try {
+      const shownChannel = await watch.until((line) => line.includes('"type":"snapshot"') && line.includes(`"${channel}"`));
+      check("with plugin channels off, watch lists the same retained legacy CHAT channel", shownChannel, watch.lines.slice(-3));
+    } finally {
+      await killAndAwaitExit(watch.child, "SIGINT");
+    }
+  } finally {
+    await writer.close();
+  }
+}
+
+async function checkEnabledPluginHistory(): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { space, servers, channel, hiddenChannel } = fixture;
+  const scope = ["--space", space, "--server", servers, "--json"];
+  const save = (name: string, creds: string) => {
+    const file = join(home, name);
+    writeFileSync(file, creds, { mode: 0o600 });
+    return file;
+  };
+  try {
+    const daemon = await fixture.startDelivery();
+    const reader = await fixture.mintAgent({ read: [channel], post: [channel] });
+    const viewer = save("plugin-reader.creds", reader.creds);
+    const writer = save("plugin-writer.creds", (await fixture.mintAgent({ post: [channel, hiddenChannel] })).creds);
+    const send = (destination: string, text: string) => run(["send", "-c", destination, text, "--creds", writer, ...scope]);
+    const kept = await send(channel, "retained plugin message");
+    const hidden = await send(hiddenChannel, "outside plugin grant");
+    check("send stores posts on both granted isolated destinations", kept.status === 0 && hidden.status === 0,
+      { kept: shown(kept), hidden: shown(hidden) });
+
+    const history = (destination: string) => run(["history", destination, "--creds", viewer, ...scope]);
+    const retained = await history(channel);
+    check("named history reads through the scoped plugin reader", retained.status === 0 && texts(retained).includes("retained plugin message"), shown(retained));
+    const numericPlugin = await run(["history", channel, "--since", "1", "--creds", viewer, ...scope]);
+    check("a CHAT sequence is not interpreted in the isolated plugin stream", numericPlugin.status === 1 &&
+      numericPlugin.envelope?.error?.code === "USAGE_INVALID" && numericPlugin.envelope.error.message.includes("give --since a time"), shown(numericPlugin));
+    const denied = await history(hiddenChannel);
+    check("a different plugin destination is refused without returning its post",
+      denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && denied.envelope.error.remedy === undefined &&
+      !denied.stdout.includes("outside plugin grant"), shown(denied));
+    const deniedSend = await run(["send", "-c", hiddenChannel, "must not be stored", "--creds", viewer, ...scope]);
+    const postGrant = (deniedSend.envelope?.target as { post?: string[] } | undefined)?.post;
+    check("a refused plugin send names only the caller's admitted post grant",
+      deniedSend.status === 2 && deniedSend.envelope?.error?.code === "PERMISSION_DENIED" && postGrant?.join() === channel &&
+      !deniedSend.envelope.error.remedy?.includes("cotal auth mint"), shown(deniedSend));
+
+    const inventory = await run(["history", "--creds", viewer, ...scope]);
+    check("history discovery includes the permitted isolated channel and no hidden plugin name",
+      inventory.envelope?.result?.channels.includes(channel) === true && !inventory.stdout.includes(hiddenChannel), shown(inventory));
+    const whoami = await run(["whoami", "--creds", viewer, "--json"]);
+    const grant = whoami.envelope?.result as unknown as { read?: string[]; post?: string[] } | undefined;
+    check("offline whoami reads the signed credential's scoped plugin claims", whoami.status === 0 &&
+      grant?.read?.join() === channel && grant.post?.join() === channel, shown(whoami));
+    await fixture.seedMembership(reader.principal, { live: [fixture.chatChannel, channel], durable: [fixture.chatChannel, hiddenChannel] });
+    await checkEnabledObserverIsChatOnly(fixture, scope, save, send, reader.principal);
+    const scopedObserver = await checkEnabledScopedViews(fixture, scope, save, send, reader.principal);
+    await checkEnabledLegacyCredential(fixture, scope, save);
+
+    const live = follow(["history", channel, "--follow", "--creds", viewer, ...scope]);
+    try {
+      await live.until((line) => line.includes('"type":"snapshot"') || line.includes('"type":"error"'));
+      const ready = live.lines.some((line) => line.includes('"type":"snapshot"') && line.includes("retained plugin message"));
+      await send(hiddenChannel, "hidden live plugin message");
+      const posted = await send(channel, "visible live plugin message");
+      if (ready) await live.until((line) => line.includes("visible live plugin message") || line.includes('"type":"error"'));
+      const delivered = live.lines.some((line) => line.includes('"type":"event"') && line.includes("visible live plugin message"));
+      check("a named follow receives the scoped plugin post and no outside message",
+        ready && posted.status === 0 && delivered && !live.lines.some((line) => line.includes("hidden live plugin message")), live.lines);
+    } finally {
+      await killAndAwaitExit(live.child, "SIGINT");
+    }
+    await checkEnabledChatCursor(fixture, scope, save);
+    await checkEnabledSpaceOverview(fixture);
+    await checkDegradedConsoleSends(fixture, scopedObserver);
+    await fixture.writeProjection({ enabled: true, epoch: 1 });
+    await checkDegradedPluginProjection(fixture, scope, viewer, save);
+    await fixture.writeProjection({ enabled: true, epoch: 1 });
+    await daemon.stop();
+    await fixture.removePluginHistory();
+    const absent = await history(channel);
+    check("a confirmed missing isolated history stream refuses rather than reading CHAT",
+      absent.status === 2 && absent.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+      absent.envelope.error.message.includes("plugin channel's history stream") && !absent.stdout.includes("create them again"), shown(absent));
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function checkEnabledScopedViews(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
+  sendPlugin: (destination: string, text: string) => Promise<{ status: number }>, member: string,
+): Promise<string> {
+  const { auth, space, channel, hiddenChannel } = fixture;
+  // Use the ordinary observer profile with one explicit signed live grant, not an agent renamed to pass the view's profile gate.
+  const id = newIdentity();
+  const { pub, sub } = credsClaims(await mintCreds(auth, id, "observer", { pluginChannelsEnabled: true })).nats!;
+  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  let scoped: string;
+  try {
+    const jwt = await encodeUser("observer", fromPublic(id.id), fromPublic(auth.account.pub), {
+      ...(pub ? { pub } : {}), sub: { ...sub, allow: [...(sub?.allow ?? []), channelRoute(space, "*", "*", channel, "isolated").subject] },
+    }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
+    scoped = save("enabled-scoped-observer.creds", credsFromJwt(jwt, id));
+  } finally {
+    signer.clear();
+  }
+  const watch = follow(["watch", "--view", "messages", "--creds", scoped, ...scope]);
+  const consoleView = follow(["console", "--plain", "--creds", scoped, ...scope.filter((arg) => arg !== "--json")]);
+  try {
+    const watchReady = await watch.until((line) => line.includes('"type":"snapshot"') && line.includes('"connected":true'));
+    const consoleReady = await consoleView.until((line) => line.includes(`watching space ${space}`));
+    const outside = await sendPlugin(hiddenChannel, "outside scoped terminal live grant");
+    const seen = await sendPlugin(channel, "inside scoped terminal live grant");
+    const writer = save("scoped-view-chat-writer.creds", (await fixture.mintAgent({ post: [fixture.chatChannel] })).creds);
+    const ordinaryText = "ordinary CHAT alongside scoped terminal grant";
+    const ordinary = await run(["send", "-c", fixture.chatChannel, ordinaryText, "--creds", writer, ...scope]);
+    const watchSeen = await watch.until((line) => line.includes('"type":"event"') && line.includes("inside scoped terminal live grant"));
+    const consoleSeen = await consoleView.until((line) => line.includes("inside scoped terminal live grant"));
+    const membership = await watch.until((line) => {
+      const snapshot = JSON.parse(line).data?.membership?.snapshot as { members?: { id: string; live: string[] }[] } | undefined;
+      return snapshot?.members?.some((row) => row.id === member && row.live.includes(channel)) === true;
+    });
+    const outsideSeen = [...watch.lines, ...consoleView.lines].some((line) => line.includes(hiddenChannel) || line.includes("outside scoped terminal live grant"));
+    check("a scoped observer's watch and console surface its own isolated live post and no other plugin name or post",
+      watchReady && consoleReady && outside.status === 0 && seen.status === 0 && watchSeen && consoleSeen && membership && !outsideSeen,
+      { watch: watch.lines.slice(-4), console: consoleView.lines.slice(-4), stderr: consoleView.stderr() });
+    const ordinarySeen = await Promise.all([watch, consoleView].map((output) => output.until((line) => line.includes(ordinaryText))));
+    check("both scoped terminal views also display ordinary live CHAT", ordinary.status === 0 && ordinarySeen.every(Boolean), shown(ordinary));
+  } finally {
+    await killAndAwaitExit(watch.child, "SIGINT");
+    await killAndAwaitExit(consoleView.child, "SIGINT");
+  }
+  return scoped;
+}
+
+async function checkDegradedConsoleSends(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, creds: string): Promise<void> {
+  const { servers, space, chatChannel, channel } = fixture;
+  const sockets = new Set<Socket>();
+  const pending = new Set<Socket>();
+  let paused = false;
+  const forward = (client: Socket) => {
+    const upstream = connectSocket(Number(new URL(servers).port), "127.0.0.1");
+    client.on("close", () => upstream.destroy());
+    upstream.on("close", () => client.destroy());
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+    client.pipe(upstream).pipe(client);
+  };
+  const proxy = createServer((client) => {
+    sockets.add(client);
+    client.on("close", () => { pending.delete(client); sockets.delete(client); });
+    client.on("error", () => client.destroy());
+    if (paused) pending.add(client);
+    else forward(client);
+  });
+  await new Promise<void>((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen(0, "127.0.0.1", resolve);
+  });
+  const consoleEnv = { HOME: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, DO_NOT_TRACK: "1" };
+  let session: ConsoleSession | undefined;
+  try {
+    const proxyServer = `nats://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const cs = session = new ConsoleSession(["--space", space, "--server", proxyServer, "--creds", creds], home,
+      consoleEnv, { cols: 160, rows: 36, cwd: shell });
+    const tab = new RegExp(`([1-9]): #${channel.replaceAll(".", "\\.")}\\b`);
+    if (!(await cs.waitFor(tab, 20_000))) throw new Error(`scoped console tab did not appear: ${clean(cs.out).slice(-1600)}`);
+    await cs.keys(tab.exec(clean(cs.out))![1]!);
+    const selected = `● ${space} · #${channel}`;
+    if (!(await cs.waitFor(selected, 5_000))) throw new Error(`console tab did not select: ${clean(cs.out).slice(-1600)}`);
+    await fixture.writeProjection({});
+    const cutAt = cs.mark();
+    paused = true;
+    for (const socket of sockets) socket.destroy();
+    if (!(await cs.waitFor(`⨯ ${space} · #${channel}`, 10_000, cutAt)))
+      throw new Error(`console did not observe the cut: ${clean(cs.out.slice(cutAt)).slice(-1600)}`);
+    const resumeAt = cs.mark();
+    paused = false;
+    for (const client of pending) forward(client);
+    pending.clear();
+    if (!(await cs.waitFor(selected, 25_000, resumeAt)))
+      throw new Error(`console did not reconnect with its cached selection: ${clean(cs.out.slice(resumeAt)).slice(-1600)}`);
+    const refusal = "This credential cannot see plugin channels.";
+    let mark = cs.mark();
+    await cs.compose("reserved cached compose must not be routed");
+    check("console refuses compose on the cached reserved selection after a degraded reconnect",
+      await cs.waitFor(`send: ${refusal}`, 6_000, mark), clean(cs.out.slice(mark)).slice(-1500));
+    mark = cs.mark();
+    await cs.command(`msg #${channel} reserved palette post must not be routed`);
+    check("console refuses the typed reserved palette destination on the degraded connection",
+      await cs.waitFor(`msg: ${refusal}`, 6_000, mark), clean(cs.out.slice(mark)).slice(-1500));
+    // Distinct from the reserved refusals: the read-only fixture still asks the broker for ordinary CHAT.
+    mark = cs.mark();
+    await cs.command(`msg #${chatChannel} ordinary chat broker control`);
+    check("ordinary console palette send still reaches the broker's read-only refusal", await cs.waitFor(/msg: .*permi/i, 8_000, mark), clean(cs.out.slice(mark)).slice(-1500));
+  } finally {
+    await session?.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => proxy.close(() => resolve()));
+  }
+}
+
+async function checkEnabledSpaceOverview(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>): Promise<void> {
+  const { space, servers, chatChannel, hiddenChannel, channel } = fixture;
+  const observerCreds = await fixture.mintObserver();
+  const readerCreds = (await fixture.mintAgent({ read: [chatChannel, channel] })).creds;
+  const count = async (creds: string) => (await listSpaces({ servers, creds })).find((row) => row.space === space);
+  const observer = await count(observerCreds);
+  const scoped = await count(readerCreds);
+  check("the spaces overview counts the admitted plugin row only for its own viewer and never returns channel names",
+    observer?.channels === 1 && scoped?.channels === observer.channels + 1 && scoped.messages === observer.messages &&
+    !JSON.stringify({ observer, scoped }).includes(channel) && !JSON.stringify({ observer, scoped }).includes(hiddenChannel), { observer, scoped });
+}
+
+async function checkDegradedPluginProjection(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], viewer: string,
+  save: (name: string, creds: string) => string,
+): Promise<void> {
+  const { auth, chatChannel, hiddenChannel, channel } = fixture;
+  const peer = await fixture.mintAgent();
+  const sender = fixture.endpoint({ creds: peer.creds, lifecycleUid: peer.lifecycleUid, consume: false, registerPresence: false,
+    card: { name: "degraded-dm-control", kind: "agent" } });
+  const note = "ordinary DM survives a malformed plugin projection";
+  await sender.start();
+  try { await sender.unicastAttributed(peer.principal, note); }
+  finally { await sender.stop(); }
+  const audit = save("projection-degraded-audit.creds", await mintCreds(auth, newIdentity(), "admin", { pluginChannelsEnabled: true }));
+  await fixture.writeProjection({});
+  const stock = save("projection-degraded-observer.creds", await fixture.mintObserver());
+  const writer = save("projection-degraded-writer.creds", (await fixture.mintAgent({ post: [chatChannel] })).creds);
+  const text = "ordinary CHAT survives a malformed plugin projection";
+  const sent = await run(["send", "-c", chatChannel, text, "--creds", writer, ...scope]);
+  const history = await run(["history", "--creds", stock, ...scope]);
+  const metadata = await run(["channel", "--creds", stock, ...scope]);
+  const dms = await run(["history", "--dms", "--creds", audit, ...scope]);
+  check("ordinary CLI send, history, and metadata survive malformed projection without exposing reserved rows",
+    sent.status === 0 && history.status === 0 && texts(history).includes(text) && metadata.status === 0 && metadata.stdout.includes(chatChannel) &&
+    dms.status === 0 && dms.envelope?.result?.items.some((row) => row.channel === null && row.text === note) === true &&
+    !history.stdout.includes(hiddenChannel) && !metadata.stdout.includes(hiddenChannel) && !dms.stdout.includes(hiddenChannel),
+    { sent: shown(sent), history: shown(history), metadata: shown(metadata), dms: shown(dms) });
+
+  const reservedRead = await run(["history", channel, "--creds", viewer, ...scope]);
+  const reservedSend = await run(["send", "-c", channel, "must not be routed", "--creds", viewer, ...scope]);
+  check("an otherwise scoped credential with a malformed projection cannot route named isolated reads or writes",
+    [reservedRead, reservedSend].every((r) => r.status === 2 && r.envelope?.error?.code === "PERMISSION_DENIED" &&
+      r.envelope.error.message === "This credential cannot see plugin channels." && r.envelope.error.remedy === undefined),
+    { read: shown(reservedRead), send: shown(reservedSend) });
+}
+
+async function checkEnabledLegacyCredential(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
+): Promise<void> {
+  const { space, servers, hiddenChannel, chatChannel } = fixture;
+  const old = await fixture.mintAgent({ legacy: true, read: [chatChannel, hiddenChannel], post: [chatChannel, hiddenChannel] });
+  const file = save("enabled-legacy-agent.creds", old.creds);
+  const observer = save("enabled-metadata-observer.creds", await fixture.mintObserver());
+  const call = (args: string[], creds = file) => run([...args, "--creds", creds, ...scope]);
+  const metadata = await call(["channel"], observer);
+  check("configured metadata shows ordinary CHAT without the stale hidden registry row", metadata.status === 0 &&
+    metadata.stdout.includes(chatChannel) && !metadata.stdout.includes(hiddenChannel), shown(metadata));
+  const retained = await call(["history", hiddenChannel]);
+  const sent = await call(["send", "-c", hiddenChannel, "legacy grant must not route to plugin history"]);
+  check("a pre-activation CHAT grant does not authorize isolated reads or writes",
+    retained.status === 2 && retained.envelope?.error?.code === "PERMISSION_DENIED" && sent.status === 2 &&
+    sent.envelope?.error?.code === "PERMISSION_DENIED", { retained: shown(retained), sent: shown(sent) });
+
+  // Model retained pre-cutover traffic through the old signed CHAT permission, not a new grant.
+  const stalePost = "legacy CHAT body at an isolated name";
+  const wire = await connect({ servers, ...standaloneConnectOpts({ creds: old.creds, tls: false }) });
+  try {
+    const ack = await jetstream(wire).publish(chatSubject(space, old.owner, old.actor, hiddenChannel), JSON.stringify({
+      id: randomUUID(), ts: Date.now(), space, from: { id: old.principal, name: "old", kind: "agent" },
+      channel: hiddenChannel, parts: [{ kind: "text", text: stalePost }],
+    }));
+    check("the pre-activation control can seed a stale CHAT post on the broker", ack.stream === chatStream(space), ack);
+  } finally {
+    await wire.close();
+  }
+  const chat = await call(["send", "-c", chatChannel, "ordinary pre-activation credential control"]);
+  const inventory = await call(["history"], observer);
+  const legacyHistory = await call(["history", chatChannel]);
+  check("ordinary history remains readable while legacy lookalikes stay out of inventory and retained output",
+    chat.status === 0 && inventory.status === 0 && legacyHistory.status === 0 &&
+    texts(inventory).includes("ordinary pre-activation credential control") && texts(legacyHistory).includes("ordinary pre-activation credential control") &&
+    !inventory.stdout.includes(hiddenChannel) && !inventory.stdout.includes(stalePost),
+    { chat: shown(chat), inventory: shown(inventory), legacyHistory: shown(legacyHistory) });
+}
+
+async function checkEnabledObserverIsChatOnly(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
+  sendPlugin: (destination: string, text: string) => Promise<{ status: number | null }>,
+  member: string,
+): Promise<void> {
+  const observer = save("plugin-negative-observer.creds", await fixture.mintObserver());
+  const writer = save("plugin-negative-chat-writer.creds", (await fixture.mintAgent({ post: [fixture.chatChannel] })).creds);
+  const watch = follow(["watch", "--view", "messages", "--creds", observer, ...scope]);
+  try {
+    const ready = await watch.until((line) => line.includes('"type":"snapshot"') && line.includes('"connected":true'));
+    const outside = await sendPlugin(fixture.channel, "plugin post outside observer scope");
+    const chat = await run(["send", "-c", fixture.chatChannel, "ordinary observer live control", "--creds", writer, ...scope]);
+    const delivered = ready && await watch.until((line) => line.includes('"type":"event"') && line.includes("ordinary observer live control"));
+    const ordinaryMembership = await watch.until((line) => {
+      const snapshot = JSON.parse(line).data?.membership?.snapshot as { members?: { id: string; live: string[]; durable: string[] }[] } | undefined;
+      return snapshot?.members?.some((row) => row.id === member && row.live.includes(fixture.chatChannel) && row.durable.includes(fixture.chatChannel)) === true;
+    });
+    check("an ordinary observer receives CHAT and its membership without seeing isolated posts or membership names",
+      outside.status === 0 && chat.status === 0 && delivered && ordinaryMembership && !watch.lines.some((line) =>
+        line.includes(fixture.channel) || line.includes(fixture.hiddenChannel) || line.includes("plugin post outside observer scope")), watch.lines.slice(-5));
+  } finally {
+    await killAndAwaitExit(watch.child, "SIGINT");
+  }
+}
+
+async function checkEnabledChatCursor(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string): Promise<void> {
+  const { chatChannel: channel } = fixture;
+  const writer = save("enabled-chat-writer.creds", (await fixture.mintAgent({ post: [channel] })).creds);
+  const observer = save("enabled-chat-observer.creds", await fixture.mintObserver());
+  const send = (text: string) => run(["send", "-c", channel, text, "--creds", writer, ...scope]);
+  const history = (...args: string[]) => run(["history", channel, "--creds", observer, ...scope, ...args]);
+  const first = await send("ordinary before cursor");
+  const second = await send("ordinary after cursor");
+  const before = await history();
+  const cursor = before.envelope?.result?.items.find((row) => row.text === "ordinary before cursor")?.seq;
+  const after = await history("--since", String(cursor));
+  check("ordinary history keeps its CHAT stream cutoff when plugin history is enabled",
+    first.status === 0 && second.status === 0 && typeof cursor === "number" && after.status === 0 &&
+    texts(after).join() === "ordinary after cursor", { before: shown(before), after: shown(after) });
 }
 
 async function checkChannelReplayRetry(): Promise<void> {
@@ -499,6 +865,8 @@ try {
     else process.env.COTAL_HOME = priorHome;
   }
   await checkDottedHistory();
+  await checkDisabledPluginNameHistory();
+  await checkEnabledPluginHistory();
   try { await checkWatchHistoryHint(watchedSpace); }
   finally {
     process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
@@ -873,12 +1241,26 @@ try {
   const restricted = join(home, "retained-reader.creds");
   try {
     const chat = chatSubject(space, "*", "*", "general");
+    const projectionRead = `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`;
     const jwt = await encodeUser("observer", fromPublic(retainedReader.id), fromPublic(auth.account.pub), {
-      pub,
+      pub: { ...pub, allow: (pub?.allow ?? []).filter((row) => row !== projectionRead), deny: [...(pub?.deny ?? []), projectionRead] },
       sub: { allow: [...(sub?.allow ?? []).filter((row) => !row.startsWith(`cotal.${space}.chat.`)), chat] },
     }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
     writeFileSync(restricted, credsFromJwt(jwt, retainedReader), { mode: 0o600 });
   } finally { signer.clear(); }
+  // The withheld KV get also covers replay metadata; it must not block retained CHAT messages.
+  const ordinaryWithoutProjection = await run(["history", "general", "--json", "--creds", restricted]);
+  check("an ordinary channel still reads when this credential cannot read the plugin routing projection",
+    ordinaryWithoutProjection.status === 4 && ordinaryWithoutProjection.envelope?.outcome === "partial" &&
+      ordinaryWithoutProjection.envelope.warnings.map((warning) => warning.code).join() === "REPLAY_UNREAD" &&
+      texts(ordinaryWithoutProjection).includes("inside scoped follow"), shown(ordinaryWithoutProjection));
+  const unknownRail = await run(["history", `${PLUGIN_CHANNEL_ROOT}.fixture.issue`, "--json", "--creds", restricted]);
+  check("a named plugin history request without mode proof refuses rather than choosing CHAT", unknownRail.status === 2 &&
+    unknownRail.envelope?.error?.code === "PERMISSION_DENIED" && unknownRail.envelope.error.message === "This credential cannot see plugin channels." &&
+    unknownRail.envelope.error.remedy === undefined, shown(unknownRail));
+  const unknownSend = await run(["send", "-c", `${PLUGIN_CHANNEL_ROOT}.fixture.issue`, "unrouted post", "--json", "--creds", restricted]);
+  check("a named plugin send without mode proof refuses before publication", unknownSend.status === 2 &&
+    unknownSend.envelope?.error?.code === "PERMISSION_DENIED" && unknownSend.envelope.error.message === unknownRail.envelope?.error?.message, shown(unknownSend));
   const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
   try {
     const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));

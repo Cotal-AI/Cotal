@@ -15,12 +15,12 @@ import {
   effectiveReplay,
   readChannelRegistry,
   channelBucket,
-  chatStream,
+  channelRoute,
   dmStream,
   taskStream,
   dialerFor,
   standaloneConnectOpts,
-  subjectMatches,
+  channelInAllow,
   AmbiguousPeerError,
   CotalEndpoint,
   mentionsIn,
@@ -34,7 +34,7 @@ import {
 import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
+import { batchedRead, hasPluginChannelRoot, namedChannelMode, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -379,14 +379,17 @@ function useOperator(space: string): string {
 const publishRefusal = "the broker refused the message, so it was not stored";
 
 /** Explain the channel grant without inferring the cause of a refusal from the registry. */
-async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
+async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], ep: CotalEndpoint, credsFile?: string): Promise<CommandFailure> {
   let post: string[] | undefined;
   let profile: "agent" | "observer" | "admin" | undefined;
+  const mode = ep.channelRoutingMode();
+  const isolated = mode === "isolated" && hasPluginChannelRoot(channel);
   if (credsFile !== undefined) {
     const claims = credsClaims(credsFile);
     if (claims.name === "agent" || claims.name === "observer" || claims.name === "admin") {
       profile = claims.name;
-      post = agentGrants(claims.nats ?? {}, target.space).post;
+      post = agentGrants(claims.nats ?? {}, target.space, mode ? { mode, principal: ep.principal } : undefined).post
+        .filter((grant) => mode !== undefined || !hasPluginChannelRoot(grant));
     }
   } else if (connection.mode === "user" && connection.root) {
     try {
@@ -400,8 +403,8 @@ async function channelDenied(channel: string, target: { space: string }, connect
     : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
   if (credsFile !== undefined) {
     if (profile !== undefined) remedy += `. Credential profile: ${profile}`;
-    remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
-    if (post !== undefined && !post.some((pattern) => subjectMatches(pattern, channel))) {
+    if (!isolated) remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
+    if (!isolated && post !== undefined && !channelInAllow(post, channel, mode === "isolated")) {
       const publish = `--allow-publish${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
       const mint = codeSpan(`cotal auth mint <label> --space ${shellWord(target.space)} ${publish} --no-persona --out <file>`);
       remedy += `: on the machine that signs this space's credentials, run ${mint} and pass the new file with --creds`;
@@ -432,10 +435,11 @@ export async function earlierMessages(values: ConnectFlags, channel: string): Pr
     const conn = await connectOrThrow(values, "observer");
     reader = new CotalEndpoint({
       space: conn.space, servers: conn.server, ...endpointAuth(conn), ...(conn.mode === "user" ? { lifecycleUid: conn.epCaller?.uid } : {}),
-      channels: [], consume: false, registerPresence: false, watchPresence: false, card: { name: "send", kind: "endpoint" },
+      channels: [], consume: false, registerPresence: false, watchPresence: false, readChannelRoutingProjection: true, card: { name: "send", kind: "endpoint" },
     });
     reader.on("error", () => {});
     await reader.start();
+    if (hasPluginChannelRoot(channel) && reader.channelRoutingMode() !== "legacy") return null;
     return (await reader.listChannels()).some((row) => row.channel === channel && row.messages > 0);
   } catch {
     return null;
@@ -462,7 +466,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     if (body.file !== undefined) closeSync(body.fd);
     throw tooLarge(budget.limit, body.size, { space: budget.space, mode: input.mode, destination: input.target });
   }
-  const opened = await openTransient(values, senderName(), { throwOnRefusal: true, senderActor, report: (level) => {
+  const opened = await openTransient(values, senderName(), { throwOnRefusal: true, senderActor, readChannelRoutingProjection: input.mode === "msg", report: (level) => {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
   } });
   const { ep, space, connection } = opened;
@@ -475,30 +479,37 @@ export async function send(args: ParsedArgs): Promise<void> {
     channelPolicy: { registered: boolean; replay: boolean; window: string | null; delivery: string } | null;
   } | undefined;
   let failure: unknown;
+  let bodyPending = !("text" in body);
   try {
-    // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
-    // send on the task stream. Confirmed absence of that stream refuses before publication. An
-    // unread check does not refuse, and a direct message is not refused because the chat stream is gone.
+    // Check the destination's expected stream. Confirmed absence refuses before publication.
+    // An unread check does not refuse, and a missing stream only matters to its own rail.
     // An open space that runs elsewhere gets its streams from its first participant, and this send
     // may be that participant, as a chat session is when it starts (#7045).
-    const storedOn = input.mode === "msg" ? chatStream(space) : input.mode === "dm" ? dmStream(space) : taskStream(space);
+    const routingMode = ep.channelRoutingMode();
+    const route = input.mode === "msg" ? channelRoute(space, ep.principal.owner, ep.principal.actor, input.target,
+      namedChannelMode(routingMode, input.target, space)) : undefined;
+    const storedOn = route?.stream ?? (input.mode === "dm" ? dmStream(space) : taskStream(space));
     if (spaceStreamsExpected(space, connection.mode)) {
-      if (await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
+      // The isolated publish requires an acknowledgement from its expected stream. A caller's
+      // plugin grant does not include a stream-wide metadata read.
+      if ((!route || route.rail.kind === "chat") && await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
     } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
-    const rest = await bodyRest(body, ep.maxPayload, refusal);
+    const maxPayload = ep.maxPayload;
+    bodyPending = false;
+    const rest = await bodyRest(body, maxPayload, refusal);
     if ("over" in rest) throw tooLarge(ep.maxPayload, rest.over, target);
     const { text } = rest;
     const bytes = Buffer.byteLength(text, "utf8");
     if (bytes > ep.maxPayload) throw tooLarge(ep.maxPayload, bytes, target);
     let policy: NonNullable<typeof receipt>["channelPolicy"] = null;
     let registered: string[] = [];
-    if (input.mode === "msg") {
+    if (input.mode === "msg" && route?.rail.kind === "chat") {
       try {
         // One Direct Get where the credential may, as the transient endpoint reads: the default scan's
         // consumer outlives the send by five minutes (#4091). A user bearer, or a credential with no
         // Direct Get row, keeps the scan.
         const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: batchedRead(connection, channelBucket(space)) });
-        registered = Object.keys(registry.channels ?? {});
+        registered = Object.keys(registry.channels ?? {}).filter((channel) => routingMode === "legacy" || !hasPluginChannelRoot(channel));
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };
         if (!policy.registered) warnings.push(await unregisteredChannel(values, input.target, target, registered));
@@ -531,7 +542,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(ep.maxPayload, bytes, target);
       if (isPublishPermissionDenied(error)) {
-        if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+        if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, ep, values.creds !== undefined ? connection.creds : undefined);
         const destination = input.mode === "ask" ? `role ${input.target}` : input.target;
         const useAuthorized = `use a credential that may send to ${destination} in ${space}`;
         throw new CommandFailure("refused", "PERMISSION_DENIED", `${destination}: ${publishRefusal}`, {
@@ -557,6 +568,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };
   } catch (error) { failure = error; }
+  if (bodyPending && !("text" in body) && body.file !== undefined) closeSync(body.fd);
   try { await ep.stop(); }
   catch { warnings.push({ code: "SENDER_CLEANUP_NOT_CONFIRMED", target, message: "Transient observer cleanup was not confirmed. This does not change the storage acknowledgement." }); }
   if (failure !== undefined) throw failure;

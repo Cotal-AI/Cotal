@@ -5454,6 +5454,13 @@
     },
     {
       "path": "implementations/cli/src/commands/send.ts",
+      "kind": "derived-output",
+      "anchor": "channelInAllow(post, channel, mode === \"isolated\")",
+      "class": "non-render/control",
+      "rationale": "Selects the send refusal remedy from the caller's channel ACL and admitted routing family. It does not render presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
       "kind": "status-token",
       "anchor": "Map((p) => p.status !== \"offline\" && p.card.role ? [p.car",
       "class": "non-render/control",

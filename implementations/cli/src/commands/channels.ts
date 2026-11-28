@@ -3,17 +3,18 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   CHANNEL_DEFAULTS_KEY,
+  CotalEndpoint,
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  ConfirmationRequired,
+  ConfirmationRequired, endpointAuth,
   checkServer, codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
-  type Presentation, type Report,
+  type Connection, type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
-import { batchedRead } from "../lib/transient.js";
+import { batchedRead, hasPluginChannelRoot } from "../lib/transient.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
@@ -150,7 +151,8 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
     const full = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
-    const registry = action === "show" ? namedRegistry(full, name!) : action === "defaults" ? defaultsRegistry(full) : full;
+    const visible = action === "defaults" ? full : await visibleChannelMetadata(connection, full);
+    const registry = action === "show" ? namedRegistry(visible, name!) : action === "defaults" ? defaultsRegistry(visible) : visible;
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open", values));
     return;
   }
@@ -205,6 +207,25 @@ export async function channels(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
+async function visibleChannelMetadata(connection: Connection, registry: ChannelRegistryRead): Promise<ChannelRegistryRead> {
+  if (!Object.keys(registry.channels ?? {}).some(hasPluginChannelRoot) && !registry.undecodable?.some(({ key }) => hasPluginChannelRoot(key))) return registry;
+  const viewer = new CotalEndpoint({
+    space: connection.space, servers: connection.server, ...endpointAuth(connection),
+    consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    readChannelRoutingProjection: true, card: { name: "channel", kind: "endpoint" },
+  });
+  viewer.on("error", () => {});
+  try {
+    await viewer.start();
+    if (viewer.channelRoutingMode() === "legacy") return registry;
+    const channels = Object.fromEntries(Object.entries(registry.channels ?? {}).filter(([name]) => !hasPluginChannelRoot(name)));
+    const undecodable = registry.undecodable?.filter(({ key }) => !hasPluginChannelRoot(key));
+    return { defaults: registry.defaults, channels, ...(undecodable?.length ? { undecodable } : {}) };
+  } finally {
+    await viewer.stop().catch(() => {});
+  }
+}
+
 /** Warn when the root's default seed, `.cotal/channels.json`, names what this write changed. A start
  *  of the stack writes each field the file sets and adds each channel it names, so a `set` of such a
  *  field or a `remove` of such a channel lasts only until the next start. A seed this cannot read as a
@@ -242,9 +263,10 @@ export async function refuseUnknownChannel(name: string, values: Values, target:
     if (isPublishPermissionDenied(error)) return;
     throw error;
   }
-  const registered = Object.keys(registry.channels ?? {}).sort();
-  const saved = new Set([...registered, ...(registry.undecodable ?? []).map((entry) => entry.key)]);
+  const saved = new Set([...Object.keys(registry.channels ?? {}), ...(registry.undecodable ?? []).map((entry) => entry.key)]);
   if (saved.has(name) || (await earlierMessages(values, name)) !== false) return;
+  const visible = await visibleChannelMetadata(reader, registry);
+  const registered = Object.keys(visible.channels ?? {}).sort();
   const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
   const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
   const word = spelled === undefined ? undefined : shellWord(spelled.startsWith("-") ? `#${spelled}` : spelled);

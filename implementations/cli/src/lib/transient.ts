@@ -1,4 +1,4 @@
-import { CotalEndpoint, DEV_OWNER, channelBucket, chatStream, credsClaims, dmStream, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches, taskStream } from "@cotal-ai/core";
+import { CotalEndpoint, DEV_OWNER, PLUGIN_CHANNEL_ROOT, channelBucket, chatStream, credsClaims, dmStream, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches, taskStream } from "@cotal-ai/core";
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
@@ -19,6 +19,20 @@ export interface ConnectValues {
   space?: string;
   server?: string;
   creds?: string;
+}
+
+/** Require routing proof for a named plugin operation, not for ordinary CHAT. */
+export function namedChannelMode(mode: ReturnType<CotalEndpoint["channelRoutingMode"]>, channel: string, space: string): "legacy" | "isolated" {
+  if (mode !== undefined) return mode;
+  if (!hasPluginChannelRoot(channel)) return "legacy";
+  throw new CommandFailure("refused", "PERMISSION_DENIED", "This credential cannot see plugin channels.", {
+    target: { space, channel },
+  });
+}
+
+/** Recognize the reserved namespace without choosing a route. */
+export function hasPluginChannelRoot(channel: string): boolean {
+  return channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
 }
 
 /** Resolve where to connect + with what credentials (`--creds` → raw off-registry; user-auth mesh →
@@ -103,7 +117,7 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
 export async function openTransient(
   values: ConnectValues,
   name: string,
-  opts: { throwOnRefusal?: boolean; senderActor?: string; watch?: boolean; presenceOnly?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
+  opts: { throwOnRefusal?: boolean; senderActor?: string; watch?: boolean; presenceOnly?: boolean; readChannelRoutingProjection?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
   const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator", { operatorActor: opts.senderActor }) : await resolveConnect(values);
   // Match the principal just minted by this connection's account signer, never a launch identity.
@@ -131,6 +145,7 @@ export async function openTransient(
         registerPresence: false,
         watchPresence: true,
         watchChannels: !opts.presenceOnly,
+        readChannelRoutingProjection: opts.readChannelRoutingProjection,
         readOnce: once,
         transportConnectTimeoutMs: DIAL_TIMEOUT_MS,
         onConnection: () => { opened = true; },
