@@ -16,6 +16,7 @@ import {
   disableInput,
   envelopeLine,
   exitCode,
+  extensionsDir,
   failureEnvelope,
   GLOBAL_FLAGS,
   globalConfigDirProblem,
@@ -30,6 +31,7 @@ import {
   isWorkspaceTargetError,
   jsonFlag,
   localeIsUtf8,
+  loadExtensionsManifest,
   operationWarnings,
   outputDeclarationProblems,
   oneLine,
@@ -64,7 +66,10 @@ import {
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
+import { offlineRemovalNeedsCache } from "./lib/extension-remove-cache.js";
 import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
+import { readStamp } from "./seed/authority.js";
+import { seedGeneration } from "./seed/paths.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild, readCursor, reconcileLockActive, recoveryPending, seedChildStatus } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
@@ -319,7 +324,8 @@ async function extSeedGate(extCmd: Command | undefined, words: string[], configF
  * `COTAL_EXT_SEEDING` nonce + parent PID match the live reconcile lock (a forged marker no longer
  * skips, so it can't bypass the recursive-reconcile guard or the lock).
  */
-function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command, values?: ParsedArgs["values"]): boolean {
+function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command, parsed?: ParsedArgs): boolean {
+  const values = parsed?.values;
   if (name === "help" || name === "version" || name === "__complete" || name === "completion") return true;
   if (cmd && readsOnly(cmd, sub)) return true;
   if (name === "login") return true; // device approval does not launch or install a connector
@@ -352,7 +358,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // which replaces it) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
-  if (name === "ext" && sub === "remove" && extRemoveKeepsSeed()) return true; // a failed seed must not trap a recorded entry; a fresh install still seeds
+  if (name === "ext" && sub === "remove" && extRemoveKeepsSeed(parsed?.positionals[1])) return true;
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
   // token file, exchange it, print the bearer and exit. It must not depend on or mutate the
@@ -369,16 +375,17 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   return false;
 }
 
-/** Whether `ext remove` should leave the seed alone. A fresh install still seeds, because the first
- *  command of a boot is what installs the built-ins. A seed that already failed is not an installer
- *  still writing the prefix, so removing the recorded extension must not be refused before it runs.
- *  An interrupted seed, a recovery journal or a child that may still be installing still refuses. */
-function extRemoveKeepsSeed(): boolean {
+/** A stopped failed seed must not trap an entry. On a current seed, a known empty-cache refusal
+ *  also skips automatic installation. Pending recovery and fresh installs still reach the seed. */
+function extRemoveKeepsSeed(pkg: string | undefined): boolean {
   try {
     const cursor = readCursor();
-    if (!cursor?.failed || recoveryPending() || reconcileLockActive()) return false;
+    if (recoveryPending() || reconcileLockActive()) return false;
     const child = seedChildStatus();
-    return child.kind !== "live" && child.kind !== "ambiguous";
+    if (child.kind === "live" || child.kind === "ambiguous") return false;
+    if (cursor) return !!cursor.failed;
+    if (child.kind !== "none" || pkg === undefined || readStamp()?.generation !== seedGeneration()) return false;
+    return offlineRemovalNeedsCache(extensionsDir(), pkg, loadExtensionsManifest().extensions);
   } catch {
     return false;
   }
@@ -1191,7 +1198,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
+  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed)) {
     const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) deferStartupSeed(parsed);

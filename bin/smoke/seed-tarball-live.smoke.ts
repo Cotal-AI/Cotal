@@ -119,12 +119,39 @@ function checkUnavailableOperator(entry: string, cwd: string, env: NodeJS.Proces
   const inodes = () => builtIns.map((name) => lstatSync(join(installed, name)).ino).join(",");
   const before = inodes();
   rmSync(join(installed, pkg), { recursive: true });
-  const offline = { npm_config_offline: "true", npm_config_cache: join(env.HOME!, "empty-npm-cache") };
+  const offline = { npm_config_offline: "true", npm_config_cache: mkdtempSync(join(env.HOME!, "empty-npm-cache-")) };
+  const shim = mkdtempSync(join(env.HOME!, "offline-remove-npm-"));
+  const trace = join(shim, "invoked");
+  const npm = resolveOnPath("npm", env);
+  if (!npm) throw new Error("the smoke needs npm on PATH");
+  writeFileSync(join(shim, "npm"), `#!/usr/bin/env node
+require('node:fs').writeFileSync(${JSON.stringify(trace)}, process.argv.slice(2).join(' '));
+process.exit(require('node:child_process').spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { stdio: 'inherit' }).status ?? 1);
+`, { mode: 0o755 });
+  const snapshot = () => ["package.json", "package-lock.json", "extensions.json", "node_modules/.package-lock.json"].map((file) =>
+    createHash("sha256").update(readFileSync(join(extensions, file))).digest("hex")).join(":") + inodes();
+  const refuseWithoutChanges = () => {
+    const beforeRemove = snapshot();
+    const remove = run(["ext", "remove", pkg], {
+      ...offline, PATH: [shim, dirname(entry), env.PATH].join(delimiter),
+    });
+    const out = remove.stdout + remove.stderr;
+    return {
+      out,
+      passed: remove.status === 1 && out.includes(`Removing ${pkg} needs the npm registry or a populated cache because the built-in dependencies are incomplete for npm. Nothing was changed.`) &&
+        out.split(`\`cotal ext remove ${pkg}\``).length === 2 && !existsSync(trace) &&
+        snapshot() === beforeRemove && !existsSync(join(installed, pkg)) && readFileSync(stampPath, "utf8") === stamp,
+    };
+  };
+  const plain = refuseWithoutChanges();
+  const retry = join(seed, "operator-fetch.retry");
+  check("packed empty-cache removal of the missing operator refuses before npm with one retry command",
+    plain.passed && !existsSync(cursor) && !existsSync(retry), plain.out);
+
   const root = mkdtempSync(join(env.HOME!, "operator-space-"));
   const ordinary = run(["space", "create", "operator-offline", "--root", root], offline);
   check("the packed CLI warns once and runs the ordinary command while the operator is unavailable",
-    ordinary.status === 0 && ordinary.stderr.split(`! Could not fetch ${pkg}`).length === 2 &&
-    existsSync(join(seed, "operator-fetch.retry")), ordinary.stdout + ordinary.stderr);
+    ordinary.status === 0 && ordinary.stderr.split(`! Could not fetch ${pkg}`).length === 2 && existsSync(retry), ordinary.stdout + ordinary.stderr);
   const update = run(["update"], offline);
   check("offline update names the absent operator and fails without a seed cursor or success report",
     update.status === 1 && update.stderr.includes(`: ${pkg}:`) && update.stderr.includes("ENOTCACHED") &&
@@ -137,14 +164,17 @@ function checkUnavailableOperator(entry: string, cwd: string, env: NodeJS.Proces
   const mixed = run(["update"], offline);
   const savedCursor = existsSync(cursor) ? readFileSync(cursor, "utf8") : "";
   const blocked = run(["space", "create", "mixed-failure", "--root", root], offline);
-  // npm remove can reify the remaining prefix; give it the cache that seeded those dependencies.
-  const remove = run(["ext", "remove", pkg], { npm_config_offline: "true" });
-  check("a changed packed built-in retains the failed cursor, and ext remove can drop the optional entry",
+  const mixedRemove = refuseWithoutChanges();
+  check("a changed packed built-in retains the failed cursor through the empty-cache refusal",
     mixed.status === 1 && /"failed"/.test(savedCursor) && mixed.stderr.includes("Reconciling built-in web") &&
     blocked.status !== 0 && /previous connector seed failed/.test(blocked.stderr) &&
+    mixedRemove.passed && readFileSync(cursor, "utf8") === savedCursor,
+    mixed.stderr + blocked.stderr + mixedRemove.out);
+
+  const remove = run(["ext", "remove", pkg], { npm_config_offline: "true" });
+  check("the packed CLI can remove the optional entry when the remaining dependencies are cached",
     remove.status === 0 && remove.stdout.includes(`removed ${pkg}`) && readFileSync(cursor, "utf8") === savedCursor &&
-    !readFileSync(join(extensions, "extensions.json"), "utf8").includes(`"${pkg}"`),
-    mixed.stderr + blocked.stderr + remove.stderr);
+    !readFileSync(join(extensions, "extensions.json"), "utf8").includes(`"${pkg}"`), remove.stdout + remove.stderr);
 }
 
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
@@ -452,14 +482,15 @@ try {
     const repairedLock = JSON.parse(readFileSync(lockPath, "utf8")) as { packages: Record<string, { extraneous?: boolean }> };
     check("one update repairs a lock containing a removed stage", /reinstalling every built-in/.test(repaired) &&
       Object.entries(repairedLock.packages).every(([key, entry]) => !key.includes(".extensions.stage-") && !(key.startsWith("../") && entry.extraneous)), repaired);
-    const linkedUpdate = update("--self");
+    const sameVersionUpdate = () => runUpdate({ ...updateEnv, PATH: `${join(home, "tools")}${delimiter}${updateEnv.PATH}` }, "--self");
+    const linkedUpdate = sameVersionUpdate();
     check("the next update through the link keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(linkedUpdate), linkedUpdate);
     updateEnv.XDG_CONFIG_HOME = physicalConfig;
     for (const args of [["--version"], ["status"]]) {
       const run = spawnSync("node", [invokedBin, ...args], { cwd: prefix, encoding: "utf8", env: updateEnv });
       check(`${args[0]} succeeds through the physical config path`, run.status === 0, run.stderr);
     }
-    const physicalUpdate = update("--self");
+    const physicalUpdate = sameVersionUpdate();
     check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
   }
   if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);

@@ -12,6 +12,7 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
 import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
+import { offlineRemovalNeedsCache } from "../lib/extension-remove-cache.js";
 import { assertSeedRemovalIdle, runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
@@ -288,7 +289,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean; registryFetchTimeoutMs?: number },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean; automatic?: true },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -340,9 +341,9 @@ export async function installExtensionSet(
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline"] : [];
-    const boundedFetch = opts?.registryFetchTimeoutMs === undefined ? [] : ["--fetch-retries=0", `--fetch-timeout=${opts.registryFetchTimeoutMs}`];
-    if (cacheOnly.length || boundedFetch.length) boundedFetch.push("--update-notifier=false");
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...boundedFetch, ...specs], npmPrefix);
+    const automatedFetch = opts?.automatic ? ["--fetch-retries=0"] : [];
+    const notifier = opts?.offline || opts?.automatic ? ["--update-notifier=false"] : [];
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...automatedFetch, ...notifier, ...specs], npmPrefix);
     const pendingMutation = existsSync(mutationPath);
     if (pendingMutation) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
@@ -726,6 +727,9 @@ async function removeUnlocked(pkg: string): Promise<void> {
   if (!entry) {
     console.log(`${pkg} is already absent. Nothing was removed.`);
     return;
+  }
+  if (offlineRemovalNeedsCache(extensionsDir(), pkg, manifest.extensions)) {
+    throw new Error(`Removing ${pkg} needs the npm registry or a populated cache because the built-in dependencies are incomplete for npm. Nothing was changed. When back online, run ${codeSpan(`${displayCmd()} ext remove ${pkg}`)}.`);
   }
   assertExtensionServiceInstancesStopped(pkg);
   const processes = await extensionProcesses(entry);

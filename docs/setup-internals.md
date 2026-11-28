@@ -392,9 +392,9 @@ same `cotal ext add` path a third party uses, so the connectors are ordinary ext
 `cotal ext remove`. The first `cotal ext remove` on a machine that has not seeded still seeds,
 because that command is what installs the built-ins. Once a seed has failed and no installer is
 still writing, `cotal ext remove` leaves that seed alone, so taking the recorded extension out is
-not refused before it runs. An interrupted seed, a recovery journal, or a child that may still be
-installing still refuses `cotal ext remove`. A command or subcommand that declares `reads` installs
-and refreshes nothing.
+not refused before it runs. Ordinary startup still refuses an interrupted seed or a recovery journal.
+A child that may still be installing also refuses removal under the extension writer lock, even if
+startup seeding was skipped. A command or subcommand that declares `reads` installs and refreshes nothing.
 The CLI never imports a built-in whose installed version differs from the binary's. Its error names
 the package and the `cotal ext seed` remedy instead.
 
@@ -574,11 +574,16 @@ A missing first-party operator package does not void the proof of a built-in tha
 identical. The check still includes hoisted dependencies. If only the operator reinstall fails,
 `cotal update` names the package, exits non-zero and leaves no seed cursor. If the same update
 also needed to reinstall a built-in, the failed cursor stays. For automatic operator reconciliation,
-npm makes one install attempt with a three-second timeout per registry request and no fetch retries.
-If the installer has stopped and npm reports an unavailable registry or uncached package, the CLI
-warns once and runs the command without advancing the seed stamp. Automatic reconciliation can
-try again after 60 seconds. `cotal update` retries immediately. Explicit `cotal ext seed` still
-reports the failure and exits non-zero. On a setup retry, reconcile checks the staged add and the seed
+npm uses its configured request timeout (five minutes by default) with no fetch retries. An answer
+within that budget can still install the extension. If the stopped installer reports no route, a
+DNS failure, a refused connection, or an offline cache miss, the CLI warns once and runs the command
+without advancing the seed stamp. It defers another automatic attempt for 60 seconds using the
+`seed/operator-fetch.retry` file. If npm times out instead, the CLI warns and continues without
+creating a retry hint. `cotal update` retries immediately. Explicit `cotal ext seed` still
+reports the failure and exits non-zero. In a packed install, removing a missing optional extension
+can require npm to reinstall dependencies of the retained built-ins. With npm offline and an empty
+cache, the CLI refuses that removal before invoking npm and prints the command to retry when back
+online. On a setup retry, reconcile checks the staged add and the seed
 records under both locks. When those records identify an interrupted first install and no
 installer is active or ambiguous, setup uses the same verified reinstall as `cotal ext seed
 --repair`. A missing generation stamp alone is not enough.

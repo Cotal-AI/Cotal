@@ -152,13 +152,11 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
   return seedRepairRefusal(cursor, generation);
 }
 
-/** Removal can leave a stopped failure for repair, but cannot race recovery or an orphaned child. */
+/** Under the extension writer lock, do not remove files an orphaned seed child might still write. */
 export function assertSeedRemovalIdle(): void {
-  const cursor = readCursor();
   const child = seedChildStatus();
   if (child.kind === "live") throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
   if (child.kind === "ambiguous") throw ambiguousSeedChild(child.path);
-  if (recoveryPending() || (cursor && !cursor.failed)) throw seedRepairRefusal(cursor, seedGeneration());
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
@@ -648,7 +646,6 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   return { noop: false, seeded, refreshed, verified, removedKept };
 }
 
-const OPERATOR_FETCH_TIMEOUT_MS = 3_000;
 const OPERATOR_RETRY_MS = 60_000;
 
 /** A retry hint is not a seed journal. Only the automatic path consults it under the seed lock. */
@@ -664,16 +661,21 @@ async function reconcileOperators(requests: readonly ExtensionInstallRequest[], 
   const { installExtensionSet } = await import("../commands/ext.js");
   for (const { pkg } of requests) console.error(c.dim(`Reconciling extension ${pkg}@${generation}`));
   try {
-    await installExtensionSet(requests, console.error, { isolate: true, ...(automatic ? { registryFetchTimeoutMs: OPERATOR_FETCH_TIMEOUT_MS } : {}) });
+    await installExtensionSet(requests, console.error, { isolate: true, ...(automatic ? { automatic: true } : {}) });
     for (const { pkg } of requests) verifyOperatorInstalled(pkg, generation);
     return true;
   } catch (error) {
-    if (automatic && error instanceof Error && typeof error.cause === "string" &&
-        (await import("../commands/update-release.js")).npmRegistryFailure(error.cause)) {
-      try { writeJsonAtomic(retry, key); } catch { /* A retry hint must not block the command. */ }
+    const failure = automatic && error instanceof Error && typeof error.cause === "string"
+      ? (await import("../commands/update-release.js")).npmRegistryFailure(error.cause) : undefined;
+    if (failure) {
       const listed = requests.map(({ pkg }) => pkg).join(", ");
-      const manual = isBundledDesktopRuntime() ? "" : `, or run \`${displayCmd()} update\` to retry now`;
-      console.error(c.yellow(`! Could not fetch ${listed}. Automatic reconciliation will retry after ${OPERATOR_RETRY_MS / 1000} seconds${manual}.`));
+      if (failure === "timeout") {
+        console.error(c.yellow(`! The npm registry timed out while fetching ${listed}.`));
+      } else {
+        try { writeJsonAtomic(retry, key); } catch { /* A retry hint must not block the command. */ }
+        const manual = isBundledDesktopRuntime() ? "" : `, or run \`${displayCmd()} update\` to retry now`;
+        console.error(c.yellow(`! Could not fetch ${listed}. Automatic reconciliation will retry after ${OPERATOR_RETRY_MS / 1000} seconds${manual}.`));
+      }
       return false;
     }
     const detail = error instanceof Error ? error.message : String(error);

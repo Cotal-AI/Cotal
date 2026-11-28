@@ -237,7 +237,9 @@ export class ReleaseDateExcluded extends Error {}
 export class DependencyCheckInterrupted extends Error {}
 export class DependencyCheckNoSpace extends Error {}
 
-const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
+const UNREACHABLE_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNREFUSED|EAI_AGAIN|ENOTFOUND)$/;
+const NETWORK_TIMEOUT_CODE = /^(?:ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT)$/;
+const isNetworkErrorCode = (code: string): boolean => UNREACHABLE_ERROR_CODE.test(code) || NETWORK_TIMEOUT_CODE.test(code) || code === "ECONNRESET" || code === "ECONNABORTED";
 
 /** npm's HTTP layer reports a response that never arrives as FETCH_ERROR, not a socket code. */
 function registryFetchTimeout(code: unknown, text: unknown): boolean {
@@ -248,21 +250,21 @@ function npmErrorCode(detail: string): string | undefined {
   return /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
 }
 
-export function npmRegistryFailure(detail: string): "timeout" | "network" | "uncached" | undefined {
+export function npmRegistryFailure(detail: string): "timeout" | "unreachable" | "uncached" | undefined {
   const code = npmErrorCode(detail);
   if (registryFetchTimeout(code, detail)) return "timeout";
   if (code === "ENOTCACHED") return "uncached";
-  if (NETWORK_ERROR_CODE.test(code ?? "")) return "network";
-  if (code && code !== "FETCH_ERROR") return undefined;
   const requestCode = /^npm (?:error|ERR!) request to \S+ failed: (?:connect |getaddrinfo )?([A-Z_]+)\b/m.exec(detail)?.[1];
-  if (NETWORK_ERROR_CODE.test(requestCode ?? "")) return "network";
+  const networkCode = (code === "FETCH_ERROR" ? requestCode : code ?? requestCode) ?? "";
+  if (UNREACHABLE_ERROR_CODE.test(networkCode)) return "unreachable";
+  if (NETWORK_TIMEOUT_CODE.test(networkCode)) return "timeout";
 }
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
   const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
   const code = npmErrorCode(detail);
-  return code !== undefined && (NETWORK_ERROR_CODE.test(code) || !detail.startsWith("target staging failed: ") && registryFetchTimeout(code, detail));
+  return code !== undefined && (isNetworkErrorCode(code) || !detail.startsWith("target staging failed: ") && registryFetchTimeout(code, detail));
 }
 
 export function offlineUpdateMessage(repaired: boolean): string {
@@ -294,7 +296,7 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       // A timeout means the registry accepted the connection and never answered, including a
       // first-party scoped read. A refusal, a 4xx, or a TLS or authentication error on a scoped
       // read can still happen while the public registry answers, so those keep the scoped remedy.
-      if (registryFetchTimeout(error?.code, error?.summary) || (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code))) return new RegistryUnavailable(detail);
+      if (registryFetchTimeout(error?.code, error?.summary) || (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && isNetworkErrorCode(error.code))) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
         if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
           const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
