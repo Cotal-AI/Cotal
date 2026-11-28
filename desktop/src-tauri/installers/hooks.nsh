@@ -183,6 +183,19 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
   StrCpy $CotalPrepared 0
+  ; The cotal command: this installation's bin folder goes last on the user's PATH, so a cotal that
+  ; npm or the shell installer already put on PATH keeps running. An update finds it already there.
+  nsExec::ExecToStack /TIMEOUT=60000 '"$INSTDIR\cotal-desktop.exe" --add-command-line'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+    DetailPrint "$1"
+    ${IfNot} ${Silent}
+    ${AndIf} $CotalUpdateMode <> 1
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Cotal is installed, but its cotal command could not be added to your PATH.$\r$\n$\r$\n$1"
+    ${EndIf}
+    SetErrorLevel 1
+  ${EndIf}
 !macroend
 
 ; Uninstalling removes the background service this installation registered, through the packaged
@@ -211,6 +224,18 @@ FunctionEnd
       DetailPrint "$1"
       ${IfNot} ${Silent}
         MessageBox MB_ICONSTOP|MB_OK "Cotal removed its background service but could not close its running programs, so its files were not removed.$\r$\n$\r$\n$1"
+      ${EndIf}
+      SetErrorLevel 21
+      Quit
+    ${EndIf}
+    ; Take this installation's bin folder off the user's PATH, before the cotal command it holds goes.
+    nsExec::ExecToStack /TIMEOUT=60000 '"$INSTDIR\cotal-desktop.exe" --remove-command-line'
+    Pop $0
+    Pop $1
+    ${If} $0 != "0"
+      DetailPrint "$1"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP|MB_OK "Cotal could not take its cotal command off your PATH, so its files were not removed.$\r$\n$\r$\n$1"
       ${EndIf}
       SetErrorLevel 21
       Quit
