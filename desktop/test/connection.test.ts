@@ -467,7 +467,8 @@ test("a set-up computer that loses its network stays on its screen and never run
     pushStatus!(statusFor("offline"));
     await settle();
     assert.equal(doc.getElementById("connection-title")!.textContent, "No internet connection", "the window names the lost connection");
-    assert.equal(doc.getElementById("tray-label")!.textContent, "Offline", "the pill names the lost connection");
+    assert.equal(doc.getElementById("sidebar-status-word")!.textContent, "Offline", "the sidebar names the lost connection");
+    assert.equal(doc.getElementById("sidebar-status-dot")!.dataset.tone, "problem");
     assert.equal(doc.querySelector("#journey")!.closest(".app") ? doc.querySelector(".app")!.classList.contains("later-open") : true, true, "the setup steps stay hidden");
     assert.equal(doc.getElementById("recovery-panel")!.hidden, true, "Try again is not offered for a lost connection");
     assert.deepEqual(tray.at(-1), { connected: false, label: "Offline" }, "the tray tooltip uses the pill's words");
