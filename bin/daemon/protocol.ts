@@ -20,7 +20,7 @@ import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { UnconfirmedConversation } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "hosted-pty-remove", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -28,6 +28,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "update-settings": { required: [], optional: ["auto", "notify"] },
   "update-check": { required: [], optional: [] },
   "daemon-stop": { required: [], optional: ["commit"] },
+  "hosted-pty-remove": { required: [], optional: [] },
   "space-recover": { required: ["space", "candidate", "holder"], optional: [] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
   "agent-stop": { required: ["space", "lifecycleUid"], optional: [] },
@@ -71,6 +72,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "hosted-pty-remove" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
@@ -307,6 +309,10 @@ export function parseRequest(line: string): ParsedRequest {
   if (op === "daemon-stop") {
     if (obj.commit !== undefined && typeof obj.commit !== "boolean") return bad(id, "commit must be a boolean");
     return { ok: true, request: { v, id, op, ...(obj.commit !== undefined ? { commit: obj.commit } : {}) } };
+  }
+  if (op === "hosted-pty-remove") {
+    if (!/^[a-f0-9]{24}$/.test(id)) return bad(id, "hosted-pty-remove requires an uninstall transaction ID");
+    return { ok: true, request: { v, id, op } };
   }
   if (op === "status" || op === "status-watch" || op === "managers-stop" || op === "managers-prepare-restart" || op === "managers-abort-restart") return { ok: true, request: { v, id, op } };
   if (op === "login-cancel") {

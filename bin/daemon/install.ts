@@ -805,6 +805,20 @@ function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUni
   return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
 
+/** The owned daemon calls this only after authenticating the caller holding service-repair.lock. */
+export function verifiedDarwinRemovalReceipt(paths: DaemonPaths, daemonHome: string | undefined, consent: () => boolean) {
+  if (process.platform !== "darwin" || process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1" || !consent() || readServiceRepair(paths.state))
+    throw new Error("hosted-pty-remove requires a verified uninstall transaction");
+  const recorded = recordedUnit(paths, daemonHome, nativeRun, false, true);
+  const { receipt, plan } = recorded;
+  const identity = recordedDaemonIdentity(recorded);
+  const job = darwinLaunchdJob(receipt.unit);
+  if (plan.mechanism !== "launchd-agent" || receipt.daemonHome !== daemonHome || !identity.same ||
+      !recordedSourceMarked(receipt, plan.mechanism) || job.state !== "loaded" || job.job.pid !== process.pid || !consent())
+    throw new Error("hosted-pty-remove could not verify the owned daemon receipt");
+  return { receipt, installedRoot: dirname(dirname(identity.installedEntry)) };
+}
+
 export interface DaemonOwnershipObservation {
   readonly state: "owned" | "not-owned" | "unknown";
   readonly reason: "verified" | "marker-absent" | "identity-differs" | "source-marker-absent" | "observation-failed" | "observation-timeout" | "observation-aborted" | "worker-failed";

@@ -107,6 +107,9 @@ try {
       ["bad id", JSON.stringify({ v: 1, id: "bad id!", op: "status" }), "BAD_ID"],
       ["non-object", JSON.stringify([1, 2]), "NOT_OBJECT"],
       ["non-JSON", "{nope", "BAD_JSON"],
+      ["removal requires a transaction ID", JSON.stringify({ v: 1, id: "normal", op: "hosted-pty-remove" }), "BAD_FIELD"],
+      ["removal cannot accept a caller consent flag", JSON.stringify({ v: 1, id: "a".repeat(24), op: "hosted-pty-remove", consent: true }), "UNKNOWN_FIELD"],
+      ["removal requires active consent", JSON.stringify({ v: 1, id: "a".repeat(24), op: "hosted-pty-remove" }), "DEPENDENCY_UNAVAILABLE"],
     ];
     let refused = 0;
     for (const [name, line, code] of cases) {
@@ -118,7 +121,7 @@ try {
     const big = await queryDaemon({ paths: p, peerUid, rawLine: "x".repeat(70 * 1024) });
     check("E3 oversize line refused LINE_TOO_LONG", !big.ok && big.error.code === "LINE_TOO_LONG", big);
     check(`E3 ${cases.length}/${cases.length} contract cases refused with their exact code`, refused === cases.length, refused);
-    check("E3 server counted 7 refusals and answered 0 statuses", d.counters.requestsRefused === cases.length + 1 && d.counters.statusAnswered === 0, d.counters);
+    check("E3 server counted every refusal and answered 0 statuses", d.counters.requestsRefused === cases.length + 1 && d.counters.statusAnswered === 0, d.counters);
     await d.close();
   }
 
