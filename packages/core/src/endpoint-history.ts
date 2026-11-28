@@ -16,13 +16,14 @@ import type { HistoryPage } from "./endpoint.js";
 
 type ChatHistoryRead = { untilSeq?: number; limit?: number; visitPage?: (page: readonly JsMsg[]) => Promise<void>; active?: () => boolean };
 type ReplayFilter = { channel: string; subject: string; frontier: number; since: number };
-export type RuntimeReplay = { through: number; beganAt: number; seq: number };
+export type RuntimeReplay = { through: number; beganAt: number; seq: number; liveIds: Set<string> };
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
   emit: (event: string, ...args: unknown[]) => boolean;
+  emitReplayError: (error: Error) => void;
   decodeHistory: (message: { subject: string; headers?: MsgHdrs; json: <T>() => T }) => HistoryMessage | undefined;
   isRecord: (value: unknown) => value is Record<string, unknown>;
   isUsableMessageId: (value: unknown) => value is string;
@@ -924,6 +925,7 @@ export class EndpointHistory {
     const stream = chatStream(this.identity.space);
     const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("chat history reads"));
     const out: JsMsg[] = [];
+    let matched = 0;
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
     const remove = async () => {
@@ -956,7 +958,7 @@ export class EndpointHistory {
             // Recheck the subject even when the broker's filter holds the same boundary.
             if (!subjectMatches(subject, m.subject)) continue;
             page.push(m);
-            if (opts.limit !== undefined && out.length >= opts.limit) return out;
+            if (opts.limit !== undefined && ++matched >= opts.limit) return out;
           }
         } finally {
           if (page.length && opts.visitPage) await opts.visitPage(page);
@@ -997,10 +999,13 @@ export class EndpointHistory {
     const joined = (entry: ReplayFilter) => runtime ? runtime.active() : this.identity.channels.includes(entry.channel);
     const active = () => !this.lifecycle.stopped && group.some(joined);
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
+    const nc = this.conn.nc;
     let n = 0;
+    let examined = 0;
     const visitPage = async (page: readonly JsMsg[]) => {
       for (const sm of page) {
         if (!active()) break;
+        examined = sm.seq;
         if (runtime) runtime.checkpoint.seq = sm.seq;
         const inWindow = (entry: ReplayFilter) => sm.seq <= entry.frontier &&
           (entry.since === 0 || sm.time.getTime() >= entry.since);
@@ -1008,7 +1013,7 @@ export class EndpointHistory {
           joined(entry) && inWindow(entry) && subjectMatches(entry.subject, sm.subject))) continue;
         // Incomparable patterns can overlap without either authorizing the union as a broker filter.
         if (previous.some(entry => joined(entry) && inWindow(entry) && subjectMatches(entry.subject, sm.subject))) continue;
-        if (this.emitReplay(sm, noop)) n++;
+        if (this.emitReplay(sm, noop, runtime?.checkpoint.liveIds)) n++;
       }
       // Yield even when all the frames on this page were skipped.
       await yieldToLoop();
@@ -1017,13 +1022,19 @@ export class EndpointHistory {
       await this.collectHistory(subject, start, { untilSeq: upToSeq, active, visitPage });
     } catch (error) {
       if (!active()) return n;
+      this.deps.emitReplayError(error as Error);
       if (isPermissionDenied(error)) throw error;
+      // An interrupted boot must retry, but an ordinary read failure does not prevent binding.
+      if (!runtime && this.conn.nc === nc && !nc?.isClosed()) {
+        for (const entry of group) entry.frontier = Math.min(entry.frontier, examined);
+        return n;
+      }
       throw new Error(`channel history replay did not complete. Delivered ${n} messages before the read ended.`, { cause: error });
     }
     return n;
   }
 
-  /** A runtime retry keeps the first attempt's replay horizon and skips frames it already handled. */
+  /** Resume from the original replay window and checkpoint through this attempt's frontier. */
   async backfillRuntimeJoin(channel: string, checkpoint: RuntimeReplay, active: () => boolean): Promise<number> {
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay || !active()) return 0;
@@ -1032,7 +1043,7 @@ export class EndpointHistory {
     return this.backfillChannel([filter], [], undefined, { checkpoint, active });
   }
 
-  private emitReplay(sm: JsMsg, noop: Delivery): boolean {
+  private emitReplay(sm: JsMsg, noop: Delivery, liveIds?: Set<string>): boolean {
     if (hasStoredOrigin(sm.headers)) return false;
     let msg: CotalMessage;
     try {
@@ -1044,6 +1055,7 @@ export class EndpointHistory {
     if (!this.deps.isRecord(msg) || !this.deps.isUsableMessageId(msg.id)) return false;
     const parsed = parseSubject(sm.subject);
     if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.identity.card.id) return false;
+    if (liveIds?.delete(msg.id)) return false;
     this.deps.emit("message", this.deps.authenticatedMessage(msg, parsed), noop, { historical: true, kind: "channel" } satisfies MessageMeta);
     return true;
   }

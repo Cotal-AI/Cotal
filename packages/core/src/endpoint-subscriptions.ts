@@ -71,6 +71,7 @@ export interface EndpointSubscriptionsDeps {
 export class EndpointSubscriptions {
   private readonly joining = new Map<string, Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>>();
   private readonly replays = new Map<string, RuntimeReplay>();
+  private readonly confirmedJoins = new Set<string>();
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps, private readonly parts: Pick<EndpointParts, "bootMemberships" | "channelDiscovery" | "connection" | "consumers" | "durable" | "durableBackstop" | "history" | "presence">) {}
 
@@ -102,7 +103,10 @@ export class EndpointSubscriptions {
     if (pending) return pending;
     const join = this.completeJoin(channel);
     this.joining.set(channel, join);
-    try { return await join; } finally { this.joining.delete(channel); }
+    try { return await join; } finally {
+      this.joining.delete(channel);
+      this.confirmedJoins.delete(channel);
+    }
   }
 
   private async completeJoin(channel: string) {
@@ -111,36 +115,65 @@ export class EndpointSubscriptions {
       return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
-    // The frontier belongs to the first attempt. A retry resumes that read before committing the join.
-    const replay = this.replays.get(channel) ?? { through: (await this.armJoin([channel])).get(channel)!, beganAt: Date.now(), seq: 0 };
+    const retry = this.replays.get(channel);
+    const replay = retry ?? { through: (await this.armJoin([channel])).get(channel)!, beganAt: Date.now(), seq: 0, liveIds: new Set<string>() };
+    const startSeq = replay.seq;
     const nc = this.conn.nc;
     this.replays.set(channel, replay);
     // Live read (SPEC v0.3): open the native core subscription — MANAGER-FREE, broker-enforced by
     // sub.allow. This is what lets an agent join a channel's live feed on its own. The sub.allow
     // refusal is async — broker-confirm before committing local join state; the subscribe handler
     // ALSO drops a channel on ANY refusal (incl. a late one), so this is not a timing gamble (#13).
-    this.parts.consumers.subscribeChat(channel);
-    let backfilled: number;
+    let backfilled = 0;
+    const pending = () => !this.lifecycle.stopped && this.replays.get(channel) === replay;
+    let confirmed = false;
     try {
-      try {
-        await this.parts.consumers.confirmChatSub();
-      } catch (e) {
-        throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
+      this.parts.consumers.subscribeChat(channel, id => {
+        if (pending()) replay.liveIds.add(id);
+      });
+      await this.confirmJoin(channel);
+      confirmed = true;
+      this.confirmedJoins.add(channel);
+      if (retry && pending()) replay.through = (await this.armJoin([channel])).get(channel)!;
+      if (pending()) backfilled = await this.parts.history.backfillRuntimeJoin(channel, replay, pending);
+      if (pending() && (this.lifecycle.rebuildPromise || this.conn.nc !== nc || nc?.isClosed())) {
+        if (retry || replay.seq !== startSeq)
+          throw new Error(`channel history replay did not complete. Delivered ${backfilled} messages before the read ended.`);
+        // An empty or disabled replay has no state to recover. Restore its confirmed live join.
+        await this.lifecycle.rebuildPromise;
+        if (pending()) {
+          this.parts.consumers.subscribeChat(channel);
+          await this.confirmJoin(channel);
+        }
       }
-      if (this.delivery.chatSubDenied.has(channel))
+      if (pending() && this.delivery.chatSubDenied.has(channel))
         throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
-      backfilled = await this.parts.history.backfillRuntimeJoin(channel, replay, () => this.replays.get(channel) === replay);
-      if (this.delivery.chatSubDenied.has(channel))
-        throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
-      if (this.replays.get(channel) !== replay || this.lifecycle.stopped || this.conn.nc !== nc || nc?.isClosed())
-        throw new Error(`channel history replay did not complete. Delivered ${backfilled} messages before the read ended.`);
     } catch (e) {
       this.parts.consumers.unsubscribeChat(channel);
-      if (replay.seq === 0 && this.replays.get(channel) === replay) this.replays.delete(channel);
-      throw e;
+      if (pending() || !confirmed) {
+        if (this.replays.get(channel) === replay && replay.seq === 0 && replay.liveIds.size === 0)
+          this.replays.delete(channel);
+        throw e;
+      }
     }
+    const commit = pending();
     this.replays.delete(channel);
-    this.identity.channels.push(channel);
+    replay.liveIds.clear();
+    if (commit) this.identity.channels.push(channel);
+    return this.joinResult(channel, backfilled, commit);
+  }
+
+  private async confirmJoin(channel: string): Promise<void> {
+    try {
+      await this.parts.consumers.confirmChatSub();
+    } catch (e) {
+      throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
+    }
+    if (this.delivery.chatSubDenied.has(channel))
+      throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
+  }
+
+  private async joinResult(channel: string, backfilled: number, commit: boolean) {
     // Durable backstop. The live core-sub above already delivers (manager-free). For a `durable`-class
     // channel, request a Plane-3 per-member backstop from the server-side delivery daemon (durableJoin via ctl.delivery) so a post reaches a
     // busy/offline turn — the core-sub stays as the live wake-hint, dedup-coalesced with the Plane-3
@@ -153,7 +186,7 @@ export class EndpointSubscriptions {
     const family = isChannelFamily(channel);
     if (!family && !isConcreteChannel(channel))
       reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
-    else if (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === "durable") {
+    else if (commit && (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === "durable")) {
       try {
         const r = await this.parts.durable.durableJoinChannel(channel);
         if (r.durable) {
@@ -180,7 +213,7 @@ export class EndpointSubscriptions {
    *  remedy when membership discovery predates lifecycle support, without changing the refusal. */
   async leaveChannel(channel: string, legacyDiscoveryMessage?: string): Promise<{ left: boolean }> {
     if (!this.conn.jsm) throw new Error(this.notLiveMsg());
-    let left = this.identity.channels.includes(channel);
+    let left = this.identity.channels.includes(channel) || this.confirmedJoins.has(channel);
     // A concrete channel or family may still have a Plane-3 membership regardless of its current policy.
     // Discover the channel's rows across this principal's lifecycles, including memberships absent
     // from the local mirror. Keep each row's generation guard. fetchMemberships throws on a
@@ -204,6 +237,7 @@ export class EndpointSubscriptions {
     }
     this.parts.consumers.unsubscribeChat(channel);
     this.replays.delete(channel);
+    this.confirmedJoins.delete(channel);
     const i = this.identity.channels.indexOf(channel);
     if (i >= 0) this.identity.channels.splice(i, 1);
     return { left };
