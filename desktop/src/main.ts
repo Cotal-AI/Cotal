@@ -10,6 +10,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
+import { consents, readPlan, renderRepair, type RepairPlanView, type RepairStepView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
 import "./components.css";
@@ -424,7 +425,7 @@ function showRefusalDetail(error: unknown): void {
 function refusal(error: unknown, fromStatus = false): void {
   agentActionProblem = false;
   showRefusalDetail(error);
-  problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  problem = error instanceof DaemonRefusal ? error.native ?? error.code : "RETRY";
   statusProblem = fromStatus;
   notice("", true);
   showStage(stage);
@@ -536,8 +537,8 @@ function showStage(next: Stage, focus = false): void {
   const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
-  el("recovery-panel").hidden = !recovery;
-  el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
+  el("recovery-panel").hidden = !recovery || repairPlan !== undefined;
+  el("setup-installer").hidden = true;
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
   if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
@@ -549,6 +550,7 @@ function showStage(next: Stage, focus = false): void {
       text("refusal-detail", `App version: ${appVersion}. Background service version differs. Update the connection when agent sessions have stopped.`); el("details").hidden = false;
     }
   }
+  if (repairPlan) for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
   el("connection-icon").dataset.tone = recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
   text("connection-title", title); text("connection-description", description);
@@ -823,6 +825,7 @@ async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
   events.onmessage = (frame) => {
     if (frame.event === "setup-progress") { setupProgress(frame); return; }
+    if (frame.event === "repair-progress") { if (typeof frame.line === "string") announce(frame.line); return; }
     if (frame.event !== "login-prompt" || !frame.prompt) return;
     try {
       approval = approvalUrl(frame.prompt.verificationUriComplete);
@@ -841,9 +844,43 @@ async function request(body: Request): Promise<Record<string, unknown>> {
     } catch (error) { refusal(error); }
   };
   const result = requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
-  if (body.op === "status" || body.op === "setup") await refreshPresence(connected());
+  if (body.op === "status" || body.op === "setup" || body.op === "repair-apply") await refreshPresence(connected());
   return result;
 }
+let repairPlan: RepairPlanView | undefined;
+let repairDone = false;
+/** Open the Repair panel with a fresh plan. Nothing changes until the person chooses its button. */
+async function openRepair(): Promise<void> {
+  repairDone = false;
+  repairPlan = readPlan(await request({ op: "repair-plan" }));
+  renderRepair(el("repair-panel"), repairPlan);
+  el("repair-panel").hidden = false; el("recovery-panel").hidden = true;
+  el("repair-title").focus();
+}
+function closeRepair(): void {
+  repairPlan = undefined; el("repair-panel").hidden = true;
+  showStage(stage);
+}
+el("repair-cancel").addEventListener("click", () => { if (!busy) closeRepair(); });
+el("repair-apply").addEventListener("click", () => {
+  const plan = repairPlan;
+  if (!plan || busy) return;
+  if (repairDone || !plan.steps.some(step => step.outcome === "fix")) { closeRepair(); void action(refresh); return; }
+  void action(async () => {
+    try {
+      const result = await request({ op: "repair-apply", digest: plan.digest, consent: consents(plan) });
+      repairDone = true;
+      renderRepair(el("repair-panel"), plan, Array.isArray(result.steps) ? result.steps as RepairStepView[] : []);
+      problem = undefined; clearDetails(); notice(result.repaired === true ? "This computer is repaired." : "Repair fixed what it could. The list shows what is left.");
+      await refresh();
+      el("repair-panel").hidden = false; el("recovery-panel").hidden = true;
+    } catch (error) {
+      // A plan that went stale is read again, so the person approves what is true now.
+      if (error instanceof DaemonRefusal && error.native === "PLAN_CHANGED") { await openRepair(); notice("This computer changed since Repair checked it. Check the list again."); return; }
+      closeRepair(); throw error;
+    }
+  });
+});
 function state(value: string, space = selectedSpace()): void {
   if (space !== selectedSpace()) return;
   connection = { space, state: value };
@@ -936,6 +973,8 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
+  // Another Cotal installation runs the service: say so and offer Repair while each status read finds it.
+  if ((status.recovery as { reason?: unknown } | undefined)?.reason === "another-installation" && (!problem || statusProblem)) { problem = "ANOTHER_INSTALLATION"; statusProblem = true; }
   renderAgentRows(status);
   if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0))) { appsLoadedAt = Date.now(); void agentApps.load(); }
   requestAnimationFrame(sizeSpaceList);
@@ -1147,6 +1186,8 @@ el("recover").addEventListener("click", () => {
   if (!keepNotAnswering) problem = undefined;
   notice("");
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  else if (recovery === "repair") void action(openRepair);
+  else if (recovery === "installer") void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal);
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
   else if (recovery === "install") void action(async () => {
@@ -1345,6 +1386,7 @@ el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
+el("settings-repair").addEventListener("click", () => { if (!busy) { settingsOpen = false; renderSettings(); void action(openRepair); } });
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
 el("account-cancel").addEventListener("click", closeAccountConfirmation);
 el("account-confirm").addEventListener("click", () => void runAccountAction());

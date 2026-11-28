@@ -129,7 +129,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                     let mut frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt" | "setup-progress" | "agent-app-progress") => on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?,
+                        Some("login-prompt" | "setup-progress" | "agent-app-progress" | "repair-progress") => on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?,
                         Some("status") if is_watch => {
                             if agent_terminal.is_none() { agent_terminal = Some(terminal_available().await); }
                             frame["result"]["agentTerminal"] = Value::Bool(agent_terminal.unwrap_or(false));

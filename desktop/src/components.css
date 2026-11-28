@@ -19,6 +19,13 @@
 .account-confirmation { margin-top: 8px; }
 .account-confirmation h3 { font-size: var(--t-small); margin: 0 0 8px; }
 .account-confirmation ul { margin: 8px 0; padding-left: 20px; max-height: 100px; overflow-y: auto; overflow-wrap: anywhere; }
+.repair-panel { margin-top: 16px; }
+.repair-panel h2 { font-size: var(--t-small); margin: 0 0 8px; }
+.repair-panel ol { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 8px; }
+.repair-panel li { display: grid; gap: 2px; font-size: 12px; overflow-wrap: anywhere; }
+.repair-panel li small { color: var(--dim); }
+.repair-panel li[data-outcome="cannot"], .repair-panel li[data-outcome="needs-you"] { font-weight: 600; }
+.repair-panel ul { margin: 4px 0 12px; padding-left: 20px; max-height: 100px; overflow-y: auto; font-size: 12px; overflow-wrap: anywhere; }
 #account-confirm-spaces:empty, #account-outcome:empty { display: none; }
 #settings-spaces { max-height: 42px; overflow-y: auto; }
 #account-outcome { white-space: pre-line; max-height: 120px; overflow-y: auto; }

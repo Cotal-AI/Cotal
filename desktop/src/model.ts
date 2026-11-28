@@ -1,11 +1,11 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string };
+export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string; digest?: string; consent?: string[] };
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
 }
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
-export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress" | "status"; watchMode?: string; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: Record<string, unknown> }; detail?: Record<string, unknown> }; code?: string; message?: string }
+export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress" | "repair-progress" | "status"; watchMode?: string; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: Record<string, unknown> }; detail?: Record<string, unknown> }; code?: string; message?: string }
 
 export class DaemonRefusal extends Error {
   constructor(readonly code: string, message: string, readonly native?: string, readonly remedy?: string, readonly detail?: Record<string, unknown>, readonly result?: Record<string, unknown>) { super(message); }
@@ -152,23 +152,31 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "repair" | "installer"; label: string }
+/** Rule 0: every screen offers one button that fixes the cause here. A cause no button can fix
+ *  directly gets Repair, which checks the background service and fixes what it finds. */
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
+  const repair = (title: string, description: string): RefusalView => ({ title, description, action: "repair", label: "Repair" });
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
     case "SEATS_ACTIVE": return { title: "Agent sessions are still running", description: "The connection cannot be updated while agent applications are using it. Stop those sessions, then check again.", action: "connect", label: "Check again" };
     case "DENIED": return { title: "Sign-in was declined", description: "This computer was not approved in your browser. You can try again when you are ready.", action: "login", label: "Try sign-in again" };
     case "EXPIRED": return { title: "Your code has expired", description: "This code can no longer approve your sign-in. Get a new code to continue in your browser.", action: "login", label: "Get a new code" };
     case "CREDENTIAL_EXPIRED": return { title: "Sign in again", description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.", action: "login", label: "Sign in again" };
-    case "SETUP_INTERRUPTED": return { title: "Setup was interrupted", description: "Run the installer again to finish updating Cotal.", action: "refresh", label: "Check again" };
+    case "AUTH_REQUIRED": case "NOT_SIGNED_IN": return { title: "Sign in to continue", description: "This computer is not signed in. Approve it in your browser to continue.", action: "login", label: "Sign in" };
+    case "SETUP_INTERRUPTED": return { title: "Setup was interrupted", description: "This copy of Cotal did not finish installing. Download the installer and run it again.", action: "installer", label: "Download installer" };
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
-    case "DAEMON_LOST": return { title: "The background service stopped", description: "It stopped before this could finish, so nothing was completed. This clears when the service is running again.", action: "refresh", label: "Check status" };
-    case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
+    case "DAEMON_LOST": return repair("The background service stopped", "It stopped before this could finish, so nothing was completed. Repair starts it again.");
+    case "NOT_ANSWERING": return repair("The background service has not started", "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.");
+    case "ANOTHER_INSTALLATION": case "CONFLICT": case "RUNNING_WITHOUT_UNIT": return repair("Another copy of Cotal runs the background service", "Repair can move it to this app. Your spaces and sign-in stay as they are.");
+    case "LOCK_HELD": case "PEER_NOT_LOCK_OWNER": case "PEER_UID_MISMATCH": return repair("The background service can't be checked", "Another program holds it, so this app cannot confirm it is Cotal's. Repair checks it and tells you what it found.");
     case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
-    default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
+    // A failure inside this window, not on the computer: nothing changed, so trying again is the fix.
+    case "RETRY": return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
+    default: return repair("Something on this computer needs fixing", "Repair checks the background service, your sign-in and your spaces, and fixes what it finds.");
   }
 }
 
@@ -179,8 +187,18 @@ export function approvalUrl(value: unknown): string {
   return url.href;
 }
 
+/** A daemon message or remedy that names a command, a path or a file is for a terminal, not a window. */
+export function forTerminal(text: string): boolean {
+  return /`|\bcotal\s|systemctl|loginctl|launchctl|schtasks|(?:^|[\s(])(?:\/|~\/|[A-Za-z]:\\)\S/.test(text);
+}
+
 export function requireResult(frame: Frame): Record<string, unknown> {
-  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", frame.error?.remedy ? `Next: ${frame.error.remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, frame.error?.remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) {
+    const message = frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.";
+    const remedy = frame.error?.remedy && !forTerminal(frame.error.remedy) ? frame.error.remedy : undefined;
+    const shown = forTerminal(message) ? "The background service refused this request. Repair shows what it found." : message;
+    throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [shown, remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+  }
   if (!frame.result || typeof frame.result !== "object" || Array.isArray(frame.result)) throw new Error("The daemon returned an unsupported result.");
   return frame.result;
 }

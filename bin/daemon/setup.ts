@@ -28,6 +28,7 @@ import { applyInstall, installedDaemonIdentity, installedServicePath, planUninst
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
+import { serviceOwner } from "./service-owner.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
 export interface SetupStep {
@@ -158,11 +159,12 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
     if (reply.ok) {
       const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
       if (!installation.same) {
-        const remedy = `run setup from ${installation.installed}, or run ${codeSpan(daemonCommandCopy("uninstall", opts.daemonHome))} then setup from ${installation.current}`;
-        if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy });
+        const remedy = `run setup from ${installation.installed}, or move the service to this installation with ${codeSpan(daemonCommandCopy("repair", opts.daemonHome))}`;
+        const native = { code: "ANOTHER_INSTALLATION", detail: { owner: serviceOwner(installation.installedEntry) } };
+        if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy, native });
         if (!opts.noManager && opts.space) {
           try { await managerViaDaemon(opts, { op: "manager-status", space: opts.space }); }
-          catch { throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; it does not answer the hosting operations and was not restarted`, { remedy }); }
+          catch { throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; it does not answer the hosting operations and was not restarted`, { remedy, native }); }
         }
         detail = `${unit} at ${installation.installed} runs compatible Cotal ${reply.result.version}; it was left running`;
         steps.push({ step: "install", outcome, detail });
@@ -227,7 +229,7 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   // A Windows task pins no PATH: restarted unchanged, its daemon reads the current user PATH, whichever
   // installation registered it, and keeps the version it runs. A unit or LaunchAgent is rewritten, which
   // only its own installation does. The message names no command line; the terminal remedy still does.
-  if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}` });
+  if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}`, native: { code: "ANOTHER_INSTALLATION", detail: { owner: serviceOwner(installation.installedEntry) } } });
   const { version: _version, ...unversioned } = opts;
   const expected: InstallOptions = installation.same ? opts : unversioned;
   const unit = process.platform === "win32" ? "" : planUninstall(opts.paths, opts.daemonHome).unit;

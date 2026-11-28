@@ -126,9 +126,9 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
   assert.deepEqual(refusalView("NOT_ANSWERING"), {
     title: "The background service has not started",
-    description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.",
-    action: "refresh",
-    label: "Check status",
+    description: "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.",
+    action: "repair",
+    label: "Repair",
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
     title: "We cannot reach your connection",

@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { recovery?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -76,14 +76,29 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         if (options.installNotAnswering) {
           stopped = true;
           const reason = typeof options.installNotAnswering === "string" ? ` It refused to start: ${options.installNotAnswering}` : "";
-          return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${reason}`, remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } } satisfies Frame;
+          return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${reason}`, remedy: "choose Repair.", native: { code: "NOT_ANSWERING" } } } satisfies Frame;
         }
         stopped = false;
         return ok({ installed: true });
       }
+      if (r.op === "repair-plan") return ok({ digest: "d".repeat(64), steps: options.recovery ? [
+        { step: "service-owner", outcome: "fix", consent: "takeover", owner: { kind: "cli", location: "/usr/lib/node_modules/cotal-ai" }, agents: [{ space: "team", name: "reviewer", application: "Claude Code" }], found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service. 1 agent restarts." },
+        { step: "service-running", outcome: "ok", found: "Checked after the service is set up." },
+      ] : [
+        { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
+        stopped ? { step: "service-running", outcome: "fix", found: "The background service is not running.", change: "Start the background service." } : { step: "service-running", outcome: "ok", found: "The background service is running." },
+      ] });
+      if (r.op === "repair-apply") {
+        if (options.recovery) { options.recovery = false; return ok({ repaired: true, steps: [{ step: "service-owner", outcome: "fix", found: "A command-line install of Cotal runs the background service.", changed: "This app now runs the background service. 1 space was kept." }] }); }
+        const wasStopped = stopped; stopped = false;
+        return ok({ repaired: true, steps: [
+          { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
+          wasStopped ? { step: "service-running", outcome: "fix", found: "The background service is not running.", changed: "The background service was started." } : { step: "service-running", outcome: "ok", found: "The background service is running." },
+        ] });
+      }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
-      const statusPayload = () => ({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
+      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli", location: "/usr/lib/node_modules/cotal-ai" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
@@ -314,11 +329,10 @@ test("interrupted setup shows installer recovery without offering Start service"
   const a = await app({ installed: true, interrupted: true });
   try {
     assert.equal(a.node("connection-title").textContent, "Setup was interrupted");
-    assert.equal(a.node("connection-description").textContent, "Run the installer again to finish updating Cotal.");
-    assert.equal(a.node("recover").textContent, "Check again");
-    assert.equal(a.node("setup-installer").hidden, false);
-    assert.match(a.node<HTMLAnchorElement>("setup-installer").href, /github.com\/Cotal-AI\/Cotal\/releases\/latest/);
-    await a.click("setup-installer");
+    assert.equal(a.node("connection-description").textContent, "This copy of Cotal did not finish installing. Download the installer and run it again.");
+    assert.equal(a.node("recover").textContent, "Download installer");
+    assert.equal(a.node("setup-installer").hidden, true, "one button: the installer link is the recovery button itself");
+    await a.click("recover");
     assert.equal(a.urls.at(-1), "https://github.com/Cotal-AI/Cotal/releases/latest");
     assert.equal(a.calls.some(call => call.op === "install"), false);
   } finally { a.dom.window.close(); }
@@ -408,9 +422,34 @@ test("Start service starts a stopped background service and leaves no notice", a
   } finally { a.dom.window.close(); }
 });
 
-test("a service start that does not answer within 15 seconds keeps its refusal across NOT_RUNNING checks and clears when the service answers", async () => {
+test("another installation's service offers Repair, which names the agent that restarts and moves the service after one approval", async () => {
+  const a = await app({ installed: true, recovery: true });
+  try {
+    await a.click("login"); await a.login();
+    assert.equal(a.node("connection-title").textContent, "Another copy of Cotal runs the background service");
+    assert.equal(a.node("connection-description").textContent, "Repair can move it to this app. Your spaces and sign-in stay as they are.");
+    assert.equal(a.node("recover").textContent, "Repair");
+    assert.doesNotMatch(a.node("refusal-detail").textContent ?? "", /`|cotal\s|\/usr\//, "Details names no command and no path");
+    const before = a.calls.length;
+    await a.click("recover");
+    assert.deepEqual(a.calls.slice(before).map(call => call.op), ["repair-plan"], "opening Repair changes nothing");
+    assert.equal(a.node("repair-consent").textContent, "The background service is now run by a command-line install of Cotal. Repair moves it to this app. Your spaces and sign-in stay as they are. This agent restarts:");
+    assert.equal(a.node("repair-agents").textContent, "reviewer (Claude Code) in team");
+    assert.equal(a.node("repair-apply").textContent, "Use this app");
+    await a.click("repair-apply");
+    const applied = a.calls.filter(call => call.op === "repair-apply");
+    assert.equal(applied.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(applied[0])), { op: "repair-apply", digest: "d".repeat(64), consent: ["takeover"] });
+    assert.match(a.node("repair-steps").textContent ?? "", /This app now runs the background service\. 1 space was kept\./);
+    await a.click("repair-apply");
+    assert.equal(a.node("repair-panel").hidden, true);
+    assert.equal(a.node("recovery-panel").hidden, true, "the next status read no longer reports another installation");
+  } finally { a.dom.window.close(); }
+});
+
+test("a service start that does not answer within 15 seconds offers Repair, which starts it, and the card clears when the service answers", async () => {
   const reason = "the native daemon source names another installation; startup refused";
-  const expectedDetail = `DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${reason}\nNext: choose Check status.`;
+  const expectedDetail = `DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${reason}\nNext: choose Repair.`;
   const a = await app({ installed: true });
   try {
     await a.click("login"); await a.login();
@@ -422,32 +461,37 @@ test("a service start that does not answer within 15 seconds keeps its refusal a
     a.options.installNotAnswering = reason;
     await a.click("recover");
     assert.equal(a.node("connection-title").textContent, "The background service has not started");
-    assert.equal(a.node("connection-description").textContent, "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
-    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("connection-description").textContent, "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.");
+    assert.equal(a.node("recover").textContent, "Repair");
     assert.equal(a.node("details").hidden, false);
     assert.equal(a.node("refusal-detail").textContent, expectedDetail);
 
-    // A background poll that still observes NOT_RUNNING keeps the NOT_ANSWERING card and Details.
+    // A background poll that still observes NOT_RUNNING keeps the card and Details.
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service has not started");
-    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("recover").textContent, "Repair");
     assert.equal(a.node("refusal-detail").textContent, expectedDetail);
 
-    // Clicking Check status while the service is still stopped checks status without offering Start service.
-    const beforeCheck = a.calls.length;
+    // Repair reads its plan first and changes nothing until the person approves it.
+    const beforeRepair = a.calls.length;
     await a.click("recover");
-    assert.deepEqual(a.calls.slice(beforeCheck).map(call => call.op), ["status"]);
-    assert.equal(a.node("connection-title").textContent, "The background service has not started");
-    assert.equal(a.node("recover").textContent, "Check status");
-    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+    assert.deepEqual(a.calls.slice(beforeRepair).map(call => call.op), ["repair-plan"]);
+    assert.equal(a.node("repair-panel").hidden, false);
+    assert.equal(a.node("recovery-panel").hidden, true);
+    assert.equal(a.node("repair-apply").textContent, "Repair");
+    assert.match(a.node("repair-steps").textContent ?? "", /The background service is not running\.Start the background service\./);
 
-    // Once the service answers after 15s, the next poll clears the card and Details.
-    a.arm();
-    await a.tick();
+    // Approving runs exactly that plan; the service answers and the window returns to normal.
+    await a.click("repair-apply");
+    const applied = a.calls.filter(call => call.op === "repair-apply");
+    assert.equal(applied.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(applied[0])), { op: "repair-apply", digest: "d".repeat(64), consent: [] });
+    assert.equal(a.node("repair-apply").textContent, "Done");
+    await a.click("repair-apply");
+    assert.equal(a.node("repair-panel").hidden, true);
     assert.equal(a.node("connection-title").textContent, before);
     assert.equal(a.node("recovery-panel").hidden, true);
     assert.equal(a.node("details").hidden, true);
-    assert.equal(a.node("refusal-detail").textContent, "");
   } finally { a.dom.window.close(); }
 });
 
