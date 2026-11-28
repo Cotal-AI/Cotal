@@ -594,13 +594,15 @@ try {
       const damagedPreparedJson = await builtCli(["status", "--daemon-home", g1Home, "--space", damagedPrepared, "--json"]);
       check("G1 unreadable prepared-space record names prepared space record and file without calling it mesh registry", damagedPreparedJson.status === 2 && damagedPreparedJson.doc.outcome === "refused" && damagedPreparedJson.doc.target?.space === damagedPrepared && damagedPreparedJson.doc.target?.file === damagedPreparedFile && damagedPreparedJson.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && damagedPreparedJson.doc.error.cause?.code === "UNAVAILABLE" && damagedPreparedJson.doc.error.message === `${damagedPreparedFile} is not a usable prepared space record.` && damagedPreparedJson.doc.error.remedy === `remove it with \`cotal space forget ${damagedPrepared}\``, damagedPreparedJson);
       const emptyPreparedJson = await builtCli(["status", "--daemon-home", g1Home, "--space", localPrepared, "--json"]);
+      const warning = emptyPreparedJson.doc.warnings?.[0];
       check("G1 a prepared local refusal with no hosted spaces warns about one unrelated damaged record", emptyPreparedJson.status === 2
         && emptyPreparedJson.doc.error?.code === "TARGET_NOT_FOUND" && emptyPreparedJson.doc.error.cause?.code === "NOT_REQUESTED"
         && emptyPreparedJson.doc.error.message?.endsWith(". It is not hosting any spaces.") === true
-        && JSON.stringify(emptyPreparedJson.doc.warnings) === JSON.stringify([{
-          code: "PREPARED_RECORD_SKIPPED", target: { file: damagedPreparedFile, space: damagedPrepared },
-          message: `${damagedPreparedFile} is not a usable prepared space record, so it is skipped; remove it with \`cotal space forget ${damagedPrepared}\``,
-        }]), emptyPreparedJson);
+        && emptyPreparedJson.doc.warnings?.length === 1 && warning?.code === "PREPARED_RECORD_SKIPPED"
+        && JSON.stringify(warning.target) === JSON.stringify({ file: damagedPreparedFile, space: damagedPrepared })
+        && warning.message.startsWith(`${damagedPreparedFile} does not parse as a prepared space record`)
+        && warning.message.endsWith(`, so it is skipped; remove it with \`cotal space forget ${damagedPrepared}\``)
+        && emptyPreparedJson.err.includes(warning.message), emptyPreparedJson);
       rmSync(damagedPreparedFile);
       const registrations = dirname(damagedFile);
       const heldRegistrations = `${registrations}.held`;
