@@ -131,13 +131,15 @@ check("a start missing an option with no default refuses naming its flag, and ea
 const added = refusal(() => servicePresetDefinition(preset, SPACE, {}, root));
 check("  and the add form repeats its own command line", added?.remedy?.startsWith("cotal service add <name> --preset fixture --token ") === true, added);
 const unregistered = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
-check("a broker default with no registered space refuses and names the flag", unregistered?.code === "DEPENDENCY_UNAVAILABLE" && unregistered.message.includes("--server") && unregistered.remedy?.includes("pass --server <url>") === true, unregistered);
+check("a broker default with no registered space refuses and names the flag", unregistered?.code === "DEPENDENCY_UNAVAILABLE" && unregistered.message.includes("--server") && unregistered.remedy?.includes("pass --server <url>") === true && unregistered.remedy.includes("original command") && !unregistered.remedy.includes("cotal up"), unregistered);
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 recordMesh({ space: SPACE, server: SERVER, root, mode: "open", ts: new Date().toISOString() });
 const absent = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
 const creds = presetMaterialPath("fixture.creds", SPACE, root, false);
 check("a file default the space does not keep refuses, naming the file and the flag, and invents none",
   absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true && absent.remedy.includes(`space show ${SPACE}`) && !absent.remedy.includes("cotal up"), absent);
+const extra = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t", "new-instance": true }, false));
+check("an additional instance cannot take file flags, so the remedy identifies the first-start alternative", extra?.remedy?.includes("to configure a first start instead, remove `--new-instance` and pass --creds <file>") === true, extra);
 mkdirSync(dirname(creds), { recursive: true, mode: 0o700 });
 writeFileSync(creds, "fixture\n", { mode: 0o600 });
 const filledMissing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));

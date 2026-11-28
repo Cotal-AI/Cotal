@@ -177,6 +177,9 @@ export function presetRequiredInputs(preset: ServicePreset, space: string, root:
  *  A default that cannot be resolved refuses with the flag that replaces it; nothing is invented. */
 export function presetDefaultOptions(preset: ServicePreset, space: string, root: string, values: ParsedArgs["values"], migrate = true): Record<string, string | boolean> {
   const filled: Record<string, string | boolean> = {};
+  const supply = (flag: string) => values["new-instance"]
+    ? `to configure a first start instead, remove ${codeSpan("--new-instance")} and pass ${flag}, keeping the other options unchanged`
+    : `pass ${flag} on the original command, keeping the other options unchanged`;
   for (const [option, fallback] of Object.entries(preset.defaults ?? {})) {
     const name = presetFlagName(option);
     if (values[name] !== undefined || values[`no-${name}`] !== undefined) continue;
@@ -185,7 +188,7 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
     if (fallback.space === "root") { filled[name] = root; continue; }
     if (fallback.space !== "material") {
       const server = findMesh(space)?.server;
-      if (!server) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space ${oneLine(space)} has no registered broker for the ${preset.name} preset's --${name}`, { target: { space }, remedy: `pass --${name} <url>, or register the space with \`cotal up\` or \`cotal space add\`` });
+      if (!server) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space ${oneLine(space)} has no registered broker for the ${preset.name} preset's --${name}`, { target: { space }, remedy: supply(`--${name} <url> for the intended broker`) });
       filled[name] = server;
       continue;
     }
@@ -195,7 +198,7 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
         throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the web dashboard requires a registered static-auth space, and the selected space is open; nothing was saved or started", { target: { space, path }, remedy: "select or create a registered static-auth space, then rerun the command for that space" });
       }
       throw localDiagnostic(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, {
-        target: { space, path }, remedy: `inspect the intended project with ${showSpaceCommand(space, presentationOf(values))}; to supply the file for that space, pass --${name} <file> on the original command, keeping the other options unchanged`,
+        target: { space, path }, remedy: `inspect the intended project with ${showSpaceCommand(space, presentationOf(values))}; ${supply(`--${name} <file> for that space`)}`,
       }));
     }
     filled[name] = path;

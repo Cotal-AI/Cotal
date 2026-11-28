@@ -86,7 +86,7 @@ Named start help lists `--idle-exit` only for `manager` or a saved manager defin
 When a preset option has the wrong numeric type or falls outside its range, the error gives the required type or bound without printing the supplied value.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
-it before adding the missing flags. If the space lacks a preset file such as the dashboard's `web.creds`, the refusal names the file locally and shows how to inspect the intended project. To supply its file, add the named option to the original command and keep the other flags, including `--dry-run`. A start refused before anything launched forgets the definition it saved. A preset name acts on the
+it before adding the missing flags. If the space lacks a preset file such as the dashboard's `web.creds`, the refusal names the file locally and shows how to inspect the intended project. To supply its file, add the named option to the original command and keep flags such as `--dry-run`. Preset options cannot accompany `--new-instance`; omit it only if you intend to configure a first start. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands.
 A foreground start with `--dry-run --json` writes one preview envelope without launching a process.
@@ -143,7 +143,7 @@ dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spe
 takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
 runs in, and the file need not exist yet. When a preset refuses because required options are missing,
 it names them and any defaults the space cannot fill, such as the broker's `--server <url>` in a
-space with no registered broker. If you supplied other options, add just the missing flags to your
+space with no registered broker. For a broker preview, supply the intended broker address without starting a stack. If you supplied other options, add just the missing flags to your
 original command. Keep your supplied values, the selected `--space`, and flags such as `--json` or
 `--dry-run`. The refusal does not repeat the option values you entered.
 
