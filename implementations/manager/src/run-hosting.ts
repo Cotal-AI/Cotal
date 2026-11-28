@@ -1005,6 +1005,7 @@ export class RunHosting {
       this.recovering.add(pending.runId);
       void this.resumeInterruptedRun(pending.runId, pending.timeout,
         { holder: pending.holder, epoch: pending.epoch, fencingToken: pending.fencingToken }, pending.until)
+        .catch((error: unknown) => { this.ctx.log(`! run ${pending.runId} could not resume after the broker interruption: ${rejectionText(error).split(/\r?\n/, 1)[0]}`); })
         .finally(() => { this.recovering.delete(pending.runId); });
     }
   }
@@ -1344,7 +1345,8 @@ export class RunHosting {
 
   private async resumeInterruptedRun(runId: string, timeout: string, previous: Pick<RunStatusValue, "holder" | "epoch" | "fencingToken">, until = Date.now() + INTERRUPTED_RUN_RETRY_WINDOW_MS): Promise<void> {
     this.recovering.add(runId);
-    await this.noteInterruptedRecovery({ runId, timeout, holder: previous.holder, epoch: previous.epoch, fencingToken: previous.fencingToken, until });
+    await this.noteInterruptedRecovery({ runId, timeout, holder: previous.holder, epoch: previous.epoch, fencingToken: previous.fencingToken, until })
+      .catch((error: unknown) => { this.ctx.log(`! run ${runId}: automatic recovery could not record its note: ${rejectionText(error)}`); });
     const startedAt = performance.now();
     for (const [attempt, backoff] of INTERRUPTED_RUN_RETRY_DELAYS_MS.entries()) {
       const wait = backoff > 0 && performance.now() - startedAt + backoff + 1_000 >= 60_000 ? 60_000 : backoff;
@@ -1387,7 +1389,8 @@ export class RunHosting {
   private async forgetInterruptedRecovery(runId: string): Promise<void> {
     const dir = this.ctx.stateDir;
     if (dir === undefined) return;
-    await updateInterruptedRunRecovery(dir, (read) => read.notes.filter((row) => row.runId !== runId));
+    await updateInterruptedRunRecovery(dir, (read) => read.notes.filter((row) => row.runId !== runId))
+      .catch((error: unknown) => { this.ctx.log(`! run ${runId}: automatic recovery could not record its note: ${rejectionText(error)}`); });
   }
 
   /** Runs this manager released and was still retrying when it stopped, inside the retry window. */
@@ -1399,7 +1402,10 @@ export class RunHosting {
     const first = readInterruptedRunRecovery(dir);
     const read = !first.corrupt && first.dropped === 0 && live(first).length === first.notes.length
       ? first
-      : await updateInterruptedRunRecovery(dir, (current) => live(current));
+      : await updateInterruptedRunRecovery(dir, (current) => live(current)).catch((error: unknown) => {
+        this.ctx.log(`! automatic recovery could not record its note: ${rejectionText(error)}`);
+        return first;
+      });
     if (read.corrupt) this.ctx.log("! automatic recovery could not read its note of released runs; those runs stay released. Resume one with `cotal run resume <runId>`");
     else if (read.dropped > 0) this.ctx.log(`! automatic recovery skipped ${read.dropped} unreadable note${read.dropped === 1 ? "" : "s"}; resume a run that is still released with \`cotal run resume <runId>\``);
     for (const row of read.notes) if (row.until <= now) this.ctx.log(`! run ${row.runId} is still released: its automatic recovery window ended while this manager was stopped. Resume it with \`cotal run resume ${row.runId}\``);

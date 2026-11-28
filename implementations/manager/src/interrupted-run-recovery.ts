@@ -76,6 +76,10 @@ export function writeInterruptedRunRecovery(dir: string, rows: readonly Interrup
   }
 }
 
+export const interruptedRunRecoveryStore = {
+  write: writeInterruptedRunRecovery,
+};
+
 /** Read the note, change it, and write it back while holding the directory lock. A second process
  *  waits for the same lock, so the two updates cannot drop each other's rows. */
 export async function updateInterruptedRunRecovery(dir: string, change: (read: InterruptedRunRecoveryRead) => readonly InterruptedRunRecovery[]): Promise<InterruptedRunRecoveryRead> {
@@ -83,7 +87,7 @@ export async function updateInterruptedRunRecovery(dir: string, change: (read: I
   const release = await lockInterruptedRunRecovery(dir);
   try {
     const read = readInterruptedRunRecovery(dir);
-    writeInterruptedRunRecovery(dir, change(read));
+    interruptedRunRecoveryStore.write(dir, change(read));
     return read;
   } finally {
     release();

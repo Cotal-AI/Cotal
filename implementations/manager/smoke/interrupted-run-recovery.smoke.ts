@@ -11,7 +11,7 @@ import { spaceSegment } from "@cotal-ai/workspace";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { RunHosting } from "../src/run-hosting.js";
 import {
-  readInterruptedRunRecovery, updateInterruptedRunRecovery, writeInterruptedRunRecovery, type InterruptedRunRecovery,
+  interruptedRunRecoveryStore, readInterruptedRunRecovery, updateInterruptedRunRecovery, writeInterruptedRunRecovery, type InterruptedRunRecovery,
 } from "../src/interrupted-run-recovery.js";
 
 const self = fileURLToPath(import.meta.url);
@@ -157,6 +157,33 @@ async function until(label: string, ready: () => boolean): Promise<void> {
   })));
   const notes = readInterruptedRunRecovery(dir).notes;
   check("two processes keep both rows", notes.find((row) => row.runId === "left")?.epoch === 20 && notes.find((row) => row.runId === "right")?.epoch === 20, notes);
+}
+
+{
+  const dir = join(root, "blocked");
+  mkdirSync(dir, { recursive: true });
+  writeInterruptedRunRecovery(dir, [note("run-blocked"), note("run-old", 1, Date.now() - 1_000)]);
+  const logs: string[] = [];
+  const host = hosting("space-write", dir, logs);
+  const refused: string[] = [];
+  const onRejection = (error: unknown) => { refused.push(String(error)); };
+  process.on("unhandledRejection", onRejection);
+  const real = interruptedRunRecoveryStore.write;
+  interruptedRunRecoveryStore.write = (target, rows) => {
+    if (target === dir) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    real(target, rows);
+  };
+  try {
+    await host.reconcile();
+    await until("the rejected write was not logged", () => logs.some((line) => line.includes("could not record its note")));
+    const listed = await host.list({ endpoint: "manager" }).then(() => "answered", () => "refused-the-read");
+    check("a rejected note write leaves the host answering", refused.length === 0 && listed === "refused-the-read", { refused, listed, logs });
+    check("a rejected note write is logged and the retry continues", logs.some((line) => line.includes("could not record its note")) && logs.some((line) => line.includes("retrying automatic recovery")), logs);
+  } finally {
+    interruptedRunRecoveryStore.write = real;
+    process.off("unhandledRejection", onRejection);
+    await host.stop();
+  }
 }
 
 finish();

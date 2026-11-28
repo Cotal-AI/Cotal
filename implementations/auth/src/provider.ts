@@ -147,26 +147,11 @@ export const cotalAuthProvider: AuthProvider = {
         if (request.operator && request.operator.answers === undefined) {
           const message = error instanceof ManagerAuthorityRefusal && isManagerAuthorityOutage(error.status)
             ? "the run authority is temporarily unavailable; retry the read in a few seconds" : error.message;
-          const read = new EpEnvelopeError("unavailable", message, undefined, "not-executed");
-          const status = error instanceof ManagerAuthorityRefusal ? error.status : error instanceof IdpRateLimitedError ? error.status : undefined;
-          const retryAfter = error instanceof IdpRateLimitedError ? error.retryAfterSeconds
-            : error instanceof ManagerAuthorityRefusal ? error.retryAfterSeconds : undefined;
-          throw Object.assign(read, {
-            ...(status === 429 || status === 501 ? { status } : {}),
-            ...(status === 429 && retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
-          });
+          throw new EpEnvelopeError("unavailable", message, undefined, "not-executed");
         }
-        if (request.attempt && request.attempt.served === undefined) {
-          const unavailable = new EpEnvelopeError("unavailable", error.message, undefined,
+        if (request.attempt && request.attempt.served === undefined)
+          throw new EpEnvelopeError("unavailable", error.message, undefined,
             error instanceof IdpTokenServerError || error instanceof IdpUnreachableError ? "not-executed" : "unknown");
-          const status = error instanceof ManagerAuthorityRefusal ? error.status : error instanceof IdpRateLimitedError ? error.status : undefined;
-          const retryAfterSeconds = error instanceof IdpRateLimitedError ? error.retryAfterSeconds
-            : error instanceof ManagerAuthorityRefusal ? error.retryAfterSeconds : undefined;
-          throw Object.assign(unavailable, {
-            ...(status !== undefined ? { status } : {}),
-            ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
-          });
-        }
       }
       throw error;
     }
@@ -1014,13 +999,13 @@ async function postManagerAuthority(
   // A stand-in object would reach the caller as a result the endpoint never sent.
   const body = await response.json().catch((error: unknown) => {
     const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
-    if (isManagerAuthorityOutage(response.status) || response.status === 429 || response.status === 501)
-      throw new ManagerAuthorityRefusal(message, response.status, undefined, retryAfterSeconds(response.headers.get("retry-after")));
+    if (isManagerAuthorityOutage(response.status) || (what === "manager run issuance" && (response.status === 429 || response.status === 501)))
+      throw new ManagerAuthorityRefusal(message, response.status, undefined, response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : undefined);
     if (response.ok && isManagerAuthorityTransportOutage(error)) throw new ManagerAuthorityTransportError(message, { cause: error });
     throw new Error(message);
   });
   signal?.throwIfAborted();
-  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status, retryAfterSeconds(response.headers.get("retry-after")));
+  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status, response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : undefined);
   return body;
 }
 
