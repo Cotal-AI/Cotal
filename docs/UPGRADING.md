@@ -440,7 +440,7 @@ broker for a stopped stack, it converts a legacy File-backed membership feed bef
 space's services and prints one conversion line. Durable members, channel metadata and message
 history are kept. A running stack, remote broker or adopted listener is not converted automatically.
 A refresh of a running legacy stack with a File-backed feed refuses with `LIFECYCLE_BLOCKED` (exit 2).
-Stop that stack, then repeat the original start with `--recreate-membership-store`.
+For a stack started by `cotal up`, run the shutdown preview from the project folder named in the refusal. Stop the stack from that same folder. For an externally started broker, use its own launcher to stop it. Then repeat the original start from its original folder with `--recreate-membership-store`.
 
 If you stopped the stack with `cotal down --preserve-state`, run
 `cotal up --recreate-membership-store` from the same project. It converts the derived feed

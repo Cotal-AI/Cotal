@@ -100,7 +100,9 @@ when it can. For an unknown `--harness`, setup lists the known ones and points t
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
 registered with `cotal space add` or a signed-in catalog, or one `--connection-file` registers. A
-hand-added registration keeps its recorded root. On the first setup of a signed-in catalog space,
+hand-added registration keeps its recorded root. If a connection file names a different broker, inspect the named registration. If it points to the broker you intend, repeat setup without the connection file. Otherwise confirm the address with the space operator before changing the registration.
+
+On the first setup of a signed-in catalog space,
 `--project` binds its project root while its provider-owned sentinel credential stays under the
 machine-home catalog directory. A later setup must name the same project. Setup then seeds the
 `default` persona into `<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space,

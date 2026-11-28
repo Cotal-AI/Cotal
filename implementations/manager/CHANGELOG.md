@@ -1,5 +1,33 @@
 # @cotal-ai/manager
 
+## 0.184.0
+
+### Minor Changes
+
+- 68fc37d: A launch now runs only an effort level or mode its harness lists for the model, and is refused before launch otherwise. A model catalog row can name its default variant, the harness's default model, and modes such as a fast tier, which `cotal models` prints and `cotal spawn --mode id=value` chooses. The Manager's `spawn` takes `modes` (Manager revision 58) and checks a variant or modes against the last catalog it read for that connector, reading one only when it holds none. A mode the account cannot use is listed with an `unavailable` reason, which `cotal models` prints, and a launch that turns it on is refused with that reason. A launch that sets it off, `false` or the choice's default, still runs. A connector declares `supportsModes` to render them, and a resumed seat launches with the modes it was spawned with. A variant on a connector without a catalog, or on a model its catalog does not list, is now refused rather than launched at a setting the harness picks.
+
+### Patch Changes
+
+- 13ce458: The desktop app now notices when this computer goes offline or a space stops answering. It used to keep showing Connected. A hosted Manager tells the machine daemon whether its connection to the space is up, on the health check that already runs every five seconds, and the daemon reports a loss once two checks in a row see it, so a drop the Manager recovers from within seconds shows nothing. The Manager now pings its connection every ten seconds, as agents already do, so a network that goes away without a word, as Wi-Fi does, is found within about 45 seconds rather than several minutes. When the connection drops, `cotal daemon status` and the app's live status show a `connection` problem. It reads `offline` when this computer cannot look up the space's host, and `unreachable` when it can but the space is not answering. The app says "No internet connection" or "Can't reach your space", and the tray says "Offline" or "Can't connect". The problem clears by itself once the Manager reconnects, and a Manager that a status read during the loss left `starting` is read again until it answers, at once and then at growing intervals of up to 30 seconds, so the app returns to Connected without anyone asking. `cotal daemon service-status` for a space with a hosted Manager succeeds only while that Manager answers with no lost connection; otherwise it refuses with the code `OFFLINE` or `SPACE_UNREACHABLE` for a lost connection, or `MANAGER_<STATE>` (such as `MANAGER_STARTING`) for the Manager's own state. The daemon logs each loss and reconnect once.
+- 2c2f1f4: A running Manager now stops offering an agent application as soon as it is uninstalled, without restarting the background service. Every status read, model lookup, command listing, resume and launch verifies that an available connector's recorded executables still exist and still resolve on `PATH`. When one is missing, the connector row becomes `unavailable` with `<name> harness needs <bin> on PATH - not found`, launches are refused before reserving a name or capacity, and class `spawn` and `launch` subscriptions update when no available application remains.
+- db3acd7: Keep connector binary checks out of the hosted Manager's background stop-policy observer and recheck only the requested application once per launch, model lookup, resume or command listing.
+- Updated dependencies [68fc37d]
+- Updated dependencies [14aa844]
+- Updated dependencies [f9301f2]
+- Updated dependencies [902f3c3]
+- Updated dependencies [35fa703]
+- Updated dependencies [50b7040]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [5efbfdc]
+- Updated dependencies [274a820]
+- Updated dependencies [aa7d8a2]
+- Updated dependencies [ec3c29f]
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/seat@0.184.0
+
 ## 0.183.1
 
 ### Patch Changes

@@ -63,7 +63,7 @@ including `TERM_PROGRAM` at `regular`. Failure text is sent at `regular` after p
 masking (see `errorMessage`); masking is not a guarantee that arbitrary error text contains no
 identifying information. When `spawn` reports a failure with a native cause, its message and
 stack stay local because the diagnostic can include the agent's terminal output. The event still
-records the typed error code. When a local session lookup refuses a resume, or the session needs a
+records the typed error code. When `input` refuses a Manager pin, its retry can contain the text meant for the terminal. The event omits that diagnostic and its stack. When a local session lookup refuses a resume, or the session needs a
 manager pin, `spawn` also keeps the message and stack local. Session IDs, candidate transcripts and
 host names in those diagnostics are not sent. When a JSON watch stream reports a typed setup failure, its command
 event records the code without collecting the stream message or stack. If `up` refuses to convert a
@@ -74,22 +74,28 @@ When a service preset has never started, its refusal names the space locally. Te
 code without the message or stack, including when `manager logs` names a missing log file.
 The space and PID also stay local when a service command cannot control a process started by `up` or `supervise`.
 When a separately started service blocks `up`, its name, PID and instance ID stay in the local refusal.
-If the preferences file is a symbolic link, the event reports the reason without the link path or target.
+If `--on` names an unregistered Manager instance, the local refusal identifies the requested instance and any running Managers. The command event keeps the error code but omits the message and stack.
+When `backup inspect` or `backup verify` finds no artifact at the requested path, or finds an incomplete artifact without its manifest, the path and recovery advice stay local. The event carries the refusal code without the message or stack.
+If the preferences file is a symbolic link, the event reports the reason without the link path or target. If a file blocks the config folder, the local diagnostic names it and the event carries `SCHEMA_INVALID` without that message or stack.
+When a connection refuses a file supplied with `--creds` or a saved service definition fails its credential file check, the CLI shows the filename and remedy locally. The command event keeps the error code and omits the diagnostic text and stack.
+If a native service target disagrees with its registration, the event reports the conflict. The conflicting roots, space and broker addresses appear in the local remedy.
 If a service adapter path crosses a symbolic link, the event names the option. The link and its destination stay in the local remedy.
 When `space create` refuses a project root that is not a directory, the event reports the reason. The path stays in the local remedy.
 If a project path contains a control character or bidirectional formatting mark, the refusal identifies it locally. The event carries the error code without the diagnostic text or stack.
 When `use` cannot find a space, the requested name and the list of known spaces stay local. The event reports `TARGET_NOT_FOUND` without the message or stack.
 If `up` refuses because the selected project's folder is unavailable, its path and the space names stay local. The event reports `TARGET_UNAVAILABLE` without the message or stack.
-If a startup registration has a relative project path, its conflict message and stack stay local.
-When a file occupies the requested broker store directory or one of its parents, the event omits the paths, message and stack. The local refusal names the file.
-When the answering managers report that none hosts a requested agent, the local refusal lists their instance IDs. The event omits the message and stack.
+If a startup registration has a relative project path, its conflict message and stack stay local. If `--store-dir` starts with a tilde the shell did not expand, the supplied value and working folder stay in the local refusal.
+When a file occupies the requested broker store directory or one of its parents, the event omits the paths, message and stack. The local refusal names the file. If another space uses the requested store, its name, project path and streams also stay in the local diagnostic. The event reports `CONFLICT` without the message or stack.
+When the answering managers report that none hosts a requested agent, the local refusal lists their instance IDs. The event omits the message and stack. If a pinned manager reports that an agent is absent during `attach`, the agent name and manager instance ID also stay local.
 If `down` refuses because another project owns the stack, space names and paths stay in the local diagnostic. If `space add` refuses an explicit registration root, its path stays in the local remedy.
-When a project name is already prepared elsewhere or another space already uses the root, the local preparation conflict names the folder. The event reports `CONFLICT` without that diagnostic text or stack.
+When a project name is already prepared elsewhere, another space already uses the root, or self-hosted setup requests a different folder than the registration, the local conflict names the folders involved. The event reports `CONFLICT` without that diagnostic text or stack.
+When `space create` or `setup` cannot write the project's `.cotal` directory, the event reports `PERMISSION_DENIED`. The project path, message and stack stay local.
 If a broker requires authentication and the registration folder holds trust for a different space, the event reports the mismatch. The names, broker address and trust path stay in the local remedy.
 If a project command refuses to use a control directory as the project folder, the paths stay local. A refusal to write the machine's connector store from a checkout or unrecognized executable also keeps the store and executable paths local.
 When a foreground launch or its preview refuses a missing persona, the file or catalog path stays in the local diagnostic. A connection refusal for a space that has not started also keeps its restart path and space name local.
 If a foreground connector reports an overlong control socket path, the CLI shows the path and the shorter-directory remedy locally. The command event reports `USAGE_INVALID` without the message or stack.
 If `endpoint check` cannot open its local contract file because of permissions or a refused link, the local diagnostic names the path. The event carries `PERMISSION_DENIED` without the message or stack.
+If `setup` rejects a destination, an unknown runtime, or a scripted project path that is not a directory, its diagnostic stays local. The command event still reports `USAGE_INVALID`.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at

@@ -78,6 +78,13 @@ try {
   }
   assert.deepEqual(failures, []);
   console.log("PASS: failed-readiness, exited-before-ready and healthy list/status agree");
+  for (const verb of ["stop", "restart"]) {
+    const id = instances.get("healthy")!;
+    const refusal = run(["service", verb, "healthy", "--instance", id], false);
+    assert.equal(refusal.status, 1);
+    assert.ok(refusal.stderr.includes(`svc ${verb} healthy --space list-state --instance ${id} --yes --plain`));
+    cells++;
+  }
   assert.equal(run(["service", "stop", "healthy", "--instance", instances.get("healthy")!, "--yes"]).status, 0);
   const stopped = run(["service"]);
   assert.equal(stopped.envelope?.result?.services?.find((row) => row.name === "healthy")?.state, "stopped");

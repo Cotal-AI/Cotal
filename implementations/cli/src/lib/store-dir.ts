@@ -99,7 +99,7 @@ export function storeTenantsText(tenants: readonly StoreTenant[]): string {
 export function sharedStoreAtStart(dir: string, space: string, recorded: boolean): StoreTenant[] {
   const tenants = otherStoreTenants(dir, space);
   if (tenants.length && !recorded)
-    throw new CommandFailure("refused", "CONFLICT", `the --store-dir ${dir} is the store of ${storeTenantsText(tenants)}, and a store folder belongs to one space; nothing was started`, { target: { space, storeDir: dir, otherSpaces: tenants }, remedy: "name a folder no other space uses with --store-dir, or omit it to use this root's .cotal/nats" });
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `the --store-dir ${dir} is the store of ${storeTenantsText(tenants)}, and a store folder belongs to one space; nothing was started`, { target: { space, storeDir: dir, otherSpaces: tenants }, remedy: "name a folder no other space uses with --store-dir, or omit it to use this root's .cotal/nats" }));
   return tenants;
 }
 
