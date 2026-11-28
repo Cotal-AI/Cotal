@@ -31,9 +31,16 @@
 #connected-spaces li + li, .agent-row + .agent-row, .row-group > :not([hidden]) ~ :not([hidden]) { border-top: 1px solid var(--rule); }
 #connected-spaces li, .settings-row, .preferences { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
-#connected-spaces strong { overflow-wrap: anywhere; }
+#connected-spaces strong, .space-kind, .space-state { overflow-wrap: anywhere; }
 .application-chip { color: var(--dim); font-size: 11px; }
-#connected-spaces [data-testid=approval-pending] { color: var(--amber); }
+.space-kind { font-size: 11px; color: var(--dim); }
+.space-state { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 12px; color: var(--dim); }
+.space-state:has(.connected) { color: var(--green); }
+.space-state:has(.error) { color: var(--red); }
+.space-state[data-testid=approval-pending] { color: var(--amber); }
+.space-state[data-testid=approval-pending] .dot { background: currentColor; }
+#connected-spaces li > button { max-width: 44%; }
+#another-space { border-color: var(--ink); background: var(--card); }
 .agent-count { color: var(--dim); font-size: 12px; font-weight: 400; }
 .agent-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 8px; }
 .agent-name, .agent-meta, .agent-folder { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -129,7 +136,8 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 @media (prefers-reduced-motion: reduce) { .app-bar::before { animation: none; } }
 .app-row details { margin-top: 4px; }
 .app-row details pre { margin: 4px 0 0; color: var(--dim); font-size: 11px; }
-.app-pill { display: inline-block; padding: 4px 8px; border: 1px solid var(--rule); border-radius: 8px; font-size: 11px; font-weight: 600; }
+.app-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; }
+.app-pill .icon { width: 12px; height: 12px; }
 .apps-footer, .dashboard-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .apps-footer { justify-content: space-between; }
 .apps-footer p { margin: 0; color: var(--dim); font-size: 12px; }
