@@ -120,11 +120,13 @@ function legacyProcesses(context: LocalProcessContext) {
   });
 }
 
-function stackMemberRemovalRemedy(root: string, space: string, json: boolean): string {
-  const cli = json ? "cotal" : displayCmd({ fromAnyFolder: true });
-  const stop = codeSpan(`${cli} down${targetWords({ space })} --yes`);
+function stackMemberRemovalRemedy(root: string, space: string, name: string, presentation: ReturnType<typeof presentationOf>): string {
+  const cli = presentation === "json" ? "cotal" : displayCmd({ fromAnyFolder: true });
+  const scope = targetWords({ space });
+  const inspect = codeSpan(`${cli} service show ${shellWord(name)}${scope}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  const stop = codeSpan(`${cli} down${scope} --yes`);
   const forget = codeSpan(`${cli} space forget ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`);
-  return `from ${oneLine(root)}, run ${stop}, then run ${forget}`;
+  return `inspect the definition with ${inspect}. Only to stop the whole stack and forget its local registration: from ${oneLine(root)}, run ${stop}, then run ${forget}`;
 }
 
 /** The refusal for a `show` or `remove` whose name matches no saved definition and no preset. Its
@@ -249,7 +251,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   if (mode === "remove") {
     const row = savedService(suppliedName!);
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
-      const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
+      const remedy = stackMemberRemovalRemedy(root, space, row.name, presentation);
       if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
       throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy });
     }
