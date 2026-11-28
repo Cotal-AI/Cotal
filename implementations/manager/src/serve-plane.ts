@@ -28,6 +28,11 @@ import { withTimeout } from "./manager-timeout.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
+/** The serve connection's ping, the same as every agent connection's (CotalEndpoint's default), so a
+ *  Manager and its agents judge one outage alike: every 10 s, stale after 2 unanswered. */
+const SERVE_PING_INTERVAL_MS = 10_000;
+const SERVE_MAX_PING_OUT = 2;
+
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
 type ExecutorStores = { recordsKv: KV; authKv: KV; nc: NatsConnection };
@@ -168,6 +173,11 @@ export class ServePlane {
       ...(state.creds !== undefined ? standaloneConnectOpts({ creds: readCreds, tls: false }) : {}),
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
+      // A silent network loss resets no socket, so only pings find it, and the liveness grade above
+      // reads this transport. At the nats.js default (120 s, 2 outstanding) a computer that lost its
+      // network reported its Manager connected for minutes; this calls the link stale within 30 s.
+      pingInterval: SERVE_PING_INTERVAL_MS,
+      maxPingOut: SERVE_MAX_PING_OUT,
     };
     const nc = await (deadline === undefined ? this.deps.dial(opts) : this.deps.dialRemoteStanding(opts, deadline));
     this.parts.brokerTransport.trackTransport(nc);

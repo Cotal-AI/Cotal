@@ -77,7 +77,8 @@ import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { processRecorded, stopInFlight, stopLocalProcess, UnattributableRecord, unattributableRecordSteps } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { localDiagnostic } from "../telemetry.js";
+import { controllerStackRecorded, downInOwningRoot, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { blockedDownRootRemedy, goneRootDown, goneRootStackDown, refuseInaccessibleDownRoot, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine, recordedProcessesUnder } from "../lib/stack-journal.js";
@@ -226,7 +227,7 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
   } catch { return; }
   if (root === undefined || space === undefined) return;
   refuseInaccessibleDownRoot(root, space);
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: blockedDownRootRemedy(root, sameDown(values)) ?? `run \`${sameDown(values)}\` from ${root}` });
+  throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: downInOwningRoot(root, values) }));
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */

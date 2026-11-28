@@ -965,6 +965,8 @@ try {
       { label: "a bare down", again: "cotal down --yes", values: { yes: true } },
       { label: "a bare down --json", again: "cotal down --yes", values: { yes: true, json: true } },
       { label: "a bare down --dry-run", again: "cotal down --dry-run", values: { "dry-run": true } },
+      { label: "a JSON preview", again: "cotal down --dry-run --json", values: { "dry-run": true, json: true } },
+      { label: "a plain preview", again: "cotal down --dry-run --plain", values: { "dry-run": true, plain: true } },
     ];
     for (const { label, again, values } of bareCases) {
       const r = await bareDownIn(empty, values);

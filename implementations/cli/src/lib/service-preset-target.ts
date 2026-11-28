@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, protectedCredentialReference, readLocalRecordSource, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { shellWord } from "./endpoint-errors.js";
 import { targetWords } from "./confirmation-required.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
@@ -70,10 +71,10 @@ function stoppedManagerLog(space: string, root: string, requested: string, prese
     const target = { space, name: requested, path };
     const stack = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
     if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: `start the stack again with ${stack}` });
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
+    throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
       target,
       remedy: `start the stack with ${stack}, or the manager alone with ${codeSpan(`cotal manager start --space ${shellWord(space)}`)}`,
-    });
+    }));
   }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
 }
@@ -171,12 +172,12 @@ export function resolvePresetService(space: string, root: string, requested: str
     const start = requested === "manager" ? `cotal manager start${onSpace}` : requested === "broker"
       ? [`cotal service start ${requested}`, ...presetRequiredInputs(preset, space, root)].join(" ") + (values.space === undefined ? "" : onSpace)
       : `cotal service start ${requested}`;
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
+    throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
       target: { space, name: requested },
       remedy: preview ? `preview the first start with ${codeSpan(`${start} --dry-run${values.json ? " --json" : values.plain ? " --plain" : ""}`)}`
         : mode === "stop" && values["dry-run"] ? stopPreviewStep(space, values) : requested === "manager" && mode === "status" && prepared
         ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(start)}`,
-    });
+    }));
   }
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };

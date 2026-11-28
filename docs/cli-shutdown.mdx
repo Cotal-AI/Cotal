@@ -561,7 +561,8 @@ you to confirm that no such component still runs for the folder, because cotal c
 that names no process and a manager that does not answer on the mesh may still be running. It then
 names `rm <pidfile>` and the same `cotal down`. A bare `down` or
 `down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
-`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
+`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The preview keeps
+`--json` or `--plain` when requested. The
 `-f` / `--run` forms tear down a [manifest deploy](cli-startup.mdx#manifest-deploys) without stopping the whole mesh
 and cannot be combined with service names or `--space`.
 
