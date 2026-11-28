@@ -8,14 +8,23 @@ import { auditPackage, packageName, runtimeDependencyExemption, runtimeImports }
 
 test('emitted runtime imports include import, re-export, dynamic import and require', () => {
   const js = ts.transpileModule(`import type { A } from 'type-only';
+import { createRequire } from 'node:module';
 import { B } from '@scope/runtime/subpath';
 export { B as C } from 're-export';
 void import('late/subpath');
 const x = require('common');
+const ownReq = createRequire(import.meta.url);
+const y = createRequire(import.meta.url)('inline-created');
+const z = ownReq('aliased-created');
+ownReq.resolve('aliased-resolved');
+createRequire(__filename).resolve('inline-resolved');
 require.resolve('resolved');
 import.meta.resolve('esm-resolved');
-console.log(B, x);`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-  assert.deepEqual(runtimeImports(js).map(row => row.specifier), ['@scope/runtime/subpath', 're-export', 'late/subpath', 'common', 'resolved', 'esm-resolved']);
+console.log(B, x, y, z);`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+  assert.deepEqual(runtimeImports(js).map(row => row.specifier), [
+    'node:module', '@scope/runtime/subpath', 're-export', 'late/subpath', 'common',
+    'inline-created', 'aliased-created', 'aliased-resolved', 'inline-resolved', 'resolved', 'esm-resolved',
+  ]);
 });
 
 test('source-launch loader classification matches only its published Jcode file and specifier', () => {

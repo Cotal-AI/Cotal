@@ -395,14 +395,19 @@ the binary ships, byte for byte, and reinstalls one that differs in any way (a m
 extra file, a link where the installed copy should be, an entry at another version, or an
 extensions prefix whose lock no longer matches what is on disk), brings what a
 connector installed in its harness to this release (the `cotal` plugin copy Claude Code sessions
-load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator extensions against
+load, and its Claude Desktop entry), then checks other first-party registry extensions against
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
 and every package the lock records is on disk at its recorded version. The extension's entry file
-must also be present and loadable. The extension check does not compare file contents. Cotal keeps a working
-local-path extension at the binary's version under the same lock and entry checks. If it needs
-repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
-needs repair is reinstalled at the binary's exact version. A built-in or extension
+must also be present and loadable. The extension check does not compare file contents. A registry extension that
+needs repair is reinstalled at the binary's exact version. A local `@cotal-ai/*` extension at the
+binary's exact version is verified under the same checks and repaired from its recorded path if needed.
+An extension recorded from a local folder, a tarball, Git, or a URL keeps its recorded source and
+is not reconciled to a different version from the registry. On releases from `0.159.1` through
+`0.183.1`, `cotal update --self` checks
+every `@cotal-ai/*` package against npm before upgrading, so an installation holding an unpublished
+local `@cotal-ai/*` package upgrades once with `npm i -g cotal-ai@<version>` followed by
+`cotal update`. A built-in or extension
 that passes is reported as verified. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
@@ -895,8 +900,11 @@ It refuses an invalid or incompatible range without changing the installed exten
 extension build that supports your core or a CLI release that satisfies the declared range.
 `*` allows any version. The check compares prerelease versions at their actual precedence and ignores
 build metadata. In a source checkout, a `0.0.0` placeholder, with or without a prerelease label, cannot
-establish a mismatch. This check does not apply to official `@cotal-ai/*` releases selected by
-registry name, version, range, or tag. Seeding and self-update reconciliation do not apply this check.
+establish a mismatch. Non-release `@cotal-ai/*` extensions (such as local folders, tarballs, Git, or URL
+specs) re-check their declared `@cotal-ai/core` peer range at load time in the CLI and Manager, so an
+incompatible build refuses to load after a CLI upgrade until you update or reinstall it. This check does
+not apply to official `@cotal-ai/*` releases selected by registry name, version, range, or tag. Seeding
+and self-update reconciliation do not apply this check.
 
 When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back. Both `add` and a later load name the missing export and identify the older install

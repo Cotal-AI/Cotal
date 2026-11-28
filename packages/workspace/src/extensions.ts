@@ -109,6 +109,31 @@ export function isExtensionPathSpec(spec: string, absolute: (p: string) => boole
   return spec.startsWith(".") || absolute(spec);
 }
 
+const FIRST_PARTY_PACKAGE = /^@cotal-ai\/[a-zA-Z0-9._~-]+$/;
+const REGISTRY_SELECTOR = /^[a-z0-9._~^*<>=|+ -]+$/i;
+
+/** Whether an inventory entry is a registry-managed first-party release package rather than a local, tarball, Git, or URL install. */
+export function isReleaseExtension(entry: { readonly pkg: string; readonly source?: "seeded"; readonly spec?: unknown }): boolean {
+  if (!FIRST_PARTY_PACKAGE.test(entry.pkg)) return false;
+  if (entry.source === "seeded" || typeof entry.spec !== "string") return true;
+  const spec = entry.spec.trim();
+  if (spec === entry.pkg || spec === `${entry.pkg}@`) return true;
+  const aliasTail = spec.startsWith(`${entry.pkg}@npm:${entry.pkg}`)
+    ? spec.slice(`${entry.pkg}@npm:${entry.pkg}`.length)
+    : spec.startsWith(`npm:${entry.pkg}`)
+      ? spec.slice(`npm:${entry.pkg}`.length)
+      : undefined;
+  if (aliasTail !== undefined && aliasTail !== "" && !aliasTail.startsWith("@")) return false;
+  const rawSelector = aliasTail !== undefined
+    ? aliasTail.replace(/^@/, "").trim()
+    : spec.startsWith(`${entry.pkg}@`)
+      ? spec.slice(entry.pkg.length + 1).trim()
+      : undefined;
+  if (rawSelector === undefined) return false;
+  if (!rawSelector) return true;
+  return rawSelector !== "." && rawSelector !== ".." && REGISTRY_SELECTOR.test(rawSelector) && !/\.(?:tgz|tar(?:\.gz)?)$/i.test(rawSelector);
+}
+
 /** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
 export function extensionReinstallAdvice(entry: InstalledExtension): string {
   if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
