@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { connect } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,7 +16,7 @@ Object.assign(process.env, {
 });
 for (const key of ["TMPDIR", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME"]) mkdirSync(process.env[key], { mode: 0o700 });
 process.chdir(home);
-const { recordMesh, spaceSegment } = await import("@cotal-ai/workspace");
+const { meshFile, spaceSegment } = await import("@cotal-ai/workspace");
 
 const socket = join(disk, "run/cotal/daemon.sock");
 const records = join(home, "daemon");
@@ -164,9 +164,11 @@ async function settingsCell() {
 async function managerCell() {
   const space = "disk-full-smoke";
   const idp = "https://idp.example.invalid";
-  recordMesh({ space, root: home, server: "nats://127.0.0.1:1", mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: {
+  const registration = meshFile(space);
+  mkdirSync(dirname(registration), { mode: 0o700 });
+  writeFileSync(registration, JSON.stringify({ space, root: home, server: "nats://127.0.0.1:1", mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: {
     provider: "cotal", remote: true, idp: { url: idp, issuer: idp, audience: idp }, endpoints: { url: idp },
-  } });
+  } }), { mode: 0o600, flag: "wx" });
   const start = () => frame("manager-start", { space });
   const file = join(records, spaceSegment(space), "manager-refusal.json");
   const expectSignInRefusal = reply => {
