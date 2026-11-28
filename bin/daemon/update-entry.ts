@@ -140,6 +140,33 @@ async function collectConnectorSets(): Promise<void> {
   } catch { /* An incomplete inventory or failed collection never fails the update. */ }
 }
 
+/** Keep the same-generation package proof stable through the integration refresh. */
+function claimCurrentReconciliation(daemonVersion: string | undefined): (() => void) | undefined {
+  const current = () => {
+    try { return daemonVersion === updateRuntime.version() && daemonVersion === installedCliVersion() && updateRuntime.isCurrent?.(); }
+    catch { return false; }
+  };
+  if (!current()) return;
+  let release: () => void;
+  try { release = claimUpdateClosureAccess(); }
+  catch { return; }
+  if (current()) return release;
+  release();
+}
+
+async function readHostedUpdateStatus(standalone: boolean, expected: boolean) {
+  try {
+    const paths = daemonPaths();
+    const reply = standalone ? await reconcileDaemonStatus(paths, expected) : await queryDaemon({ paths });
+    if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
+    if (process.platform === "win32") await captureWindowsGeneration(paths);
+    return reply.result;
+  } catch (error) {
+    if (expected || !(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
+    if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
+  }
+}
+
 function reconcileInstalledLinuxPolicy(): void {
   if (process.platform !== "linux" || process.env.COTAL_UPDATE_PARENT || process.env.COTAL_UPDATE_CLOSURE_TRANSACTION || readUpdateRecovery()) return;
   try { reconcileInstalledSystemdOomPolicy({ state: join(homeCotalDir(), "daemon") }, undefined, line => console.log(line)); }
@@ -172,6 +199,7 @@ const composed: Command = { ...command, async run(args) {
   let daemonObserved = false;
   let preparedRestart = false;
   let packageCheck: "current" | "offline" | undefined;
+  let releaseCurrentReconciliation: (() => void) | undefined;
   let retainedReconciliation = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
@@ -536,22 +564,11 @@ const composed: Command = { ...command, async run(args) {
     const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
     if ((process.platform === "win32" && hasNoWindowsUpdateDaemon()) || (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime()))
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
-    let managers;
-    try {
-      const paths = daemonPaths();
-      const reply = standaloneReconcile ? await reconcileDaemonStatus(paths, reconcileDaemonObserved) : await queryDaemon({ paths });
-      if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
-      daemonObserved = true;
-      if (process.platform === "win32") await captureWindowsGeneration(daemonPaths());
-      managers = reply.result.managers ?? [];
-    } catch (error) {
-      if (!reconcileDaemonObserved && error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
-        if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
-        return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
-      }
-      throw error;
-    }
-    // Updating this installation restarts the machine daemon, including spaces not selected by flags.
+    const daemon = await readHostedUpdateStatus(standaloneReconcile, reconcileDaemonObserved);
+    if (!daemon) return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+    daemonObserved = true;
+    // Restarting this installation affects hosted Managers even outside the selected space.
+    const managers = daemon.managers ?? [];
     for (const manager of managers) {
       if (manager.pid === undefined) console.log(`hosted Manager ${manager.space}: ${manager.state}; no live child, skipped`);
     }
@@ -559,7 +576,11 @@ const composed: Command = { ...command, async run(args) {
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
-    for (const manager of active) {
+    if (standaloneReconcile && process.env.COTAL_INSTALL_RECONCILE !== "1" &&
+        active.every(manager => manager.state === "answering" && manager.instanceId)) {
+      releaseCurrentReconciliation = claimCurrentReconciliation(daemon.version);
+    }
+    for (const manager of releaseCurrentReconciliation ? [] : active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
       // Keep the fresh, instance-pinned custody check below as the authority for update admission.
       if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run \`cotal daemon service-disconnect --space ${manager.space}\`, correct its sign-in or connection, then run \`cotal update\` again` });
@@ -691,6 +712,7 @@ const composed: Command = { ...command, async run(args) {
     console.log(`${foreignDaemonUpdateReport(installation.installedEntry)} The daemon is running Cotal ${current.result.version}.`);
     return;
   }
+  if (releaseCurrentReconciliation) return;
   if (current.result.version !== expectedVersion) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
@@ -715,6 +737,7 @@ const composed: Command = { ...command, async run(args) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));
   }
   } finally {
+    releaseCurrentReconciliation?.();
     closeWindowsGeneration();
     if (repairService) {
       if (repairServiceStopped) await startEnabledInstalled(repairService, undefined);
