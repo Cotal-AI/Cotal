@@ -883,7 +883,7 @@ prints `reopening <dir>, the store this root's last broker served`. `up -f` refu
 stores. Pass `--store-dir <dir>` to reopen it, or remove it with
 `cotal clean store --force`. While that store holds data, a
 `--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
-(exit 2) and names both. Create the directory first to start a new empty store there.
+(exit 2) and names both paths locally. Its suggested `--store-dir` value quotes the old path when needed, so you can copy it to reopen that store. Create the directory first to start a new empty store there.
 
 When the broker or manager of a static-auth stack that `up` started in a folder exits and leaves its
 pidfile, `cotal status` in that folder shows the row as `stale pidfile` and puts `cotal up` first under

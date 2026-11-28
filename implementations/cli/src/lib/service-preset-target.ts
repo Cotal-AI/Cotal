@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, protectedCredentialReference, readLocalRecordSource, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, protectedCredentialReference, readLocalRecordSource, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type Presentation, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { localDiagnostic } from "../telemetry.js";
 import { shellWord } from "./endpoint-errors.js";
 import { targetWords } from "./confirmation-required.js";
@@ -18,6 +18,12 @@ import { managerLogPath } from "./manager-proc.js";
 export function serviceListStep(values: ParsedArgs["values"], space = values.space): string {
   const output = values.json ? " --json" : values.plain ? " --plain" : "";
   return `list this space's saved definitions with ${codeSpan(`cotal service${targetWords({ space })}${output}`)}`;
+}
+
+/** A whole-stack preview belongs to the folder that owns the stack, even with an explicit space. */
+export function wholeStackPreviewStep(space: string, root: string, presentation: Presentation): string {
+  const preview = codeSpan(`cotal down --dry-run --space=${shellWord(space)}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  return `to preview stopping the whole stack, run ${preview} in ${oneLine(root)}`;
 }
 
 /** A missing stop-preview target can lead to a corrected preview or a read of the selected catalog. */

@@ -419,7 +419,7 @@ retained instance identity), the refusal says the log is gone and names `cotal u
 `cotal service logs stack-manager` reads the same file when no `stack-manager` is saved.
 A manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`,
 `install` and the other verbs refuse it while it runs, because no saved service owns it. It stops
-with its stack through `cotal down`, or where `cotal supervise` runs it. With no saved `stack-manager`,
+with its stack, or where its supervisor runs. For a stack, the refusal names the project folder and gives a whole-stack preview for the requested space in the same output format. With no saved `stack-manager`,
 `cotal service stop stack-manager --yes` and `cotal service restart stack-manager --yes` identify
 that running manager and refuse `UNSUPPORTED` with the same stop advice. The refusal explains that
 stopping the manager stops every hosted workflow run it drives, and `cotal down` also stops the

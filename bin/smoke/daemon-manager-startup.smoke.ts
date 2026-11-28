@@ -1,4 +1,4 @@
-/** A real hosted child that dies before readiness retains its exit and final diagnostic. */
+/** A real hosted child that dies before readiness reports its exit in plain words and retains its final diagnostic. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,11 +25,11 @@ try {
   recordMesh({ space: "startup-proof", server: "nats://127.0.0.1:1", root: home, mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: { provider: "cotal", remote: true, idp: { url: idp, issuer: idp, audience: idp }, endpoints: { url: idp } } });
   saveIdpSession(home, idp, { token: "synthetic-session", sub: "fixture", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
   const view = await managers.start("startup-proof");
-  assert.match(String(view.reason), /code 3/);
-  assert.match(String(view.reason), /Cannot find module node-pty \(synthetic crash\)/);
+  // The reason a person reads names the exit; the Manager's own stderr line stays in lastExit.
+  assert.equal(view.reason, "Manager exited (code 3)");
+  assert.match(String(view.lastExit), /^Manager exited \(code 3\): .*Cannot find module node-pty \(synthetic crash\)/);
   assert.equal(view.pid, undefined);
-  assert.ok(view.lastExit);
-  console.log("PASS genuine hosted startup exit: code, final stderr, lastExit and no live PID");
+  console.log("PASS genuine hosted startup exit: plain reason, code and final stderr in lastExit, no live PID");
 } finally {
   await managers.close();
   process.argv[1] = oldArgv;

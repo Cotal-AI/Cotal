@@ -13,9 +13,11 @@ import {
   readBrokerPolicy,
   writeBrokerPolicy,
   recordsElsewhereError,
+  shellPath,
   terminalWidth,
 } from "@cotal-ai/workspace";
 import { c, hang, stderrLine } from "../ui.js";
+import { localDiagnostic } from "../telemetry.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { lastServedStore, lastServedStores, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning } from "../lib/store-dir.js";
@@ -317,7 +319,7 @@ export function refuseUnnamedLastStore(storeDir: string): void {
   if (existsSync(join(storeDir, "jetstream"))) return;
   const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
-    throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${shellPath(last)}, or move that store away to start empty` }));
 }
 
 /** The store a bare start that names none opens: the store this root's last broker served, while
@@ -339,7 +341,7 @@ export function refuseMissingNamedStore(storeDir: string): void {
   if (existsSync(storeDir)) return;
   const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
-    throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${last}, or create ${storeDir} first to start on a new empty store` });
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${shellPath(last)}, or create ${storeDir} first to start on a new empty store` }));
 }
 
 /** A start's store against the other spaces that use it. A `--store-dir` this root's last broker did

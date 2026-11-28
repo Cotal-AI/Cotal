@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { computerSpaces, computerSpaceState, computerSummary, SERVICE_START, spaceStateKnown, surfaceInputs, surfaceState, type SurfaceWord } from "../src/model.ts";
+import { computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, SERVICE_START, spaceStateKnown, surfaceInputs, surfaceState, type SurfaceWord, forTerminal } from "../src/model.ts";
 
 test("computer list follows desired intent while retaining connected local spaces", () => {
   const desired = { space: "mine", desired: true, observed: "starting" };
@@ -27,8 +27,51 @@ test("computer rows use observed account state and actionable refusal", () => {
   // A Manager that lost its connection reconnects by itself; the row says why it is not connected.
   assert.equal(computerSpaceState({ ...row, observed: "offline" }), "No internet connection");
   assert.equal(computerSpaceState({ ...row, observed: "unreachable" }), "Can't reach this space");
-  assert.equal(computerSpaceState({ ...row, lastRefusal: "Ask the owner to approve this computer." }), "Ask the owner to approve this computer.");
-  assert.equal(computerSpaceState({ ...row, observed: "refused", lastRefusal: "Ask the owner." }), "Ask the owner.");
+  // A saved refusal is the service's own sentence; the row says the cause in plain words instead.
+  assert.equal(computerSpaceState({ ...row, lastRefusal: "The local space connection is held by https://cloud.cotal.ai/api/auth." }), "This space is set up under another sign-in on this computer.");
+  assert.equal(computerSpaceState({ ...row, observed: "refused", lastRefusal: "a refusal this app has never seen" }), "Can't connect this space.");
+});
+
+/** Every saved refusal the background service writes for an account space (bin/daemon/account-reconcile.ts). */
+const SAVED_REFUSALS: Record<string, { text: string; action: string; label: string }> = {
+  // Until the same-account move exists, a holder that still answers leaves Remove as the row's only action.
+  "The local space connection is held by https://cloud.cotal.ai/api/auth.": { text: "This space is set up under another sign-in on this computer.", action: "remove", label: "Remove" },
+  "The local space connection is held by an unknown account.": { text: "This space is set up under another sign-in on this computer.", action: "remove", label: "Remove" },
+  "no available application": { text: "No agent app is installed.", action: "apps", label: "Set up agent apps" },
+  "not-signed-in": { text: "Sign in again to use this space.", action: "sign-in", label: "Sign in" },
+  "credential-expired": { text: "Sign in again to use this space.", action: "sign-in", label: "Sign in" },
+  "not-user-auth": { text: "Sign in again to use this space.", action: "sign-in", label: "Sign in" },
+  "Manager is not answering": { text: "Starting this space. Cotal keeps trying by itself.", action: "check", label: "Check again" },
+  "unreachable": { text: "Can't reach this space. Cotal keeps trying by itself.", action: "check", label: "Check again" },
+  "account space is currently unavailable": { text: "Can't reach this space. Cotal keeps trying by itself.", action: "check", label: "Check again" },
+  "disconnect refused; inspect daemon status before retrying": { text: "Couldn't remove this space from this computer. Cotal keeps trying by itself.", action: "check", label: "Check again" },
+  "local removal could not stop the space; inspect daemon status": { text: "Couldn't remove this space from this computer.", action: "check", label: "Check again" },
+  "space connection refused; inspect daemon status": { text: "Can't connect this space.", action: "check", label: "Check again" },
+  "not-registered": { text: "Can't connect this space.", action: "check", label: "Check again" },
+  "refused": { text: "Can't connect this space.", action: "check", label: "Check again" },
+  "local-state-error": { text: "Can't connect this space.", action: "check", label: "Check again" },
+  "account-mismatch": { text: "Can't connect this space.", action: "check", label: "Check again" },
+  "ended": { text: "Can't connect this space.", action: "check", label: "Check again" },
+  // A refusal code no version of this app has mapped still ends in a true sentence and one action.
+  "NEVER_SEEN_REFUSAL: run `cotal daemon setup --space mine` at https://example.test/x": { text: "Can't connect this space.", action: "check", label: "Check again" },
+};
+const RAW = /`|\bcotal [a-z]|https?:\/\/|\bdaemon\b|\bManager\b|inspect |;/;
+
+test("each saved space refusal shows one plain sentence and one action, never the service's text", () => {
+  const row = { space: "mine", desired: true, observed: "not-requested" };
+  const views = Object.entries(SAVED_REFUSALS).map(([lastRefusal, expected]) => [spaceRowRefusal({ ...row, lastRefusal }), expected] as const);
+  assert.equal(views.length, 18);
+  for (const [view, expected] of views) assert.deepEqual(view, expected);
+  assert.deepEqual(views.filter(([view]) => RAW.test(view.text) || RAW.test(view.label)), []);
+  assert.equal(new Set(views.map(([view]) => view.text)).size, 8);
+  // A confirmed custody recovery keeps its own button, and the row names no sign-in address.
+  const recovery = spaceRowRefusal({ ...row, lastRefusal: "The local space connection is held by https://old.example/api/auth.", custodyRecovery: { holder: "https://old.example/api/auth", candidate: "b".repeat(64) } });
+  assert.deepEqual(recovery, { text: "This space is set up under another sign-in on this computer.", action: "recover", label: "Move to this account" });
+});
+
+test("a daemon text that names a web address is for a terminal, so the window does not show it", () => {
+  assert.equal(forTerminal("the service stopped at https://cloud.cotal.ai/api/auth"), true);
+  assert.equal(forTerminal("The background service did not answer. Check the host connection before retrying."), false);
 });
 
 test("window title and tray share one summary of the listed spaces", () => {

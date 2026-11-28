@@ -167,9 +167,9 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
   assert.deepEqual(refusalView("NOT_ANSWERING"), {
     title: "The background service has not started",
-    description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.",
-    action: "refresh",
-    label: "Check status",
+    description: "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.",
+    action: "repair",
+    label: "Repair",
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
     title: "We cannot reach your connection",
@@ -197,13 +197,15 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
 });
 
-test("another installation's service offers no action and keeps a command out of the window", () => {
-  assert.deepEqual(refusalView("CONFLICT"), {
-    title: "Another Cotal installation runs the background service",
-    description: "This copy cannot take it over. Nothing was changed.",
-    action: "none",
-    label: "",
+test("another installation's service offers Repair, and a bare conflict is not titled as one, with no command in the window", () => {
+  assert.deepEqual(refusalView("ANOTHER_INSTALLATION"), {
+    title: "Another copy of Cotal runs the background service",
+    description: "Repair can move it to this app. Your spaces and sign-in stay as they are.",
+    action: "repair",
+    label: "Repair",
   });
+  assert.equal(refusalView("CONFLICT").title, "Something on this computer needs fixing", "a conflict that names no installation does not claim one");
+  assert.equal(refusalView("CONFLICT").action, "repair");
   const refused = () => { requireResult({ v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js" } }); };
   assert.throws(refused, (error: { remedy?: string; message: string }) => error.remedy === undefined && !/\/usr\/local|`/.test(error.message));
 });

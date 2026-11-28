@@ -59,6 +59,7 @@
           <div class="row-group">
             <div class="settings-row"><div><h3>About</h3><p id="settings-versions"></p></div><button id="release-notes" class="button secondary" type="button">Release notes</button></div>
             <div class="settings-row"><div><h3>Disconnect this computer</h3><p class="muted">Your spaces stop using this computer. It stays in your account.</p></div><button id="settings-disconnect" class="button secondary" type="button">Disconnect</button></div>
+            <div class="settings-row"><div><h3>Repair this computer</h3><p class="muted">Check the background service, your sign-in and your spaces, and fix what Repair can.</p></div><button id="settings-repair" class="button secondary" type="button">Repair</button></div>
             <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
           </div>
         </section>
@@ -108,7 +109,7 @@
           <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
         </div>
         <div id="space-panel" hidden><p id="no-other-spaces" class="muted" role="status"></p><label for="space">Space to connect</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="text-button" type="button">Use this space</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>
-        <div id="connect-panel" hidden><p class="context" id="selected-space"></p><div class="actions"><button id="connect" class="button primary" type="button">Connect this computer</button><button id="change-space" class="text-button" type="button">Cancel</button><button id="retry-login" class="text-button" type="button">Sign in again</button></div></div>
+        <div id="connect-panel" hidden><p class="context" id="selected-space"></p><div id="connect-actions" class="actions"><button id="connect" class="button primary" type="button">Connect this computer</button><button id="change-space" class="text-button" type="button">Cancel</button><button id="retry-login" class="text-button" type="button">Sign in again</button></div></div>
         <ol id="setup-progress" class="progress" aria-label="Connection progress" hidden></ol>
         <p id="connected-space" class="connected-space" hidden></p>
         <div id="connected-panel" hidden>
@@ -136,6 +137,7 @@
           </section>
         </div>
         <div id="recovery-panel" data-testid="recovery-panel" class="actions" hidden><button id="recover" data-testid="recover" class="button primary" type="button">Try again</button><button id="recover-apps" class="text-button" type="button" hidden>Set up agent apps</button><a id="setup-installer" class="text-button" href="https://github.com/Cotal-AI/Cotal/releases/latest" hidden>Download installer</a></div>
+        <section id="repair-panel" data-testid="repair-panel" class="repair-panel" aria-labelledby="repair-title" hidden><h2 id="repair-title" tabindex="-1">Repair this computer</h2><ol id="repair-steps" data-testid="repair-steps"></ol><p id="repair-consent" class="context" hidden></p><ul id="repair-agents" data-testid="repair-agents" aria-label="Agents that stop" hidden></ul><div class="actions"><button id="repair-apply" data-testid="repair-apply" class="button primary" type="button">Repair</button><button id="repair-cancel" class="text-button" type="button">Cancel</button></div></section>
         <details id="details" hidden><summary>Details</summary><div class="details-content"><div><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></div></div></details>
         <button id="refresh" class="text-button" type="button" hidden>Refresh status</button>
       </section>
