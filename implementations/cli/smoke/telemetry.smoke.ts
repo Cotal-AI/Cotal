@@ -342,6 +342,12 @@ for (const level of ["regular", "minimal"]) {
     check("a file in the requested store path is named only locally", r.status === 1 && r.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
       && event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
+  const blockedStore = join(s.project, `private ${marker}`, ".cotal", "data");
+  for (const args of [["up"], ["backup", "restore", "artifact"], ["up", "--restore", "artifact"]]) {
+    const r = await s.run([...args, "--store-dir", blockedStore, "--json"]), event = r.sent.find(body => body.event === "command");
+    check(`${args.join(" ")} keeps a refused control-directory store local`, r.status === 1 && r.stdout.includes(marker) && !existsSync(blockedStore) &&
+      event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
   const records = join(s.home, ".cotal", "meshes"), record = join(records, "relative.json");
   mkdirSync(records, { recursive: true });
   const legacy = JSON.stringify({ space: "relative", root: `../folder ${marker}`, origin: "up", mode: "auth", server: "nats://127.0.0.1:4222", ts: new Date(0).toISOString() });
