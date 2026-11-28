@@ -219,6 +219,15 @@ for (const level of ["regular", "minimal"]) {
 }
 
 {
+  const s = sandbox(), marker = "fixture-preferences-marker", config = join(s.home, `config ${marker}`);
+  const dir = join(config, "cotal"), file = join(dir, "preferences.json");
+  mkdirSync(dir, { recursive: true }); writeFileSync(file, "{", { mode: 0o600 });
+  const r = await s.run(["history", "--json"], { XDG_CONFIG_HOME: config }), event = r.sent.find(row => row.event === "command");
+  check("invalid preferences name the file and parse error only locally", r.status === 1 && r.stdout.includes(marker) && r.stdout.includes("not JSON") && readFileSync(file, "utf8") === "{" &&
+    event?.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
+{
   const s = sandbox(), marker = "fixture-credential-name", file = join(s.home, `ordinary ${marker}`);
   writeFileSync(file, "invalid fixture text", { mode: 0o600 });
   for (const [path, code, status] of [[file, "SCHEMA_INVALID", 1], [`${file}-missing`, "TARGET_NOT_FOUND", 2]] as const) {
