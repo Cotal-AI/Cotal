@@ -63,6 +63,8 @@
 .code-row { padding: 8px 12px; }
 .approval strong { font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
 .approval .button { margin-bottom: 8px; }
+#approval-link { overflow-wrap: anywhere; user-select: text; }
+#copy-link-status:empty { margin: 0; }
 .caret { display: none; }
 .progress { list-style: none; margin: 12px 0; padding: 0; }
 .progress li { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 0; font-size: 12px; }
