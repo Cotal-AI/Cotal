@@ -215,7 +215,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "start" | "disk" | "none"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "start" | "disk" | "move" | "none"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
@@ -227,6 +227,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "SERVICE_STOPPED": return { title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again.", action: "start", label: "Start" };
     case "DISK_FULL": return { title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room.", action: "disk", label: "Check again" };
+    case "TRANSIENT_LOCATION": return { title: "Move Cotal to Applications", description: "This copy is on a disk image, in an App Translocation folder, or in Downloads. Its background service was not registered.", action: "move", label: "Move to Applications" };
     case "DAEMON_LOST": return { title: "The background service stopped", description: "It stopped before this could finish, so nothing was completed. This clears when the service is running again.", action: "refresh", label: "Check status" };
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
     case "OFFLINE": return { title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description, action: "refresh", label: "Check again" };

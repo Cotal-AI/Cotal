@@ -64,7 +64,14 @@ interface LaunchAgentInput {
   readonly logPath: string;
 }
 
-/** The plist this install writes. launchd execs `ProgramArguments` directly, with no shell. */
+/** A program that will not be there later: a disk image, App Translocation, or the account Downloads.
+ *  /Applications and the account's own Applications folder are installed copies. */
+export function transientProgram(program: string): boolean {
+  if (program === "/Volumes" || program.startsWith("/Volumes/")) return true;
+  if (program.split("/").includes("AppTranslocation")) return true;
+  const downloads = /^\/Users\/[^/]+\/Downloads(?:\/|$)/.exec(program);
+  return downloads !== null;
+}
 export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha256: string } {
   if ([input.argv[0] ?? "", input.workingDirectory, input.logPath].some((path) => !isAbsolute(path))) throw new CommandFailure("refused", "USAGE_INVALID", "the LaunchAgent needs absolute executable, working and log paths");
   const str = (value: string) => `<string>${xmlText(value)}</string>`;
@@ -74,6 +81,14 @@ export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha2
   if (daemon < 2 || input.argv[daemon + 1] !== "serve" || !cli || !isAbsolute(cli)
     || !input.argv.slice(1, daemon - 1).every((flag) => /^--[A-Za-z][A-Za-z0-9-]*(?:=[^\s"]*)?$/.test(flag))) {
     throw new CommandFailure("refused", "UNSUPPORTED", "the LaunchAgent needs the durable Node daemon serve entry; no launcher was substituted");
+  }
+  // A disk image, an App Translocation copy and Downloads disappear. The service would then have
+  // nothing to run. An installed copy under /Applications or the account's Applications stays.
+  if (transientProgram(cli)) {
+    throw new CommandFailure("refused", "CONFLICT", "this copy is on a disk image, in an App Translocation folder, or in Downloads, so its background service was not registered", {
+      remedy: "Move Cotal to Applications, then set it up from there.",
+      native: { code: "TRANSIENT_LOCATION" },
+    });
   }
   // launchd's job dictionary omits WorkingDirectory. Carry it in the exact argument vector instead;
   // this entry changes directory before importing the CLI, including any cwd-sensitive setup.

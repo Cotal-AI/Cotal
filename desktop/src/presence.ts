@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type Presence = { loginEnabled: boolean; loginError?: string; relocationOffer: boolean; pinOffer: boolean; pinMessage: string; preferenceNotice?: string };
+type Presence = { loginEnabled: boolean; loginError?: string; relocationOffer: boolean; pinOffer: boolean; pinMessage: string; preferenceNotice?: string; relocated?: boolean };
 let offerShown = false;
 let relocationShown = false;
 let working = false;
@@ -25,8 +25,8 @@ function offer(id: string, message: string, primary: string, accept: () => Promi
   (document.getElementById(id === "move-offer" ? "connection-card" : "settings-startup") ?? document.querySelector(".connection-card") ?? document.querySelector("main")!).append(box);
 }
 
-export async function refreshPresence(connected = false): Promise<void> {
-  if (working) return;
+export async function refreshPresence(connected = false): Promise<boolean> {
+  if (working) return false;
   working = true;
   try {
     const p = await invoke<Presence>("desktop_presence");
@@ -68,10 +68,11 @@ export async function refreshPresence(connected = false): Promise<void> {
         document.getElementById("settings-startup")!.append(message);
       }
     }
+    return p.relocated === true;
   } finally { working = false; }
 }
 
-export async function startPresence(notice: (message: string, error?: boolean) => void, actions?: { settings: () => void; dashboard: () => void }): Promise<void> {
+export async function startPresence(notice: (message: string, error?: boolean) => void, actions?: { settings: () => void; dashboard: () => void }): Promise<boolean> {
   report = notice;
   await listen<string>("desktop-close-explained", event => report(event.payload));
   await listen<string>("desktop-presence-error", event => report(event.payload, true));
@@ -79,7 +80,7 @@ export async function startPresence(notice: (message: string, error?: boolean) =
     await listen("desktop-open-settings", actions.settings);
     await listen("desktop-open-dashboard", actions.dashboard);
   }
-  await refreshPresence();
+  return refreshPresence();
 }
 
 export async function setLoginPreference(enabled: boolean): Promise<void> {

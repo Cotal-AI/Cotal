@@ -81,7 +81,7 @@ for (const scenario of ["old", "absent", "ambiguous", "changed", "pending"] as c
 const restartSource = readFileSync(new URL("../daemon/install.ts", import.meta.url), "utf8").split("async function restartWindowsInstalled")[1]!.split("/** Restart only")[0]!;
 check("source inspection: production restart retains its pinned socket until finally recovery completes", !restartSource.split("} finally { clearInterval(heartbeat)")[0]!.includes("socket.destroy()") && restartSource.includes("socket?.destroy(); exclusion?.release();"));
 const code = (fn: () => unknown): string => {
-  try { fn(); return "none"; } catch (e) { return e instanceof CommandFailure ? e.code : `throw:${(e as Error).message}`; }
+  try { fn(); return "none"; } catch (e) { return e instanceof CommandFailure ? (e.native?.code ?? e.code) : `throw:${(e as Error).message}`; }
 };
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
@@ -197,6 +197,12 @@ try {
     check("N1 Windows tasks have no PATH pin to rewrite", refreshedDaemonPath("scheduled-task", "task", "relative") === undefined);
     check("a control character refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "a\nb"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
     check("a relative executable refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: ["node", "x"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
+    for (const entry of ["/Volumes/Cotal/Cotal.app/Contents/Resources/runtime/dist/cotal.js", "/private/var/folders/xx/AppTranslocation/x/d/Cotal.app/Contents/Resources/runtime/dist/cotal.js", "/Users/a/Downloads/Cotal.app/Contents/Resources/runtime/dist/cotal.js"]) {
+      check("a temporary location refuses TRANSIENT_LOCATION and writes nothing", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, entry, "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" })) === "TRANSIENT_LOCATION");
+    }
+    for (const entry of ["/Applications/Cotal.app/Contents/Resources/runtime/dist/cotal.js", "/Users/a/Applications/Cotal.app/Contents/Resources/runtime/dist/cotal.js"]) {
+      check("an Applications copy is accepted", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, entry, "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" })) === "none");
+    }
   }
 
   console.log("N2 LaunchAgent lifecycle");

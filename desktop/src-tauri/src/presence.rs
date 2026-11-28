@@ -45,10 +45,21 @@ impl Preferences {
     }
 }
 
-/// Only packaged bundles on a mounted volume or in the account's Downloads need an offer.
+/// A packaged app on a disk image, in App Translocation, or in the account's Downloads.
 pub fn relocation_source(bundle: &Path, downloads: &Path) -> bool {
     bundle.extension().is_some_and(|ext| ext == "app")
-        && (bundle.starts_with("/Volumes") || bundle.starts_with(downloads))
+        && (bundle.starts_with("/Volumes")
+            || bundle.starts_with(downloads)
+            || bundle.components().any(|component| component.as_os_str() == "AppTranslocation"))
+}
+
+/// The moved copy is reopened with this exact argument so setup can continue.
+pub fn launched_relocated<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--relocated")
 }
 
 /// A verified inventory retains login startup during a manager restart, not after disconnect.
@@ -218,9 +229,16 @@ mod tests {
     #[test]
     fn relocation_is_restricted_to_transient_packaged_apps() {
         let downloads = Path::new("/Users/a/Downloads");
-        for source in ["/Volumes/Cotal/Cotal.app", "/Users/a/Downloads/Cotal.app"] {
+        for source in [
+            "/Volumes/Cotal/Cotal.app",
+            "/Users/a/Downloads/Cotal.app",
+            "/private/var/folders/ab/xyz/T/AppTranslocation/C0FFEE/d/Cotal.app",
+        ] {
             assert!(relocation_source(Path::new(source), downloads));
         }
+        assert!(launched_relocated(["--background", "--relocated"]));
+        assert!(!launched_relocated(["--background", "--relocated-later"]));
+        assert!(!launched_relocated(std::iter::empty::<&str>()));
         for source in ["/Applications/Cotal.app", "/Users/a/Downloads-foreign/Cotal.app", "/Volumes/Cotal/cotal", "/Users/a/Applications/Cotal.app"] {
             assert!(!relocation_source(Path::new(source), downloads));
         }

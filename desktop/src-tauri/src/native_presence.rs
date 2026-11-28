@@ -1,4 +1,4 @@
-use crate::presence::{has_connected_space, Preferences};
+use crate::presence::{has_connected_space, launched_relocated, Preferences};
 use serde::Serialize;
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
@@ -35,7 +35,7 @@ fn bundle() -> Result<PathBuf, String> {
 pub(crate) fn updater_location(app: &AppHandle) -> Result<PathBuf, String> {
     let source = bundle()?;
     if crate::presence::relocation_source(&source, &app.path().download_dir().map_err(|error| error.to_string())?) {
-        return Err("Move Cotal to Applications before updating it. Disk image and Downloads copies cannot update themselves.".into());
+        return Err("Move Cotal to Applications before updating it. A disk image, App Translocation folder, or Downloads copy cannot update itself.".into());
     }
     Ok(source)
 }
@@ -220,6 +220,7 @@ pub struct PresenceView {
     #[serde(skip_serializing_if = "Option::is_none")]
     login_error: Option<String>,
     relocation_offer: bool,
+    relocated: bool,
     pin_offer: bool,
     pin_message: String,
     preference_notice: Option<String>,
@@ -246,6 +247,7 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
         #[cfg(windows)]
         login_error,
         relocation_offer: !relocation_declined && transient(&app)?,
+        relocated: launched_relocated(std::env::args()),
         pin_offer,
         pin_message,
         preference_notice: app.state::<Presence>().1.clone(),
@@ -287,7 +289,7 @@ pub async fn move_to_applications(app: AppHandle) -> Result<(), String> {
     let _activity = app.state::<crate::app_activity::Activity>().request()?;
     #[cfg(target_os = "macos")]
     {
-        if !transient(&app)? { return Err("This application is not running from a disk image or Downloads.".into()); }
+        if !transient(&app)? { return Err("This application is not running from a disk image, an App Translocation folder, or Downloads.".into()); }
         let source = bundle()?;
         let destination = PathBuf::from("/Applications/Cotal.app");
         // Reserve the destination exclusively before copying. Never overwrite another installation.

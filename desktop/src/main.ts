@@ -1128,6 +1128,7 @@ el("recover").addEventListener("click", () => {
     if (!ready) throw new Error("The background service is not ready.");
     notice("");
   });
+  else if (recovery === "move") void invoke("move_to_applications").catch(refusal);
   else void action(async () => { if (!keepNotAnswering) clearDetails(); await refresh(); });
 });
 /** The install request's progress lines all say "running"; only its result ends them, so the list resets. */
@@ -1385,7 +1386,7 @@ async function start(): Promise<void> {
     }
   };
   try {
-    await startPresence(notice, { settings: openSettings, dashboard: () => openDashboard(true) });
+    const relocated = await startPresence(notice, { settings: openSettings, dashboard: () => openDashboard(true) });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     appPlatform = String(info.platform); appArch = String(info.arch);
@@ -1417,10 +1418,16 @@ async function start(): Promise<void> {
     catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
     void checkAppUpdates();
     await refresh();
+    // The move reopens this app from Applications before the service exists.
+    if (relocated && !ready) {
+      await startService();
+      await refresh();
+    }
     if (ready) {
       await spaces(false);
       if (selectedSpace()) { if (!linked) showStage("connect"); await refresh(); }
       else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("connect");
+      if (relocated && !linked && selectedSpace() && !connected()) el<HTMLButtonElement>("connect").click();
     }
   } catch (error) {
     if (error instanceof DaemonRefusal && error.code === "SETUP_INTERRUPTED") text("machine-details", "Computer information is unavailable while setup is incomplete.");

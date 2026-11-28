@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; relocated?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -45,7 +45,7 @@ async function app(options: { browserFailureAt?: number; copyFailure?: boolean; 
     async invoke(cmd: string, args: { explicit?: boolean; manual?: boolean; request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
-      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "", relocated: options.relocated === true };
       if (cmd === "first_paint") return;
       if (cmd === "set_connection_state") return;
       nativeCalls.push(cmd);
@@ -885,6 +885,28 @@ for (const reason of ["denied", "expired", "unreachable"]) test(`sign-in ${reaso
   } finally { a.dom.window.close(); }
 });
 
+test("a temporary location offers Move to Applications and does not install", async () => {
+  const a = await app({ installed: true, setupCode: "TRANSIENT_LOCATION" });
+  try {
+    await a.click("connect");
+    await a.setup();
+    assert.equal(a.node("recovery-panel").hidden, false);
+    assert.equal(a.node("recover").textContent, "Move to Applications");
+    assert.equal(a.node("recover").dataset.action, "move");
+    await a.click("recover");
+    assert.ok(a.nativeCalls.includes("move_to_applications"));
+    assert.equal(a.calls.filter(call => call.op === "install").length, 0);
+  } finally { a.dom.window.close(); }
+});
+test("a relocated reopen continues setup", async () => {
+  const a = await app({ installed: false, relocated: true });
+  try {
+    assert.equal(a.calls.filter(call => call.op === "install").length, 1);
+    assert.equal(a.calls.filter(call => call.op === "setup").length, 1);
+    await a.setup();
+    assert.equal(a.node("connection-title").textContent, "This computer is connected");
+  } finally { a.dom.window.close(); }
+});
 for (const setupCode of ["NO_AVAILABLE_CONNECTOR", "SEATS_ACTIVE"]) test(`${setupCode} retains diagnostics and retries setup`, async () => {
   const a = await app({ installed: true, setupCode });
   try {
