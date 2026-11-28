@@ -6,13 +6,14 @@ import type { LoginResult } from "./protocol.js";
 
 async function withLoginSignals<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const abort = new AbortController();
-  const onSignal = () => abort.abort();
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  for (const signal of signals) process.on(signal, onSignal);
+  const removeHandlers = () => { for (const signal of signals) process.off(signal, onSignal); };
+  const onSignal = () => { removeHandlers(); abort.abort(); };
+  for (const signal of signals) process.once(signal, onSignal);
   try {
     return await run(abort.signal);
   } finally {
-    for (const signal of signals) process.off(signal, onSignal);
+    removeHandlers();
   }
 }
 
@@ -37,10 +38,17 @@ export async function loginFromCli(opts: Omit<LoginOptions, "signal">) {
 export async function loginBeforeInstall(opts: Omit<LoginOptions, "signal">, sessionDir: string) {
   return withLoginSignals(async signal => {
     const login = createLoginCoordinator({ sessionDir });
+    let prompted = false;
     const cancel = () => { void login.close(); };
-    const attempt = login.start({ ...opts, onPrompt: (_, prompt) => opts.onPrompt(prompt), onResult: async () => {} })!;
+    const attempt = login.start({ ...opts, onPrompt: (_, prompt) => { prompted = true; opts.onPrompt(prompt); }, onResult: async () => {} })!;
     signal.addEventListener("abort", cancel, { once: true });
-    try { return completedLogin(await attempt.settled); }
+    try {
+      const result = await attempt.settled;
+      if (result.outcome === "cancelled" && !prompted) {
+        throw new CommandFailure("refused", "USAGE_INVALID", "stopped before the approval prompt; no sign-in was saved", { selfContained: true, native: { code: "ABANDONED" } });
+      }
+      return completedLogin(result);
+    }
     finally { signal.removeEventListener("abort", cancel); }
   });
 }

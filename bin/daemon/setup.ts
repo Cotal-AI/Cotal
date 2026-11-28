@@ -50,6 +50,7 @@ export interface SetupResult {
 }
 
 export interface InstallOptions {
+  readonly resumeAccountInstall?: boolean;
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
@@ -155,7 +156,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
   }
   if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
     // A start failure is not evidence that no installation was recorded.
-    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts));
+    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts), opts.resumeAccountInstall);
     detail = `${unit} is already installed; its owned service received a start request`;
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);
@@ -272,18 +273,42 @@ function credentialsRemoved(r: LoginResult): void {
   throw new CommandFailure("partial", "OPERATION_PARTIAL", message, { remedy: `${remedy}, then run this setup again` });
 }
 
+function firstAccountSignInFailure(result: Extract<LoginResult, { outcome: "failed" }>): CommandFailure {
+  if (result.reason === "local-state-error") return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", result.message, { native: { code: "LOCAL-STATE-ERROR" }, remedy: result.remedy });
+  const native = { code: result.reason.toUpperCase().replaceAll("-", "_") };
+  if (result.reason === "denied" || result.reason === "expired") return new CommandFailure("refused", "PERMISSION_DENIED", result.message, { native });
+  if (result.reason !== "refused") return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", result.message, { native });
+  return new CommandFailure("refused", "AUTH_REQUIRED", result.message);
+}
+
+function hasSavedSetupAccount(dir: string, idp: string): boolean {
+  try { return listIdpAccounts(dir).some(account => account.idp === idp && account.expiresAt > Math.floor(Date.now() / 1000)); }
+  catch {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no approval was requested", {
+      native: { code: "LOCAL-STATE-ERROR" }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
+    });
+  }
+}
+
 /** Connect this computer to an account without changing any space intent. */
 export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string; existingSignInOnly?: boolean }) {
   const steps: SetupStep[] = [];
-  let signedHere: LoginResult | undefined;
+  const reportSignIn = (outcome: string, detail: string) => {
+    const step: SetupStep = { step: "sign-in", outcome, detail };
+    steps.push(step);
+    opts.report(`sign-in: ${detail}`, step);
+  };
+  let signedHere = false;
   if (!opts.existingSignInOnly && installedUnitForSetup(opts.paths, opts.daemonHome) === undefined) {
     await refuseUnsupervisedDaemon(opts);
     planInstall(opts.paths, opts.daemonHome);
     const sessionDir = opts.daemonHome ?? homeCotalDir();
-    if (opts.discoveryPins || !listIdpAccounts(sessionDir).some(account => account.idp === opts.idp && account.expiresAt > Math.floor(Date.now() / 1000))) {
-      signedHere = await loginBeforeInstall(opts, sessionDir);
-      if (signedHere.outcome === "failed") throw new CommandFailure("refused", "AUTH_REQUIRED", signedHere.message);
-      credentialsRemoved(signedHere);
+    if (opts.discoveryPins || !hasSavedSetupAccount(sessionDir, opts.idp)) {
+      const signed = await loginBeforeInstall(opts, sessionDir);
+      if (signed.outcome === "failed") throw firstAccountSignInFailure(signed);
+      credentialsRemoved(signed);
+      reportSignIn("signed-in", `signed in as ${signed.label || signed.sub}`);
+      signedHere = true;
     }
   }
   const unit = await ensureInstalled(opts, steps);
@@ -293,17 +318,14 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
   const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
-  if (signedHere?.outcome === "signed-in") {
-    steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signedHere.label || signedHere.sub}` });
-  } else if (!signedIn || opts.discoveryPins) {
+  if (!signedHere && (!signedIn || opts.discoveryPins)) {
     if (opts.existingSignInOnly) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
     const signed = await loginFromCli(opts);
     if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
     if (signed.result.outcome === "failed") throw new CommandFailure("refused", "AUTH_REQUIRED", signed.result.message);
     credentialsRemoved(signed.result);
-    steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
-  } else steps.push({ step: "sign-in", outcome: "already-signed-in", detail: "already signed in; no approval was needed" });
-  opts.report(`sign-in: ${steps.at(-1)!.detail}`, steps.at(-1));
+    reportSignIn("signed-in", `signed in as ${signed.result.label || signed.result.sub}`);
+  } else if (!signedHere) reportSignIn("already-signed-in", "already signed in; no approval was needed");
   const deadline = Date.now() + 60_000;
   for (;;) {
     const status = await queryDaemon(opts);

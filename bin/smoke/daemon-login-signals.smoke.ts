@@ -165,6 +165,23 @@ try {
     assert.match(result.err, /signal-smoke-unknown/);
     assert.match(result.err, /Usage\n/);
   });
+  await cell("a second Ctrl-C exits while the daemon cannot acknowledge cancellation", async () => {
+    const attempt = run(["login", "--idp", url, "--json"]);
+    try {
+      await until(() => attempt.stderr().includes("Approval code"), "device prompt");
+      assert.ok(daemon.child.kill("SIGSTOP"));
+      assert.ok(attempt.child.kill("SIGINT"));
+      await sleep(250);
+      assert.equal(attempt.child.exitCode, null);
+      assert.equal(attempt.child.signalCode, null, "the first interrupt waits for cancellation");
+      assert.ok(attempt.child.kill("SIGINT"));
+      const result = await attempt.done;
+      assert.equal(result.signal, "SIGINT");
+      assert.equal(existsSync(sessionFile), false);
+    } finally {
+      daemon.child.kill("SIGCONT");
+    }
+  });
   await cell("approval still signs in and saves a session", async () => {
     const ready = await run(["status", "--json"]).done;
     assert.equal(ready.code, 0);
