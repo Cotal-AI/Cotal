@@ -238,7 +238,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "UNREACHABLE": return { title: "We cannot reach your connection", description: `${CONNECTION_COPY.unreachable.description} Details shows the reason.`, action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
-    case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
+    case "VERSION_MISMATCH": return { title: "Cotal was updated", description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.", action: "connect", label: "Restart background service" };
     case "CONFLICT": return { title: "Another Cotal installation runs the background service", description: "This copy cannot take it over. Nothing was changed.", action: "none", label: "" };
     default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
   }

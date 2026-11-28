@@ -131,6 +131,15 @@ test("onboarding boundaries survive special-scheme normalization", () => {
   ]) assert.throws(() => onboardingLink(value), Error, value);
 });
 
+test("the version mismatch says what happened, what the button does and what it costs", () => {
+  assert.deepEqual(refusalView("VERSION_MISMATCH"), {
+    title: "Cotal was updated",
+    description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.",
+    action: "connect",
+    label: "Restart background service",
+  });
+});
+
 test("expired credentials and pending approval refusals map to their recovery actions", () => {
   assert.deepEqual(refusalView("CREDENTIAL_EXPIRED"), {
     title: "Sign in again",

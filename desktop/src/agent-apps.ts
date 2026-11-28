@@ -28,7 +28,7 @@ export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; serviceOwner?: { kind: "app" | "cli"; location?: string }; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
@@ -109,8 +109,14 @@ export class AgentApps {
   private loading: Promise<void> | undefined;
   private readonly activity = new Map<string, Activity>();
   private message = "";
+  /** The last install outcome is a warning, not a success: the service has not picked the app up. */
+  private messageWarning = false;
   /** An install the service could not pick up while agents ran. Checked again once they stop. */
   waitingForAgents = false;
+  /** Another Cotal installation owns the background service, so this copy's own re-check cannot
+   *  succeed. The panel hides Check again while this is set, and the periodic re-read with refresh
+   *  clears it by itself once the other copy fixes the service. */
+  ownerBlocked = false;
   /** The message says the service has not picked an install up; a refresh that succeeds clears it. */
   private servicePending = false;
   constructor(private readonly host: AgentAppsHost) {}
@@ -123,10 +129,14 @@ export class AgentApps {
     if (this.loading) return this.loading;
     this.loading = (async () => {
       try {
-        const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
+        // Another installation owning the service is not something time fixes, but the person can fix
+        // the other copy; while that is pending, a periodic re-read with refresh clears this box by
+        // itself once the service really is refreshed, with no button this copy could press.
+        const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents || this.ownerBlocked ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
         // Only a refresh that ran clears the warning: "unchanged" also comes back when the service does not answer.
-        if (result.service === "refreshed" && this.servicePending) { this.message = ""; this.servicePending = false; }
+        if (result.service === "refreshed" && this.servicePending) { this.message = ""; this.messageWarning = false; this.ownerBlocked = false; this.servicePending = false; }
+        if (result.service === "failed" && !this.servicePending) { this.message = ""; this.messageWarning = false; this.ownerBlocked = false; }
         if (result.service === "refreshed" || result.service === "unchanged") this.waitingForAgents = false;
       } catch (error) { this.error = refusalMessage(error); }
       finally { this.loading = undefined; this.host.changed(); }
@@ -150,7 +160,7 @@ export class AgentApps {
   async install(name: string): Promise<void> {
     if (this.busy) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
-    this.activity.set(name, { kind: "installing" }); this.message = ""; this.host.changed();
+    this.activity.set(name, { kind: "installing" }); this.message = ""; this.messageWarning = false; this.ownerBlocked = false; this.host.changed();
     this.host.announce(`Installing ${title}.`);
     try {
       const result = await appRequest({ op: "agent-app-install", name }, this.progress(name, "installing"));
@@ -158,7 +168,9 @@ export class AgentApps {
       if (result.app) this.replace(result.app);
       this.waitingForAgents = result.service === "waiting";
       this.servicePending = result.service === "waiting" || result.service === "failed";
-      this.message = installedMessage(title, result);
+      const outcome = installedMessage(title, result);
+      this.message = outcome.text; this.messageWarning = outcome.warning;
+      this.ownerBlocked = result.service === "failed" && result.serviceOwner !== undefined;
       this.host.announce(this.message);
       if (result.app?.state === "signed-out") await this.signIn(name, result);
     } catch (error) {
@@ -178,7 +190,7 @@ export class AgentApps {
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
       if (result.app?.state === "signed-out") this.activity.set(name, { kind: "failed", action: "sign-in", message: "the sign-in finished, but the app still reports it is signed out" });
-      else { this.message = installedMessage(title, installed, true); this.host.announce(this.message); }
+      else { const outcome = installedMessage(title, installed, true); this.message = outcome.text; this.messageWarning = outcome.warning; this.ownerBlocked = installed.service === "failed" && installed.serviceOwner !== undefined; this.host.announce(this.message); }
     } catch (error) {
       this.activity.set(name, { kind: "failed", action: "sign-in", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} sign-in did not finish.`);
@@ -194,6 +206,10 @@ export class AgentApps {
     const text = this.error ?? this.message;
     if (message.textContent !== text) message.textContent = text;
     message.classList.toggle("error", !!this.error);
+    // An install the service has not picked up is a warning, never a success, and when another
+    // Cotal copy owns the service this copy's own re-check cannot succeed, so it is not offered.
+    message.classList.toggle("warning", !this.error && this.messageWarning);
+    refresh.hidden = this.ownerBlocked;
     refresh.disabled = this.busy || !!this.loading;
     if (!this.apps) { if (!list.children.length) list.replaceChildren(); return; }
     const keys = new Set(this.apps.map(app => app.name));

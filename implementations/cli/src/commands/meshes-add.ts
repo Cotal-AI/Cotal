@@ -227,8 +227,10 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
       message: `the broker at ${server} requires auth, but "${space}" is registered in open mode`,
       remedy: `restore the broker at ${server} to its recorded open mode, then rerun the check unchanged`,
     };
-    if (others.length)
-      return bad(`✗ the broker at ${server} requires auth, and ${authDir(root)} holds the trust for "${others.join('", "')}", not "${space}" - register the space it holds under its own name, or point --root at where "${space}"'s trust is`, "DEPENDENCY_UNAVAILABLE");
+    if (others.length) return {
+      ok: false, code: "DEPENDENCY_UNAVAILABLE", message: "✗ the broker requires auth, but this folder holds trust for a different space",
+      remedy: `${authDir(root)} holds the trust for "${others.join('", "')}", not "${space}"; register the intended space at ${server} under its own name with the root that holds its trust`,
+    };
     return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST + SEEDLESS, "CONFLICT");
   }
   if (mode === "user" && enforces === "open")
