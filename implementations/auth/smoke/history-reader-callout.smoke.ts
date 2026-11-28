@@ -182,7 +182,7 @@ async function checkDelegationDoors(channel: string, dial: (row: ReturnType<type
   const http = createServer((req, res) => { void handleExchange(req, res, ctx, LOOPBACK_POLICY).catch(e => { res.statusCode = 500; res.end(String(e)); }); });
   await new Promise<void>(resolve => { http.listen(0, "127.0.0.1", resolve); });
   const port = (http.address() as { port: number }).port;
-  const exchange = async ({ actor, actorToken }: ReturnType<typeof ask>) => {
+  const exchange = async ({ actor, actorToken }: { actor: string; actorToken: string }) => {
     const response = await fetch(`http://127.0.0.1:${port}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ctx.cap}` }, body: JSON.stringify({ owner: OWNER, actor, actorToken }) });
     return { status: response.status, ...await response.json() as { token?: string; error?: string } };
   };
