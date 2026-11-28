@@ -92,7 +92,7 @@ const describeRecorded = (r: RecordedHostRequest): string =>
  *  recorded under its id before it is sent, and `--request-id` sends that recorded request again
  *  verbatim, never one rebuilt from a fresh read, so the host replays its answer; an id this root
  *  never recorded, or one recorded for another command, is refused with nothing sent. */
-export async function serviceEndpointHostCall(dir: string, space: string, positionals: readonly string[], values: ServiceEndpointValues): Promise<ServiceEndpointCall> {
+export async function serviceEndpointHostCall(dir: string, space: string, positionals: readonly string[], values: ServiceEndpointValues, showDiagnosis?: (lines: string[]) => void): Promise<ServiceEndpointCall> {
   const [sub, subject, ...extra] = positionals;
   const usage = () => new CommandFailure("refused", "USAGE_INVALID", SERVICE_ENDPOINT_USAGE);
   if (!sub || !subject || extra.length) throw usage();
@@ -139,7 +139,20 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
       recordHostRequest(dir, request);
       return send(request);
     }
-    case "proposal": return read("proposal-read", { proposalId: subject });
+    case "proposal": {
+      const result = await read("proposal-read", { proposalId: subject });
+      const answer = result.answer;
+      if (showDiagnosis && answer.operation === "proposal-read" && answer.state === "present" && answer.record.value.state === "approved") {
+        const { endpoint, instanceId } = answer.record.value;
+        const instance = await post(fresh("instance-read", { endpoint, instanceId })).catch(() => undefined);
+        if (instance?.operation === "instance-read" && instance.state === "present") {
+          const view = instance.record.value;
+          if (view.endpoint === endpoint && view.instanceId === instanceId && view.approvalDigest === ("approvalDigest" in answer.record.value ? answer.record.value.approvalDigest : null))
+            showDiagnosis(serviceInstanceDiagnosis(view));
+        }
+      }
+      return result;
+    }
     case "operation": return read("operation-read", { operationId: subject });
     case "name": return read("name-read", { endpoint: subject });
     case "name-bind": {
@@ -214,6 +227,18 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
 }
 
 type ServiceHostTarget = { endpoint: string; idpUrl: string; authorization?: string };
+
+function serviceInstanceDiagnosis(view: import("./service-host-contract.js").ServiceInstanceView): string[] {
+  if (view.state === "revoking" || view.state === "retired") return ["The service approval is revoked or being revoked."];
+  const lines: string[] = [];
+  // This read carries deadlines, not the host's admission verdict. A client's clock cannot infer it.
+  for (const [label, timestamp] of [["Root credential expiry", view.rootExpiresAt], ["Service approval expiry", view.approvalExpiresAt]] as const) {
+    if (timestamp === null) continue;
+    const utc = new Date(timestamp * 1000).toJSON();
+    if (utc !== null) lines.push(`${label}: ${utc} (UTC).`);
+  }
+  return lines;
+}
 
 /** The refusal for a space this root knows no service endpoint host for. Only the auth service of a
  *  user-auth space started with `--service-endpoints` hosts one, so a static or open space is told

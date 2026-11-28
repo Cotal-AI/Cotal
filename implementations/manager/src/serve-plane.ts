@@ -150,10 +150,10 @@ export class ServePlane {
   private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
-  /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
+  /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after refreshing the inventory. */
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;
-    inventory.refreshUnavailableConnectors();
+    inventory.refreshConnectors();
     return servedConnectorStatuses(inventory.connectorStatuses);
   }
 
@@ -213,15 +213,16 @@ export class ServePlane {
     });
   }
 
-  /** Add the class spawn rails when the first application becomes available, without redialing. */
-  enableClassSpawn(): void {
+  /** Update the class spawn rails when application availability crosses zero, without redialing. */
+  syncClassSpawn(): void {
     const serving = this.serviceServe;
     if (!serving || this.leaseStopping) return;
     const replacement = this.serveOnConnection(serving.nc, serving.grant);
     // Reusing the incarnation queues keeps overlap single-delivery. Do not await the old
-    // handlers here: the status or launch that discovered the application can be one of them.
-    const drained = serving.handle.stop();
-    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), drained]); } };
+    // handlers here: the status or launch that changed availability can be one of them.
+    let draining: Promise<void> | undefined = serving.handle.stop();
+    void draining.finally(() => { draining = undefined; });
+    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), draining]); } };
   }
 
   /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and
