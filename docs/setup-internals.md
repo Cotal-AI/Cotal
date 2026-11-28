@@ -388,7 +388,12 @@ self-registers only when imported, and the CLI imports it only once it is instal
 
 The CLI seeds the connectors before the first command of each boot that is not a read. It uses the
 same `cotal ext add` path a third party uses, so the connectors are ordinary extensions you can
-`cotal ext remove`. A command or subcommand that declares `reads` installs and refreshes nothing.
+`cotal ext remove`. The first `cotal ext remove` on a machine that has not seeded still seeds,
+because that command is what installs the built-ins. Once a seed has failed and no installer is
+still writing, `cotal ext remove` leaves that seed alone, so taking the recorded extension out is
+not refused before it runs. Ordinary startup still refuses an interrupted seed or a recovery journal.
+A child that may still be installing also refuses removal under the extension writer lock, even if
+startup seeding was skipped. A command or subcommand that declares `reads` installs and refreshes nothing.
 The CLI never imports a built-in whose installed version differs from the binary's. Its error names
 the package and the `cotal ext seed` remedy instead.
 
@@ -562,10 +567,25 @@ inspection does not invoke `ps`. Each inspection reads the owner record once and
 with the observed inode. Reclaim checks both again under its sentinel before it removes the lock
 file it judged.
 
-The reconcile journals a crash cursor before each connector mutation. On a setup retry, reconcile
-checks the staged add and the seed records under both locks. When those records identify an
-interrupted first install and no installer is active or ambiguous, setup uses the same verified
-reinstall as `cotal ext seed --repair`. A missing generation stamp alone is not enough.
+The reconcile journals a crash cursor before each connector mutation. A verify pass installs the
+built-ins and the optional extensions together, into one stage, and promotes that stage once.
+A missing first-party operator package does not void the proof of a built-in that is already
+identical. The check still includes hoisted dependencies. If only the operator reinstall fails,
+`cotal update` names the package, exits non-zero and leaves no seed cursor. If the same update
+also needed to reinstall a built-in, the failed cursor stays. For automatic operator reconciliation,
+npm uses its configured request timeout (five minutes by default) with no fetch retries. An answer
+within that budget can still install the extension. If the stopped installer reports no route, a
+DNS failure, a refused connection, or an offline cache miss, the CLI warns once and runs the command
+without advancing the seed stamp. It defers another automatic attempt for 60 seconds using the
+`seed/operator-fetch.retry` file. If npm times out instead, the CLI warns and continues without
+creating a retry hint. `cotal update` retries immediately. Explicit `cotal ext seed` still
+reports the failure and exits non-zero. In a packed install, removing a missing optional extension
+can require npm to reinstall dependencies of the retained built-ins. With npm offline and an empty
+cache, the CLI refuses that removal before invoking npm and prints the command to retry when back
+online. On a setup retry, reconcile checks the staged add and the seed
+records under both locks. When those records identify an interrupted first install and no
+installer is active or ambiguous, setup uses the same verified reinstall as `cotal ext seed
+--repair`. A missing generation stamp alone is not enough.
 When reconcile cannot establish safe recovery, it keeps the cursor and reports the repair command.
 A SIGTERM to the seed command lets the current transaction finish, then stops
 before another starts. If an ordinary install verified, cancellation clears the cursor without

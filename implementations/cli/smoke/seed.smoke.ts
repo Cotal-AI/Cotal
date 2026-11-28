@@ -7,7 +7,7 @@
  *  - crash cursor → auto fails loud → `--repair` re-installs the interrupted connector
  *  - a seed that fails reports its reason; the next boot says it failed, not that it was interrupted
  *  - a recorded third-party package whose directory is gone (never there, or pruned by npm) is
- *    reported by reset and repair, which still succeed, and `ext remove` then drops its entry
+ *    reported by reset and repair, which still succeed; `ext remove` drops its entry without repairing a failed seed
  *  - corrupt manifest → `--reset` quarantines + rebuilds; connectors still on disk → `--repair` rebuilds
  *  - truncated authority never resurrects a removed connector (backup union)
  *  - operator-installed official entry reconciled to running generation on upgrade; semver fail-loud
@@ -115,6 +115,7 @@ const files = [
   "same-generation.smoke.ts",
   "store-gc.smoke.ts",
   "operator-pinned.smoke.ts",
+  "offline-optional.smoke.ts",
   "forged-environment.smoke.ts",
   "ambiguous-marker.smoke.ts",
   "parallel-boots.smoke.ts",
@@ -135,6 +136,8 @@ if (process.platform === "win32") {
   excluded["absent-extension.smoke.ts"] = "its failed-seed PATH and dangling package link are symlinks, which need a privilege on Windows";
   files.splice(files.indexOf("config-modes.smoke.ts"), 1);
   excluded["config-modes.smoke.ts"] = "POSIX folder modes; Windows has no group write to repair";
+  files.splice(files.indexOf("offline-optional.smoke.ts"), 1);
+  excluded["offline-optional.smoke.ts"] = "a failed Windows npm intermediary does not prove its descendants stopped";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
@@ -164,7 +167,7 @@ try {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
     // The manifest-repair and store-cleanup permission cells run only for a non-root user.
     const permissionChecks = process.getuid && process.getuid() !== 0 ? 5 : 0;
-    const expected = (process.platform === "win32" ? 122 : process.platform === "linux" ? 197 : 191) + permissionChecks;
+    const expected = (process.platform === "win32" ? 126 : process.platform === "linux" ? 217 : 211) + permissionChecks;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });

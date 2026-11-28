@@ -81,11 +81,8 @@ try {
     symlinkSync(process.execPath, join(bin, "node"));
     const failed = boot(cfg, { PATH: bin });
     check("absent extension recovery: a seed without npm fails and keeps its cursor", failed.status !== 0 && existsSync(cursorPath(cfg)), failed.stderr);
-    const refused = cotal(cfg, ["ext", "remove", PKG]);
-    check("absent extension recovery: remove is refused until the failed seed is repaired",
-      refused.status !== 0 && /a previous connector seed failed \(package "claude", phase add\)/.test(refused.stderr) && /cotal ext seed --repair/.test(refused.stderr), refused.stderr);
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("absent extension recovery: --repair exits 0 and names the absent package, never its spec", repair.status === 0 && warned(repair, dir), repair.stderr);
+    check("absent extension recovery: --repair names the absent package, never its spec", repair.status === 0 && warned(repair, dir), repair.stderr);
     check("absent extension recovery: --repair seeds all seven built-ins and clears the cursor", seededAll(cfg), recorded(cfg));
     const remove = cotal(cfg, ["ext", "remove", PKG]);
     check("absent extension recovery: remove then drops the entry", remove.status === 0 && !recorded(cfg).includes(PKG), remove.stderr);

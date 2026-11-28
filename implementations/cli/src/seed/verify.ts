@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, loadExtensionsManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
 
@@ -116,6 +116,24 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
  * built-in, so an update that skips a reinstall still leaves no missing or skewed dependency behind.
  */
 export function prefixLockDiffers(): string | undefined {
+  return lockDiffers();
+}
+
+/** Check the complete prefix except for recorded first-party operator packages that need their own
+ *  reinstall. Keep checking hoisted dependencies and stale stage entries: neither belongs to an
+ *  operator's private subtree. */
+export function builtInLockDiffers(builtInPackages: ReadonlySet<string>): string | undefined {
+  const operators = loadExtensionsManifest().extensions.flatMap(({ pkg, version }) => {
+    if (!pkg.startsWith("@cotal-ai/") || builtInPackages.has(pkg)) return [];
+    try {
+      if (installedExtensionPackage(pkg)?.version === version) return [];
+    } catch { /* Unreadable operator metadata also needs its own reinstall. */ }
+    return [`node_modules/${pkg}`];
+  });
+  return lockDiffers((key) => !operators.some((root) => key === root || key.startsWith(`${root}/node_modules/`)));
+}
+
+function lockDiffers(include: (key: string) => boolean = () => true): string | undefined {
   const prefix = extensionsDir();
   let lock: { packages?: Record<string, LockEntry> };
   try {
@@ -125,7 +143,7 @@ export function prefixLockDiffers(): string | undefined {
   }
   if (!lock.packages || typeof lock.packages !== "object") return "the prefix lock records no packages";
   for (const [key, recorded] of Object.entries(lock.packages)) {
-    if (key === "" || recorded.link === true) continue;
+    if (key === "" || recorded.link === true || !include(key)) continue;
     if (typeof recorded.version !== "string") return `the prefix lock records no version for ${key}`;
     let actual: unknown;
     try {

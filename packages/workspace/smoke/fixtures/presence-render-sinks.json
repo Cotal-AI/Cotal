@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1164,
+    "total": 1165,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 942
+    "non-render/control": 943
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -24,6 +24,13 @@
     }
   ],
   "entries": [
+    {
+      "path": "implementations/cli/src/lib/extension-remove-cache.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Names the npm configuration setting that disables registry requests, not a presence state."
+    },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",

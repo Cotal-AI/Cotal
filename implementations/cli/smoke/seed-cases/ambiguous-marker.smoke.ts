@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { BIN, HOST_ENV, boot, bootArgs, cotal, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario, spawn, existsSync, readFileSync } from "./harness.js";
+import { BIN, HOST_ENV, boot, bootArgs, cotal, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario, spawn, existsSync, readFileSync, rmSync } from "./harness.js";
 import { acquireReconcileLock, markSeedChildLive, seedChildStatus, clearChildMarker, writePendingChildMarker } from "../../src/seed/lock.js";
 import { processStartToken } from "@cotal-ai/workspace";
 import { randomBytes } from "node:crypto";
@@ -43,6 +43,9 @@ try {
     writeJson(marker, { state: "live", parentPid: 2147483646, nonce, ts: 1, childPid: child.pid, childStart: processStartToken(child.pid!) });
     const live = cotal(cfg, ["ext", "seed", "--repair"]);
     check("live child with dead parent blocks", live.status !== 0 && /still installing/.test(live.stderr) && existsSync(marker), live);
+    const remove = cotal(cfg, ["ext", "remove", "@cotal-ai/web"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
+    check("ext remove refuses the live child under the prefix writer lock",
+      remove.status !== 0 && /still installing/.test(remove.stderr) && existsSync(marker), remove);
   } finally {
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     child.kill();
@@ -56,6 +59,23 @@ try {
   writeJson(marker, { state: "unknown" });
   const corrupt = boot(cfg);
   check("unprovable marker still refuses", corrupt.status !== 0 && /mid-flight/.test(corrupt.stderr), corrupt);
+  const skip = { COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const ambiguousRemove = cotal(cfg, ["ext", "remove", "@cotal-ai/web"], skip);
+  check("ext remove with seed skipped still refuses ambiguous child custody",
+    ambiguousRemove.status === 1 && /mid-flight/.test(ambiguousRemove.stderr) && existsSync(marker), ambiguousRemove);
+  rmSync(marker);
+  const cursor = join(seedDir(cfg), "reconcile.cursor.json");
+  const recovery = join(seedDir(cfg), "reconcile.recovery.json");
+  const savedCursor = readFileSync(cursor, "utf8");
+  const interruptedRemove = cotal(cfg, ["ext", "remove", "@cotal-ai/connector-codex"], skip);
+  check("ext remove with seed skipped keeps main's removal behavior with a stopped interruption",
+    interruptedRemove.status === 0 && interruptedRemove.stdout.includes("removed @cotal-ai/connector-codex") && readFileSync(cursor, "utf8") === savedCursor, interruptedRemove);
+  rmSync(cursor);
+  writeJson(recovery, { repairAllSeeded: true });
+  const savedRecovery = readFileSync(recovery, "utf8");
+  const recoveryRemove = cotal(cfg, ["ext", "remove", "@cotal-ai/pi"], skip);
+  check("ext remove with seed skipped keeps main's removal behavior with a recovery journal",
+    recoveryRemove.status === 0 && recoveryRemove.stdout.includes("removed @cotal-ai/pi") && readFileSync(recovery, "utf8") === savedRecovery, recoveryRemove);
 
   if (process.platform !== "win32") for (const args of [["ext", "seed"], ["ext", "seed", "--repair"]]) {
     const cfg = track(freshCfg());

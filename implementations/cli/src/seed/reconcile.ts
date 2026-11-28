@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   CommandFailure,
@@ -27,11 +27,12 @@ import {
   type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
+import type { ExtensionInstallRequest } from "../commands/ext.js";
+import { displayCmd, selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath, writeJsonAtomic } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -62,7 +63,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
+import { builtInLockDiffers, prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -149,6 +150,13 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
   if (child.kind !== "none") return;
   if (cursor && interruptedUpgrade(cursor, generation)) return;
   return seedRepairRefusal(cursor, generation);
+}
+
+/** Under the extension writer lock, do not remove files an orphaned seed child might still write. */
+export function assertSeedRemovalIdle(): void {
+  const child = seedChildStatus();
+  if (child.kind === "live") throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
+  if (child.kind === "ambiguous") throw ambiguousSeedChild(child.path);
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
@@ -298,7 +306,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      }, checkInterrupted, resumeFirstSeed);
+      }, checkInterrupted, resumeFirstSeed, automatic);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
@@ -414,7 +422,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean, automatic: boolean): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -531,9 +539,10 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const unverifiable = (): string | undefined => {
     if (!voidedRead) {
       voidedRead = true;
+      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
       voided = cursor ? `a previous seed of "${cursor.package}" did not finish`
         : recoveryPending() ? "a previous repair did not finish"
-        : prefixLockDiffers();
+        : builtInLockDiffers(builtIns);
       if (voided) console.error(c.dim(`reinstalling every built-in: ${voided}`));
     }
     return voided;
@@ -605,32 +614,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   ).map((entry) => ({ pkg: entry.pkg, spec: operatorUpdateSpec(entry, generation), version: generation }));
 
   if (mode === "verify") {
-    const { installExtensionSet } = await import("../commands/ext.js");
-    await installExtensionSet([...staged, ...operators]);
+    await installVerifiedSet(staged, operators);
     for (const entry of staged) verifyInstalled(entry.name, generation);
     for (const entry of operators) verifyOperatorInstalled(entry.pkg, generation);
   } else if (operators.length) {
     clearCursor();
-    const { installExtensionSet } = await import("../commands/ext.js");
-    for (const entry of operators) console.error(c.dim(`Reconciling extension ${entry.pkg}@${generation}`));
-    try {
-      await installExtensionSet(operators, console.error, { isolate: true });
-      for (const entry of operators) {
-        verifyOperatorInstalled(entry.pkg, generation);
-        refreshed.push(entry.pkg);
-      }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const desktop = isBundledDesktopRuntime();
-      throw new CommandFailure(
-        "refused",
-        "DEPENDENCY_UNAVAILABLE",
-        desktop
-          ? `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail}`
-          : `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail} - run \`cotal update --self\` to reconcile this installation`,
-        { cause: error, ...(desktop ? {} : { remedy: "run `cotal update --self` to reconcile this installation" }) },
-      );
-    }
+    if (!await reconcileOperators(operators, generation, mode === "auto" && automatic))
+      return { noop: false, seeded, refreshed, verified, removedKept };
+    refreshed.push(...operators.map(({ pkg }) => pkg));
   }
 
   // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
@@ -653,6 +644,62 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     loadExtensionsManifest().extensions.map((e) => e.spec),
   );
   return { noop: false, seeded, refreshed, verified, removedKept };
+}
+
+const OPERATOR_RETRY_MS = 60_000;
+
+/** A retry hint is not a seed journal. Only the automatic path consults it under the seed lock. */
+async function reconcileOperators(requests: readonly ExtensionInstallRequest[], generation: string, automatic: boolean): Promise<boolean> {
+  const retry = join(seedDir(), "operator-fetch.retry");
+  const key = createHash("sha256").update(JSON.stringify(requests)).digest("hex");
+  if (automatic) {
+    try {
+      const age = Date.now() - statSync(retry).mtimeMs;
+      if (age >= 0 && age < OPERATOR_RETRY_MS && readFileSync(retry, "utf8").trim() === JSON.stringify(key)) return false;
+    } catch { /* An absent or unreadable hint does not prevent an attempt. */ }
+  }
+  const { installExtensionSet } = await import("../commands/ext.js");
+  for (const { pkg } of requests) console.error(c.dim(`Reconciling extension ${pkg}@${generation}`));
+  try {
+    await installExtensionSet(requests, console.error, { isolate: true, ...(automatic ? { automatic: true } : {}) });
+    for (const { pkg } of requests) verifyOperatorInstalled(pkg, generation);
+    return true;
+  } catch (error) {
+    const failure = automatic && error instanceof Error && typeof error.cause === "string"
+      ? (await import("../commands/update-release.js")).npmRegistryFailure(error.cause) : undefined;
+    if (failure) {
+      const listed = requests.map(({ pkg }) => pkg).join(", ");
+      if (failure === "timeout") {
+        console.error(c.yellow(`! The npm registry timed out while fetching ${listed}.`));
+      } else {
+        try { writeJsonAtomic(retry, key); } catch { /* A retry hint must not block the command. */ }
+        const manual = isBundledDesktopRuntime() ? "" : `, or run \`${displayCmd()} update\` to retry now`;
+        console.error(c.yellow(`! Could not fetch ${listed}. Automatic reconciliation will retry after ${OPERATOR_RETRY_MS / 1000} seconds${manual}.`));
+      }
+      return false;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    const desktop = isBundledDesktopRuntime();
+    const packages = requests.map(({ pkg }) => `${pkg}@${generation}`).join(", ");
+    const remedy = "run `cotal update --self` to reconcile this installation";
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE",
+      desktop ? `failed to reconcile ${packages}: ${detail}` : `failed to reconcile ${packages}: ${detail} - ${remedy}`,
+      { cause: error, ...(desktop ? {} : { remedy }) });
+  }
+}
+
+/** A verify pass stages one set. When only operators need installing, name them in the failure. */
+async function installVerifiedSet(
+  builtIns: readonly ExtensionInstallRequest[],
+  operators: readonly ExtensionInstallRequest[],
+): Promise<void> {
+  const { installExtensionSet } = await import("../commands/ext.js");
+  try {
+    await installExtensionSet([...builtIns, ...operators]);
+  } catch (error) {
+    if (builtIns.length || !operators.length || !(error instanceof Error)) throw error;
+    throw new Error(`${operators.map(({ pkg }) => pkg).join(", ")}: ${error.message}`, { cause: error });
+  }
 }
 
 /** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order

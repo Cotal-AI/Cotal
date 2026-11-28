@@ -969,6 +969,10 @@ A package directory that is present without a readable `package.json` still fail
 a seed that failed this way in an earlier release, `cotal ext seed --repair` finishes it, and
 `cotal ext remove` then drops the entry.
 
+In a packed install, npm may need to reinstall dependencies of the remaining built-ins when it
+removes a missing optional package. If npm is offline with an empty cache and Cotal detects that
+requirement, removal leaves the installation unchanged and prints the command to retry online.
+
 Removing an extension reclaims a pidfile when its recorded PID is proven dead. A running process,
 unreadable or unattributable record, or unconfirmed liveness still refuses removal with its process
 or record remedy. There is no command that stops one extension's legacy process. Follow the emitted
