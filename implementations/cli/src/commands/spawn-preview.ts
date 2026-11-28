@@ -125,7 +125,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
       definition = parseAgentFileSource(DEFAULT_AGENT, path);
       if (!blockedDefault) personaWrite = "shipped-default";
     } else if (code === "ENOENT") {
-      throw missingPersonaFailure(site, ref, from, path, { ...target, path });
+      throw missingPersonaFailure(site, ref, from, path, { ...target, path }, presentationOf(values));
     } else if (error instanceof PersonaSourceError) {
       throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, { target: { ...target, path }, ...(error.remedy ? { remedy: error.remedy } : {}) });
     } else if (code === "ELOOP") {

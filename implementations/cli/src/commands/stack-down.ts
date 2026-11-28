@@ -65,9 +65,10 @@ export const sameDown = (values: ParsedArgs["values"]): string =>
   [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
 
 /** A preview can keep its output format at either a legacy or controller stack's root. */
-export function downInOwningRoot(root: string, values: ParsedArgs["values"]): string {
+export function downInOwningRoot(root: string | undefined, values: ParsedArgs["values"]): string {
   const mode = values["dry-run"] === true ? presentationOf(values) : "rich";
   const retry = sameDown(values) + (mode === "rich" ? "" : ` --${mode}`);
+  if (root === undefined) return `run ${codeSpan(retry)} in the project that started the stack`;
   return blockedDownRootRemedy(root, retry) ?? `run ${codeSpan(retry)} from ${root}`;
 }
 

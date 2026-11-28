@@ -231,6 +231,7 @@ no stack of its own.
 
 A manual or catalog connection records the folder that uses it. If a named stop or preview finds
 only that connection in another folder, run the stop or preview in the project that started the stack.
+A preview retry keeps `--dry-run` and the requested output format. It does not suggest stopping a service.
 
 When the folder of a running controller stack is deleted, its stack journal and broker
 configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`

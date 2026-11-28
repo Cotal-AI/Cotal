@@ -1,9 +1,10 @@
 /** Application discovery for GUI launches. Only PATH is retained from the account's shell. */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
+import { serviceAgentAppBinDirs } from "./desktop-agent-apps.js";
 import { pinnedPath } from "./install.js";
 
 /** The last few lines a failed PATH read printed to stderr, bounded and with tokens and control characters removed.
@@ -68,6 +69,13 @@ const run = (command: string, args: string[], reader: string, remedy: string, ti
 interface DiscoveredApplicationPath {
   readonly path: string;
   readonly omittedRelativeEntries: readonly string[];
+}
+
+/** Append the per-user installer folders of this OS's connectors after the caller's PATH when missing. */
+export function serviceApplicationPath(value = process.env.PATH ?? "", os: "darwin" | "linux" = process.platform === "darwin" ? "darwin" : "linux", home = process.env.HOME || homedir()): string {
+  const caller = pinnedPath(value, posix).split(posix.delimiter);
+  const appended = serviceAgentAppBinDirs(os, home);
+  return pinnedPath([...new Set([...caller, ...appended])].join(posix.delimiter), posix);
 }
 
 /** Keep only absolute POSIX entries for the desktop service and name any relative entries left out, in order and without duplicates. */

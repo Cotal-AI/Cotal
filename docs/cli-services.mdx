@@ -49,6 +49,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--follow` | logs: keep reading |
 
 `service list` takes no definition name. If you supply one, the suggested list command keeps your space and output format.
+`service status` and `service logs` need a name. If you omit it or the name is unknown, the CLI suggests a listing in the same space and output format.
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
@@ -376,7 +377,7 @@ as in `cotal help -- service --space reviews-dev start broker --config ./nats.co
 Use `--no-open` with `cotal service start web` or when starting a dashboard saved under a custom name.
 Start help lists `--no-open` for either name. For a saved dashboard in another space, pass `--space <s>` to select it.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
-names `cotal ext add @cotal-ai/web`.
+names `cotal ext add @cotal-ai/web`. If a start preview cannot find the service definition, its next step lists saved definitions in the same space and output format. It does not ask you to install or start anything.
 Options that collide with service/global flags require the file form. No preset is installed or
 provider code imported by help, completion, a guided question or definition creation.
 

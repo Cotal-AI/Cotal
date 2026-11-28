@@ -29,7 +29,7 @@ import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-a
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { addedDefinitionStep, stackMemberFor, STACK_ADAPTER } from "../lib/stack-journal.js";
 import { assertManagerStartOptions, checkManagerStartRoster } from "../lib/service-presets.js";
-import { adapterInstallRefusal, stopPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { adapterInstallRefusal, serviceListStep, stopPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, assertRestartAdmitted, PROCESS_STOP_GRACE_MS, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readinessAddressSurvivors, readServiceLog, retainedStopRequest, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
@@ -164,8 +164,9 @@ function missingServiceDefinition(space: string, name: string, mode: string, com
   const verb = commandName === "down" ? "down" : `${commandName} ${mode}`;
   const remedy = mode === "stop" && values["dry-run"]
     ? stopPreviewStep(space, values, stackName ? { name: stackName, verb } : undefined)
+    : values["dry-run"] || (reading && !stackName) ? serviceListStep(values, space)
     : stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${verb} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}`
-    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode, space);
+    : unsavedServiceStep(name, mode, space);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
 }
 

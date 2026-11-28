@@ -437,7 +437,7 @@ const catalog = dirname(agentFilePath(root, "default"));
 const noName = cotal("spawn", "nosuch", "--dry-run", "--json");
 check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog and --file",
   noName.status === 2 && noName.envelope?.error?.code === "TARGET_NOT_FOUND" && noName.envelope.error.message === `no persona "nosuch" in ${catalog} (mesh "opsp")`
-    && noName.envelope.error.remedy === "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`", shown(noName));
+    && noName.envelope.error.remedy === "list the catalog with `cotal persona --space opsp --json`, then pass a name from it, or a persona file with `--file <persona.md>`", shown(noName));
 const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
 check("spawn --dry-run of a missing --file names the file it checked",
   noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));
