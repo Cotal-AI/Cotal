@@ -20,6 +20,7 @@ import { startAuthService, type AuthServiceHandle } from "../../auth/src/service
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../../auth/src/store.js";
 import { mintServiceCallerPayloadObserverCreds } from "../../auth/src/service-caller-payload-bootstrap.js";
 import { serviceEndpointHostCall } from "../../auth/src/service-host-client.js";
+import { SERVICE_EVICTION_HOLD_MARGIN_S } from "../../auth/src/service-host-decisions.js";
 import { isCommandFailure } from "@cotal-ai/workspace";
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../../auth/src/service-caller-payload.js";
 import { LINEAR_CAPABILITY, LINEAR_COMMANDS } from "../src/contract.js";
@@ -354,14 +355,21 @@ try {
     assert.equal(refreshedReply.reply.ok, true, "the same native instance serves after expiry reconnect");
     assert.equal(toolCalls, recoveryCalls + 3);
     if (approved.state !== "approved") throw new Error("approval missing");
-    const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner }, input: {
-      endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" } });
-    assert.equal(revoked.state, "pending", "the host confirms deny-new, not completed eviction");
+    const revokeReq = { v: 1 as const, kind: "service-endpoint-host" as const, requestId: rid(), operation: "revoke" as const, granter: { kind: "owner" as const, owner }, input: {
+      endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" as const } };
+    const revoked = await host(revokeReq);
+    const revokeReturnedAtMs = Date.now();
+    assert.equal(revoked.state, "held", "without a delivery daemon, the host lands deny-new and holds live eviction");
+    assert.equal(revoked.denyNew, "landed");
     const shutdownDeadline = setTimeout(() => ctl.abort(), 55_000);
     try { await assert.rejects(running, /stopped after its remote authority/); }
     finally { clearTimeout(shutdownDeadline); }
     running = undefined;
     assert.equal(closedUpstreams, 3, "a terminal renewal denial closes the serving upstream");
+    const remainingBoundMs = revokeReturnedAtMs + (SERVICE_EVICTION_HOLD_MARGIN_S + 2) * 1000 - Date.now();
+    if (remainingBoundMs > 0) await new Promise((r) => setTimeout(r, remainingBoundMs));
+    const replayedRevoke = await host(revokeReq);
+    assert.equal(replayedRevoke.state, "pending", "after the serving credential bound, replay confirms nonterminal cancellation without a delivery daemon");
     await assert.rejects(start(), /did not authorize|renewal ended/);
     assert.equal(closedUpstreams, 4, "a revoked restart closes its upstream without a replacement registration");
     assert.equal(contractDigest(seen.filter(r => r.operation === "register").at(-1)!), contractDigest(request));

@@ -20,13 +20,17 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { KvWatchInclude, Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, GOVERNED_TRAIT_URNS, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, VOID_SCHEMA_DIGEST, authorizeGuestServeGrant, contractArtifactCanonicalBytes, contractDigest, contractRefToHex, contractStoreContext, endpointRegistrationBarrier, fetchContractArtifact,
-  serveAuthenticityOf, type GuestServeAuthenticity,
+  EpEnvelopeError, GOVERNED_TRAIT_URNS, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, VOID_SCHEMA_DIGEST, authorizeGuestServeGrant, compileContract, contractArtifactCanonicalBytes, contractDigest, contractRefToHex, contractStoreContext, endpointRegistrationBarrier, fetchContractArtifact,
+  invokeCommand, mintConnectionEvictorCreds, mintLifecycleUid, mintMembershipObserverCreds, resolveService, serveAuthenticityOf, serveEndpoint, type EpCapability, type EpServeHandle, type GuestServeAuthenticity,
   endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, RECORD_KINDS, recordSpecKey,
   recordStatusKey, recordsBucket, registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
   type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
+import { startDeliveryService } from "../../delivery/src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
+import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../src/service-caller-payload.js";
+import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { createUserTokenIssuer } from "../src/issuer.js";
@@ -83,27 +87,37 @@ const cluster = (urn: string, commands: object[]) => {
 type Cluster = ReturnType<typeof cluster>;
 const registration = (x: Cluster) => ({ clusterDigests: [x.closureDigest], contractArtifacts: [x.manifest, x.document] });
 
-const fx = await startHostedAuthFixture("svserve", 1);
+const fx = await startHostedAuthFixture("svserve", 1, { maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR });
 const [a] = fx.accounts;
 const space = a.space, accountPublicKey = a.accountPublicKey;
 const handles: AuthServiceHandle[] = [];
 const conns: NatsConnection[] = [];
+const serves: EpServeHandle[] = [];
+let delivery: Awaited<ReturnType<typeof startDeliveryService>> | undefined;
 const prevHome = process.env.COTAL_HOME;
 let harness: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 try {
   await setupSpaceStreams({ servers: fx.servers, space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
+  const composition = { injected: true as const };
+  await a.store.put(deliveryCredsKey(space, composition), await mintCreds(a.auth, newIdentity(), "delivery"));
+  await a.store.put(membershipRwCredsKey(space, composition), await mintCreds(a.auth, newIdentity(), "membership-rw"));
+  await a.store.put(membershipObserverCredsKey(space, composition), await mintMembershipObserverCreds(a.auth, newIdentity()));
+  await a.store.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(a.auth, newIdentity()));
   const stateDir = join(fx.dir, "svserve-state"), clientDir = join(fx.dir, "svserve-client"), home = join(fx.dir, "svserve-home");
   for (const d of [stateDir, clientDir, home]) mkdirSync(d, { recursive: true });
   ensurePinnedIdp(stateDir, idpUrl); ensurePinnedIdp(clientDir, idpUrl);
+  delivery = await startDeliveryService({ context: { accountPublicKey, lifecycleUid: mintLifecycleUid() }, space, servers: fx.servers, stateDir, store: a.store, storeIdentity: a.store.identity });
+  for (let i = 0; i < 100 && (await delivery.readiness()).state !== "ready"; i++) await new Promise((r) => setTimeout(r, 100));
   const ownerSecret = (await loadOwnerSecret(a.store, space))!;
   const [ownerA, ownerB, ownerC] = ["user-a", "user-b", "user-c"].map((sub) => deriveOwnerForIdpSubject(ownerSecret, origin, sub));
-  grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+  const cliRowA = grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
   grantActor(stateDir, { owner: ownerB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
   grantActor(stateDir, { owner: ownerC, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
   process.env.COTAL_HOME = home;
   const signIn = (s: "a" | "b" | "c") => saveIdpSession(home, idpUrl, { token: `session-${s}`, expiresAt: nowS() + 600, sub: `user-${s}` });
   const on = await startAuthService({ context: { accountPublicKey, lifecycleUid: "life-0" }, space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity,
-    stateDir, publicFace: { port: 0, trustedProxy: false }, serviceEndpoints: { startup: { kind: "normal" } } });
+    stateDir, publicFace: { port: 0, trustedProxy: false }, serviceEndpoints: { startup: { kind: "normal" },
+      callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }) } } });
   handles.push(on);
   const host = on.serviceEndpointHost!;
   saveAuthServiceInfo(clientDir, { url: on.url, pid: process.pid, cap: on.cap });
@@ -153,16 +167,16 @@ try {
   };
   const names = new Map<string, number>();
   /** One approved selector: the proposal-phase register, then the owner's approval through the host. */
-  const approved = async (who: Who, ep: string, x: Cluster) => {
+  const approved = async (who: Who, ep: string, x: Cluster, ceilingFor: (iid: string) => EpCapability[] = () => []) => {
     if (!names.has(ep)) names.set(ep, await bindName(ep, who));
     const proposal = registerReq(ep, rid(), x);
     const first = await viaProvider(who, proposal);
     if (first.state !== "approval-required") throw new Error(`fixture proposal not admitted: ${JSON.stringify(first)}`);
     const p = await propRead(first.proposalId);
     const d = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner: ownerOf(who) },
-      input: { proposalId: first.proposalId, expectedProposalRevision: p.state === "present" ? p.record.revision : 0, expectedNameRevision: names.get(ep)!, decision: "approve", callerCeiling: [] } });
+      input: { proposalId: first.proposalId, expectedProposalRevision: p.state === "present" ? p.record.revision : 0, expectedNameRevision: names.get(ep)!, decision: "approve", callerCeiling: ceilingFor(proposal.instanceId) } });
     if (d.state !== "approved") throw new Error(`fixture approval failed: ${JSON.stringify(d)}`);
-    return { who, ep, x, instanceId: proposal.instanceId, proposal, proposalId: first.proposalId, assignmentDigest: d.approval.assignment.assignmentDigest };
+    return { who, ep, x, instanceId: proposal.instanceId, proposal, proposalId: first.proposalId, assignmentDigest: d.approval.assignment.assignmentDigest, approvalDigest: d.approval.approvalDigest };
   };
   type Approved = Awaited<ReturnType<typeof approved>>;
   const revoke = (s: Approved) => call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner: ownerOf(s.who) },
@@ -460,7 +474,7 @@ try {
     x6?.state === "superseded" && x6.registrationRequestId === s6.proposal.requestId && x6.currentRegistrationRequestId === r6b.requestId, x6);
   const changedBody = await raw(on.url, { ...act1, witness: otherWitness }, await idpProof("a"));
   c.check("F4 X8 a changed body under an existing key is a conflict (409), not a state refusal", changedBody.status === 409 && denied(changedBody.parsed, "conflict"), changedBody.body);
-  const s9 = await approved("a", ordersEp, orders), w9 = await registered(s9), r9 = witnessReq("activate", w9);
+  const s9 = await approved("a", ordersEp, orders, (iid) => [{ endpoint: ordersEp, command: "lookup", instanceId: iid, instanceOnly: true }]), w9 = await registered(s9), r9 = witnessReq("activate", w9);
   // A KV revision is the stream sequence, so the gate's writes are counted by a watcher on its key.
   const gateWrites: number[] = [], watcher = await authKv.watch({ key: epgateKey(ordersEp, s9.instanceId), include: KvWatchInclude.UpdatesOnly });
   const watching = (async () => { for await (const e of watcher) gateWrites.push(e.revision); })();
@@ -496,10 +510,37 @@ try {
     c.check("F7 a cancelled assignment's activate is refused (409) with no material", gone.status === 409 && denied(gone.parsed, "approval-revoked"), gone.body);
   }
   const live9 = c9a.state === "credential" ? await dial(c9a.accessBearer) : undefined;
-  await revoke(s9);
+  let calls9 = 0;
+  if (live9 && !(guest9 instanceof Error)) {
+    const voidCompiled = compileContract({ root: VOID_SCHEMA });
+    serves.push(serveEndpoint(live9, space, guest9, [{ command: "lookup", contract: { input: voidCompiled, output: voidCompiled }, handler: () => { calls9++; return null; } }], { public: true }));
+    await live9.flush();
+    await viaProvider("a", witnessReq("ready", w9), { kind: "service-access", token: c9a.state === "credential" ? c9a.accessBearer : "" });
+  }
+  const callerGrant9 = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner: ownerA },
+    input: { grantee: { owner: ownerA, actor: "cli", lifecycleUid: cliRowA.lifecycleUid! }, service: { endpoint: ordersEp, instanceId: s9.instanceId, approvalDigest: s9.approvalDigest },
+      capabilities: [{ endpoint: ordersEp, command: "lookup", instanceId: s9.instanceId, instanceOnly: true }], expectedPolicyRevision: 0 } });
+  const callerEx9 = await (await fetch(`${on.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${on.cap}` },
+    body: JSON.stringify({ idpToken: (await idpProof("a")).token, actor: "cli" }) })).json() as { token: string };
+  const callerNc9 = await dial(callerEx9.token);
+  const callerId9 = { owner: ownerA, actor: "cli", uid: cliRowA.lifecycleUid! };
+  const target9 = await resolveService(callerNc9, space, ordersEp, callerId9, { instanceId: s9.instanceId, deadlineMs: 3000 });
+  const preRevokeCall = await invokeCommand(callerNc9, space, target9, "lookup", undefined, { deadlineMs: 3000 });
+  const rv9 = await revoke(s9);
+  const closedAtRevoke9 = live9?.isClosed() === true;
+  let postRevokeErr: unknown;
+  try { await invokeCommand(callerNc9, space, target9, "lookup", undefined, { deadlineMs: 1500 }); } catch (e) { postRevokeErr = e; }
+  const callerOpenAfter9 = callerNc9.isClosed() === false;
+  const missingReply9 = postRevokeErr instanceof EpEnvelopeError
+    && ((postRevokeErr.code === "unavailable" && /^no responder for /.test(postRevokeErr.message))
+      || (postRevokeErr.code === "deadline-exceeded" && /^no reply to /.test(postRevokeErr.message)));
   let dialed = "connected";
   try { await dial(c9a.state === "credential" ? c9a.accessBearer : ""); } catch (e) { dialed = (e as Error).message; }
-  c.check("F8 the same live bearer connects before its assignment is revoked and is refused by the callout after", live9 !== undefined && /authorization violation/i.test(dialed), dialed);
+  c.check("F8 the same live bearer connects and serves before its assignment is revoked and is refused by the callout after",
+    callerGrant9.state === "granted" && preRevokeCall.reply.ok && calls9 === 1 && live9 !== undefined && /authorization violation/i.test(dialed), { callerGrant9: callerGrant9.state, preRevokeCall: preRevokeCall.reply.ok, calls9, dialed });
+  c.check("F8b host revoke evicts the already-open serving connection before returning so a post-revoke call gets a missing-reply error while the caller stays open",
+    rv9.state === "pending" && rv9.phase === "cancelled-nonterminal" && rv9.denyNew === "landed" && closedAtRevoke9 && callerOpenAfter9 && missingReply9 && calls9 === 1,
+    { rv9, closedAtRevoke9, callerOpenAfter9, postRevokeErr: postRevokeErr instanceof Error ? { code: (postRevokeErr as EpEnvelopeError).code, message: postRevokeErr.message } : postRevokeErr, calls9 });
 
   // ---- G: an owner without an interactive row, a sibling's status, and requests held inside an effect ----
   const writesTo = async (kv: KV, k: string) => {
@@ -720,10 +761,12 @@ try {
     unlatched.status === 200 && beforeLatch === 1 && readHeld && latchedAnswer.status === 503 && statusWrites.revisions.length === beforeLatch,
     { unlatched: unlatched.status, beforeLatch, readHeld, latched: latchedAnswer.status, writes: statusWrites.revisions.length });
 } finally {
+  for (const s of serves) await s.stop().catch(() => {});
   for (const nc of conns) await nc.close().catch(() => {});
   await harness?.close().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prevHome;
   for (const hh of handles) await hh.close().catch(() => {});
+  await delivery?.close().catch(() => {});
   await fx.close();
   idp.closeAllConnections();
   await new Promise<void>((r) => idp.close(() => r()));

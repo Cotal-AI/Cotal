@@ -8,9 +8,14 @@ import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
 import type { AuthorityClientOpts } from "./authority-client.js";
 import { dataAccountAuth, type ServiceKeys } from "./store.js";
 
-/** One delivery-admin call runs in a 15s request budget; 60s covers connect, the call and teardown
- *  with margin, and bounds a copied credential to a minute where the `supervisor` default is a
- *  standing 24h. */
+/** Request timeout (`15_000` ms) passed to `requestDeliveryAdmin` by `makeDeliveryAdminEvictor`
+ *  and `makeDeliveryAdminHolderEvictor`, and combined with one broker-request connect allowance
+ *  in `V5-evict`. */
+export const DELIVERY_ADMIN_REQUEST_TIMEOUT_MS = 15_000;
+
+/** One delivery-admin call runs a 15 s request inside a short-lived endpoint; 60 s covers
+ *  connect, the call and teardown with margin, and bounds a copied credential to a minute where
+ *  the `supervisor` default is a standing 24 h. */
 const DELIVERY_ADMIN_CRED_TTL_SECONDS = 60;
 
 /** Run `work` on a short-lived, non-participating endpoint holding one `profile` credential minted

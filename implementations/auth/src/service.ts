@@ -719,6 +719,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     const engine = await openServiceHostOperations({
       discovery, hold: hold!, accountPublicKey: dataAccount.pub, ledgerDir: opts.dir, startup: opts.serviceEndpoints.startup,
       serving: { readContractArtifact },
+      evictPrincipal: (principal) => evictPrincipal(principal),
       openEffect: async (scope) => {
         const opened = await openServiceHostEffect({ onConnection, server, space, dataAccount, log }, scope);
         const effect: ServiceHostEffect = { ...opened, close: async () => { await opened.close(); openEffects.delete(effect); } };

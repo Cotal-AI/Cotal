@@ -81,12 +81,12 @@ function context(h: HostInternals, deadlineMs: number): Ctx {
 
 type Bounded<T> = { ok: true; value: T } | { ok: false; error: unknown } | { ok: false; timedOut: true };
 
-/** Run one broker request with a timeout of `min(S1_REQUEST_TIMEOUT_MS, remaining)`. A request
- *  is never started at or past the live-authority bound, and a request still in flight when that
- *  bound is reached ends the step held under the bound's reason. The abandoned request's
- *  settlement is still handled. */
-async function bounded<T>(ctx: Ctx, start: () => Promise<T>): Promise<Bounded<T>> {
-  const remaining = ctx.deadlineMs - Date.now(), ms = Math.min(S1_REQUEST_TIMEOUT_MS, remaining);
+/** Run one broker request with a timeout of `min(timeoutMs, remaining)` (default
+ *  `S1_REQUEST_TIMEOUT_MS`). A request is never started at or past the live-authority bound, and
+ *  a request still in flight when that bound is reached ends the step held under the bound's
+ *  reason. The abandoned request's settlement is still handled. */
+async function bounded<T>(ctx: Ctx, start: () => Promise<T>, timeoutMs = S1_REQUEST_TIMEOUT_MS): Promise<Bounded<T>> {
+  const remaining = ctx.deadlineMs - Date.now(), ms = Math.min(timeoutMs, remaining);
   const bound = ctx.deadlineReason === "plan-expired" ? "the RootPlan expiry" : "the original deadline";
   if (ms <= 0) return held(ctx.deadlineReason, ctx.step, `${bound} has passed; no request starts`);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -173,7 +173,7 @@ async function write(ctx: Ctx, bucket: "records" | "auth", key: string, bytes: U
 
 type EndpointRow = ReturnType<ServiceGateRows["parse"]>;
 type EndpointClass = { kind: "absent" } | { kind: "foreign" }
-  | { kind: "pending" | "approved" | "revoked"; row: EndpointRow; bytes: Uint8Array; revision: number };
+  | { kind: "pending" | "approved" | "revoked"; row: EndpointRow; bytes: Uint8Array; revision: number; timestamp: string };
 
 /** Leader-read and classify this assignment's endpoint gate. Every endpoint-gate request is the
  *  writer's own, so none can start after it returns. */
@@ -189,7 +189,7 @@ async function endpoint(ctx: Ctx, m: { readonly epgate: ServiceGateRows }): Prom
     return held("endpoint-malformed", ctx.step, message(e));
   }
   const state = row.serviceAuthority.state;
-  return { kind: state === "pending-root" ? "pending" : state, row, bytes: cur.bytes, revision: cur.revision };
+  return { kind: state === "pending-root" ? "pending" : state, row, bytes: cur.bytes, revision: cur.revision, timestamp: cur.timestamp };
 }
 
 export { HOSTS };

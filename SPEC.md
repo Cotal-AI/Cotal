@@ -2075,7 +2075,20 @@ Deny-new has landed exactly when the endpoint gate reads `revoked` for this assi
 `approving` proposal of the assignment closes as `approved` when the gate carries an approval digest
 and as refused otherwise. A gate row at the key that belongs to another assignment is no evidence
 either way: every revoke path that reads the gate reports deny-new `unknown` for it, as for a failed
-read; an already fenced assignment is its own evidence and reports `landed`. Revocation stays
+read; an already fenced assignment is its own evidence and reports `landed`. Once deny-new has
+landed on a bound assignment and native cancellation returns pending, the host evicts the
+assignment's serving principal over the delivery-admin rail (`evictPrincipal`) before recording
+`cancelled-nonterminal`. Immediate close requires the space's delivery daemon to answer with observer
+and evictor credentials, and an already-open serving connection can still answer in the short window
+between deny-new landing and the broker KICK. When eviction fails, times out or cannot be verified
+gone before the cutoff bound, the revoke answers `held` at `phase: "V5-evict"` with
+`reason: "eviction-unverified"` (or `"reconcile-pending"` at the invocation deadline, or `"readiness"` / `"post-write-readiness"` if the plane claim fails around the step) and
+`denyNew: "landed"`, leaving the stored operation progress unchanged. Until eviction is verified, an
+open serving connection can keep answering for at most its 60 s credential lifetime. Once
+`ceil(T) + 71` s (`60 + 2*5 + 1` s from the revoked endpoint gate's stored broker timestamp `T`,
+covering the 60 s credential lifetime, two-sided 5 s clock tolerance and 1 s whole-second rounding)
+has elapsed since deny-new landed, no serving connection of the assignment can outlive its
+credential, and a replay records and answers `cancelled-nonterminal` without an eviction answer. Revocation stays
 nonterminal. Owner-scoped reads authorize against the subject owner fixed at binding, and terminal views carry no commands or cluster digests. None of these
 records proves a human decision, broker writer exclusion, restore readiness or terminal retirement.
 
@@ -2324,9 +2337,14 @@ witness names, which the service host reads, on its own writer connection
 to the base writer grant; a broker grant cannot confine those families to service assignments, and
 the native mint writes only the bearer's own rows. A fenced plane or a latched host refuses the
 mint. Registered closures are read back from the contract store on the issuer connection's
-exact-subject Direct Get. Revocation, the Describe view, caller policy, terminal retirement and
-restore remain unsupported: a revoked assignment's bearer is refused at its next connect, but a
-connection already open keeps its original expiry of at most 60 s.
+exact-subject Direct Get. The Describe view, caller policy, terminal retirement and restore remain
+unsupported: a host revoke refuses new activation, renewal, readiness and connections and, when the
+delivery daemon answers, evicts the assignment's open serving connection until it is verified gone
+before confirming `cancelled-nonterminal`. Between deny-new landing and that close, or while a
+revoke is held without verified eviction, an open serving connection can still answer for at most
+its 60 s credential lifetime (`ceil(T) + 71` s with two-sided 5 s clock tolerance and 1 s
+whole-second rounding from the revoked gate's stored broker timestamp `T`, after which a replay
+completes without an eviction answer), while root and assignment records remain nonterminal.
 
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of

@@ -3,7 +3,9 @@
  * cutoff marker, the operation, proposal and caller-policy reads and one owner's assignment state,
  * over closed per-key records in the auth bucket. The index does not export it; only the
  * owner-proved public authority door calls register. It grants no serving, registration, issuance
- * from caller policy, terminal caller revocation, restore, terminal retirement or KICK.
+ * from caller policy, terminal caller revocation, restore or terminal retirement; on a bound
+ * revoke after deny-new lands, it drives verified-gone principal eviction through `evictPrincipal`
+ * when configured.
  *
  * Every write is one zero-history create or one exact-revision CAS on one key, issued through the
  * shared custody writer (service-write.ts) under the same plane-claim hold check and fatal latch as
@@ -15,7 +17,7 @@
  * waits, fences or proof that an earlier write cannot still land. */
 import type { MsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket, contractDigest, contractStoreContext, endpointRegistrationBarrier, epgateKey, publishContractArtifact, recordAtomicKey, recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest, writeServiceStatus, type ContractStoreContext, type ServiceAuthorityStatus, type ServiceGateAuthority, type ServiceRegistrationSnapshot, type ServiceRegistrationWitness, type ServiceUidCustodyV1 } from "@cotal-ai/core";
+import { EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket, contractDigest, contractStoreContext, endpointRegistrationBarrier, epgateKey, publishContractArtifact, recordAtomicKey, recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest, writeServiceStatus, type ContractStoreContext, type EvictionResult, type ServiceAuthorityStatus, type ServiceGateAuthority, type ServiceRegistrationSnapshot, type ServiceRegistrationWitness, type ServiceUidCustodyV1 } from "@cotal-ai/core";
 import { openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
 import { findInteractiveActor } from "./ledger.js";
 import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -181,6 +183,11 @@ export interface ServiceHostOperationsOptions {
   /** Serving reads a registered closure's artifacts from the contract store; without it a
    *  serving read that needs them is unavailable. */
   serving?: { readContractArtifact(digest: string): Promise<unknown> };
+  /** Verified-gone connection eviction for a revoked assignment's serving principal; when omitted,
+   *  `revoke` skips V5 eviction and confirms `cancelled-nonterminal` from deny-new alone, leaving
+   *  an open serving connection up to its 60 s credential expiry. `openAuthAuthorityPlane` and
+   *  `startAuthService` always supply `makeDeliveryAdminEvictor`. */
+  evictPrincipal?: (principal: string) => Promise<EvictionResult>;
 }
 /** One verified public serving request (SPEC 13.1). The face verified the proof: `owner` is an IdP
  *  owner, whose current interactive row the engine still requires, or a service proof's witness
@@ -519,7 +526,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     }
   }
 
-  const { decide, revoke, denyNewOf, view } = serviceHostDecisions({ space, accountPublicKey, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx, coverCustody });
+  const { decide, revoke, denyNewOf, view } = serviceHostDecisions({ space, accountPublicKey, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx, coverCustody, evictPrincipal: opts.evictPrincipal });
 
   const { deniedServe, bindingOf, namesBinding, namesSelector, stampWitness, grammarHeld, snapshotOf, reportedAt, rootExpiresAt, native, servedGate, sameIntent } = serviceHostServing({ space, accountPublicKey, discovery, opts });
 

@@ -13,10 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
-  VOID_SCHEMA_DIGEST, canonicalJson, contractDigest, contractRefToHex, contractStoreContext, endpointToken, epAuthBucket, epgateKey, fetchContractArtifact,
-  lifecycleHeadKey, recordsBucket, serviceEndpointActor, serviceWitnessDigest, singleDocumentClosure, uidReservationKey,
+  SERVICE_ACCESS_TTL_SECONDS, VOID_SCHEMA_DIGEST, canonicalJson, contractDigest, contractRefToHex, contractStoreContext, endpointToken, epAuthBucket, epgateKey, fetchContractArtifact,
+  lifecycleHeadKey, principalKey, recordsBucket, serviceEndpointActor, serviceWitnessDigest, singleDocumentClosure, uidReservationKey,
   type ServiceRegistrationWitness, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
+import { DELIVERY_ADMIN_REQUEST_TIMEOUT_MS } from "../src/delivery-admin.js";
 import { grantActor, revokeActor } from "../src/ledger.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import {
@@ -24,12 +25,15 @@ import {
 } from "../src/service-custody.js";
 import { compileServiceRegistration, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceHostResult, type ServiceApprovalResult } from "../src/service-host-contract.js";
+import { SERVICE_EVICTION_BOUNDED_TIMEOUT_MS, SERVICE_EVICTION_HOLD_MARGIN_S, SERVICE_EVICTION_HOLD_ROUNDING_S } from "../src/service-host-decisions.js";
 import {
   S3_MAX_INTENTS_PER_INSTANCE, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord,
   parseServiceCapacityRecord, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceRequestIntentIndexRecord,
-  serviceRegisterHostRequest, type ServiceHostOperations, type ServiceHostOperationsOptions, type ServiceServeOperation, type ServiceServeRequest,
+  serviceMarkerCeilSeconds, serviceRegisterHostRequest, type ServiceHostOperations, type ServiceHostOperationsOptions, type ServiceServeOperation, type ServiceServeRequest,
 } from "../src/service-host-ops.js";
 import { S2A_INVOCATION_MS, serviceHostOperationId } from "../src/service-host-kernel.js";
+import { S1_REQUEST_TIMEOUT_MS } from "../src/service-write.js";
+import { CLOCK_TOLERANCE_SEC } from "../src/token.js";
 import { bytesOf, checks, openFixture, type Fixture, type WriteCall } from "./_service-custody-fixture.js";
 
 const c = checks();
@@ -463,6 +467,92 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
       const rv = await e.handle(revoke(f.endpoint, p.instanceId, d, "membership-removal", operator));
       c.check("G7 (S-8) an operator revoke still reaches deny-new", rv.state === "pending" && rv.denyNew === "landed", rv);
       grantActor(dir, { owner: f.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+    }
+    // V5-evict: exact principal, unverified/throw/mismatch hold at V5-evict without advancing svcop, and replay after verifiedGone reaches cancelled-nonterminal.
+    {
+      let mode: "unverified" | "throw" | "mismatch" | "verified" = "unverified";
+      const seenPrincipals: string[] = [];
+      const ev = await engine(f, dir, {
+        evictPrincipal: async (principal) => {
+          seenPrincipals.push(principal);
+          if (mode === "throw") throw new Error("delivery-admin unreachable");
+          if (mode === "mismatch") return { principal: `${f.owner}.other`, kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true };
+          const ok = mode === "verified";
+          return { principal, kicked: ok ? 1 : 0, remaining: ok ? 0 : 1, verifiedGone: ok, scanComplete: true };
+        },
+      });
+      const p = await registered(f, ev);
+      const expectedPrincipal = principalKey(f.owner, serviceEndpointActor({ accountPublicKey: f.accountPublicKey, space: f.space, owner: f.owner, endpoint: f.endpoint, instanceId: p.instanceId })).key;
+      const ap = await ev.handle(decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f)));
+      const d = ap.state === "approved" ? ap.approval.assignment.assignmentDigest : "";
+      const rq = revoke(f.endpoint, p.instanceId, d, "owner-request", ownerOf(f));
+      const r1 = await ev.handle(rq);
+      const opHeld = await f.value(f.auth, `svcop.${serviceHostOperationId(f.space, rq.requestId)}`);
+      mode = "throw";
+      const rThrow = await ev.handle(rq);
+      mode = "mismatch";
+      const rMismatch = await ev.handle(rq);
+      mode = "verified";
+      const r2 = await ev.handle(rq);
+      const opDone = await f.value(f.auth, `svcop.${serviceHostOperationId(f.space, rq.requestId)}`);
+      parsesClosed("G8 V5-evict held", r1);
+      parsesClosed("G8 V5-evict throw", rThrow);
+      parsesClosed("G8 V5-evict mismatch", rMismatch);
+      parsesClosed("G8 V5-evict resumed", r2);
+      c.check("G8 (V5-evict) unverified, thrown or mismatched eviction holds the answer at V5-evict with denyNew landed and svcop admitted, then replay reaches cancelled-nonterminal once the exact principal is verifiedGone",
+        seenPrincipals.length === 4 && seenPrincipals.every((x) => x === expectedPrincipal)
+          && [r1, rThrow, rMismatch].every((x) => x.state === "held" && x.reason === "eviction-unverified" && x.phase === "V5-evict" && x.denyNew === "landed")
+          && JSON.stringify(opHeld?.progress) === JSON.stringify({ state: "admitted" })
+          && r2.state === "pending" && r2.phase === "cancelled-nonterminal" && r2.denyNew === "landed"
+          && JSON.stringify(opDone?.progress) === JSON.stringify({ state: "custody", step: "cancelled-nonterminal" }),
+        { seenPrincipals, expectedPrincipal, r1, rThrow, rMismatch, opHeld: opHeld?.progress, r2, opDone: opDone?.progress });
+    }
+    // V5-evict bound derivation: SERVICE_EVICTION_HOLD_MARGIN_S and SERVICE_EVICTION_BOUNDED_TIMEOUT_MS match their constituent constants, replay 1 ms before ceil(T) + margin holds, and replay at ceil(T) + margin completes without calling evictPrincipal.
+    {
+      const realNow = Date.now;
+      const expectedMargin = SERVICE_ACCESS_TTL_SECONDS + 2 * CLOCK_TOLERANCE_SEC + 1;
+      let evictorCalls = 0;
+      const evBound = await engine(f, dir, {
+        openEffect: async (scope) => {
+          const saved = Date.now;
+          Date.now = realNow;
+          try { return await f.effect(scope.keys, realNow() + S2A_INVOCATION_MS, undefined, scope.reads); }
+          finally { Date.now = saved; }
+        },
+        evictPrincipal: async (principal) => {
+          evictorCalls++;
+          return { principal, kicked: 0, remaining: 1, verifiedGone: false, scanComplete: true };
+        },
+      });
+      const p = await registered(f, evBound);
+      const ap = await evBound.handle(decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f)));
+      const d = ap.state === "approved" ? ap.approval.assignment.assignmentDigest : "";
+      const rq = revoke(f.endpoint, p.instanceId, d, "owner-request", ownerOf(f));
+      const rInitial = await evBound.handle(rq);
+      const jsm = await jetstreamManager(f.conn), authBucket = epAuthBucket(f.space);
+      const gateMsg = await jsm.streams.getMessage(`KV_${authBucket}`, { last_by_subj: `$KV.${authBucket}.${epgateKey(f.endpoint, p.instanceId)}` });
+      const deniedAt = serviceMarkerCeilSeconds(gateMsg?.timestamp);
+      const boundSec = (deniedAt ?? 0) + expectedMargin;
+      const atMs = async <T>(nowMs: number, go: () => Promise<T>): Promise<T> => {
+        Date.now = () => nowMs;
+        try { return await go(); } finally { Date.now = realNow; }
+      };
+      const rBeforeBound = await atMs(boundSec * 1000 - 1, () => evBound.handle(rq));
+      const opBeforeBound = await f.value(f.auth, `svcop.${serviceHostOperationId(f.space, rq.requestId)}`);
+      const callsBeforeAtBound = evictorCalls;
+      const rAtBound = await atMs(boundSec * 1000, () => evBound.handle(rq));
+      const opAtBound = await f.value(f.auth, `svcop.${serviceHostOperationId(f.space, rq.requestId)}`);
+      c.check("G8b (V5-evict bound) SERVICE_EVICTION_HOLD_MARGIN_S and SERVICE_EVICTION_BOUNDED_TIMEOUT_MS equal their constituent constants, replay 1 ms before ceil(T) + margin holds at V5-evict, and replay at ceil(T) + margin completes without calling evictPrincipal",
+        SERVICE_EVICTION_HOLD_ROUNDING_S === 1
+          && SERVICE_EVICTION_HOLD_MARGIN_S === expectedMargin
+          && SERVICE_EVICTION_BOUNDED_TIMEOUT_MS === DELIVERY_ADMIN_REQUEST_TIMEOUT_MS + S1_REQUEST_TIMEOUT_MS
+          && deniedAt !== undefined
+          && rInitial.state === "held" && rInitial.reason === "eviction-unverified" && rInitial.phase === "V5-evict"
+          && rBeforeBound.state === "held" && rBeforeBound.reason === "eviction-unverified" && rBeforeBound.phase === "V5-evict" && rBeforeBound.denyNew === "landed"
+          && callsBeforeAtBound === 2 && JSON.stringify(opBeforeBound?.progress) === JSON.stringify({ state: "admitted" })
+          && rAtBound.state === "pending" && rAtBound.phase === "cancelled-nonterminal" && rAtBound.denyNew === "landed"
+          && evictorCalls === 2 && JSON.stringify(opAtBound?.progress) === JSON.stringify({ state: "custody", step: "cancelled-nonterminal" }),
+        { expectedMargin, SERVICE_EVICTION_HOLD_MARGIN_S, SERVICE_EVICTION_BOUNDED_TIMEOUT_MS, deniedAt, rBeforeBound, callsBeforeAtBound, opBeforeBound: opBeforeBound?.progress, rAtBound, evictorCalls, opAtBound: opAtBound?.progress });
     }
     // S-27 / T5: a late A1 after the approver's expired-admitted settlement; refuse closes the stale approving{X}.
     {

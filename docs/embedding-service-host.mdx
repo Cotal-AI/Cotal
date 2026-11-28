@@ -50,7 +50,7 @@ four caller-policy operations and the instance, proposal, operation and name rea
 `instance-read` returns the current `ServiceInstanceView` for the proved owner's selector, including
 its approval digest and registration state. `instance-list` walks the native assignment subjects with
 a cursor and returns only that owner's instances. Missing and foreign selectors both read absent.
-A hosted context rejects it as
+The plane wires live connection eviction for `revoke` over the space's delivery daemon (`ctl.delivery-admin`). Immediate close of an open serving connection and single-call `cancelled-nonterminal` confirmation need a running delivery daemon with observer and evictor credentials. When eviction cannot be verified yet (for example when no delivery daemon is running), `revoke` still lands deny-new and answers `held` at phase `V5-evict` with reason `eviction-unverified` (or `reconcile-pending` at the invocation deadline, or `readiness` or `post-write-readiness` if the plane claim fails around the step) and `denyNew` `landed` while any already-open serving connection ages out over at most its 60 s credential lifetime, and a replay after `ceil(T) + 71` s from the revoked endpoint gate's stored broker timestamp `T` (the 60 s credential lifetime plus two-sided 5 s clock tolerance and 1 s whole-second rounding) confirms `cancelled-nonterminal` without an eviction answer. A hosted context rejects it as
 `unavailable` while it is not ready. The host authenticates no caller: the embedder must
 authenticate the operator or owner granter it passes. The stock service does that on
 `POST /service-endpoint-host`: the body is `{ idpToken, request }` with no granter, and the route
