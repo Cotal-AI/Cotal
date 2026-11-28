@@ -26,13 +26,15 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
+import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
+import { withAppMutation } from "./agent-app-admission.js";
 
 type ManagerResult = DaemonStatus | HostedManager | HostedLaunchInspection | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
@@ -52,6 +54,36 @@ function managerUnavailable(op: string, cause: string) {
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 const MAX_REQUESTS_PER_CONNECTION = 64;
+
+async function answerAgentApp(req: AgentAppRequest & { id: string; appVersion: string }, opts: ServeOptions, write: (frame: DaemonResponse) => Promise<void>): Promise<void> {
+  const base = { v: DAEMON_PROTOCOL_VERSION, id: req.id } as const;
+  try {
+    if (req.appVersion !== opts.version) {
+      await write({ ...base, ok: false, error: { code: "CONFLICT", message: "This app and the background service have different versions." } });
+      return;
+    }
+    if (req.op === "agent-app-install") {
+      // The bridge holds one admission from installation through any native service pickup.
+      await write({ ...base, ok: false, error: { code: "UNKNOWN_OP", message: "The desktop app must run the installer through its bridge." } });
+      return;
+    }
+    const run = async () => {
+      const owner = await opts.stopAllowed?.();
+      if (owner !== true && !(typeof owner === "object" && owner.state === "owned")) {
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "The background service could not be confirmed. Nothing was changed.");
+      }
+      return agentAppRequest(req, "service", line => { void write({ ...base, ok: true, event: "agent-app-progress", line }); });
+    };
+    const result = await (req.op === "agent-apps" ? run() : withAppMutation(opts.paths, run));
+    await write({ ...base, ok: true, result });
+  } catch (error) {
+    if (isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED") {
+      await write({ ...base, ok: false, error: { code: error.code, message: "The background service could not be confirmed. Nothing was changed." } });
+      return;
+    }
+    await write({ ...base, ok: false, error: { code: "OPERATION_FAILED", message: "The agent app operation could not finish." } });
+  }
+}
 
 /** Counters a test or `status` can read. Every security decision increments exactly one. */
 interface ServerCounters {
@@ -316,6 +348,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      if ("appVersion" in req) { replyTask(answerAgentApp(req, opts, write)); return; }
       if (req.op === "daemon-stop") {
         // The reply acknowledges the request, not completed shutdown. The uninstaller
         // independently waits for this process and endpoint to disappear.

@@ -81,6 +81,7 @@ let settingsOpen = false;
 let appsOpen = false;
 let appsOpener: HTMLElement | undefined;
 let appsLoadedAt = 0;
+let appsOwnerRetry: ReturnType<typeof setTimeout> | undefined;
 const agentApps = new AgentApps({
   platform: () => appPlatform,
   announce: message => announce(message),
@@ -173,6 +174,7 @@ function renderSettings(): void {
   el("settings-panel").hidden = !settingsOpen || appsOpen;
   el("apps-panel").hidden = !appsOpen;
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
+  syncViewTabs();
   document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
   renderApps();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
@@ -627,7 +629,7 @@ function showStage(next: Stage, focus = false): void {
     const card = document.querySelector(".connection-card")!;
     card.classList.remove("stage-enter");
     if (changed && initialized) { void (card as HTMLElement).offsetWidth; card.classList.add("stage-enter"); }
-    if (focus || changed && initialized) el("connection-title").focus({ preventScroll: true });
+    if (!appsOpen && !settingsOpen && (focus || changed && initialized)) el("connection-title").focus({ preventScroll: true });
     announce(title);
     resizeCard(previousHeight);
   }
@@ -943,7 +945,10 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version "))))) clearDetails();
   renderAgentRows(status);
-  if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0) || agentApps.ownerBlocked)) { appsLoadedAt = Date.now(); void agentApps.load(); }
+  if (isTauri()) {
+    agentApps.observeRunningAgents(runningAgents());
+    if (!agentApps.busy && Date.now() - appsLoadedAt > 30_000 && agentApps.apps === undefined) { appsLoadedAt = Date.now(); void agentApps.load(); }
+  }
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
@@ -1277,7 +1282,7 @@ async function readServiceLog(): Promise<void> {
 el("refresh-log").addEventListener("click", () => void readServiceLog());
 el("service-log").addEventListener("toggle", () => { if (el<HTMLDetailsElement>("service-log").open) void readServiceLog(); });
 el("connection-status").addEventListener("click", () => {
-  settingsOpen = false; renderSettings(); showStage(stage);
+  appsOpen = settingsOpen = false; renderSettings(); showStage(stage);
   if (!el("details").hidden) {
     el<HTMLDetailsElement>("details").open = true;
     el("details").querySelector<HTMLElement>("summary")!.focus();
@@ -1293,16 +1298,25 @@ el("connection-status").addEventListener("click", () => {
 function syncAppsChip(): void { el("apps-chip").hidden = el("apps-strip-wrap").hidden || agentApps.readyCount === 0; }
 function renderApps(): void {
   agentApps.renderPanel(el("app-list"), el("apps-message"), el<HTMLButtonElement>("apps-refresh"));
+  const management = agentApps.management;
+  el("apps-local").hidden = management !== "local" || stage === "finished";
+  const ownerMessage = agentApps.ownerMessage;
+  el("apps-owner").hidden = !ownerMessage;
+  el("apps-owner").classList.toggle("warning", !!ownerMessage && agentApps.management === "other-copy");
+  el("apps-fix-connection").hidden = !agentApps.showFixConnection;
+  text("apps-owner", ownerMessage);
+  if (appsOpen && agentApps.retryOwnerCheck) {
+    appsOwnerRetry ??= setTimeout(() => { appsOwnerRetry = undefined; if (appsOpen && agentApps.retryOwnerCheck) void agentApps.load(); }, 5000);
+  } else if (appsOwnerRetry !== undefined) { clearTimeout(appsOwnerRetry); appsOwnerRetry = undefined; }
   agentApps.renderStrip(el("apps-strip"), el<HTMLButtonElement>("apps-chip"));
   syncAppsChip();
   // With no app ready, installing one is the step that matters, so the dashboard button steps back.
   el("dashboard").classList.toggle("primary", !agentApps.apps || agentApps.readyCount > 0);
 }
-/** The Agent apps screen opens from the Ready screen, and Back returns focus to the control that opened it. */
+/** Back returns to the Connection view and to the control that opened Agent apps. */
 function openApps(): void {
-  if (loginActive || setupActive) return;
   appsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-  appsOpen = true; renderSettings(); el("apps-title").focus();
+  settingsOpen = false; appsOpen = true; renderSettings(); el("apps-title").focus();
   if (!agentApps.busy) void agentApps.load();
 }
 function closeApps(): void {
@@ -1316,9 +1330,35 @@ function openSettings(): void {
   for (const option of select.options) { option.hidden = false; option.disabled = false; }
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
   if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") { listOpened = true; showStage("finished"); }
-  settingsOpen = true; renderSettings(); el("settings-title").focus();
+  appsOpen = false; settingsOpen = true; renderSettings(); el("settings-title").focus();
   if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
   void refresh();
+}
+const viewTabs = ["view-connection", "view-apps", "view-settings"] as const;
+function syncViewTabs(): void {
+  const current = appsOpen ? "view-apps" : settingsOpen ? "view-settings" : "view-connection";
+  for (const id of viewTabs) {
+    const tab = el(id);
+    tab.setAttribute("aria-selected", String(id === current));
+    tab.tabIndex = id === current ? 0 : -1;
+  }
+}
+function selectView(id: typeof viewTabs[number]): void {
+  if (id === "view-apps") { openApps(); return; }
+  appsOpen = false;
+  settingsOpen = id === "view-settings";
+  renderSettings();
+  if (settingsOpen && appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(() => undefined);
+}
+for (const [index, id] of viewTabs.entries()) {
+  el(id).addEventListener("click", () => { selectView(id); el(id).focus(); });
+  el(id).addEventListener("keydown", event => {
+    const target = event.key === "Home" ? 0 : event.key === "End" ? 2 : event.key === "ArrowRight" ? (index + 1) % 3 : event.key === "ArrowLeft" ? (index + 2) % 3 : undefined;
+    if (target === undefined) return;
+    event.preventDefault();
+    selectView(viewTabs[target]!);
+    el(viewTabs[target]!).focus();
+  });
 }
 async function settingsAction(body: Request): Promise<void> {
   if (busy) return;
@@ -1355,10 +1395,11 @@ el("update-download").addEventListener("click", () => void openInstaller());
 el("setup-installer").addEventListener("click", event => { event.preventDefault(); void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal); });
 el("settings-download").addEventListener("click", () => void openInstaller());
 el("apps-back").addEventListener("click", closeApps);
+el("apps-fix-connection").addEventListener("click", () => { selectView("view-connection"); el("connection-title").focus(); });
 el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
 el("recover-apps").addEventListener("click", () => openApps());
 el("apps-chip").addEventListener("click", () => openApps());
-window.addEventListener("focus", () => { if (isTauri() && agentApps.apps && !agentApps.busy && Date.now() - appsLoadedAt > 30_000) void agentApps.load(); });
+window.addEventListener("focus", () => { if (isTauri() && !agentApps.busy && (appsOpen || agentApps.apps && Date.now() - appsLoadedAt > 30_000)) void agentApps.load(); });
 el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
