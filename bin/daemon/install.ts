@@ -607,7 +607,7 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
       const ended = disabled
         ? `Nothing was started. ${message} Automatic start is off. Run \`cotal daemon start\` again.`
         : `${message} Automatic start is on, and it could not be turned off. Run \`cotal daemon stop\` to turn it off, or \`cotal daemon start\` to start it.`;
-      const remedy = "run `cotal daemon start` again";
+      const remedy = disabled ? "run `cotal daemon start` again" : "run `cotal daemon stop` to turn it off, or `cotal daemon start` to start it";
       if (error instanceof CommandFailure) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { remedy, native: error.native, cause: error });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { remedy, cause: error });
     }
@@ -635,7 +635,7 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
         throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the service started, but automatic start could not be read", { cause: error });
       }
     }
-    if (service && resume && !automaticOn) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service started, but automatic start was not confirmed on");
+    if (service && resume && !automaticOn) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service started, but automatic start was not confirmed on", { remedy: "run `cotal daemon start` again" });
   } catch (error) {
     if (error instanceof CommandFailure && error.message === "the service started, but automatic start could not be read") throw error;
     if (resume && personStopped(paths)) {
@@ -1366,7 +1366,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
     const ended = startOnly ? (stoppedAgain ? "Automatic start is off." : "Automatic start is on, and it could not be turned off. Run `cotal daemon stop` to turn it off, or `cotal daemon start` to start it.") : "";
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained${ended ? ` ${ended}` : ""}`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? "run \`cotal daemon start\` again" : "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained${ended ? ` ${ended}` : ""}`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? (stoppedAgain ? "run \`cotal daemon start\` again" : "run \`cotal daemon stop\` to turn it off, or \`cotal daemon start\` to start it") : "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }
 
