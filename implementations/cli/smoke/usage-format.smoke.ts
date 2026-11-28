@@ -375,13 +375,15 @@ if (process.platform !== "win32") {
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
   const rejected = JSON.parse(conflict.stdout);
   const copyDir = `${parent}/reviews-copy`;
-  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const retry = /cotal (endpoint init different --dir <new-directory>(?: --json)?)/.exec(rejected.error?.remedy ?? "");
+  if (!retry) throw new Error("endpoint init conflict omitted the alternate-directory command");
+  const copy = run(retry[1]!.split(" ").map((word) => word === "<new-directory>" ? copyDir : word), {}, cwd);
   const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
   check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
     conflict.status === 2 && conflict.stderr === "" && rejected.command === "endpoint init" && rejected.outcome === "refused"
     && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
-    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
-    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && retry?.[1]?.endsWith(" --json") && plainConflict.status === 2
+    && plainConflict.stderr.includes("cotal endpoint init different --dir <new-directory> --plain")
     && files.every((path, index) => readFileSync(path).equals(original[index]!))
     && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
     [conflict, plainConflict, copy, checked].map(shown));
@@ -405,8 +407,16 @@ if (process.platform !== "win32") {
   const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
   const partialReceipt = JSON.parse(partial.stdout);
   check("endpoint init reports directories created before a component exceeds the filename limit", partial.status === 4
-    && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
+    && partialReceipt.error?.code === "OPERATION_PARTIAL" && partialReceipt.error.cause?.code === "ENAMETOOLONG"
+    && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
     && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
+  const noChanges = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
+  const rejectedPath = JSON.parse(noChanges.stdout);
+  check("an overlong path under an existing parent is a usage refusal without changes", noChanges.status === 1 && rejectedPath.outcome === "refused" &&
+    rejectedPath.error?.code === "USAGE_INVALID" && rejectedPath.error.cause?.code === "ENAMETOOLONG" && !rejectedPath.changed, shown(noChanges));
+  const partialText = run(["endpoint", "init", "scratch", "--dir", `partial-text/${"x".repeat(256)}`, "--plain"], {}, cwd);
+  check("a partial scaffold names its retained directory and the shorter-path remedy in text", partialText.status === 4 && partialText.stderr.includes("ENAMETOOLONG") &&
+    partialText.stderr.includes(join(cwd, "partial-text")) && partialText.stderr.includes("shorter path"), shown(partialText));
 
   const directoryArgs = ["endpoint", "check", dir];
   const directoryText = [run(directoryArgs, {}, cwd), run([...directoryArgs, "--plain"], {}, cwd)];
@@ -877,7 +887,10 @@ for (const [args, usage, foreign] of [
       };
       bind(tree);
       const visit = (node: ts.Node): void => {
-        const text = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
+        // The argument of codeSpan() is printed inside backticks, so a shell line there, such as
+        // `cd <dir> && cotal down`, already has its command in a code span.
+        const spanned = node.parent !== undefined && ts.isCallExpression(node.parent) && node.parent.expression.getText(tree) === "codeSpan" && node.parent.arguments[0] === node;
+        const text = spanned ? undefined : ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
           : ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map((span) => (display.has(span.expression.getText(tree)) ? "cotal" : "${}") + span.literal.text).join("") : undefined;
         if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text)))
           for (const at of bare(text)) offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, at - 40), at + 40))}`);

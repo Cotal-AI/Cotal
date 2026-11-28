@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type AgentApp } from "../src/agent-apps-model.ts";
+import { installedMessage, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type AgentApp } from "../src/agent-apps-model.ts";
 import { DaemonRefusal } from "../src/model.ts";
 
 const app = (name: string, state: AgentApp["state"], extra: Partial<AgentApp> = {}): AgentApp => ({ name, title: name.toUpperCase(), maker: "Maker", state, install: { source: `${name}.example` }, ...extra });
@@ -59,4 +59,16 @@ test("a refusal shows its first line, and its installer output as detail", () =>
   assert.equal(refusalDetail(refusal), "curl: (6) Could not resolve host");
   assert.equal(refusalDetail(new Error("x")), undefined);
   assert.equal(refusalMessage(new Error("")), "The operation could not finish");
+});
+
+test("a finished install says it is installed, also when the background service has not picked it up yet", () => {
+  assert.equal(installedMessage("Hermes", { serviceRefresh: { state: "refreshed" } }), "Hermes is installed.");
+  assert.equal(installedMessage("Codex", { pathAdded: "your user PATH" }), "Codex is installed. Cotal added its folder to PATH in your user PATH.");
+  assert.equal(installedMessage("Pi", { serviceRefresh: { state: "pending", reason: "agents-running" } }), "Pi is installed. Your spaces can use it once the running agents finish.");
+  assert.equal(installedMessage("Hermes", { serviceRefresh: { state: "pending", reason: "unconfirmed" } }), "Hermes is installed. Cotal couldn't confirm that the background service can use it. Choose Check again.");
+  // The sign-in that follows an install keeps what the service has not done yet.
+  assert.equal(installedMessage("Codex", {}, true), "Codex is ready.");
+  assert.equal(installedMessage("Codex", { serviceRefresh: { state: "refreshed" }, pathAdded: "your user PATH" }, true), "Codex is ready. Cotal added its folder to PATH in your user PATH.");
+  assert.equal(installedMessage("Claude Code", { serviceRefresh: { state: "pending", reason: "agents-running" } }, true), "Claude Code is signed in. Your spaces can use it once the running agents finish.");
+  assert.equal(installedMessage("Claude Code", { serviceRefresh: { state: "pending", reason: "unconfirmed" } }, true), "Claude Code is signed in. Cotal couldn't confirm that the background service can use it. Choose Check again.");
 });

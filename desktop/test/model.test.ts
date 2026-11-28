@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, surfaceState } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -13,8 +13,8 @@ test("a blank space label is the space id and a label with a character stays", (
   assert.equal(shownSpaceKind(""), "Space");
   assert.equal(shownSpaceKind("\n"), "Space");
   assert.equal(shownSpaceKind(undefined), "Space");
-  assert.equal(shownSpaceKind(" ada"), " ada");
-  assert.equal(shownSpaceKind("team"), "team");
+  assert.equal(shownSpaceKind(" ada"), "Ada");
+  assert.equal(shownSpaceKind("team"), "Team");
 });
 
 test("a blank account label is the subject and a label with a character stays", () => {
@@ -55,9 +55,29 @@ test("approval guidance refers to this computer", () => {
   assert.equal(connectionView("approval-pending").description, "The space owner must approve this computer. No connection is claimed yet.");
 });
 
+test("a computer with no account stays Starting until a Manager is verified", () => {
+  const none = { rows: [], anyConnected: false };
+  assert.equal(surfaceState(none).word, "Not set up");
+  assert.equal(surfaceState(none).title, "This computer is not set up");
+  // A registered account with no assigned spaces is connected to the account, not Starting.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account");
+  // A verified Manager with no account rows is Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: true, verified: true }).word, "Connected");
+  // Removing the last space leaves an account with nothing using it. That stays Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).word, "Connected");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account");
+  // A daemon that answers, with no account and a Manager still starting, is Starting. Never Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, managerStarting: true }).word, "Starting");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, managerStarting: true }).title, "This computer is starting");
+  // No account and no Manager at all was never set up.
+  assert.equal(surfaceState({ rows: [], anyConnected: false }).word, "Not set up");
+});
+
 test("launch readiness requires an answering registered Manager with an available application", () => {
   for (const manager of [undefined, {}, { state: "answering" }, { state: "restarting", instanceId: "m", connectors: [{ state: "available" }] }, { state: "answering", instanceId: "m", connectors: [{ state: "unavailable" }] }]) assert.equal(launchReady(manager), false);
   assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }] }), true);
+  // A Manager that lost its connection still answers its daemon, but nothing can launch through it.
+  assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }], connection: { state: "offline", reason: "this computer cannot look up cotal.cloud (ENOTFOUND)" } }), false);
   assert.equal(connectionView("launch-ready").title, "This computer is connected");
   assert.equal(machinesUrl("https://cloud.cotal.ai/api/auth", "sp_636f74616c5f636c6f7564", "manager&exact"), "https://cloud.cotal.ai/machines?space=sp_636f74616c5f636c6f7564&machine=manager%26exact");
 });
@@ -111,6 +131,15 @@ test("onboarding boundaries survive special-scheme normalization", () => {
   ]) assert.throws(() => onboardingLink(value), Error, value);
 });
 
+test("the version mismatch says what happened, what the button does and what it costs", () => {
+  assert.deepEqual(refusalView("VERSION_MISMATCH"), {
+    title: "Cotal was updated",
+    description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.",
+    action: "connect",
+    label: "Restart background service",
+  });
+});
+
 test("expired credentials and pending approval refusals map to their recovery actions", () => {
   assert.deepEqual(refusalView("CREDENTIAL_EXPIRED"), {
     title: "Sign in again",
@@ -124,17 +153,41 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "install",
     label: "Start service",
   });
+  assert.deepEqual(refusalView("SERVICE_STOPPED"), {
+    title: "The background service is stopped",
+    description: "You stopped the background service. Start it to run agents on this computer again.",
+    action: "start",
+    label: "Start",
+  });
+  assert.deepEqual(refusalView("DISK_FULL"), {
+    title: "Your disk is full",
+    description: "Free up space on this computer. Cotal continues by itself once there is room.",
+    action: "disk",
+    label: "Check again",
+  });
   assert.deepEqual(refusalView("NOT_ANSWERING"), {
     title: "The background service has not started",
-    description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.",
-    action: "refresh",
-    label: "Check status",
+    description: "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.",
+    action: "repair",
+    label: "Repair",
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
     title: "We cannot reach your connection",
-    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
     action: "refresh",
     label: "Try again",
+  });
+  assert.deepEqual(refusalView("OFFLINE"), {
+    title: "No internet connection",
+    description: "Cotal reconnects by itself when this computer is back online.",
+    action: "refresh",
+    label: "Check again",
+  });
+  assert.deepEqual(refusalView("SPACE_UNREACHABLE"), {
+    title: "Can't reach your space",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
+    action: "refresh",
+    label: "Check again",
   });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",
@@ -142,6 +195,19 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "refresh",
     label: "Check approval",
   });
+});
+
+test("another installation's service offers Repair, and a bare conflict is not titled as one, with no command in the window", () => {
+  assert.deepEqual(refusalView("ANOTHER_INSTALLATION"), {
+    title: "Another copy of Cotal runs the background service",
+    description: "Repair can move it to this app. Your spaces and sign-in stay as they are.",
+    action: "repair",
+    label: "Repair",
+  });
+  assert.equal(refusalView("CONFLICT").title, "Something on this computer needs fixing", "a conflict that names no installation does not claim one");
+  assert.equal(refusalView("CONFLICT").action, "repair");
+  const refused = () => { requireResult({ v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js" } }); };
+  assert.throws(refused, (error: { remedy?: string; message: string }) => error.remedy === undefined && !/\/usr\/local|`/.test(error.message));
 });
 
 test("kept credential notice names each well-formed file and is empty otherwise", () => {

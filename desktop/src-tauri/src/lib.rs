@@ -9,6 +9,7 @@ mod native_presence;
 #[cfg(feature = "desktop")]
 pub mod updater;
 pub mod app_activity;
+pub mod command_line;
 #[cfg(any(feature = "desktop", test))]
 mod terminal;
 pub mod update_receipt;
@@ -49,6 +50,8 @@ pub enum DesktopRequest {
     Log {},
     #[serde(rename = "install")]
     Install {},
+    #[serde(rename = "start")]
+    Start {},
     #[serde(rename = "name")]
     Name {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +95,10 @@ pub enum DesktopRequest {
     AgentAppInstall { name: String },
     #[serde(rename = "agent-app-sign-in")]
     AgentAppSignIn { name: String },
+    #[serde(rename = "repair-plan")]
+    RepairPlan {},
+    #[serde(rename = "repair-apply")]
+    RepairApply { digest: String, consent: Vec<String> },
 }
 
 impl DesktopRequest {
@@ -150,6 +157,15 @@ impl DesktopRequest {
                 return Err("Invalid application name.".into());
             }
         }
+        if let Self::RepairApply { digest, consent } = self {
+            if digest.len() != 64
+                || !digest.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+                || consent.len() > 3
+                || !consent.iter().all(|item| item == "takeover" || item == "start-stopped" || item == "remove-old-registration")
+            {
+                return Err("Invalid repair approval.".into());
+            }
+        }
         Ok(())
     }
 
@@ -159,7 +175,7 @@ impl DesktopRequest {
 
     pub fn timeout_seconds(&self) -> u64 {
         // An installer may run for 15 minutes and a browser sign-in for 10; the service stops either first.
-        if matches!(self, Self::Login { .. } | Self::Setup { .. } | Self::AgentAppInstall { .. } | Self::AgentAppSignIn { .. }) {
+        if matches!(self, Self::Login { .. } | Self::Setup { .. } | Self::AgentAppInstall { .. } | Self::AgentAppSignIn { .. } | Self::RepairApply { .. }) {
             1200
         } else {
             150
@@ -257,6 +273,9 @@ mod tests {
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","path":"/foreign"}"#).is_err());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","limit":1000000}"#).is_err());
         assert!(DesktopRequest::Log {}.validate().is_ok());
+        let start = serde_json::from_str::<DesktopRequest>(r#"{"op":"start"}"#).unwrap();
+        assert!(start.validate().is_ok());
+        assert_eq!(serde_json::to_value(start).unwrap(), serde_json::json!({"op": "start"}));
         for input in [
             // Only the uninstaller removes the background service; the window can never ask for it.
             r#"{"op":"remove-service"}"#,
@@ -264,6 +283,7 @@ mod tests {
             r#"{"op":"status","args":[]}"#,
             r#"{"op":"status-watch","args":[]}"#,
             r#"{"op":"install","path":"/tmp/foreign"}"#,
+            r#"{"op":"start","path":"/tmp/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,
             r#"{"op":"agent-app-install","name":"claude","script":"https://example.com/x.sh"}"#,
@@ -274,6 +294,15 @@ mod tests {
             assert!(serde_json::from_str::<DesktopRequest>(input).is_err());
         }
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"agent-apps"}"#).unwrap().validate().is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"repair-plan"}"#).unwrap().validate().is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"repair-plan","path":"/foreign"}"#).is_err());
+        let digest = "a".repeat(64);
+        for (consent, valid) in [(vec![], true), (vec!["takeover"], true), (vec!["takeover", "start-stopped"], true), (vec!["remove-old-registration"], true), (vec!["uninstall"], false), (vec!["takeover"; 4], false)] {
+            let request = DesktopRequest::RepairApply { digest: digest.clone(), consent: consent.iter().map(|item| item.to_string()).collect() };
+            assert_eq!(request.validate().is_ok(), valid, "{consent:?}");
+        }
+        assert!(DesktopRequest::RepairApply { digest: "A".repeat(64), consent: vec![] }.validate().is_err());
+        assert!(DesktopRequest::RepairApply { digest: "a".repeat(63), consent: vec![] }.validate().is_err());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"agent-apps","refresh":true}"#).unwrap().validate().is_ok());
         for (name, valid) in [("claude", true), ("connector-2", true), ("", false), ("-x", false), ("Claude", false), ("a b", false), ("../x", false), (&"a".repeat(65)[..], false)] {
             assert_eq!(DesktopRequest::AgentAppInstall { name: name.into() }.validate().is_ok(), valid, "{name}");

@@ -63,8 +63,8 @@ export function validateExtArguments(args: ParsedArgs): void {
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
   if (sub === "add" && operand && !isPathSpec(operand) && !REGISTRY_SPEC.test(operand))
     throw usage("unsupported extension spec - use a local path or a registry name[@version]; prefix a relative folder with ./");
-  // npm accepts an initial underscore in either part of a scoped name.
-  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9_-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
+  // A scope can start with a dot. The package after the slash cannot.
+  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9._-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
@@ -118,7 +118,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   }
   if (sub === "seed") {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
-    return runSeed({ repair, reset, force });
+    return runSeed({ repair, reset, force }, false, process.connected === true && process.env.COTAL_SKIP_CONNECTOR_SEED === "1");
   }
   throw usage(EXT_USAGE);
 }
@@ -135,6 +135,10 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  if (npm.missingOnPath && args[0] === "install" && !seeding)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "npm is not on PATH; the extension install did not start", {
+      remedy: "make npm available on PATH, check that `npm --version` works, then retry the original extension install",
+    });
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);

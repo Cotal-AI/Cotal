@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string; preparedRoot?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -487,6 +487,13 @@ if (process.platform !== "win32") {
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "homestack", server: "nats://127.0.0.1:1", root: home, mode: "auth", ts: new Date().toISOString() });
   const homeEntry = JSON.stringify(findMesh("homestack"));
+  const wrongFolder = join(folder, "not-the-stack");
+  mkdirSync(join(wrongFolder, ".cotal"), { recursive: true });
+  sandbox(wrongFolder);
+  for (const option of ["--yes", "--dry-run"]) {
+    const misplaced = run(["down", option, "--with-agents", "--json"], wrongFolder);
+    check(`a wrong-folder down with ${option} asks to repeat the original options in the owning folder`, misplaced.status === 2 && misplaced.envelope?.error?.code === "TARGET_NOT_FOUND" && misplaced.envelope.error.remedy?.includes("repeat your original command from the folder") === true && !existsSync(join(wrongFolder, ".cotal", "stack-controller.json")), shown(misplaced));
+  }
   const holdsUp = run(["up", "--runtime", "nosuch", "--server", "nats://127.0.0.1:1", "--json"], nested);
   const holdsManifest = run(["up", "-f", "cotal.yaml", "--json"], nested);
   const homeAfter = JSON.stringify(findMesh("homestack"));
@@ -561,6 +568,25 @@ if (process.platform !== "win32") {
   check("while the selected space's folder no longer exists, a bare up refuses TARGET_UNAVAILABLE and does not start the folder's name",
     preparedMoved.status === 0 && selected.status === 0 && afterMove.status === 2 && afterMove.envelope?.error?.code === "TARGET_UNAVAILABLE"
       && afterMove.envelope.error.message === `the selected space "moved" is prepared in ${source}, which no longer exists, and this folder names no space, so up did not start "epsilon" here` && !records(join(desktop, "epsilon")), shown(afterMove));
+  check("recovering a moved selection keeps the requested startup options for either space",
+    afterMove.envelope?.error?.remedy === 'restore the original project folder at its recorded path, then repeat your startup command in that folder; to start "epsilon" here instead, add `--space epsilon` to your original command', shown(afterMove));
+  const blockedStart = () => run(["up", "--server", "nats://127.0.0.1:1", "--json"], join(desktop, "epsilon"));
+  writeFileSync(source, "obstruction");
+  const blocked = blockedStart();
+  check("a file at the selection's project path refuses startup before preparing another space",
+    blocked.status === 2 && blocked.envelope?.error?.code === "TARGET_UNAVAILABLE" && blocked.envelope.target?.preparedRoot === source
+      && blocked.envelope.error.message?.includes("is not a directory") === true && blocked.envelope.error.remedy?.includes("restore the original project folder") === true
+      && readFileSync(source, "utf8") === "obstruction" && !records(join(desktop, "epsilon")), shown(blocked));
+  rmSync(source);
+  if (process.getuid?.() !== 0) {
+    mkdirSync(source, { mode: 0o600 });
+    try {
+      const denied = blockedStart();
+      check("a selection whose project cannot be entered calls for restoring access, not forgetting it",
+        denied.status === 2 && denied.envelope?.error?.code === "TARGET_UNAVAILABLE" && denied.envelope.target?.preparedRoot === source
+          && denied.envelope.error.remedy?.includes("restore access") === true && !denied.envelope.error.remedy.includes("forget") && !records(join(desktop, "epsilon")), shown(denied));
+    } finally { chmodSync(source, 0o700); }
+  }
   for (const space of ["delta", "projspace", "moved"]) run(["space", "forget", space]);
 }
 

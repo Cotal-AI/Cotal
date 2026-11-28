@@ -1,0 +1,5 @@
+#!/bin/sh
+# The cotal command of the Cotal desktop app: the app's bundled CLI on its own Node.
+# It lives in Cotal.app/Contents/Resources/bin, so it goes with the app and survives its updates.
+contents=$(cd -- "$(dirname -- "$0")/../.." && pwd -P) || exit 1
+exec "$contents/MacOS/cotal-node" "$contents/Resources/runtime/dist/cotal.js" "$@"

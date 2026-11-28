@@ -97,9 +97,18 @@ check("help service remove lists --instance <full-id> in its usage and options",
     other.status === 1 && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.message === 'service definition: the definition names space "sb", and the selected space is "sa"' && refusal.error.remedy === undefined, shown(other));
   const list = run(["service", "--space", "sa", "--json"], b);
   check("sa keeps its service tick", list.status === 0 && list.stdout.includes('"name":"tick"'), shown(list));
+  const extraName = run(["service", "list", "tick", "--space", "sa", "--json"], b);
+  const error = JSON.parse(extraName.stdout).error;
+  const retry = /^cotal (service list --space sa --json)$/.exec(error?.remedy ?? "");
+  const inventory = retry && run(retry[1]!.split(" "), b);
+  check("list with a definition name keeps the explicit space and JSON output in its inventory retry",
+    extraName.status === 1 && error?.code === "USAGE_INVALID" && inventory?.status === 0 &&
+    JSON.parse(inventory.stdout).result.definitions.some((row: { name: string }) => row.name === "tick"), shown(extraName));
   const again = run(["service", "add", "tick", "--file", forA, "--json"], a);
-  check("control: a file for sa under its existing name is still refused as already existing",
-    again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
+  check("a duplicate definition is refused and its removal command keeps the space and JSON output",
+    again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists") && again.stdout.includes("`cotal svc remove tick --space sa --yes --json`"), shown(again));
+  const duplicatePlain = run(["service", "add", "tick", "--file", forA, "--space", "sa", "--plain"], b);
+  check("the removal command for a duplicate keeps plain output", duplicatePlain.status === 2 && duplicatePlain.stderr.includes("svc remove tick --space sa --yes --plain`"), shown(duplicatePlain));
 
   for (const [flag, value, location] of [["--file", "", []], ["-f", "  ", ["--space", "missing-space"]]] as const) {
     const empty = run(["service", "add", "blank-file", flag, value, ...location, "--json"], a);

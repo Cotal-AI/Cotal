@@ -122,7 +122,10 @@ The package manifest and original dependencies stay as npm or pnpm installed the
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
 On Linux and macOS, self-update refreshes an existing npm launcher when it can safely preserve its recorded Node path. If that recorded Node is no longer on disk, the refresh records the supported Node that ran the update. If the launcher cannot be refreshed, the update keeps it unchanged.
-Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
+Self-update uses the npm selected on `PATH` when that file exists, including when its engine range cannot be read.
+If that npm states that it does not support the running Node, or PATH has no npm, Linux and macOS use the npm package shipped beside the running Node when its own range accepts that Node.
+One notice names that Node. If that package is also missing, self-update keeps the npm it found on `PATH`, or reports that npm is not on `PATH`.
+This lookup is not used on Windows.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
 Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
@@ -336,10 +339,12 @@ If the machine daemon closes a status connection while restarting, reconciliatio
 status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
 installation records. It creates no Claude directories or lock files, including in a read-only
-configuration directory. If an integration is installed and the Claude profile or plugin directory is
-read-only, Cotal reports that the Claude refresh is deferred and continues the update without changing
-the protected directory. If you want to finish the refresh, make the directory writable and run
-`cotal update`. Unreadable or damaged installation records still refuse the update.
+configuration directory. If an integration is installed and the Claude profile, plugin directory, or
+local `claude-plugin` marketplace directory is read-only, or if `claude-plugin` is a broken symbolic
+link, Cotal reports that the Claude refresh is deferred, names the blocked path, and continues the
+update without changing it. Repair the named path and run `cotal update` to finish the refresh. An
+explicit `cotal setup` fails when `claude-plugin` is read-only or a broken symbolic link and names
+the same path and remedy. Unreadable or damaged installation records still refuse the update.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check
@@ -373,6 +378,9 @@ If it refuses, follow the reported remedy instead of removing credentials or rei
 `cotal update --check` reports registry availability, recorded extension versions and whether an
 interrupted connector seed needs manual repair.
 It installs and restarts nothing, so it does not replace this reconciliation step.
+A newer release retries a connector seed that an older release recorded as failed.
+The machine daemon and Manager also retry a failure from the current release once per start.
+If that attempt fails, they report the new failure.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
 A machine service restarted during an update answers local status while the updater still owns
 its installation transaction. It matches the updater's process ID, start token and lock nonce
@@ -456,10 +464,17 @@ covers service startup and the target daemon's authenticated status, and the par
 the daemon to answer at the target version before completing the update rather than accepting a zero
 exit code from the reconciliation child alone. Protection starts with the first release that carries
 each recovery step, and the transition into that release is guarded by the candidate-to-next upgrade
-matrix cells. Newly installed Linux daemon units use `Type=notify` and `TimeoutStartSec=60`.
+matrix cells. Newly installed Linux daemon units use `Type=notify`, `TimeoutStartSec=60` and `OOMPolicy=continue`.
 The daemon sends readiness only after its local control listener is ready. If startup hangs,
 systemd terminates it and restarts the unit even when the updater's readiness observer has died.
-Existing units retain their installed policy until reinstalled. This does not prove that a mesh
+Existing units retain their startup readiness policy until reinstalled, while `cotal update` adds
+`OOMPolicy=continue` in place to an unmodified default-home unit (`cotal-daemon.service` under `~/.cotal/daemon`)
+from the same installation without restarting running seats, leaving edited units, units with drop-ins, managers with
+pending unit reloads, and isolated `--daemon-home` units untouched (reinstall an isolated `--daemon-home` unit with
+`cotal daemon uninstall --daemon-home <dir> --yes && cotal daemon install --daemon-home <dir>` to pick up the new
+policy). `cotal update` and automatic updates leave the existing unit alone during the update that installs the release
+carrying that step, and write `OOMPolicy=continue` on the next update run by that release. Upgrading through the
+installer script runs the new release's reconciliation step and writes `OOMPolicy=continue` during that install. This does not prove that a mesh
 connection or hosted Manager is ready. On macOS, launchd has no startup readiness timeout, and
 Windows Task Scheduler's `ExecutionTimeLimit` bounds the whole process lifetime rather than startup.
 On those platforms a non-exiting startup hang remains unbounded after the live observer dies.

@@ -195,7 +195,7 @@ be displayed safely, the refusal asks you to remove the output flag from your or
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
 `nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
-ownership ([Diagnostic inventory](workflows.mdx#diagnostic-inventory)).
+ownership ([Diagnostic inventory](workflows.mdx#diagnostic-inventory)). If the Manager ID is missing or malformed, look it up in the roster for the same space and broker, then retry the original page request with that ID. Keep any cursor and limit unchanged.
 `revoke` writes the run's revocation marker from the project folder; `--by` and `--reason` are
 required ([workflows](workflows.mdx)).
 `answer` resolves an open
@@ -257,7 +257,9 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`). If the run record itself is missing,
+(`cotal run resume <runId> --local --file <program>`). If the supplied file differs from the
+recorded program, local resume refuses with `CONFLICT` (exit 2) before taking over the run.
+Omit `--file` and its value to resume the recorded program. If the run record itself is missing,
 `resume --local` refuses with `TARGET_NOT_FOUND`, exits 2 and points to `cotal run list --local`
 for the same space and any explicit broker, credential or endpoint. If a local `resume`, `answer` or `amend` has a
 malformed run ID, use `cotal run list --local` with the same target options. Then replace only the run

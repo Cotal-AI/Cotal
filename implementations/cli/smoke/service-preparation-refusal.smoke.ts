@@ -122,6 +122,12 @@ check("rig: the space is prepared and not started", created.status === 0, shown(
 const added = run(["service", "add", "mymgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", "b1"]);
 check("rig: the manager preset is saved without starting anything", added.status === 0 && added.envelope?.outcome === "ok", shown(added));
 
+for (const format of ["--json", "--plain"]) {
+  const absent = run(["service", "start", "web", "--space", "b1", "--no-open", "--dry-run", format]);
+  const next = format === "--json" ? absent.envelope?.error?.remedy ?? "" : absent.stderr;
+  check(`a missing dashboard start preview offers only a catalog read in ${format}`, absent.status === 2 && next.includes(`service --space b1 ${format}`)
+    && !next.includes("ext add") && !next.includes("service start web"), shown(absent));
+}
 const first = run(["service", "start", "mymgr", "--space", "b1"]);
 check("rig: the start reached allocation; the binary is a verified entry for an adapter launch", first.envelope?.error?.code !== "UNSUPPORTED", shown(first));
 const instance = first.envelope?.target?.instanceId;
@@ -271,7 +277,7 @@ const member = run(["service", "add", "stack-manager", "--preset", "manager", "-
 check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
 const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
 check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
-  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === `from ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === `inspect the definition with \`cotal service show stack-manager --space b1 --json\`. Only to stop the whole stack and forget its local registration: from ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
     && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same

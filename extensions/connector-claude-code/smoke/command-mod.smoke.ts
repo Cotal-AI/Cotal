@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
-const EXPECTED_CELLS = 61;
+const EXPECTED_CELLS = 68;
 const plugin = resolve(import.meta.dirname, "..");
 const config = mkdtempSync(join(tmpdir(), "cotal-command-mod-"));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>

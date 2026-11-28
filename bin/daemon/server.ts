@@ -21,18 +21,20 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
+import { claimSocketPath, generationOf, holdLifetime, processBirth, type DaemonPeerLifetime, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
+import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
+import { withAppMutation } from "./agent-app-admission.js";
 
 type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
@@ -52,6 +54,36 @@ function managerUnavailable(op: string, cause: string) {
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 const MAX_REQUESTS_PER_CONNECTION = 64;
+
+async function answerAgentApp(req: AgentAppRequest & { id: string; appVersion: string }, opts: ServeOptions, write: (frame: DaemonResponse) => Promise<void>): Promise<void> {
+  const base = { v: DAEMON_PROTOCOL_VERSION, id: req.id } as const;
+  try {
+    if (req.appVersion !== opts.version) {
+      await write({ ...base, ok: false, error: { code: "CONFLICT", message: "This app and the background service have different versions." } });
+      return;
+    }
+    if (req.op === "agent-app-install") {
+      // The bridge holds one admission from installation through any native service pickup.
+      await write({ ...base, ok: false, error: { code: "UNKNOWN_OP", message: "The desktop app must run the installer through its bridge." } });
+      return;
+    }
+    const run = async () => {
+      const owner = await opts.stopAllowed?.();
+      if (owner !== true && !(typeof owner === "object" && owner.state === "owned")) {
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "The background service could not be confirmed. Nothing was changed.");
+      }
+      return agentAppRequest(req, "service", line => { void write({ ...base, ok: true, event: "agent-app-progress", line }); });
+    };
+    const result = await (req.op === "agent-apps" ? run() : withAppMutation(opts.paths, run));
+    await write({ ...base, ok: true, result });
+  } catch (error) {
+    if (isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED") {
+      await write({ ...base, ok: false, error: { code: error.code, message: "The background service could not be confirmed. Nothing was changed." } });
+      return;
+    }
+    await write({ ...base, ok: false, error: { code: "OPERATION_FAILED", message: "The agent app operation could not finish." } });
+  }
+}
 
 /** Counters a test or `status` can read. Every security decision increments exactly one. */
 interface ServerCounters {
@@ -104,7 +136,7 @@ export interface ServeOptions {
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
   /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
-  readonly stopAllowed?: () => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
+  readonly stopAllowed?: (peer?: DaemonPeerLifetime) => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
   /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
   readonly admit?: () => void;
 }
@@ -264,7 +296,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   };
   // One connection whose peer the kernel already reported as this user: decode its requests.
   const daemonRestartOwner = `daemon:${process.pid}:${processBirth(process.pid)}`;
-  const serveConnection = (sock: Socket, restartOwner: () => string): void => {
+  const serveConnection = (sock: Socket, restartOwner: () => string, peerLifetime?: DaemonPeerLifetime): void => {
     counters.accepted++;
     let buf = "";
     let bufBytes = 0;
@@ -316,11 +348,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      if ("appVersion" in req) { replyTask(answerAgentApp(req, opts, write)); return; }
       if (req.op === "daemon-stop") {
         // The reply acknowledges the request, not completed shutdown. The uninstaller
         // independently waits for this process and endpoint to disappear.
         void (async () => {
-          const observation = req.commit ? stopPrepared : await opts.stopAllowed?.();
+          const observation = req.commit ? stopPrepared : await opts.stopAllowed?.(peerLifetime);
           const allowed = typeof observation === "object" ? observation.state === "owned" : observation === true;
           if (!allowed) {
             const unknown = typeof observation === "object" && observation.state === "unknown";
@@ -346,8 +379,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));
       };
-      if (req.op === "manager-start" || req.op === "manager-status") {
-        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
+      if (req.op === "manager-start" || req.op === "manager-status" || req.op === "manager-repair-cleanup") {
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : req.op === "manager-repair-cleanup" ? managers.repairCleanup(req.space) : managers.refresh(req.space));
         return;
       }
       if (req.op === "managers-stop") {
@@ -631,18 +664,18 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         sock.destroy();
         return;
       }
-      let owner: string | undefined;
+      let lifetime: DaemonPeerLifetime | undefined;
       try {
         const identity = localPeerCredentials(sock);
         const birth = processBirth(identity.pid);
         if (identity.uid === uid && Number.isSafeInteger(identity.pid) && identity.pid > 0 && birth) {
-          owner = JSON.stringify(["peer", identity.uid, identity.pid, birth]);
+          lifetime = { pid: identity.pid, birth };
         }
       } catch { /* Ordinary requests do not require restart ownership. */ }
       serveConnection(sock, () => {
-        if (!owner) throw new Error("restart owner process identity is unavailable");
-        return owner;
-      });
+        if (!lifetime) throw new Error("restart owner process identity is unavailable");
+        return JSON.stringify(["peer", uid, lifetime.pid, lifetime.birth]);
+      }, lifetime);
     });
   }
 

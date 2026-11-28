@@ -267,8 +267,11 @@ cotal endpoint check <contract-file> [--json|--plain]
 the supplied name. Use `--dir` to choose another one. `init` creates missing directories with
 mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
 Retry with `--dir` set to a real directory path. If a scaffold file already exists, `init` leaves it
-unchanged and suggests `--dir <new-directory>` with the same endpoint name. The receipt lists the
-paths created. A partial write leaves those paths in place for review.
+unchanged. Its retry keeps the endpoint name and output format. Replace `<new-directory>` with
+an unused directory. If the filesystem rejects a path as too long before anything is created,
+`init` refuses with `USAGE_INVALID` (exit 1). Shorten the path or its directory names.
+If creation has already begun, `init` reports `OPERATION_PARTIAL` (exit 4) and lists the paths
+it created for you to inspect. It leaves those paths in place.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
 is kept. Choose a namespace you control before requesting serving authority. Scaffolding creates
@@ -298,7 +301,8 @@ in the path, use shell completion to enter the directory and run the suggested c
 `check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
-endpoint. Authoring takes no space, broker, caller or invocation flags.
+endpoint. Authoring takes no space, broker, caller or invocation flags. If `check` refuses a bare
+`--server`, omit it and keep the contract path. No broker address is needed.
 
 With `--json`, the receipt's `command` is `endpoint init` or `endpoint check`, including when
 the operation is refused.
@@ -720,11 +724,18 @@ Decides and inspects service endpoint registrations on a user-auth space whose a
 with `--service-endpoints`. A static-credential or open space has no service endpoint host, so
 there every subcommand refuses `UNSUPPORTED` (exit 2), says so, sends nothing and records no
 request. A root that does not hold the space's user-auth service refuses the same way and names the
-root that started it. Every subcommand is one request to the service's
-`/service-endpoint-host` route as the signed-in user: the route verifies your IdP token and derives
+root that started it. The CLI sends requests to the service's `/service-endpoint-host` route
+as the signed-in user. The route verifies your IdP token and derives
 the granter itself, so no command names one. `approve` and `refuse` are the owner's: the command
 reads the proposal and its name first and decides at those revisions, so a proposal or name that
 moved in between is a conflict the host reports, never a decision on something else.
+The human approval receipt shows the root credential's expiry in UTC as recorded at approval.
+It is not a fresh readiness check. For an approved proposal, the human `cotal service-endpoint proposal`
+report shows the root and approval deadlines that the host reports for the matching instance when
+its owner can read them. A deadline in this report does not say why the host refused a credential.
+If the host reports that the root expired, restarting the instance or replaying its approval will
+not replace the root. Ask whoever runs the integration whether it can register a replacement.
+A replacement needs its own approval and caller grants.
 `--caller-ceiling` names capabilities the proposed commands declare, such as `read`. Each one
 becomes a ceiling entry, pinned to the proposed instance, for every proposed command that declares
 it, and callers can later be granted only commands inside that ceiling. A name that no proposed

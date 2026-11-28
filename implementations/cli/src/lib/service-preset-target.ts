@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, protectedCredentialReference, readLocalRecordSource, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, protectedCredentialReference, readLocalRecordSource, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type Presentation, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { shellWord } from "./endpoint-errors.js";
 import { targetWords } from "./confirmation-required.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
@@ -13,11 +14,23 @@ import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, r
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
 
+/** List definitions in the requested output format, using the resolved space when available. */
+export function serviceListStep(values: ParsedArgs["values"], space = values.space): string {
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  return `list this space's saved definitions with ${codeSpan(`cotal service${targetWords({ space })}${output}`)}`;
+}
+
+/** A whole-stack preview belongs to the folder that owns the stack, even with an explicit space. */
+export function wholeStackPreviewStep(space: string, root: string, presentation: Presentation): string {
+  const preview = codeSpan(`cotal down --dry-run --space=${shellWord(space)}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  return `to preview stopping the whole stack, run ${preview} in ${oneLine(root)}`;
+}
+
 /** A missing stop-preview target can lead to a corrected preview or a read of the selected catalog. */
 export function stopPreviewStep(space: string, values: ParsedArgs["values"], member?: { name: string; verb: string }): string {
+  if (!member) return serviceListStep(values, space);
   const output = values.json ? " --json" : values.plain ? " --plain" : "";
   const scope = targetWords({ space });
-  if (!member) return `list this space's saved definitions with ${codeSpan(`cotal service${scope}${output}`)}`;
   const instance = typeof values.instance === "string" ? ` --instance=${shellWord(values.instance)}` : "";
   const agents = values["with-agents"] ? " --with-agents" : "";
   return `this space's controller stack names it ${member.name}: preview its stop with ${codeSpan(`cotal ${member.verb} ${member.name} --dry-run${scope}${instance}${agents}${output}`)}`;
@@ -70,10 +83,10 @@ function stoppedManagerLog(space: string, root: string, requested: string, prese
     const target = { space, name: requested, path };
     const stack = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
     if (record?.liveness === "dead" || loadManagerInstanceIdentity(root, space)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the manager log at ${path} is no longer there; nothing was read`, { target, remedy: `start the stack again with ${stack}` });
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
+    throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `no manager has been started in space ${oneLine(space)}: there is no manager log at ${path}; nothing was read`, {
       target,
       remedy: `start the stack with ${stack}, or the manager alone with ${codeSpan(`cotal manager start --space ${shellWord(space)}`)}`,
-    });
+    }));
   }
   return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.liveness === "dead" ? record.pid : null, label: record?.label ?? preset.name } };
 }
@@ -164,19 +177,19 @@ export function resolvePresetService(space: string, root: string, requested: str
     if (record?.liveness === "dead" || (!record && (existsSync(managerLogPath(space, root)) || loadManagerInstanceIdentity(root, space))))
       return { requested, name: requested, preset: preset.name, saved: null, stopped: { pid: record?.pid ?? null, label: record?.label ?? preset.name } };
   }
-  if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
+  if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested }, values);
   if (mode !== "start") {
     const onSpace = ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
     const preview = requested === "manager" && mode === "restart" && values["dry-run"];
     const start = requested === "manager" ? `cotal manager start${onSpace}` : requested === "broker"
       ? [`cotal service start ${requested}`, ...presetRequiredInputs(preset, space, root)].join(" ") + (values.space === undefined ? "" : onSpace)
       : `cotal service start ${requested}`;
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
+    throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
       target: { space, name: requested },
       remedy: preview ? `preview the first start with ${codeSpan(`${start} --dry-run${values.json ? " --json" : values.plain ? " --plain" : ""}`)}`
         : mode === "stop" && values["dry-run"] ? stopPreviewStep(space, values) : requested === "manager" && mode === "status" && prepared
         ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(start)}`,
-    });
+    }));
   }
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
@@ -215,7 +228,14 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   if (launch.adapter === WEB_SERVICE_ADAPTER && changed.includes("read-only") && merged["read-only"] === true && typeof merged["posting-creds"] === "string")
     throw new CommandFailure("refused", "CONFLICT", `--read-only would keep the saved ${row.name} definition's --posting-creds, and the dashboard posts only with --no-read-only; nothing was changed`, { target: { space, name: row.name }, remedy: `remove it with \`cotal service remove ${row.name} --space ${space} --yes\`, then run \`cotal service add ${row.name} --preset ${preset.name} --space ${space} --read-only\`` });
   if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, merged);
-  if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${shellWord(row.name)}`} --space ${shellWord(space)}\`, then start it again with the new ${shown}` });
+  if (running(space, row.name)) {
+    const preview = values["dry-run"];
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const verb = requested === "manager" ? "manager stop" : `service stop ${shellWord(row.name)}`;
+    const stop = codeSpan(`cotal ${verb}${targetWords({ space })}${preview ? " --dry-run" : ""}${output}`);
+    const remedy = preview ? `preview the stop with ${stop}. To apply the new settings, stop the service first, then repeat the original start without --dry-run` : `stop it first with ${stop}, then repeat the original start with the same options`;
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy });
+  }
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);
@@ -267,17 +287,17 @@ export function forgetRefusedPresetService(space: string, name: string): boolean
  *  their own handoff under the unit, which the unit entry does not do yet. The remedy names a
  *  platform-appropriate way to run the service. `command` is `manager` when the person
  *  typed the manager's own command. */
-export function adapterInstallRefusal(space: string, name: string, adapter: string, options: Readonly<Record<string, unknown>>, command: "manager" | undefined, target: Record<string, unknown>): CommandFailure {
+export function adapterInstallRefusal(space: string, name: string, adapter: string, options: Readonly<Record<string, unknown>>, command: "manager" | undefined, target: Record<string, unknown>, values: ParsedArgs["values"]): CommandFailure {
   const declaration = resolveServiceAdapter(adapter, options, false).declaration;
   let entry = "cotal";
   try { entry = selfArgv().join(" "); } catch { /* the bare name stands for an unverified entry */ }
   const foreground = command === "manager" ? "manager start --foreground" : `service start ${name} --foreground`;
   return new CommandFailure("refused", "UNSUPPORTED", `${command === "manager" ? "cotal manager install" : `cotal service install ${name}`} is not supported yet: a Cotal-written unit runs only a direct-process service, and ${name} runs through the ${adapter} adapter, whose stop is ${declaration.stop === "native" ? "a native request" : "its own"}; nothing was installed or allocated`, {
     target,
-    remedy: process.platform === "win32" && command === "manager"
+    remedy: values["dry-run"] ? serviceListStep(values, space) : process.platform === "win32" && command === "manager"
       ? `for a local space, run ${codeSpan(`cotal up${targetWords({ space })}`)} from the folder that hosts it. The local stack runs the Manager`
       : declaration.capabilities.foreground
       ? `run it from your own systemd user unit with ExecStart=${entry} ${foreground} --space ${space} and KillMode=mixed${command === "manager" ? ", or keep an existing unit on `cotal supervise` for now" : ""}`
-      : `start it with \`cotal service start ${name}\``,
+      : `start it with ${codeSpan(`cotal service start ${shellWord(name)}${targetWords({ space })}`)}`,
   });
 }

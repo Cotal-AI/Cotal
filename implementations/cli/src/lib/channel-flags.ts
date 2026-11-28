@@ -1,6 +1,11 @@
-import { assertValidChannel, oneLine } from "@cotal-ai/core";
+import { assertValidChannel, oneLine, resolveReadAcl } from "@cotal-ai/core";
 import { CommandFailure, parseCommaList } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
+
+export function spawnReadAcl(subscribe: string[], allowed: string[] | undefined, remedy = "omit the conflicting channel override or choose subscriptions within the effective allowSubscribe list"): string[] {
+  try { return resolveReadAcl(subscribe, allowed); }
+  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message), { remedy, selfContained: true }); }
+}
 
 /** Validate the declared entries. A stripped channel is only a suggestion, never a grant. */
 export function parseChannelFlag(flag: string, value: string | undefined, selfContained?: true): string[] | undefined {

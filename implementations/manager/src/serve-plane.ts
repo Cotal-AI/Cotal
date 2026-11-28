@@ -28,6 +28,11 @@ import { withTimeout } from "./manager-timeout.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
+/** The serve connection's ping, the same as every agent connection's (CotalEndpoint's default), so a
+ *  Manager and its agents judge one outage alike: every 10 s, stale after 2 unanswered. */
+const SERVE_PING_INTERVAL_MS = 10_000;
+const SERVE_MAX_PING_OUT = 2;
+
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
 type ExecutorStores = { recordsKv: KV; authKv: KV; nc: NatsConnection };
@@ -145,10 +150,10 @@ export class ServePlane {
   private get managerInstanceId(): string { return this.state.managerInstanceId!; }
   private get managerServeIdentity(): Identity { return this.deps.managerServeIdentity(); }
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
-  /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
+  /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after refreshing the inventory. */
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;
-    inventory.refreshUnavailableConnectors();
+    inventory.refreshConnectors();
     return servedConnectorStatuses(inventory.connectorStatuses);
   }
 
@@ -168,6 +173,11 @@ export class ServePlane {
       ...(state.creds !== undefined ? standaloneConnectOpts({ creds: readCreds, tls: false }) : {}),
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
+      // A silent network loss resets no socket, so only pings find it, and the liveness grade above
+      // reads this transport. At the nats.js default (120 s, 2 outstanding) a computer that lost its
+      // network reported its Manager connected for minutes; this calls the link stale within 30 s.
+      pingInterval: SERVE_PING_INTERVAL_MS,
+      maxPingOut: SERVE_MAX_PING_OUT,
     };
     const nc = await (deadline === undefined ? this.deps.dial(opts) : this.deps.dialRemoteStanding(opts, deadline));
     this.parts.brokerTransport.trackTransport(nc);
@@ -203,15 +213,16 @@ export class ServePlane {
     });
   }
 
-  /** Add the class spawn rails when the first application becomes available, without redialing. */
-  enableClassSpawn(): void {
+  /** Update the class spawn rails when application availability crosses zero, without redialing. */
+  syncClassSpawn(): void {
     const serving = this.serviceServe;
-    if (!serving || this.leaseStopping) return;
+    if (!serving || this.leaseStopping || serving.nc.isClosed()) return;
     const replacement = this.serveOnConnection(serving.nc, serving.grant);
     // Reusing the incarnation queues keeps overlap single-delivery. Do not await the old
-    // handlers here: the status or launch that discovered the application can be one of them.
-    const drained = serving.handle.stop();
-    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), drained]); } };
+    // handlers here: the status or launch that changed availability can be one of them.
+    let draining: Promise<void> | undefined = serving.handle.stop();
+    void draining.finally(() => { draining = undefined; });
+    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), draining]); } };
   }
 
   /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and
@@ -266,6 +277,7 @@ export class ServePlane {
       }
       s.nc = nc;
       s.handle = handle;
+      this.syncClassSpawn();
       console.error(`manager service endpoint re-dialed: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${s.grant.epoch})`);
       return true;
     });

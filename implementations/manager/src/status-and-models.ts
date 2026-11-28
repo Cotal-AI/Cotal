@@ -124,7 +124,7 @@ export class StatusAndModels {
       return { ok: false, error: rejectionText(e) };
     }
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
+      await this.parts.connectorInventory.refreshConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
@@ -203,7 +203,7 @@ export class StatusAndModels {
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
   managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
-    this.parts.connectorInventory.refreshUnavailableConnectors(undefined, setupClaude);
+    this.parts.connectorInventory.refreshConnectors(undefined, setupClaude);
     const machine = hostMachine();
     return {
       instanceId: this.managerInstanceId,
@@ -221,30 +221,35 @@ export class StatusAndModels {
       connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
-      stopImpact: {
-        agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
-        observedAt: new Date().toISOString(),
-        maintenance: this.maintenanceState,
-        resumeRequired: this.resumeRequired,
-        stopping: this.leaseStopping,
-        ...this.deps.pendingWork(),
-        agents: [...this.agents.values()]
-          .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
-          .map((a): ManagerStopImpact["agents"][number] => ({
-            name: a.name,
-            id: a.id,
-            lifecycleUid: a.lifecycleUid,
-            mode: a.handle.kind,
-            defaultAction: this.maintenanceState !== "active" || this.resumeRequired
-              ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
-            withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
-          })),
-        // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
-        // resume name one inventory.
-        ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
-          ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
-          : {}),
-      },
+      stopImpact: this.stopImpactData(ownerFilter),
+    };
+  }
+
+  /** Native stop policy and pending-work snapshot without refreshing connector binaries. */
+  stopImpactData(ownerFilter: string | undefined): ManagerStopImpact {
+    return {
+      agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
+      observedAt: new Date().toISOString(),
+      maintenance: this.maintenanceState,
+      resumeRequired: this.resumeRequired,
+      stopping: this.leaseStopping,
+      ...this.deps.pendingWork(),
+      agents: [...this.agents.values()]
+        .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
+        .map((a): ManagerStopImpact["agents"][number] => ({
+          name: a.name,
+          id: a.id,
+          lifecycleUid: a.lifecycleUid,
+          mode: a.handle.kind,
+          defaultAction: this.maintenanceState !== "active" || this.resumeRequired
+            ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
+          withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
+        })),
+      // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
+      // resume name one inventory.
+      ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
+        ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
+        : {}),
     };
   }
 

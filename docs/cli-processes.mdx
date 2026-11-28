@@ -69,13 +69,19 @@ optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cot
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
-(`status` reports `classSpawn: false`). A launch, model catalog or status read checks unavailable
-applications again. Finding the first available application enables the class rail without a restart.
+(`status` reports `classSpawn: false`). A `status` read rechecks every declared connector row,
+while a launch, preserved resume, supervised restart, model lookup or command listing rechecks
+only the requested connector. Once a connector becomes available, its resolved executable paths
+stay pinned and never switch to another copy on `PATH`; if a pinned file disappears or leaves
+`PATH`, the row becomes unavailable (naming any other copy now on `PATH`) until that pinned file
+returns or the manager restarts. Finding the first available application on a read or launch
+enables the class rail without a restart, and losing the last available application drops it when
+that read or launch observes the change.
 `describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
-on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
-inventory keeps the class rail and names `--on` on a harness refusal, because sibling
-inventories are not readable from the serve credential. See [control surface](control-surface.mdx#instance-routing).
+on the class rail, an unpinned spawn is refused and names the agent application to add. Wire
+`spawn` and `launch` refusals for an unavailable harness name `--on`, because sibling inventories
+are not readable from the serve credential. See [control surface](control-surface.mdx#instance-routing).
 The manager prints what its boot inventory found once it is up, so a start that is refused prints
 no boot line.
 
@@ -617,6 +623,7 @@ cotal daemon setup [--cloud | --idp <auth URL or name>] [--no-browser] [--client
 cotal daemon setup --space <s> [--idp <auth URL or name>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
+cotal daemon repair [--apply <digest> [--yes]] [--daemon-home <dir>] [--json|--plain]
 cotal daemon start [--daemon-home <dir>] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
@@ -646,10 +653,102 @@ search permission to group and other accounts, such as an owned `.config` direct
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
 Relative paths, control characters and malformed quoting are refused.
 
-On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
+On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation. It leaves the unit, receipt and running daemon unchanged. It reports `Already installed` when the unit is enabled and linger is on. Otherwise, it reports why autostart is unavailable or could not be verified. `cotal daemon status` reports confirmed autostart problems even when the daemon is running. A modified source or another installation still refuses installation.
 
 On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
 installation reports a conflict and leaves the running daemon alone.
+
+### Repair
+
+`cotal daemon repair` checks this computer's background service and prints what it would fix, in
+order: the service is installed by this installation, it runs this installation's version, the
+service finds the installed agent applications, every hosted space runs, no old registration of
+this computer's agent host is left, and no account needs sign-in again. It changes nothing and
+prints a plan digest. `cotal daemon repair --apply <digest>` runs that plan and nothing else, and refuses
+`CONFLICT` with cause `PLAN_CHANGED` when the computer changed since it was printed.
+
+Three kinds of step ask first, and `--apply` refuses `LIFECYCLE_BLOCKED` with cause
+`CONSENT_REQUIRED` until they are approved: `takeover` (moving the service from another
+installation), `start-stopped` (starting a service that is not running, which the person may have
+stopped) and `remove-old-registration`. `--yes` approves all three. The spaces step starts only the
+spaces the plan named, and only those this computer still hosts: a space with a hosting intent and no
+registration removal pending or unconfirmed. A space the person disconnected is never started again.
+Each space's `manager-status` reply carries `hostingIntent`. The spaces step reports each space's
+result; a space that stays stopped fails the step with cause `SPACE_NOT_STARTED` and what its agent
+host said.
+
+Every step that changes the service (set-up, start, restart, move, space start and old-registration
+removal) runs while Repair holds the agent-app admission lock (`agent-app.lock`), so no agent-app
+install, sign-in or pickup runs across it. A held lock fails the first such step with
+`LIFECYCLE_BLOCKED` and changes nothing.
+
+With `--json`, the plan is `{digest, steps}`. Each step has `step`, `outcome` (`ok`, `fix`,
+`needs-you`, `cannot` or `unchecked`) and `found`, and may have `change`, `consent`, `space`, `spaces`,
+`agents`, `agentsUnknown`, `disconnected`, `owner` and `action`. `unchecked` marks a step Repair could
+not check yet because an earlier one must be fixed first. `agentsUnknown: true` means the service's
+agents could not be read, so any agent it runs stops. `disconnected: true` marks an old-registration
+step for a space that stays disconnected. `action: "update"` marks a `cannot` step that updating this
+app fixes, and `action: "reinstall"` one that installing Cotal again fixes: a service record that
+fails verification (`CONFLICT` or `TARGET_NOT_FOUND` while reading it) becomes that step rather than
+a refusal. A step that fails stops the run, and the command refuses with that step's cause. The desktop
+app instead receives `{steps, repaired, remaining}`: each step has `changed` or `failed` plus
+`detail`, steps after a failed one did not run, and `remaining` is what a new check still finds.
+`bin/daemon/repair.ts` exports `planRepair`, `applyRepair`, `planFrom`, `probeRepair`, `probeFailure`,
+`runSteps`, `startSpaces`, `pickupOutcome`, `failedCopy`, `accountSteps` and `compareVersions`.
+
+The agent-apps step asks the bridge's agent-app routing for a fresh inventory with a pickup
+(`agent-apps {refresh: true}`), the same entry the Agent apps pane uses, which takes the agent-app
+admission lock itself. The step is fixed only when the reply's `serviceRefresh` is `refreshed`. While
+agents run (`pending`, `agents-running`) the step reports that the service picks the apps up once they
+finish. Any other reply, including one without `serviceRefresh`, fails the step.
+
+When another Cotal installation runs the service, the plan moves it to this installation. A move
+needs consent `takeover` and lists the agents that stop. When the service's status or an agent row
+cannot be read, the plan says any agents it runs stop. A move never replaces a newer installation, or
+one whose version Repair cannot read or compare: the step is then `cannot` and names updating this
+app. The exception is a recorded program that can't run where it is: one that no longer exists (an
+ejected disk image, say) or one under `/Volumes`, App Translocation or `~/Downloads`. Repair moves that
+service to this installation whatever its version. A move stops the recorded service through the
+same verified path as `uninstall`, but keeps every
+record in the daemon home: sign-in, this computer's account identity and each space's service records.
+It then installs this installation's service and waits for it to answer. If that service does not
+answer, the move puts the previous service back, starts it, and refuses with cause
+`MOVE_ROLLED_BACK`; the agents the previous service ran were stopped and do not start again by
+themselves, and the window says to keep using the other copy and update this app before trying again.
+If putting the previous service back fails too, the move refuses `MOVE_RESTORE_FAILED`: no service
+may be running, and the next Repair offers to set this app's service up. When the previous service's
+shutdown cannot be confirmed, the move refuses `OPERATION_UNKNOWN` with cause `MOVE_UNCONFIRMED` and
+keeps the unit and receipt. A process that
+dies after the previous unit is removed and before this one is published leaves no unit, and the
+next Repair offers to set the service up. `uninstall` still erases the space service records; use
+`repair` to move the service.
+
+When a hosted Manager's cleanup record names an older instance than the one this computer now runs,
+`service-disconnect` refuses ("Manager cleanup identity differs from its recorded instance"). The
+plan then offers one step per space to remove that old registration (consent
+`remove-old-registration`). The plan reads the space's hosting intent, so its words say what apply
+does: "start the agent host again" for a space this computer hosts, "stays disconnected" for one the
+person disconnected. Repair reads the intent again before it asks the space to
+remove only the older instance, through the same guarded deregistration as disconnect and with the
+record's verified authority. While the older instance still answers, the space refuses and Repair
+leaves it alone. When the space confirms the removal, the record is rebound to the current instance.
+A space this computer still hosts starts its Manager again. A space the person disconnected stays
+disconnected: Repair finishes that disconnect, which removes the current instance through
+disconnect's own path. When the removal succeeded but that start or disconnect did not finish, the
+reply's `repair.state` is `removed-unfinished` and the step fails with cause `CLEANUP_UNFINISHED`,
+saying the old registration was removed and what is left. Any other answer keeps the record. Repair's own request never names the
+current instance. The daemon request is `manager-repair-cleanup {space}`.
+
+The desktop app offers Repair as the one button on the error screens whose cause it handles, and in
+the tray menu. One approval names every change it approves. After a step fails, opening the same
+plan again says so and does not offer its apply button again. Agent apps, when another copy runs the
+service, names that copy by kind and offers Fix in Connection, which leads to the same Repair. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`, and
+`repair-apply` sends `repair-progress {line}` events while it runs.
+Its `status` reply and each pushed `status-watch` status frame add `recovery: {reason: "another-installation", owner}`
+while another installation runs the service, so the window offers Repair without a manual refresh.
+`owner` is `{kind: "app" | "cli"}`; the owner's path is never sent.
+The new service's startup never takes the admission lock, so waiting for it to answer during a move
+cannot deadlock.
 
 Daemon launches keep the invoked Node path when it resolves to the running Node in the same
 directory, including a distribution's stable `node` symlink. Links through another directory,
@@ -680,8 +779,14 @@ Other providers get no assumed page or section name. JSON carries the same expla
 `result.message`, the command and its description in `result.next`, and the dashboard alternative
 in `result.dashboard`.
 
-Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
-refresh the service's PATH when the daemon is signed in to one provider. The provider comes
+On macOS and Linux, a newly installed or refreshed service appends the per-user installer folders
+declared by seeded and installed connectors (`~/.local/bin`, `~/.opencode/bin`, and
+`~/.pi/agent/bin` for the built-in connectors) after the caller's `PATH` when missing, so hosted
+Managers find applications installed there later without setting up the service again.
+Services installed by an earlier release keep their recorded `PATH` until refreshed, and
+applications installed outside those folders also need a refresh. Run `cotal daemon setup` from a
+terminal that finds the newly installed application to refresh the service's `PATH` when the daemon
+is signed in to one provider. The provider comes
 from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
 the CLI selects Cloud when no provider is known. Outside an interactive terminal, a sole
 known provider from saved accounts or registered spaces is selected even without a saved sign-in.
@@ -778,8 +883,10 @@ A host without the route reports account computers unsupported and keeps per-spa
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
 When another account holds a local space connection, the daemon does not transfer it automatically.
 Status names the holding account's sign-in address when the retained identity is known.
+The app's space row does not show that address. It says "This space is set up under another
+sign-in on this computer." with **Remove**.
 If the holding account is signed out or three consecutive account-computer
-polls fail, the space row can offer **Use signed-in account**.
+polls fail, the space row offers **Move to this account**.
 Cancel leaves custody unchanged. Confirmation requires a fresh, available catalog registration
 for the space from the signed-in account and rechecks the holder before moving custody.
 A holder that answers again clears its failure count and cannot be replaced through a stale
@@ -899,8 +1006,15 @@ Adding a space requires its own confirmation. Owner approval appears in that spa
 The app reports This computer is connected only with an answering registered Manager and an
 available connector. Open dashboard is the primary action on that screen and on later opens.
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
-reports, while original diagnostics and exact refusals remain under Details. Missing applications
+reports. Details shows the service's code and message without command lines. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
+
+In the desktop app, **Connection**, **Agent apps**, and **Settings** are separate views. You can
+open **Agent apps** before connecting, including while Cotal sign-in is waiting. The app can list,
+install, and start sign-in for supported agent apps on this computer without setting up Cotal first.
+Once the background service runs, it uses the same installed apps and app-owned sign-ins. A service
+owned by another copy of Cotal allows viewing the apps but not changing them from this copy. While
+ownership is uncertain, the app checks again automatically. Checking apps does not restart the service.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` (`NOT_ANSWERING`), includes a
 startup refusal from that launch's `daemon.log` when one was written, and offers Check status in
@@ -994,11 +1108,13 @@ Manager state stays under the daemon's own per-space directory. Its `manager.log
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
 A successful pinned Manager status probe clears a superseded `lastRefusal` from current status.
-A Manager that exits before readiness reports its exit code or signal and its last stderr line.
+A Manager that exits before readiness reports its exit code or signal as its `reason`, and
+`lastExit` adds its last stderr line. A Manager's `reason` never holds a command or a web address:
+the step to take is in `next`, which the app does not show.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
 step. Status emits a PID only for a retained child, never from a saved refusal record.
-An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
-and its next step. Hosted repair commands carry `--daemon-home <dir>` when the daemon has an
+An expired or revoked daemon session says so in the refusal and names
+`cotal daemon login --idp <url>` in its next step. Hosted repair commands carry `--daemon-home <dir>` when the daemon has an
 explicit home. Status also includes `logError` if logging fails. The daemon checks the child's
 parent IPC channel every five to six seconds without an auth callout. Three consecutive missing
 answers make recovery eligible. Recovery restarts a live child only after its native preservation
@@ -1029,7 +1145,10 @@ For the same installation it prepares hosted children through the local preserva
 restarts its recorded native service, and waits for the matching daemon. A different installation
 is never restarted. Setup uses it when its protocol and hosting operations are compatible.
 Otherwise the refusal names both installations and asks you to run setup from the daemon's
-installation, or run `cotal daemon uninstall` and then setup from this installation.
+installation, or to move the service to this installation with `cotal daemon repair` (below).
+The refusal carries `cause: {code: "ANOTHER_INSTALLATION", detail: {owner: {kind}}}`;
+`kind` is `app` when the owning installation is the desktop app's bundled runtime and `cli` otherwise.
+The owner's path is never sent.
 An occupied legacy Manager blocks that preparation and remains running. Stop its seats before
 retrying setup. Aborting preparation restores the Manager's standing-credential and run-hosting
 renewal schedules. Active seats refuse `SEATS_ACTIVE` with the space and the command to stop them.
@@ -1118,9 +1237,17 @@ a system unit, a LaunchDaemon or a Windows service account, is not offered.
 On Linux it is a systemd user service. It writes one unit to the user manager's own
 configuration directory, enables it, and starts it. The unit starts at login, restarts the daemon
 when it dies, and keeps running after you log out, which on a headless server is what linger
-provides. `install` enables linger for the invoking user and says so in its receipt. A linger it
-cannot enable fails the install, naming `loginctl enable-linger <user>`, because a unit without it
-stops at logout. `uninstall` stops the service, disables autostart and removes the unit, and leaves
+provides. If `install` cannot enable linger, it keeps the unit and its receipt and refuses.
+The refusal asks an administrator to run `sudo loginctl enable-linger <user>`. Then run
+`systemctl --user enable --now <unit>` from your own session. The unit sets `OOMPolicy=continue`,
+so an out-of-memory kill of one seat child
+process does not cause systemd to stop the daemon, Manager, or other running seats. On Linux, `cotal update`
+reconciles the default daemon home's recorded user unit (`cotal-daemon.service` under `~/.cotal/daemon`) when it
+belongs to the same installation, is unmodified, has no systemd drop-ins and no loaded user unit has a pending reload, adding
+`OOMPolicy=continue` and reloading the user manager without restarting running seats; an isolated `--daemon-home`
+unit (`cotal-daemon-<16 hex>.service`) is not reconciled by `cotal update` and refreshes when reinstalled with
+`cotal daemon uninstall --daemon-home <dir> --yes && cotal daemon install --daemon-home <dir>`. `uninstall` stops the service, disables autostart and removes the
+unit, and leaves
 linger enabled, because other user services may rely on it. The unit and its receipt are written
 before enabling linger. If linger cannot be enabled, the unit stays recorded for `uninstall` and
 is not enabled or started.
@@ -1230,6 +1357,10 @@ before linger is enabled. Publication checks the directory again before any ling
 After the linger calls, installation verifies the published unit's digest and directory protection
 again before submitting reload, enable or start. A changed source or unsafe path stops registration
 and keeps the source and receipt for inspection.
+If logind denies linger, the unit and receipt remain so you can recover without reinstalling.
+The refusal names the command to enable linger with administrator privileges and then enable and
+start the service as the original user. Until then, manually starting the daemon does not make
+it survive logout or start after a reboot.
 
 `serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
 resuming connections. The value must be whole milliseconds from `1` to `2147483647`.
@@ -1561,7 +1692,11 @@ A broker connection lost during startup's ready call is also retried. Recovery n
 `service-connect`. Other refusals, including ended authority and damaged local records, stop these
 retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
 daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. With no current
+`service-status` reads the daemon's current answer without contacting the space. For a space
+whose hosted Manager is running, it reports that Manager and succeeds only while the Manager
+answers with no lost connection. Otherwise it refuses with the code `OFFLINE` (this computer cannot
+look up the space's host) or `SPACE_UNREACHABLE` (it can, and the space does not answer), or with
+`MANAGER_<STATE>`, such as `MANAGER_STARTING`, for the Manager's own state. With no current
 answer or saved register request, a space that is not registered locally reports `NOT_REGISTERED`
 (`TARGET_NOT_FOUND`). Check the name or run `cotal space` to list registered spaces. A registered
 user-auth space without a request reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`), including after a

@@ -61,6 +61,7 @@ import {
   type MaintenanceClaim,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
+  type Presentation,
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
@@ -79,6 +80,7 @@ import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sw
 import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
+import { localDiagnostic } from "../telemetry.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
@@ -364,7 +366,7 @@ function assertNewStorePath(target: string, source: string): void {
   if (!statSync(dirname(target), { throwIfNoEntry: false })?.isDirectory()) throw missingRestoreStoreParent(target);
   const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
   if (target !== source && lstatSync(target, { throwIfNoEntry: false }))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy }));
 }
 
 function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {
@@ -683,7 +685,7 @@ export function restoreLaunch(root: string, flags: RestoreFlags, journal: Mainte
 
 /** Recheck the validated launch under the operation lock, before staging. `progress` receives the
  *  seat admission lines, which `backup restore` routes to stderr to keep stdout for its receipt. */
-export async function prepareRestore(root: string, flags: RestoreFlags, validateLaunch?: (launch: RestoreLaunch, controller: boolean) => Promise<void>, progress?: (line: string) => void): Promise<PreparedRestore> {
+export async function prepareRestore(root: string, flags: RestoreFlags, validateLaunch?: (launch: RestoreLaunch, controller: boolean) => Promise<void>, { progress, presentation = "rich" }: { progress?: (line: string) => void; presentation?: Presentation } = {}): Promise<PreparedRestore> {
   const attemptId = `restore-${randomUUID()}`;
   const serverNonce = randomUUID().replaceAll("-", "");
   const serverName = `${attemptId}-${serverNonce}`;
@@ -794,8 +796,11 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       sweepAttemptResidue(root);
       artifact = stageArtifact(artifactPath, stageParent);
     } catch (error) {
+      const denied = artifactReadRefusal(error, artifactPath, root);
+      if (denied) throw denied;
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw artifactReadRefusal(error, artifactPath, root) ?? new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
+      const verify = codeSpan(`cotal backup verify ${shellPath(artifactPath)}${presentation === "rich" ? "" : ` --${presentation}`}`);
+      throw localDiagnostic(new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${verify}, or restore another copy of the same artifact; the preserved cut is unchanged` }));
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
