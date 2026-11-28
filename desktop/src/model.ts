@@ -182,7 +182,21 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "none"; label: string }
+/** The one service code for a Cotal settings folder another local account can change. */
+export const CONNECTOR_CONFIG_UNPROTECTED = "CONNECTOR_CONFIG_UNPROTECTED";
+/** The one daemon operation that repairs that folder. It takes no arguments. */
+export const CONNECTOR_CONFIG_REPAIR = "connector-config-repair";
+export const FOLDER_CARD_TITLE = "Your Cotal settings folder can be changed by other accounts on this computer";
+export const FOLDER_FIX_LABEL = "Fix folder permissions";
+export interface FolderGap { readonly path: string; readonly mode: number; readonly owned: boolean }
+/** The path and ownership the service reports, or nothing when the report is not that shape. */
+export function folderGap(detail: unknown): FolderGap | undefined {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return undefined;
+  const value = detail as Record<string, unknown>;
+  if (typeof value.path !== "string" || !value.path || typeof value.mode !== "number" || !Number.isSafeInteger(value.mode) || typeof value.owned !== "boolean") return undefined;
+  return { path: value.path, mode: value.mode, owned: value.owned };
+}
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "repair" | "none"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
@@ -201,6 +215,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Cotal was updated", description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.", action: "connect", label: "Restart background service" };
     case "CONFLICT": return { title: "Another Cotal installation runs the background service", description: "This copy cannot take it over. Nothing was changed.", action: "none", label: "" };
+    case CONNECTOR_CONFIG_UNPROTECTED: return { title: FOLDER_CARD_TITLE, description: "", action: "repair", label: FOLDER_FIX_LABEL };
     default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
   }
 }

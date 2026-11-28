@@ -102,7 +102,7 @@ export function nativeStub(scenario) {
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(state.explicitStop ? { stopped: "by-you" } : {}) } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...state.statusFields });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.folder ? [{ space: "acme-team", state: "refused", reason: "the connector config folder is writable by every local account", reasonCode: "CONNECTOR_CONFIG_UNPROTECTED", reasonDetail: state.folder }] : state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...state.statusFields });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
       if (request.op === "status-watch") {
@@ -184,6 +184,11 @@ export function nativeStub(scenario) {
         progress("applications", state.noApp ? "unavailable" : "available", "connectors: availability checked", { applications: ["Claude Code", "Codex", "Hermes", "Jcode", "OpenCode", "pi"] });
         if (state.noApp) return fail("DEPENDENCY_UNAVAILABLE", "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again.", "NO_AVAILABLE_CONNECTOR");
         state.connected = true; return ok({ launchReady: true, manager: manager() });
+      }
+      if (request.op === "connector-config-repair") {
+        state.repairRequests = [...(state.repairRequests ?? []), request];
+        state.folder = undefined;
+        return ok({ path: "/Users/ada/.cotal/config", mode: 0o755 });
       }
       throw new Error(`Unexpected operation: ${request.op}`);
     },
@@ -977,6 +982,25 @@ export const scenarios = [
       }
     },
   })),
+  { name: "settings-folder-owned", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "refused" }] }, folder: { path: "/Users/ada/.cotal/config", mode: 0o777, owned: true } }, prepare: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Your Cotal settings folder can be changed by other accounts on this computer");
+    assert.equal(await page.locator("#connection-description").textContent(), "/Users/ada/.cotal/config");
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Repair needed");
+    assert.equal(await page.locator("#recover").textContent(), "Fix folder permissions");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Repair needed" });
+    assert.deepEqual(await page.evaluate(() => window.__renderState.repairRequests ?? []), [], "the card sends no repair before the button");
+  }, act: page => page.click("#recover"), expect: async page => {
+    await page.waitForFunction(() => window.__renderState.repairRequests?.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.repairRequests.map(request => ({ op: request.op, keys: Object.keys(request).sort() }))), [{ op: "connector-config-repair", keys: ["op"] }], "the button sends the repair with no arguments");
+    await page.locator("#connection-title:not(:text('Your Cotal settings folder can be changed by other accounts on this computer'))").waitFor();
+    assert.notEqual(await page.locator("#sidebar-status-word").textContent(), "Repair needed");
+  } },
+  { name: "settings-folder-unowned", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "refused" }] }, folder: { path: "/Users/ada/.cotal/config", mode: 0o777, owned: false } }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Your Cotal settings folder can be changed by other accounts on this computer");
+    assert.equal(await page.locator("#connection-description").textContent(), "/Users/ada/.cotal/config");
+    assert.equal(await page.locator("#recover").textContent(), "Check again");
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Repair needed");
+  } },
   { name: "loading", state: { loading: true }, expect: async page => {
     assert.equal(await page.locator("#sidebar-status-word").textContent(), "Starting");
     assert.equal(await page.locator("#loading-icon .icon-spinner").count(), 1);

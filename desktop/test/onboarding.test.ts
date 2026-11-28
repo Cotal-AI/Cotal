@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import type { AppUpdate, AppUpdateReceipt } from "../src/app-update";
 import type { UpdateStatus } from "../src/updates";
-import { COTAL_CLOUD_IDP, type Frame, type Request } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, CONNECTOR_CONFIG_UNPROTECTED, CONNECTOR_CONFIG_REPAIR, type Frame, type Request } from "../src/model.ts";
 
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
 const settle = async () => { for (let i = 0; i < 25; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[]; folder?: { path: string; mode: number; owned: boolean } } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -83,7 +83,8 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
-      const statusPayload = () => ({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
+      const folderRow = options.folder ? { space: "team", state: "refused", reason: "the connector config folder is writable by every local account", reasonCode: CONNECTOR_CONFIG_UNPROTECTED, reasonDetail: options.folder } : undefined;
+      const statusPayload = () => ({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: folderRow ? [folderRow] : connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
@@ -127,8 +128,13 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         ] as const;
         metadata.forEach((progress, i) => send({ v: 1, event: "setup-progress", line: `opaque diagnostic ${i}`, progress }, i));
         await new Promise<void>(resolve => { releaseSetup = resolve; });
-        if (options.setupCode) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Exact setup reason: ${options.setupCode}`, native: { code: options.setupCode } } };
+        if (options.setupCode) return { v: 1, event: "result", ok: false, error: { code: "LIFECYCLE_BLOCKED", message: options.folder ? "the connector config folder is writable by every local account" : `Exact setup reason: ${options.setupCode}`, native: { code: options.setupCode, ...(options.folder ? { detail: options.folder } : {}) } } };
         connected = true; return ok({ launchReady: true, manager });
+      }
+      if (r.op === CONNECTOR_CONFIG_REPAIR) {
+        assert.deepEqual(Object.keys(r).sort(), ["op"]);
+        options.folder = undefined;
+        return ok({ path: "/Users/ada/.cotal/config", mode: 0o755 });
       }
       throw new Error(`Unexpected ${r.op}`);
     },
@@ -818,6 +824,30 @@ for (const reason of ["denied", "expired", "unreachable"]) test(`sign-in ${reaso
     await a.click("recover");
     if (reason !== "unreachable") assert.equal(a.calls.filter(r => r.op === "login").length, 2);
     else assert.ok(a.calls.filter(r => r.op === "status").length > 1);
+  } finally { a.dom.window.close(); }
+});
+
+for (const owned of [true, false]) test(`an unprotected settings folder ${owned ? "offers the one repair" : "waits for its owner"}`, async () => {
+  const folder = { path: "/Users/ada/.cotal/config", mode: 0o777, owned };
+  const a = await app({ installed: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "team", desired: true, observed: "refused" }] }, folder });
+  try {
+    assert.equal(a.node("connection-title").textContent, "Your Cotal settings folder can be changed by other accounts on this computer");
+    assert.equal(a.node("connection-description").textContent, folder.path);
+    assert.equal(a.node("sidebar-status-word").textContent, "Repair needed");
+    assert.equal(a.node("sidebar-status-dot").dataset.tone, "problem");
+    assert.equal(a.node("recover").textContent, owned ? "Fix folder permissions" : "Check again");
+    assert.equal(a.node("recovery-panel").hidden, false);
+    assert.equal(a.calls.some(call => call.op === CONNECTOR_CONFIG_REPAIR), false, "opening the card sends no repair");
+    if (!owned) {
+      await a.click("recover");
+      assert.equal(a.calls.some(call => call.op === CONNECTOR_CONFIG_REPAIR), false, "an unowned folder is not repaired from here");
+      assert.equal(a.node("connection-title").textContent, "Your Cotal settings folder can be changed by other accounts on this computer");
+      return;
+    }
+    await a.click("recover");
+    assert.deepEqual(JSON.parse(JSON.stringify(a.calls.filter(call => call.op === CONNECTOR_CONFIG_REPAIR))), [{ op: CONNECTOR_CONFIG_REPAIR }], "the button sends the repair with no arguments");
+    assert.equal(a.node("recovery-panel").hidden, true, "a repaired folder leaves the card");
+    assert.notEqual(a.node("sidebar-status-word").textContent, "Repair needed");
   } finally { a.dom.window.close(); }
 });
 

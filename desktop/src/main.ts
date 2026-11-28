@@ -7,7 +7,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, CONNECTOR_CONFIG_UNPROTECTED, CONNECTOR_CONFIG_REPAIR, folderGap, type FolderGap, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -86,6 +86,7 @@ let nextAppApplyTick = 0;
 let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
 let serviceAvailability: "stopped" | "not-set-up" | undefined;
+let folderProblem: FolderGap | undefined;
 let trayWord: SurfaceState["word"] | undefined;
 function renderSurface(surface: SurfaceState): void {
   text("sidebar-status-word", surface.word);
@@ -430,11 +431,23 @@ function showRefusalDetail(error: unknown): void {
   el("details").hidden = false;
   el<HTMLDetailsElement>("details").open = true;
 }
+/** The settings-folder report on a manager row, or on a setup error's native detail. */
+function reportedFolder(value: unknown): FolderGap | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as { reasonCode?: unknown; reasonDetail?: unknown };
+  return row.reasonCode === CONNECTOR_CONFIG_UNPROTECTED ? folderGap(row.reasonDetail) : undefined;
+}
+function noteFolder(error: unknown): void {
+  if (!(error instanceof DaemonRefusal) || error.native !== CONNECTOR_CONFIG_UNPROTECTED) return;
+  const gap = folderGap(error.detail);
+  if (gap) folderProblem = gap;
+}
 /** `fromStatus` marks an error the background status check raised, which the next good check clears.
  *  Any other error stays until the person acts on it. */
 function refusal(error: unknown, fromStatus = false): void {
   agentActionProblem = false;
   showRefusalDetail(error);
+  noteFolder(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
   statusProblem = fromStatus;
   notice("", true);
@@ -499,7 +512,7 @@ function showStage(next: Stage, focus = false): void {
     starting: !initialized || setupActive || loginActive || !serviceStatus && !serviceAvailability,
     updating: !!serviceStatus?.generation,
     diskFull: serviceStatus?.diskFull === true,
-    repairNeeded: !!serviceStatus?.recovery,
+    repairNeeded: !!serviceStatus?.recovery || !!folderProblem,
   });
   renderSurface(surface);
   const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
@@ -529,12 +542,15 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const issue = folderProblem ? CONNECTOR_CONFIG_UNPROTECTED : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const surfaceRecovery = surface.word === "Disk full" || surface.word === "Service stopped";
   const networkLoss = surface.title === CONNECTION_COPY.offline.title || surface.title === CONNECTION_COPY.unreachable.title;
-  const recovery = surface.word === "Disk full" ? { title: surface.title, description: surface.description, action: "refresh", label: "Check again" }
+  const shown = folderProblem ? refusalView(CONNECTOR_CONFIG_UNPROTECTED) : undefined;
+  const folderCard = shown && folderProblem ? { title: shown.title, description: folderProblem.path, action: folderProblem.owned ? shown.action : "refresh", label: folderProblem.owned ? shown.label : "Check again" } : undefined;
+  const recovery = folderCard
+    ?? (surface.word === "Disk full" ? { title: surface.title, description: surface.description, action: "refresh", label: "Check again" }
     : surface.word === "Service stopped" ? { title: surface.title, description: surface.description, action: "start", label: "Start" }
-    : issue && !networkLoss ? refusalView(issue, applications) : undefined;
+    : issue && !networkLoss ? refusalView(issue, applications) : undefined);
   if (recovery) {
     title = recovery.title;
     description = recovery.description;
@@ -842,9 +858,11 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   if (typeof status.computer === "string") renderComputerName(status.computer);
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
   managerReasons.clear();
+  folderProblem = undefined;
   if (Array.isArray(status.managers)) for (const item of status.managers) {
     if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
     else if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
+    folderProblem ??= reportedFolder(item);
   }
   const space = selectedSpace();
   computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
@@ -1067,6 +1085,12 @@ el("recover").addEventListener("click", () => {
   else if (recovery === "start") void action(async () => {
     clearDetails();
     await request({ op: "start" });
+    await refresh();
+  });
+  else if (recovery === "repair") void action(async () => {
+    clearDetails();
+    const result = await request({ op: CONNECTOR_CONFIG_REPAIR });
+    if (typeof result.path !== "string" && result.path !== null) throw new Error("The folder repair did not report the folder it changed.");
     await refresh();
   });
   else if (recovery === "install") void action(async () => {

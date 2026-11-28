@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, CONNECTOR_CONFIG_UNPROTECTED, CONNECTOR_CONFIG_REPAIR, FOLDER_CARD_TITLE, FOLDER_FIX_LABEL, folderGap } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -165,6 +165,15 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "refresh",
     label: "Check approval",
   });
+});
+
+test("a settings folder another account can change names the folder and one repair", () => {
+  assert.equal(CONNECTOR_CONFIG_REPAIR, "connector-config-repair");
+  assert.deepEqual(refusalView(CONNECTOR_CONFIG_UNPROTECTED), { title: FOLDER_CARD_TITLE, description: "", action: "repair", label: FOLDER_FIX_LABEL });
+  assert.deepEqual(folderGap({ path: "/Users/ada/.cotal/config", mode: 0o777, owned: true }), { path: "/Users/ada/.cotal/config", mode: 0o777, owned: true });
+  assert.equal(folderGap({ path: "", mode: 0o777, owned: true }), undefined);
+  assert.equal(folderGap({ path: "/Users/ada/.cotal/config", mode: 1.5, owned: false }), undefined);
+  assert.equal(folderGap({ path: "/Users/ada/.cotal/config", mode: 0o777 }), undefined);
 });
 
 test("another installation's service offers no action and keeps a command out of the window", () => {
