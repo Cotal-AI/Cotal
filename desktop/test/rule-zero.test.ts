@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { refusalView, requireResult, DaemonRefusal } from "../src/model.ts";
+import { failedDetail } from "../src/repair.ts";
 import { COMMAND_TEXT, REFUSAL_CODES } from "./rule-zero-cases.ts";
 
 /** Rule 0: every error screen offers one button that fixes the cause from inside the app, and a
@@ -52,4 +53,20 @@ test("rule 0: Details never carries a command line from a daemon remedy", () => 
     assert.ok(refusal instanceof DaemonRefusal);
     assert.doesNotMatch(refusal.message, commandText, message);
   }
+});
+
+test("rule 0: Details after a failed Repair step never carries a command line or a path", () => {
+  const plain = "Cotal couldn't set up the agent app connectors. Details shows what the background service said.";
+  const forTerminal = [
+    // What 0.184.1 records for a connector setup that needs npm, word for word.
+    "the daemon refused connectors-repair: MANAGER_UNAVAILABLE connector repair failed (exit 1): × failed to seed connector \"claude\" from /home/ada/.config/cotal/seed/store/0.177.0/claude: npm install failed: npm is not on PATH - fix that, then run `cotal ext seed --repair`",
+    "failed to seed connector \"claude\" from C:\\Users\\ada\\AppData\\Roaming\\Cotal\\seed\\store\\0.162.0\\claude: cannot run \"npm\": not found on PATH",
+  ];
+  for (const detail of forTerminal) {
+    const shown = failedDetail({ step: "connectors", outcome: "fix", found: "f", failed: plain, detail });
+    assert.equal(shown, plain, "the step's plain words stand in for a terminal message");
+    assert.doesNotMatch(shown, commandText);
+  }
+  const words = "this installation's background service did not start (it did not answer within 60s)";
+  assert.equal(failedDetail({ step: "service-owner", outcome: "fix", found: "f", failed: plain, detail: words }), words, "plain service words still reach Details");
 });

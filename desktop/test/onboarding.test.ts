@@ -9,13 +9,15 @@ import type { UpdateStatus } from "../src/updates";
 import { COTAL_CLOUD_IDP, type Frame, type Request } from "../src/model.ts";
 
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
+// The Manager reason 0.184.1 records, word for word, on a computer with no npm.
+const SEED_REASON = "hosted connector reconciliation failed: replacement connector reconciliation failed (exit 1): × a previous connector seed failed (package \"claude\", phase add): failed to seed connector \"claude\" from /home/person/.config/cotal/seed/store/0.177.0/claude: @cotal-ai/connector-claude-code npm install failed: npm is not on PATH - fix that, then run `cotal ext seed --repair`; run `cotal ext seed --repair` with the installed CLI";
 const settle = async () => { for (let i = 0; i < 25; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
 const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } }).then(output => {
   assert.ok(!Array.isArray(output) && "output" in output);
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { repairPlan?: Record<string, unknown>; repairApply?: Record<string, unknown>; removedAccount?: boolean; managerRefused?: boolean; recovery?: boolean; browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { repairPlan?: Record<string, unknown>; repairApply?: Record<string, unknown>; removedAccount?: boolean; managerRefused?: boolean; seedFailed?: boolean; seedRepairFails?: boolean; recovery?: boolean; browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -94,6 +96,25 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
       }
       if (r.op === "repair-plan" && options.repairPlan) return ok(options.repairPlan);
       if (r.op === "repair-apply" && options.repairApply) return ok(options.repairApply);
+      // A space stopped because its connectors could not be set up (what 0.184.1 records with no npm).
+      if (r.op === "repair-plan" && options.seedFailed) return ok({ digest: "c".repeat(64), steps: [
+        { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
+        { step: "connectors", outcome: "fix", found: "Cotal couldn't set up the agent app connectors on this computer.", change: "Set up the agent app connectors again." },
+        { step: "spaces", outcome: "fix", spaces: ["team"], found: "1 space has stopped on this computer.", change: "Start those spaces again." },
+      ] });
+      if (r.op === "repair-apply" && options.seedFailed) {
+        if (options.seedRepairFails) return ok({ repaired: false, steps: [
+          { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
+          { step: "connectors", outcome: "fix", found: "Cotal couldn't set up the agent app connectors on this computer.", failed: "Cotal couldn't set up the agent app connectors. Details shows what the background service said.", detail: SEED_REASON },
+          { step: "spaces", outcome: "fix", spaces: ["team"], found: "1 space has stopped on this computer.", change: "Start those spaces again." },
+        ] });
+        options.seedFailed = false; connected = true;
+        return ok({ repaired: true, remaining: [], steps: [
+          { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
+          { step: "connectors", outcome: "fix", found: "Cotal couldn't set up the agent app connectors on this computer.", changed: "The agent app connectors were set up again." },
+          { step: "spaces", outcome: "fix", spaces: ["team"], found: "1 space has stopped on this computer.", changed: "Those spaces were started again." },
+        ] });
+      }
       if (r.op === "repair-plan") return ok({ digest: "d".repeat(64), steps: options.removedAccount ? [
         { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
         { step: "account", outcome: "needs-you", space: COTAL_CLOUD_IDP, found: "This computer was removed from your account. Sign in to add it back." },
@@ -114,7 +135,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, stopped: "by-you" } } } satisfies Frame;
-      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : connected ? [manager] : [] });
+      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.seedFailed ? [{ space: "team", state: "refused", restarts: 0, hostingIntent: true, reason: SEED_REASON, next: "correct the connector cause, run `cotal ext seed --repair` with the daemon's installed CLI, then retry setup; the daemon will retry automatically" }] : options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
@@ -512,6 +533,58 @@ test("a refused hosted Manager shows its reason without the command it names, an
 });
 
 const DIGEST = "e".repeat(64);
+const COMMAND_LINE = /`|\bcotal\s|\bnpm\b|\/home\/|seed --repair/;
+
+test("a space stopped on its connector setup offers one Repair, which sets the connectors up again and returns to connected", async () => {
+  const a = await app({ installed: true, seedFailed: true });
+  try {
+    await a.click("login"); await a.login();
+    // A status read during sign-in never replaces the selected space; the next one shows the refused agent host.
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The agent host for this space stopped");
+    const buttons = [...a.doc.querySelectorAll<HTMLButtonElement>("button")].filter(button => !button.hidden && !button.closest("[hidden]") && button.textContent === "Repair");
+    assert.equal(buttons.length, 1, "exactly 1 Repair button on the screen");
+    assert.equal(a.node("recover").textContent, "Repair");
+    assert.doesNotMatch(a.node("refusal-detail").textContent ?? "", COMMAND_LINE, "Details names no command, no npm and no path");
+    const before = a.calls.length;
+    await a.click("recover");
+    assert.deepEqual(a.calls.slice(before).map(call => call.op), ["repair-plan"], "opening Repair changes nothing");
+    const rows = [...a.node("repair-steps").children].map(li => li.textContent);
+    assert.ok(rows.includes("Cotal couldn't set up the agent app connectors on this computer.Set up the agent app connectors again."), "the panel names the connector fix");
+    assert.equal(a.node("repair-consent").hidden, true, "it stops nothing, so it asks nothing");
+    assert.equal(a.node("repair-apply").textContent, "Repair");
+    await a.click("repair-apply");
+    const applied = a.calls.filter(call => call.op === "repair-apply");
+    assert.equal(applied.length, 1, "1 apply");
+    assert.deepEqual(JSON.parse(JSON.stringify(applied[0])), { op: "repair-apply", digest: "c".repeat(64), consent: [] });
+    assert.equal(a.node("notice").textContent, "This computer is repaired.");
+    assert.deepEqual([...a.node("repair-steps").children].map(li => li.textContent), ["Cotal couldn't set up the agent app connectors on this computer.The agent app connectors were set up again.", "1 space has stopped on this computer.Those spaces were started again."]);
+    await a.click("repair-apply");
+    await a.tick();
+    assert.equal(a.node("repair-panel").hidden, true);
+    assert.equal(a.node("connection-title").textContent, "This computer is connected", "the screen returns to connected");
+    assert.equal(a.node("sidebar-status-word").textContent, "Connected", "the sidebar word says Connected");
+    assert.equal(a.node("recovery-panel").hidden, true, "no recovery button is left to press");
+    assert.equal(a.node("details").hidden, true, "nothing is left in Details");
+  } finally { a.dom.window.close(); }
+});
+
+test("a connector repair that fails says so in plain words, and Details shows no command line", async () => {
+  const a = await app({ installed: true, seedFailed: true, seedRepairFails: true });
+  try {
+    await a.click("login"); await a.login();
+    await a.tick();
+    await a.click("recover");
+    await a.click("repair-apply");
+    const rows = [...a.node("repair-steps").children];
+    assert.equal(rows.length, 1, "the spaces step after it did not run");
+    assert.equal(rows[0]!.getAttribute("data-outcome"), "failed");
+    assert.match(rows[0]!.textContent ?? "", /Cotal couldn't set up the agent app connectors\. Details shows what the background service said\./);
+    const detail = a.node("refusal-detail").textContent ?? "";
+    assert.doesNotMatch(detail, COMMAND_LINE, "the service's reason names commands and paths, so Details keeps only the plain words");
+    assert.match(detail, /Cotal couldn't set up the agent app connectors\./);
+  } finally { a.dom.window.close(); }
+});
 const stoppedService = { step: "service-running", outcome: "fix", consent: "start-stopped", found: "The background service is not running.", change: "Start the background service." };
 
 test("finding 4: starting a stopped service asks first and sends the start-stopped consent", async () => {

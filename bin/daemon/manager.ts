@@ -15,10 +15,10 @@ import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFailure, managerFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
-import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
+import { installedGenerationVersion, reconcileHostedConnectors, repairInstalledConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
-import type { HostedManager, HostedAgents, ManagerConnection } from "./protocol.js";
+import { CONNECTOR_SETUP_REFUSAL, type HostedManager, type HostedAgents, type ManagerConnection } from "./protocol.js";
 import { readHostedAgents, readServeBound } from "./agents.js";
 import { lostConnection } from "./lost-connection.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile, rebindRemovedManagerCleanup } from "./manager-cleanup.js";
@@ -163,6 +163,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
+  // One connector writer at a time: a repair waits for a running reconcile, and a start waits for the repair.
+  const repairConnectors = async (): Promise<void> => {
+    while (reconcileTask) await reconcileTask.catch(() => undefined);
+    const task = repairInstalledConnectors(version).finally(() => { if (reconcileTask === task) reconcileTask = undefined; });
+    reconcileTask = task;
+    await task;
+  };
   let runtimeTask: Promise<string> | undefined;
   const retainAppRuntime = (source: string): Promise<string> => runtimeTask ??= new Promise<string>((resolve, reject) => {
     const worker = new Worker(new URL("./manager-runtime-worker.js", import.meta.url), { workerData: { home, source }, execArgv: [] });
@@ -506,7 +513,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, then \`cotal daemon setup --space ${space}\``);
     try { await reconcile(); }
     catch (error) {
-      const reason = `hosted connector reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+      const reason = `${CONNECTOR_SETUP_REFUSAL}: ${error instanceof Error ? error.message : String(error)}`;
       if (error instanceof ReplacedDaemonGeneration) {
         const paths = daemonHome === undefined ? daemonPaths(process.env, home) : daemonPathsFor(daemonHome);
         let next: string;
@@ -786,7 +793,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return current.starting;
   };
   return {
-    start, status, refresh,
+    start, status, refresh, repairConnectors,
     ...hostedAgentActions(home, live),
     async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {

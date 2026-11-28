@@ -1,6 +1,6 @@
 /** The Repair panel: read the plan, show what each step found and will change, ask once for a step
  *  that stops agents or moves the background service, then run that plan and nothing else. */
-import type { Request } from "./model";
+import { forTerminal, type Request } from "./model";
 
 export interface RepairStepView { step: string; outcome: "ok" | "fix" | "needs-you" | "cannot" | "unchecked"; found: string; change?: string; changed?: string; failed?: string; detail?: string; consent?: "takeover" | "start-stopped" | "remove-old-registration"; space?: string; spaces?: string[]; action?: "update" | "reinstall"; disconnected?: true; agentsUnknown?: true; agents?: { space: string; name: string; application: string }[]; owner?: { kind: "app" | "cli" } }
 export interface RepairPlanView { digest: string; steps: RepairStepView[] }
@@ -57,6 +57,12 @@ export function resultSteps(result: RepairResultView): RepairStepView[] {
   const stopped = result.steps.some(step => step.failed);
   // After a failed step the new check repeats what the failed step names, so it is not listed twice.
   return stopped ? acted : [...acted, ...(result.remaining ?? [])];
+}
+
+/** What Details shows for a failed step: the service's words, unless they are written for a terminal
+ *  (a command, a path or an address), in which case the step's own plain words (rule 0). */
+export function failedDetail(step: RepairStepView): string {
+  return step.detail && !forTerminal(step.detail) ? step.detail : step.failed ?? "Repair could not finish this step.";
 }
 
 /** The sentence above the list after applying. */
