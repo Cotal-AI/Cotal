@@ -91,9 +91,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const stagingTimeout = scenario === 'staging-timeout';
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
   const stagingRefused = scenario === 'staging-refused';
+  const configAccess = scenario === 'config-access-upgrade' || scenario === 'config-access-auto';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(versionNamedNode || repairSelection || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(versionNamedNode || repairSelection || configAccess || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -119,7 +120,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   }
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   const lifecycle = versionNamedNode ? lifecycleRuntime(root, join(root, 'payload/package')) : undefined;
-  const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection;
+  const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection || configAccess;
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
   if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   if (stagingNetwork) writeFileSync(join(root, 'payload/package/dist/data'), randomBytes(1024 * 1024));
@@ -371,6 +372,7 @@ exec npm "$@"
       const result = await run(process.execPath, [entry, 'update', '--self'], 60000);
       assert(stagingDenied, result.output);
       assert.equal(result.code, 1, result.output);
+      assert.equal(result.output.split('\n').filter(line => line === 'Restored owner access to the Cotal connector configuration.').length, 1, result.output);
       assert.match(result.output, /staged pre-install check refused:[\s\S]*E403[\s\S]*; no installed packages were replaced/);
       assert.doesNotMatch(result.output, /connector state were changed|nothing was changed/);
       assert.equal(statSync(seed).mode & 0o777, 0o700);
@@ -379,6 +381,53 @@ exec npm "$@"
       assert.equal(existsSync(marker), false);
       assert.equal(existsSync(join(env.COTAL_HOME, 'update-recovery.json')), false);
       return { scenario, code: result.code, elapsedMs: Date.now() - started, selected: previous, missing, requests, output: result.output };
+    }
+    if (configAccess && process.getuid?.() !== 0) {
+      const connectorConfig = join(env.XDG_CONFIG_HOME, 'cotal');
+      const restored = 'Restored owner access to the Cotal connector configuration.';
+      mkdirSync(join(connectorConfig, 'extensions'), { recursive: true, mode: 0o700 });
+      chmodSync(connectorConfig, 0o500);
+      assert.equal(statSync(connectorConfig).mode & 0o777, 0o500);
+      const started = Date.now();
+      let result;
+      if (scenario === 'config-access-auto') {
+        const now = Date.now();
+        const attempt = join(env.COTAL_HOME, 'update-attempt.json');
+        writeFileSync(attempt, JSON.stringify({ version: target, failures: 0, result: 'due', next: 0 }));
+        writeFileSync(join(env.COTAL_HOME, 'update-check.json'), JSON.stringify({ v: 1, latest: target, attemptedAt: now, checkedAt: now, firstSeenAt: now - 3_601_000 }));
+        const automatic = join(packageRoot, 'dist/daemon/auto-update.js');
+        const autoRun = await run(process.execPath, ['--input-type=module', '-e', `
+          import { automaticUpdates } from ${JSON.stringify(pathToFileURL(automatic).href)};
+          globalThis[Symbol.for('cotal.execution.identity')] = Object.freeze({ logicalEntry: ${JSON.stringify(entry)}, loadedEntry: ${JSON.stringify(entry)} });
+          const timer = setTimeout(() => process.exit(2), 120000);
+          const updates = automaticUpdates({ version: ${JSON.stringify(previous)}, eligible: () => true, prepare: async () => {}, abort: async () => {}, report(line) { console.log(line); clearTimeout(timer); } });
+          await new Promise(resolve => process.once('beforeExit', resolve));
+          await updates.close();
+        `], 130000);
+        assert.equal(autoRun.code, 0, autoRun.output);
+        assert.equal(autoRun.output.trim(), `updated to ${target}`);
+        const recorded = JSON.parse(readFileSync(attempt, 'utf8'));
+        assert.equal(recorded.failures, 0);
+        assert.equal(recorded.result, `updated to ${target}`);
+        result = { code: autoRun.code, output: readFileSync(join(env.COTAL_HOME, 'update-attempt.log'), 'utf8') };
+      } else {
+        result = await run(process.execPath, [entry, 'update', '--self'], 180000);
+      }
+      const elapsedMs = Date.now() - started;
+      assert.equal(result.code, 0, result.output);
+      assert.equal(statSync(connectorConfig).mode & 0o777, 0o700);
+      assert.equal(result.output.split('\n').filter(line => line === restored).length, 1, result.output);
+      assert.doesNotMatch(result.output, /no installed packages were replaced/);
+      assert.match(result.output, /cotal-ai@99\.0\.0 in use and reconciled/);
+      const version = await run(process.execPath, [entry, '--version'], 60000);
+      assert.equal(version.code, 0, version.output);
+      assert.equal(version.output.split('\n')[0], `cotal-ai ${target}`);
+      if (scenario === 'config-access-upgrade') {
+        const writableControl = await run(process.execPath, [entry, 'update', '--self'], 60000);
+        assert.equal(writableControl.code, 0, writableControl.output);
+        assert.doesNotMatch(writableControl.output, /Restored owner access/);
+      }
+      return { scenario, code: result.code, elapsedMs, selected: target, missing, requests, output: result.output };
     }
     if (repairSelection) {
       const rollback = scenario === 'selection-rollback';
@@ -1206,7 +1255,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'config-access-upgrade', 'config-access-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
