@@ -11,14 +11,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import {
   consumerConfigFromCheckpoint,
   hardenPrivate,
-  readPluginMaintenanceState,
   spaceBackupInventory,
   spacePluginStreams,
   validateSpaceAuth,
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
   wfjStreamName,
-  type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -78,7 +76,7 @@ import {
 import { controllerStackApplies } from "../commands/stack-up.js";
 import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, declaredArtifactStreams, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
-import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
+import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
@@ -448,18 +446,6 @@ function assertOffRestoreArtifact(space: string, streams: readonly { stream: str
     throw new CommandFailure("refused", "CONFLICT", "the backup contains plugin channel history, but the destination does not have plugin channels enabled; nothing was restored");
 }
 
-async function readRestorePluginState(root: string, ready: MaintenanceReadyRecord, auth: SpaceAuth, clone: ReturnType<typeof createAttemptClone>, attemptId: string, deadline: Date): ReturnType<typeof readPluginMaintenanceState> {
-  const broker = await startIsolatedBroker({ root, storeDir: clone.path, space: ready.space, mode: ready.mode, auth, deadline, label: "previous", initialScope: { profile: "backup", scope: { operation: "plugin-state" } }, attemptId });
-  try {
-    const nc = await connectIsolatedBroker(broker, broker.initialLogin);
-    try {
-      return await readPluginMaintenanceState(nc, ready.space);
-    } finally { await nc.close(); }
-  } finally {
-    await broker.stop();
-  }
-}
-
 function validateRestoreCheckpoints(manifest: BackupManifest, wanted: readonly string[], checkpoints: ReturnType<typeof readStagedCheckpoints>): void {
   for (const checkpoint of checkpoints) {
     if (!wanted.includes(checkpoint.stream)) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} is outside the restored selection`);
@@ -734,7 +720,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
   restoreArtifactPath(root, flags.restore, recorded.source.path);
   let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
-  let sourceClone: ReturnType<typeof createAttemptClone> | undefined;
   let transitioned = false;
   let targetBound = false;
   let targetIdentity: { dev: bigint; ino: bigint } | undefined;
@@ -819,18 +804,20 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       if (flags["restore-only"] !== "registry" && selection !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
         throw new CommandFailure("refused", "USAGE_INVALID", `--runtime ${JSON.stringify(flags.runtime)} contradicts the preserved agent runtime ${JSON.stringify(preservedRuntime)}; nothing was restored`, { remedy: "omit --runtime or restore only the registry with --restore-only registry" });
     };
-    let stageParent: string;
     let artifact: StagedArtifact;
     // A faulty artifact is refused before anything moves, naming the file and fault verify names.
     try {
-      const inspected = inspectBackupArtifact(artifactPath, false);
-      if (inspected.space === journal.space) assertOffRestoreArtifact(journal.space, inspected.streams);
-      assertRuntime(inspected.selection);
-      if (!attemptProcessesGone(root)) throw new Error("an isolated maintenance process is not proven stopped; the preserved cut was not changed");
-      stageParent = ensurePrivateAttemptsDir(root).path;
-      // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
-      sweepAttemptResidue(root);
-      artifact = stageArtifact(artifactPath, stageParent);
+      if (flags["restore-only"] !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime) {
+        const inspected = inspectBackupArtifact(artifactPath, false);
+        if (inspected.space === journal.space) assertOffRestoreArtifact(journal.space, inspected.streams);
+        assertRuntime(inspected.selection);
+      }
+      artifact = stageArtifact(artifactPath, (manifest) => {
+        if (manifest.space === journal.space) assertOffRestoreArtifact(journal.space, manifest.streams);
+        // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
+        sweepAttemptResidue(root);
+        return ensurePrivateAttemptsDir(root).path;
+      });
     } catch (error) {
       const denied = artifactReadRefusal(error, artifactPath, root);
       if (denied) throw denied;
@@ -839,7 +826,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
-    assertOffRestoreArtifact(journal.space, artifact.manifest.streams);
     const checkpoints = readStagedCheckpoints(artifact);
     // The partial selection is a property of the artifact, not only of the flag: a registry-only
     // artifact restored without --restore-only registry must still create omitted infrastructure.
@@ -867,14 +853,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
         throw error;
       }
     })();
-    const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
-    if (auth && sourceExists) {
-      const probeId = `${attemptId}-plugin-state`;
-      sourceClone = createAttemptClone(root, journal.source.path, probeId);
-      await readRestorePluginState(root, journal, auth, sourceClone, probeId, deadline);
-      sourceClone.cleanup();
-      sourceClone = undefined;
-    }
     // The store can also hold another account's streams, such as an open mesh's beside a static
     // space's. The artifact holds only this space's account, so the store this restore sets aside
     // keeps their only copy; they are read before it moves.
@@ -911,6 +889,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     // The lock is held across broker spawn → owner record so no live broker can exist outside the
     // journaled claim, even across a crash in between; stale recovery then never races an orphan.
     lock = acquireMaintenanceLock(root);
+    const stageParent = dirname(artifact.directory);
     const quarantinePath = join(stageParent, `${attemptId}-quarantine`);
     createOwnedDirectory(quarantinePath);
     const quarantineStat = lstatSync(quarantinePath, { bigint: true });
@@ -988,6 +967,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     if (journal.mode === "auth" && !onlyRegistry) await restoredPluginState(broker, journal.space);
     // A newer cut can hold state the artifact lacks. Inspect the set-aside store on a private
     // clone before waiving consent, and use both brokers' journals to name rolled-back runs.
+    const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
     for (const record of artifact.manifest.streams)
       if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
@@ -1090,7 +1070,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     if (quarantine) removeOwnedDirectory(quarantine.path, quarantine.identity);
     if (sanitized) removeOwnedDirectory(sanitized.path, sanitized.identity);
     if (!lock) lock = acquireMaintenanceLock(root);
-    if (!transitioned && sourceClone && attemptProcessesGone(root)) sourceClone.cleanup();
     if (transitioned && !targetBound && targetIdentity) {
       removeOwnedDirectory(targetPath!, targetIdentity);
       targetIdentity = undefined;

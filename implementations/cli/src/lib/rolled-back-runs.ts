@@ -8,6 +8,7 @@ import {
 import type { AttemptOwnedPath, MaintenanceAuthMode, ProcessOwner, RolledBackRun } from "@cotal-ai/workspace";
 import type { BackupStreamRecord } from "./backup-artifact.js";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, type IsolatedBroker } from "./isolated-broker.js";
+import { restoredPluginState } from "./restore-streams.js";
 
 /** The most runs a restore's launch lists; it counts the rest. */
 const MAX_LISTED_RUNS = 50;
@@ -193,6 +194,7 @@ export async function inspectPreviousStore(options: {
       attemptId: options.attemptId,
     });
     options.record({ owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
+    if (options.mode !== "open") await restoredPluginState(broker, options.space);
     const runs = await readRunJournals(broker, options.space);
     return { noUniqueState: runs.size === 0 && await previousStoreHasNoUniqueState(broker, options.space, options.restoredDefault, options.recordedStreams), runs };
   } finally {

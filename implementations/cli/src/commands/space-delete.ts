@@ -38,7 +38,7 @@ async function assertPluginDeletionState(entry: MeshEntry, space: string, auth: 
   const reader = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ creds, tls: entry.tlsRequired === true }), reconnect: false, maxReconnectAttempts: 0 });
   try {
     if (reader.info?.server_id !== serverId || (await observeBrokerConnectionIdentity(reader, { user: identity.id, account: auth.account.pub })).state !== "matched")
-      throw new CommandFailure("refused", "CONFLICT", "the state reader did not reach the same authenticated broker", { target });
+      throw new CommandFailure("refused", "CONFLICT", "the state reader did not reach the same authenticated broker; no delete request was submitted", { target });
     try { await readPluginMaintenanceState(reader, space); }
     catch {
       throw new CommandFailure("refused", "CONFLICT", `plugin channel state is unsupported or could not be verified in records store ${codeSpan(`KV_${recordsBucket(space)}`)}; no delete request was submitted`, { target });

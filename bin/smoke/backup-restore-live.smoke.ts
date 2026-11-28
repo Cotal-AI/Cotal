@@ -2287,12 +2287,18 @@ async function pluginHistoryScenario(): Promise<void> {
       refusesWith(/could not read plugin channel state in records store .*invalid or unsupported plugin channel space state/s, "history", "clear", "--yes", "--plain");
       await recordsKv.put(PLUGIN_CHANNEL_SPACE_STATE_KEY, JSON.stringify({ version: 1, epoch: 1, enabled: true }));
     } finally { await stateWriter.close(); }
-    const refuses = (...args: string[]) => refusesWith(/this release does not support enabled plugin channels/, ...args);
+    const refuses = (...args: string[]) => {
+      const result = run(...args);
+      const output = result.stdout + result.stderr;
+      assert.notEqual(result.status, 0, `${args.join(" ")} unexpectedly succeeded`);
+      assert.match(output, /this release does not support enabled plugin channels/);
+      assert.doesNotMatch(output, /could not read plugin channel state/);
+    };
     refuses("history", "limit", "--plain");
     refuses("history", "limit", "--per-sender", "50", "--yes", "--plain");
     refuses("history", "clear", "--yes", "--plain");
     refuses("clean", "history", "--force");
-    refusesWith(/plugin channel state is unsupported or could not be verified/, "space", "delete", space, "--dry-run", "--plain");
+    refusesWith(/plugin channel state is unsupported or could not be verified.*no delete request was submitted/s, "space", "delete", space, "--dry-run", "--plain");
     const reader = await fixture();
     try {
       const manager = await jetstreamManager(reader);
@@ -2300,11 +2306,23 @@ async function pluginHistoryScenario(): Promise<void> {
       assert.equal((await manager.streams.info(chatStream(space))).state.messages, 1);
     } finally { await reader.close(); }
     must("down", "--preserve-state");
+    const preserved = readMaintenanceJournal(root);
+    assert.ok(preserved?.state === "ready");
     refuses("backup", "create", artifact, "--plain");
     assert.equal(existsSync(artifact), false);
     refuses("backup", "restore", older, "--plain");
-    assert.equal(readMaintenanceJournal(root)?.state, "ready");
-    console.log("plugin history: the built CLI refuses the enabled epoch and leaves the preserved cut ready");
+    const rolledBack = readMaintenanceJournal(root);
+    assert.ok(rolledBack?.state === "ready");
+    assert.deepEqual(rolledBack.source, preserved.source);
+    assert.ok(!readdirSync(attempts).some((name) => name.endsWith("-clone")), "the previous-store inspection clone was removed");
+    must("up", "--detach");
+    const afterRestore = await fixture();
+    try {
+      const manager = await jetstreamManager(afterRestore);
+      assert.equal((await manager.streams.info(history!)).state.messages, 1);
+      assert.equal((await manager.streams.info(chatStream(space))).state.messages, 1);
+    } finally { await afterRestore.close(); }
+    console.log("plugin history: enabled state was refused and the previous store reopened with both posts after rollback");
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
@@ -2359,6 +2377,76 @@ async function legacyMissingRecordsScenario(): Promise<void> {
   }
 }
 
+// BEGIN authenticated restore resource parity cell
+async function authenticatedRestoreResourceParity(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-resources-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restore-resources-home-")));
+  const { env, sandbox } = sandboxRun(root, home);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "restore_resource_parity";
+  const artifact = join(root, "backup");
+  const preload = join(home, "restore-resources.cjs");
+  const trace = join(home, "restore-resources.log");
+  writeFileSync(preload, `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const { basename } = require('node:path');
+const emit = event => fs.appendFileSync(${JSON.stringify(trace)}, event + '\\n');
+const mkdir = fs.mkdirSync;
+fs.mkdirSync = function(path, ...args) {
+  const result = mkdir.call(this, path, ...args);
+  if (typeof path === 'string' && path.startsWith(${JSON.stringify(join(root, ".cotal", "maintenance", "attempts") + "/")}) && path.endsWith('-clone')) emit('clone');
+  return result;
+};
+const spawn = cp.spawn;
+cp.spawn = function(file, args, ...options) {
+  const child = spawn.call(this, file, args, ...options);
+  if (child.pid && /^nats-server(?:\\.exe)?$/.test(basename(file))) {
+    const config = args[args.indexOf('-c') + 1];
+    emit(args.includes('-c') && config?.includes('/maintenance/attempts/') ? 'isolated' : 'listener');
+  }
+  return child;
+};
+require('node:module').syncBuiltinESMExports();
+`);
+  const run = (args: string[], observe = false) => {
+    const options = { cwd: root, env: observe ? { ...env, NODE_OPTIONS: `--require=${preload}` } : env, encoding: "utf8" as const, timeout: 240_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(process.execPath, [join(worktree, "bin", "dist", "cotal.js"), ...args], options);
+  };
+  const must = (args: string[], observe = false) => {
+    const result = run(args, observe);
+    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+  };
+  const restore = (label: string, clones: number, isolated: number) => {
+    writeFileSync(trace, "");
+    must(["backup", "restore", artifact, "--plain"], true);
+    const events = readFileSync(trace, "utf8").trim().split("\n");
+    const counts = { clones: events.filter((event) => event === "clone").length, isolated: events.filter((event) => event === "isolated").length, listeners: events.filter((event) => event === "listener").length };
+    console.log(`AUTH_RESTORE_RESOURCES ${label} ${JSON.stringify(counts)}`);
+    assert.deepEqual(counts, { clones, isolated, listeners: 1 });
+    const active = readMaintenanceJournal(root);
+    assert.ok(active?.state === "active");
+    return active.restore.attemptId;
+  };
+  try {
+    must(["up", "--detach", "--server", server, "--space", space]);
+    must(["down", "--preserve-state"]);
+    must(["backup", "create", artifact, "--plain"]);
+    const first = restore("same-cut", 0, 2);
+    must(["backup", "cleanup-fallback", first, "--yes"]);
+    must(["down", "--preserve-state"]);
+    restore("newer-cut", 1, 3);
+  } finally {
+    run(["down", "--yes"]);
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+// END authenticated restore resource parity cell
+
+await authenticatedRestoreResourceParity();
+if (process.argv.includes("--restore-resource-parity-only")) process.exit(0);
 await pluginHistoryScenario();
 await legacyMissingRecordsScenario();
 if (process.argv.includes("--plugin-history-only")) process.exit(0);

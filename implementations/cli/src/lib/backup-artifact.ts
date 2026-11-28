@@ -474,14 +474,14 @@ export interface StagedArtifact {
   cleanup(): void;
 }
 
-/** Validate exact names and pin verified bytes into a private attempt directory before any mutation. */
-export function stageArtifact(artifactPath: string, parent: string): StagedArtifact {
+/** Validate exact names and pin verified bytes. A staging parent callback runs after parsing the manifest and before creating any scratch. */
+export function stageArtifact(artifactPath: string, parent: string | ((manifest: BackupManifest) => string)): StagedArtifact {
   const artifact = resolve(artifactPath);
   const artifactStat = lstatSync(artifact);
   if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) throw new Error(`backup artifact is not a real directory: ${artifact}`);
   const manifest = parseManifest(readManifestBytes(join(artifact, "manifest.json")));
   validateArtifactInventory(artifact, manifest);
-  const parentPath = realpathSync.native(resolve(parent));
+  const parentPath = realpathSync.native(resolve(typeof parent === "string" ? parent : parent(manifest)));
   const parentStat = lstatSync(parentPath, { bigint: true });
   if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) throw new Error(`restore staging parent is not a real directory: ${parentPath}`);
   const parentIdentity = { dev: parentStat.dev, ino: parentStat.ino };

@@ -117,6 +117,7 @@ export async function readPluginMaintenanceState(nc: NatsConnection, space: stri
     return await readPluginChannelSpaceState(await jetstreamManager(nc, { checkAPI: false }), space);
   } catch (error) {
     if (isStreamNotFound(error)) return { state: { version: 1, epoch: 0, enabled: false }, revision: 0 };
+    if (error instanceof Error && error.message === "this release does not support enabled plugin channels") throw error;
     const reason = error instanceof EpEnvelopeError ? "the protected record could not be decoded or was deleted"
       : error instanceof Error ? oneLine(boundedValue(error.message, 200)) : "unknown read failure";
     throw new Error(`could not read plugin channel state in records store ${recordsKvStreamName(space)}: ${reason}`, { cause: error });

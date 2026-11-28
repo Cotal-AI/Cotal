@@ -342,7 +342,7 @@ export async function restoreAndValidate(
   }
 }
 
-/** Read the restored records store with a separate read-only phase before listener exposure. */
+/** Read the isolated records store with a separate read-only phase before listener exposure. */
 export async function restoredPluginState(broker: IsolatedBroker, space: string): ReturnType<typeof readPluginMaintenanceState> {
   const login = await broker.addLogin({ profile: "backup", scope: { operation: "plugin-state" } });
   const nc = await connectIsolatedBroker(broker, login);
