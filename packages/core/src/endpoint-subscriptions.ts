@@ -106,9 +106,9 @@ export class EndpointSubscriptions {
         ...(pluginHistoryOnly ? { reason: PLUGIN_HISTORY_ONLY_REASON } : {}) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
-    // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
-    // delivers post-subscribe live messages (> frontier), so the two never overlap.
-    const armed = await this.armJoin([channel]);
+    // CHAT retains its pre-subscribe watermark. Plugin replay uses the confirmed live subscription
+    // and coalesces the overlap so a publish during confirmation cannot fall between the two reads.
+    const armed = pluginHistoryOnly ? new Map<string, number>() : await this.armJoin([channel]);
     // Live read (SPEC v0.3): open the native core subscription — MANAGER-FREE, broker-enforced by
     // sub.allow. This is what lets an agent join a channel's live feed on its own. The sub.allow
     // refusal is async — broker-confirm before committing local join state; the subscribe handler
@@ -127,6 +127,10 @@ export class EndpointSubscriptions {
     if (this.delivery.chatSubDenied.has(channel)) {
       this.parts.consumers.unsubscribeChat(channel);
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
+    }
+    if (pluginHistoryOnly) {
+      try { armed.set(channel, await this.parts.history.pluginJoinFrontier(channel)); }
+      catch (error) { this.parts.consumers.unsubscribeChat(channel); throw error; }
     }
     this.identity.channels.push(channel);
     // Durable backstop. The live core-sub above already delivers (manager-free). For a `durable`-class
