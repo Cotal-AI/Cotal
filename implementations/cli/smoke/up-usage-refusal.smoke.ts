@@ -562,7 +562,7 @@ if (process.platform !== "win32") {
     preparedMoved.status === 0 && selected.status === 0 && afterMove.status === 2 && afterMove.envelope?.error?.code === "TARGET_UNAVAILABLE"
       && afterMove.envelope.error.message === `the selected space "moved" is prepared in ${source}, which no longer exists, and this folder names no space, so up did not start "epsilon" here` && !records(join(desktop, "epsilon")), shown(afterMove));
   check("recovering a moved selection keeps the requested startup options for either space",
-    afterMove.envelope?.error?.remedy === 'if this is that folder moved, forget it with `cotal space forget moved`, prepare it here with `cotal space create moved`, then repeat your startup command with the same options; to start "epsilon" here instead, add `--space epsilon` to your original command', shown(afterMove));
+    afterMove.envelope?.error?.remedy === 'restore the original project folder at its recorded path, then repeat your startup command in that folder; to start "epsilon" here instead, add `--space epsilon` to your original command', shown(afterMove));
   const blockedStart = () => run(["up", "--server", "nats://127.0.0.1:1", "--json"], join(desktop, "epsilon"));
   writeFileSync(source, "obstruction");
   const blocked = blockedStart();

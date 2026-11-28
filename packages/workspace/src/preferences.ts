@@ -214,9 +214,9 @@ function parsePreferences(text: string): Preferences {
  *  so the file is neither read through the link nor replaced by a write. */
 function assertPreferencesNotLinked(path: string): void {
   if (localRecordAccess() === "posix" && lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink())
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is a symbolic link to ${readlinkSync(path)}; preferences are kept only in a regular file, so nothing was read or changed`, {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "the preferences file is a symbolic link; preferences are kept only in a regular file, so nothing was read or changed", {
       target: { path },
-      remedy: `replace the link ${path} with a regular copy of the file it names`,
+      remedy: `the link ${path} points to ${readlinkSync(path)}; replace it with a regular copy of the intended preferences file`,
     });
 }
 

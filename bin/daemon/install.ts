@@ -49,13 +49,14 @@ import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
-import { missingSystemdProgram, observeSystemdRepairUnit } from "./install-linux-repair.js";
+import { finishRecordedOomPolicyIntent, missingSystemdProgram, observeSystemdRepairUnit, reconcileInstalledSystemdOomPolicy as reconcileSystemdOomPolicy } from "./install-linux-repair.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy, windowsDaemonFirstStart } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
+import { serviceApplicationPath } from "./desktop-path.js";
 import { removeAllServiceRecords } from "./service-records.js";
-import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, serviceRepairFile, sourceDigest } from "./service-repair.js";
+import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, servicePolicyRepairFile, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -130,13 +131,14 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     "Type=notify",
     "NotifyAccess=all",
     "TimeoutStartSec=60",
-    `Environment=PATH=${unitValue(pinnedPath())}`,
+    `Environment=PATH=${unitValue(serviceApplicationPath())}`,
     "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
     `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
     "Restart=always",
     "RestartSec=2",
     "TimeoutStopSec=90",
     "KillMode=mixed",
+    "OOMPolicy=continue",
     "",
     "[Install]",
     "WantedBy=default.target",
@@ -233,9 +235,14 @@ function loginctl(args: readonly string[]): { status: number | null; stdout: str
 }
 
 function lingerEnabled(user: string): boolean {
+  return readLinger(user) === true;
+}
+
+function readLinger(user: string): boolean | undefined {
   const read = loginctl(["show-user", user, "--property=Linger"]);
-  // An unknown user (never logged in, no session) answers nonzero; that is "not lingering".
-  return read.status === 0 && read.stdout.split("\n").includes("Linger=yes");
+  if (read.status !== 0) return;
+  const state = read.stdout.trim();
+  if (state === "Linger=yes" || state === "Linger=no") return state === "Linger=yes";
 }
 
 /** The user whose manager this install targets, read from the environment and never from argv. */
@@ -243,6 +250,45 @@ function invokingUser(): string {
   const user = process.env.USER || process.env.LOGNAME;
   if (!user || !/^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$/.test(user)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this session's USER and LOGNAME do not name the user whose systemd manager would run the daemon", { remedy: "run from a logged-in session of the user who will run the daemon (login sets USER and LOGNAME)" });
   return user;
+}
+
+function enableLingerCommand(user: string): string {
+  return `sudo loginctl enable-linger ${user}`;
+}
+
+function enableUnitCommand(unit: string): string {
+  return `systemctl --user enable --now ${unit}`;
+}
+
+function lingerRepair(user: string, unit: string): string {
+  return `Ask an administrator to run ${codeSpan(enableLingerCommand(user))}, then run ${codeSpan(enableUnitCommand(unit))} yourself.`;
+}
+
+export function linuxAutostartUnverified(unit: string, user = '"$USER"'): string {
+  return `The recorded service's autostart could not be verified. Check it with ${codeSpan(`loginctl show-user ${user} --property=Linger`)} and ${codeSpan(`systemctl --user is-enabled ${unit}`)}.`;
+}
+
+/** A receipt records ownership, not autostart. Null means the recorded service could not be checked. */
+export function linuxAutostartWarning(paths: DaemonPaths, daemonHome?: string, setupUnit?: string): string | null | undefined {
+  if (process.platform !== "linux") return;
+  const receipt = readReceipt(paths);
+  if (!receipt || (receipt.mechanism !== undefined && receipt.mechanism !== "systemd-user")) return setupUnit === undefined ? undefined : null;
+  if (setupUnit !== undefined && receipt.unit !== setupUnit) return null;
+  if (!existsSync(receipt.unitPath)) return null;
+  try {
+    assertLinuxRecordedUnit(paths, daemonHome, receipt);
+    const user = invokingUser();
+    const linger = readLinger(user);
+    if (linger === undefined) return null;
+    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", receipt.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv(), 5000);
+    const state = result.status === 0 ? result.stdout.trim() : undefined;
+    if (linger && state === "enabled") return;
+    if (state === "disabled" || state === "enabled-runtime") {
+      return `The service is not enabled at boot and will not start automatically after a restart.${linger ? ` Run ${codeSpan(enableUnitCommand(receipt.unit))}.` : ` Linger is off, so it will not keep running after logout. ${lingerRepair(user, receipt.unit)}`}`;
+    }
+    if (!linger && state === "enabled") return `Linger is off, so the service will not keep running after logout or start at boot before you log in. Ask an administrator to run ${codeSpan(enableLingerCommand(user))}.`;
+  } catch { /* A failed read does not prove autostart and must not change the command's outcome. */ }
+  return null;
 }
 
 interface InstallPlan {
@@ -280,12 +326,12 @@ function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): vo
 function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">): void {
   if (process.platform !== "darwin" && process.platform !== "linux") return;
   const held = inspectLock(join(paths.state, "service-repair.lock"));
-  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state)) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
+  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state) || (process.platform === "linux" && readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)))) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
   refuseInstalled(paths, daemonHome);
-  return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), pinnedPath);
+  return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), () => serviceApplicationPath());
 }
 
 /** Everything `install` would do, with no effect: the unit it would write and, on Linux, the linger it needs. */
@@ -378,7 +424,10 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
   writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
   if (!plan.lingerAlready) {
     const enabled = loginctl(["enable-linger", plan.user]);
-    if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
+    const linger = enabled.status === 0 ? readLinger(plan.user) : false;
+    if (!linger) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be ${linger === undefined ? "verified" : "enabled"} for ${plan.user}, so the recorded unit was not enabled or started`, {
+      remedy: linger === undefined ? linuxAutostartUnverified(plan.unit, plan.user) : lingerRepair(plan.user, plan.unit),
+    });
   }
   assertSystemdSource(rendered.unitPath, rendered.sha256);
   submitSystemdUnitRegistration("reload", rendered.unit);
@@ -491,7 +540,12 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   const { receipt, plan } = recordedUnit(paths, daemonHome);
   if (plan.mechanism === "scheduled-task") return undefined;
   const source = readFileSync(receipt.unitPath, "utf8");
-  const next = refreshedDaemonPath(plan.mechanism, source)!;
+  const os = plan.mechanism === "launchd-agent" ? "darwin" : "linux";
+  const merged = [...new Set([
+    ...pinnedPath(process.env.PATH ?? "", posix).split(posix.delimiter),
+    ...pinnedPath(pinnedPathMatch(plan.mechanism, source).old, posix).split(posix.delimiter),
+  ])].join(posix.delimiter);
+  const next = refreshedDaemonPath(plan.mechanism, source, serviceApplicationPath(merged, os))!;
   const sha256 = createHash("sha256").update(next).digest("hex");
   return () => {
     const lock = process.platform === "darwin" || process.platform === "linux" ? acquireLock(join(paths.state, "service-repair.lock")) : undefined;
@@ -587,6 +641,11 @@ function reconcileShellRuntime(paths: Pick<DaemonPaths, "state">, root: string):
   submitSystemdUnitRegistration("reload", plan.unit, daemonUserServiceEnv());
 }
 
+/** Upgrade an unmodified same-installation Linux unit's OOMPolicy in place without restarting running seats. */
+export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "state">, daemonHome?: string, report?: (line: string) => void): boolean {
+  return reconcileSystemdOomPolicy(paths, daemonHome, daemonUnitName(daemonHome), report);
+}
+
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
 export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string } {
   const recorded = recordedUnit(paths, daemonHome);
@@ -607,9 +666,10 @@ export function linuxMissingProgram(paths: Pick<DaemonPaths, "state">): boolean 
 }
 
 /** Replace only a verified native unit whose program is gone. Keep sign-in and hosting records. */
-export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHome?: string): Promise<boolean> {
+export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHome?: string, report?: (line: string) => void): Promise<boolean> {
   const linux = process.platform === "linux";
   if (!linux && process.platform !== "darwin") return false;
+  if (linux) await finishRecordedOomPolicyIntent(paths, daemonHome, daemonUnitName(daemonHome), report);
   const remedy = `inspect the recorded service. To replace a verified installation, run ${codeSpan(daemonCommandCopy("uninstall", daemonHome, ["--yes"]) + " && " + daemonCommandCopy("install", daemonHome))}`;
   const missing = (receipt: UnitReceipt) => linux ? missingSystemdProgram(readFileSync(receipt.unitPath, "utf8")) : missingLaunchAgentProgram(receipt);
   const failure = (detail: string, code: "CONFLICT" | "TARGET_UNAVAILABLE" | "LIFECYCLE_BLOCKED" = "CONFLICT") =>
@@ -692,7 +752,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     const renderedUnit = linux && !intent ? renderDaemonUnit(dirname(receipt.unitPath), daemonHome) : undefined;
     const next = intent ? { text: intent.nextSource, sha256: sourceDigest(intent.nextSource) }
       : renderedUnit ? { text: renderedUnit.bytes, sha256: renderedUnit.sha256 }
-      : renderLaunchAgent({ label: receipt.unit, argv, searchPath: pinnedPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
+      : renderLaunchAgent({ label: receipt.unit, argv, searchPath: serviceApplicationPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
     const published = !!intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource;
     const enabled = intent?.enabled ?? (linux ? systemd(receipt).enabled : service!.isEnabled!(receipt));
     owner = readLifetimeRecord(paths.lock);
@@ -814,7 +874,7 @@ export interface DaemonOwnershipObservation {
 export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
-    const intent = process.platform === "darwin" || process.platform === "linux" ? readServiceRepair(paths.state) : undefined;
+    const intent = process.platform === "darwin" || process.platform === "linux" ? (readServiceRepair(paths.state) ?? (process.platform === "linux" ? readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)) : undefined)) : undefined;
     const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
     if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };

@@ -11,6 +11,8 @@ import {
   extensionProvides,
   homeCotalDir,
   isCommandFailure,
+  isConnectRefusal,
+  isWorkspaceTargetError,
   loadExtensionsManifest,
   markTelemetryNoticeShown,
   readMeshRegistry,
@@ -20,7 +22,7 @@ import {
   type TelemetrySettings,
 } from "@cotal-ai/workspace";
 import { metadataPositionals } from "./lib/command-path.js";
-import { cliVersion } from "./seed/paths.js";
+import { cliVersion, SeedWriterRefusal } from "./seed/paths.js";
 
 /**
  * Anonymous usage telemetry for the CLI: one small event per command, sent as the process exits, and
@@ -47,10 +49,10 @@ const PATH = /(?:~|[A-Za-z]:)?(?:[\\/][^\s\\/'"`:)]+){2,}/g;
 const TOKEN = /[A-Za-z0-9_-]{32,}/g;
 const FRAME_PATH = /(?:file:\/\/)?(?:[A-Za-z]:)?[\\/][^\s()]+/g;
 
-/** An error message with what could identify someone masked: quoted words (the CLI quotes every
- *  user value it echoes), URLs, email addresses, IPv4 addresses, paths (the home directory first,
- *  so a path under it reads as one) and any token-shaped run of 32 characters or more. */
+/** Mask identifying values before sending a diagnostic. The local read-policy refusal includes
+ *  the entire allow list in brackets, with no quotes around its individual channel names. */
 export function scrubErrorText(text: string, max = MAX_MESSAGE): string {
+  if (text.includes(" is not within allowSubscribe [")) return "subscription is not within allowSubscribe".slice(0, max);
   return text
     .split(HOME).join("~")
     .replace(QUOTED, "$1<value>$1")
@@ -78,7 +80,18 @@ interface ErrorText {
   readonly stack: string | null;
 }
 
+const localDiagnostics = new WeakSet<Error>();
+
+/** Keep this error's operator text and stack out of telemetry without changing the local failure. */
+export function localDiagnostic<T extends Error>(error: T): T {
+  localDiagnostics.add(error);
+  return error;
+}
+
 export function telemetryErrorText(command: string, error: unknown): ErrorText {
+  if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
+  // The connection error includes the stopped project's local restart instructions in its text.
+  if (isConnectRefusal(error) && isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") return { message: null, stack: null };
   // Help shows the requested topic and can suggest commands from local extensions.
   if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   // A spawn diagnostic can include native terminal output or the original launch arguments.

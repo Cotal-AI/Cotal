@@ -230,7 +230,7 @@ export class SeatStart {
     // spawns could overshoot the ceiling or pick the same name.
     let occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
     if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
-    const recheck = this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
+    const recheck = this.parts.connectorInventory.refreshConnectors(connector.name, true);
     if (recheck) {
       await recheck;
       occupancy = this.namesCapacity.occupancy();
