@@ -48,6 +48,7 @@ function fixture() {
   const lines = readline.createInterface({ input: process.stdin });
   lines.once("line", line => {
     lines.close();
+    process.stdin.destroy();
     const req = JSON.parse(line);
     appendFileSync(traceFile, `${JSON.stringify(req)}\n`);
     const requests = existsSync(traceFile) ? readFileSync(traceFile, "utf8").trim().split("\n").map(JSON.parse) : [];
@@ -72,13 +73,16 @@ function fixture() {
 
 // This runs next to the built renderer in the real WebKit window. It does not replace invoke.
 async function drive() {
+  const startupErrors = [];
+  window.addEventListener("error", event => startupErrors.push(event.message));
+  window.addEventListener("unhandledrejection", event => startupErrors.push(String(event.reason)));
   const visible = selector => document.querySelector(selector)?.getClientRects().length > 0;
   const wait = async (predicate, label) => {
     for (let i = 0; i < 150; i++) {
       if (predicate()) return;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    throw new Error(`${label}: ${document.querySelector("#connection-title").textContent}; ${document.querySelector("#refusal-detail").textContent}`);
+    throw new Error(`${label}: ${document.querySelector("#connection-title").textContent}; ${document.querySelector("#refusal-detail").textContent}; native IPC ${typeof window.__TAURI_INTERNALS__?.invoke}; ${startupErrors.join(", ")}`);
   };
   const click = async selector => {
     await wait(() => visible(selector) && !document.querySelector(selector).disabled, selector);
@@ -88,20 +92,20 @@ async function drive() {
   try {
     await wait(() => !document.querySelector(".app").classList.contains("loading"), "native window ready");
     await click("#login");
-    await click("#move-account");
-    try {
-      await wait(() => visible("#recover") && document.querySelector("#recover").textContent === "Get a new code", "Move reaches the expiry reply");
-      await click("#recover");
-      await wait(() => document.querySelector("#notice").textContent.includes("Moved your spaces") || (visible("#space-conflicts-callout") && !visible("#move-account")), "Get a new code retries the move");
-    } catch (error) {
-      failures.push(error.message);
-      if (visible("#recover")) await click("#recover");
-    }
     await click("#open-conflicts");
     // Approve the local fixture replacement without intercepting any Tauri command.
     window.confirm = () => true;
     await click('[data-space="saved-manual"] button[aria-label^="Use "]');
-    await wait(() => !document.querySelector('[data-space="saved-manual"]'), "Use reaches the sidecar and clears the row");
+    try {
+      await wait(() => !document.querySelector('[data-space="saved-manual"]'), "Use reaches the sidecar and clears the row");
+    } catch (error) {
+      failures.push(`${error.message}; ${document.querySelector("#conflicts-message").textContent}`);
+    }
+    await click("#conflicts-back");
+    await click("#move-account");
+    await wait(() => visible("#recover") && document.querySelector("#recover").textContent === "Get a new code", "Move reaches the expiry reply");
+    await click("#recover");
+    await wait(() => document.querySelector("#notice").textContent.includes("Moved your spaces"), "Get a new code retries the move");
   } catch (error) {
     failures.push(error.message);
   }
@@ -123,11 +127,11 @@ function serve(req, res) {
   }
   if (req.url === "/") {
     res.setHeader("Content-Type", "text/html");
-    return res.end(readFileSync(join(assets, "index.html"), "utf8").replace("</body>", '<script type="module" src="/__native_conflict_driver.js"></script></body>'));
+    return res.end(readFileSync(join(assets, "index.html"), "utf8").replace("<head>", '<head><script src="/__native_conflict_driver.js" defer></script>'));
   }
   const file = resolve(assets, `.${req.url}`);
   if (!file.startsWith(`${assets}/`)) { res.writeHead(404); return res.end(); }
-  const types = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+  const types = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
   try { res.setHeader("Content-Type", types[extname(file)] ?? "application/octet-stream"); res.end(readFileSync(file)); }
   catch { res.writeHead(404); res.end(); }
 }
@@ -152,16 +156,17 @@ try {
   let requests = [];
   try { requests = readFileSync(trace, "utf8").trim().split("\n").map(JSON.parse); } catch { /* No request reached the sidecar. */ }
   const actions = requests.filter(item => item.migrateFrom || item.op === "space-conflict-resolve");
+  console.log("Native request operations:", requests.map(item => item.op).join(", "));
   console.log("Native conflict actions:", JSON.stringify(actions));
   assert.deepEqual(failures, []);
   const idp = "https://cotal.cloud/api/auth";
   const move = { op: "login", idp, migrateFrom: "https://cloud.cotal.ai/api/auth" };
-  assert.deepEqual(actions, [move, move, { op: "space-conflict-resolve", idp, space: "saved-manual" }]);
+  assert.deepEqual(actions, [{ op: "space-conflict-resolve", idp, space: "saved-manual" }, move, move]);
   console.log("PASS: native Move, Get a new code, and Use reached the sidecar");
 } finally {
   if (child?.pid) {
     try { process.kill(-child.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
-    if (child.exitCode === null && child.signalCode === null) await Promise.race([once(child, "exit"), delay(2000)]);
+    if (child.exitCode === null && child.signalCode === null) await Promise.race([once(child, "exit"), delay(2000, undefined, { ref: false })]);
   }
   server.closeAllConnections();
   server.close();
