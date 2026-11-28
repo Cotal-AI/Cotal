@@ -91,6 +91,12 @@ export function nativeStub(scenario) {
         return ok(installing ? { app, ...(state.appService ? { serviceRefresh: state.appService } : {}), ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
       }
       if (request.op === "repair-plan") return ok(state.repairPlan ?? { digest: "0".repeat(64), steps: [{ step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." }] });
+      if (request.op === "repair-apply" && state.repairApply) {
+        (state.repairApplies ??= []).push(request);
+        const result = state.repairApply;
+        if (result.repaired) { state.managers = undefined; state.connected = true; state.repairPlan = undefined; }
+        return ok(result);
+      }
       if (request.op === "start") {
         (state.startRequests ??= []).push(request);
         if (state.startFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_UNKNOWN", message: "Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof", native: { code: "OPERATION_UNKNOWN" } } };
@@ -516,6 +522,37 @@ export const scenarios = [
       if (label !== "Remove") assert.equal(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "service-disconnect").length), 0, "a fixing button never removes the space");
     },
   })),
+  (() => {
+    // What 0.184.1 records, word for word, when the agent app connectors could not be set up without npm.
+    const reason = "hosted connector reconciliation failed: replacement connector reconciliation failed (exit 1): × a previous connector seed failed (package \"claude\", phase add): failed to seed connector \"claude\" from /Users/ada/.config/cotal/seed/store/0.177.0/claude: @cotal-ai/connector-claude-code npm install failed: npm is not on PATH - fix that, then run `cotal ext seed --repair`";
+    const connectors = { step: "connectors", outcome: "fix", found: "Cotal couldn't set up the agent app connectors on this computer.", change: "Set up the agent app connectors again." };
+    const spaces = { step: "spaces", outcome: "fix", spaces: ["acme-team"], found: "1 space has stopped on this computer.", change: "Start those spaces again." };
+    return { name: "connector-setup-repair", state: {
+      installed: true, signedIn: true, connected: true,
+      managers: [{ space: "acme-team", state: "refused", restarts: 0, hostingIntent: true, reason, next: "correct the connector cause, run `cotal ext seed --repair` with the daemon's installed CLI, then retry setup; the daemon will retry automatically" }],
+      repairPlan: { digest: "c".repeat(64), steps: [{ step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." }, connectors, spaces] },
+      repairApply: { repaired: true, remaining: [], steps: [{ ...connectors, changed: "The agent app connectors were set up again." }, { ...spaces, changed: "acme-team was started again." }] },
+    }, expect: async page => {
+      await page.locator("#recovery-panel:not([hidden])").waitFor();
+      assert.equal(await page.locator("#connection-title").textContent(), "The agent host for this space stopped");
+      assert.equal(await page.locator("button:visible", { hasText: /^Repair$/ }).count(), 1, "1 Repair button on the screen");
+      assert.doesNotMatch(await page.locator("main").textContent(), /`|\bcotal [a-z]|\bnpm\b|\/Users\//, "no command line, npm or path in the window or Details");
+      await page.locator("#recover").click();
+      await page.locator("#repair-panel:not([hidden])").waitFor();
+      assert.deepEqual(await page.locator("#repair-steps li").allTextContents(), [
+        "This copy of Cotal runs the background service.",
+        "Cotal couldn't set up the agent app connectors on this computer.Set up the agent app connectors again.",
+        "1 space has stopped on this computer.Start those spaces again.",
+      ]);
+      await page.locator("#repair-apply").click();
+      await page.waitForFunction(() => (window.__renderState.repairApplies ?? []).length === 1);
+      await page.waitForFunction(() => document.querySelector("#notice")?.textContent === "This computer is repaired.");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.repairApplies), [{ op: "repair-apply", digest: "c".repeat(64), consent: [] }], "1 apply, asking for nothing");
+      await page.locator("#repair-apply").click();
+      await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "This computer is connected");
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), "Connected");
+    } };
+  })(),
   { name: "single-space-manager-details", state: { installed: true, signedIn: true, connected: true, managers: [{ space: "acme-team", state: "refused", restarts: 0, reason: "the space refused remote supervision", next: "run `cotal daemon login --idp https://cloud.cotal.ai/api/auth`, correct the reported cause, then run `cotal daemon setup --space acme-team`" }] }, expect: async page => {
     await page.locator("#details:not([hidden])").waitFor();
     assert.equal(await page.locator("#refusal-detail").textContent(), "MANAGER_UNAVAILABLE\nThe agent host for this space stopped. The background service said: the space refused remote supervision");

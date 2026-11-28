@@ -383,8 +383,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(() => req.op === "manager-start" ? managers.start(req.space) : req.op === "manager-repair-cleanup" ? managers.repairCleanup(req.space) : managers.refresh(req.space));
         return;
       }
-      if (req.op === "managers-stop") {
-        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.disconnect(manager.space))); return status(); });
+      if (req.op === "managers-stop" || req.op === "connectors-repair") {
+        managerResult(async () => { if (req.op === "connectors-repair") await managers.repairConnectors(); else await Promise.all(managers.all().map((manager) => managers.disconnect(manager.space))); return status(); });
         return;
       }
       if (req.op === "managers-prepare-restart" || req.op === "managers-abort-restart") {

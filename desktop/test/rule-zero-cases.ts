@@ -13,6 +13,9 @@ export const REFUSAL_CODES: Readonly<Record<string, RuleZeroAction>> = {
   // Generic computer-side failures the catch-all used to answer with a status re-read.
   OPERATION_FAILED: "repair", OPERATION_PARTIAL: "repair", DEPENDENCY_UNAVAILABLE: "repair", LIFECYCLE_BLOCKED: "repair",
   MANAGER_UNAVAILABLE: "repair", GENERATION_PENDING: "repair", PERMISSION_DENIED: "repair", NO_RUNTIME_DIR: "repair",
+  // A hosted Manager setup refused, for example because the agent app connectors could not be set up:
+  // setup's refusal carries the Manager's state as its cause. Repair's connectors step fixes that one.
+  REFUSED: "repair",
   UNSUPPORTED_PLATFORM: "repair", UNSUPPORTED: "repair", USAGE_INVALID: "repair", BAD_REQUEST: "repair",
   // Causes with their own working fix.
   NOT_RUNNING: "install", DENIED: "login", EXPIRED: "login", CREDENTIAL_EXPIRED: "login", AUTH_REQUIRED: "login", NOT_SIGNED_IN: "login",

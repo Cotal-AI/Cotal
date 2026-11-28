@@ -24,13 +24,13 @@ import { answeringAt, applyInstall, applyMove, installationOwner, installedDaemo
 import { unitReceiptFile } from "./install-receipt.js";
 import { desktopAppRequest } from "./desktop-app-routing.js";
 import type { AgentAppResult } from "./desktop-agent-apps.js";
-import type { DaemonStatus, HostedManager } from "./protocol.js";
+import { CONNECTOR_SETUP_REFUSAL, type DaemonStatus, type HostedManager } from "./protocol.js";
 import { withAppMutation } from "./agent-app-admission.js";
 
 /** Which Cotal copy runs the background service. Only its kind is public, never its path. */
 export type ServiceOwner = ReturnType<typeof installationOwner>;
 
-export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "spaces" | "stale-registration" | "account";
+export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "connectors" | "spaces" | "stale-registration" | "account";
 export const REPAIR_CONSENTS = ["takeover", "start-stopped", "remove-old-registration"] as const;
 export type RepairConsent = (typeof REPAIR_CONSENTS)[number];
 export type RepairOutcome = "ok" | "fix" | "needs-you" | "cannot" | "unchecked";
@@ -230,6 +230,21 @@ function appsStep(status: DaemonStatus | undefined): RepairStep {
   return { step: "agent-apps", outcome: "ok", found: "The background service finds your agent apps." };
 }
 
+/** A hosted Manager refused because this home's agent app connectors could not be set up. A
+ *  replaced installation is not one: the service-running step restarts it with this version. */
+export const connectorSetupFailed = (manager: HostedManager): boolean =>
+  manager.state === "refused" && `${manager.reason ?? ""}`.startsWith(CONNECTOR_SETUP_REFUSAL) &&
+  !/refusing to launch a hosted Manager from the replaced installation/.test(manager.reason ?? "");
+
+/** The connectors step: set up the agent app connectors again when a space this computer still hosts
+ *  stopped on them. The spaces step after it starts those spaces again. It stops nothing, so it asks nothing. */
+function connectorsStep(status: DaemonStatus | undefined): RepairStep {
+  if (!status) return unchecked("connectors", "Not checked yet: the background service must be running first.");
+  if ((status.managers ?? []).some(manager => restartable(manager) && connectorSetupFailed(manager)))
+    return { step: "connectors", outcome: "fix", found: "Cotal couldn't set up the agent app connectors on this computer.", change: "Set up the agent app connectors again." };
+  return { step: "connectors", outcome: "ok", found: "The agent app connectors are set up." };
+}
+
 /** A refused space this computer still means to host, with no registration removal waiting. A space the
  *  person disconnected keeps a refusal from disconnect; starting it would host it again. */
 const restartable = (manager: HostedManager): boolean =>
@@ -283,7 +298,7 @@ function digestOf(steps: readonly RepairStep[]): string {
 export function planFrom(probe: RepairProbe, version: string, home?: string): RepairPlan {
   const { status } = probe;
   const owner = ownerStep(probe, version, home);
-  const steps = [owner, runningStep(status, version, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status), ...accountSteps(status)];
+  const steps = [owner, runningStep(status, version, owner), appsStep(status), connectorsStep(status), spacesStep(status), ...staleCleanupSteps(status), ...accountSteps(status)];
   return { digest: digestOf(steps), steps };
 }
 
@@ -293,13 +308,15 @@ export async function planRepair(opts: RepairOptions): Promise<RepairPlan> {
 }
 
 /** Why a step did not finish, in words the window can show, and what the person can do next. */
-export function failedCopy(error: unknown): string {
+export function failedCopy(error: unknown, step?: RepairStepName): string {
   const code = (error as { native?: { code?: unknown } } | undefined)?.native?.code;
   if (code === "MOVE_ROLLED_BACK") return "This app's service didn't start, so the other copy of Cotal runs the background service again. The agents it ran stopped and don't start again by themselves. Keep using the other copy for now, and update this app before trying again.";
   if (code === "MOVE_RESTORE_FAILED") return "This app's service didn't start, and the other copy's service didn't start again either, so no background service runs on this computer. Choose Repair to set up this app's service.";
   if (code === "MOVE_UNCONFIRMED") return "Repair could not confirm the other copy's service stopped. Choose Repair again to check this computer.";
   if (code === "SPACE_NOT_STARTED") return "A space's agent host didn't start. Details shows what it said. If it names a permission, ask the space owner.";
   if (code === "CLEANUP_UNFINISHED") return (error as Error).message;
+  // The daemon's own refusal of a connector repair carries its code; only a bare lifecycle block is another change.
+  if (step === "connectors" && code !== undefined) return "Cotal couldn't set up the agent app connectors. Details shows what the background service said.";
   if ((error as { code?: unknown } | undefined)?.code === "LIFECYCLE_BLOCKED") return "Another change is running on this computer. Wait for it to finish, then choose Repair again.";
   return "Repair could not finish this step. Details shows what the background service said.";
 }
@@ -318,7 +335,7 @@ export async function runSteps(steps: readonly RepairStep[], fix: (step: RepairS
     catch (error) {
       stopped = true;
       onError?.(error);
-      done.push({ ...step, failed: failedCopy(error), detail: (error instanceof Error ? error.message : String(error)).slice(0, 1500) });
+      done.push({ ...step, failed: failedCopy(error, step.step), detail: (error instanceof Error ? error.message : String(error)).slice(0, 1500) });
     }
   };
   for (let i = 0; i < steps.length;) {
@@ -333,7 +350,7 @@ export async function runSteps(steps: readonly RepairStep[], fix: (step: RepairS
       catch (error) {
         stopped = true; onError?.(error);
         const first = run.findIndex(step => step.outcome === "fix");
-        run.forEach((step, index) => done.push(index === first ? { ...step, failed: failedCopy(error), detail: (error as Error).message.slice(0, 1500) } : step));
+        run.forEach((step, index) => done.push(index === first ? { ...step, failed: failedCopy(error, step.step), detail: (error as Error).message.slice(0, 1500) } : step));
       }
     } else await work();
     i = end;
@@ -419,6 +436,10 @@ async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
   if (step.step === "agent-apps") {
     // The agent-app routing's pickup entry takes the agent-app admission itself, so no gate wraps it here.
     return pickupOutcome(await desktopAppRequest({ paths: opts.paths, home: opts.daemonHome, version: opts.version, peerUid: opts.peerUid, peerPid: opts.peerPid }, { op: "agent-apps", refresh: true }, line => opts.report?.(line)));
+  }
+  if (step.step === "connectors") {
+    await managerViaDaemon(opts, { op: "connectors-repair" });
+    return "The agent app connectors were set up again.";
   }
   if (step.step === "stale-registration") {
     const result = await managerViaDaemon(opts, { op: "manager-repair-cleanup", space: step.space! }) as HostedManager & { repair?: { state?: unknown; message?: unknown; detail?: unknown } };

@@ -48,9 +48,22 @@ function packageFile(): string {
 }
 
 async function reconcileInstalledGeneration(): Promise<void> {
+  await runInstalledSeed([], "replacement connector reconciliation failed");
+}
+
+/** Repair this home's connector setup with the daemon's own installed CLI: the same repair
+ *  `cotal ext seed --repair` runs, with no terminal. Any failure names the CLI's own last line. */
+export async function repairInstalledConnectors(version: string): Promise<void> {
+  if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
+  const installed = installedGenerationVersion();
+  if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
+  await runInstalledSeed(["--repair"], "connector repair failed");
+}
+
+async function runInstalledSeed(flags: readonly string[], failure: string): Promise<void> {
   const file = packageFile();
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed", ...flags], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
     let error = "";
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
@@ -65,7 +78,7 @@ async function reconcileInstalledGeneration(): Promise<void> {
       else {
         const cause = timedOut ? `timed out after ${timeoutMs}ms, signal ${signal ?? "unknown"}` : signal ? `signal ${signal}` : `exit ${code}`;
         const detail = error.trim().split(/\r?\n/).at(-1)?.replace(/\s+/g, " ").trim();
-        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}`));
+        reject(new Error(`${failure} (${cause})${detail ? `: ${detail}` : ""}`));
       }
     });
   });

@@ -9,7 +9,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, CONNECTION_COPY, networkState, surfaceState, surfaceInputs, type SurfaceFrame, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
 import { icon, type Icon } from "./icons";
-import { consents, readPlan, reinstallNeeded, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
+import { consents, failedDetail, readPlan, reinstallNeeded, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
 import "./components.css";
@@ -834,8 +834,8 @@ el("repair-apply").addEventListener("click", () => {
       renderRepair(el("repair-panel"), plan, resultSteps(result));
       problem = undefined; clearDetails();
       await refresh();
-      // What the service said about a failed step goes to Details only.
-      if (failed?.detail) showRefusalDetail(new DaemonRefusal("OPERATION_FAILED", failed.detail));
+      // What the service said about a failed step goes to Details only, and never a command line (rule 0).
+      if (failed?.detail) showRefusalDetail(new DaemonRefusal("OPERATION_FAILED", failedDetail(failed)));
       notice(resultNotice(result));
       el("repair-panel").hidden = false; el("recovery-panel").hidden = true;
     } catch (error) {

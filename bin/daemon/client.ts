@@ -69,13 +69,13 @@ export interface ClientCounters {
 }
 
 /** Send a bounded machine-control request after authenticating the daemon's live process. */
-export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "manager-start" | "manager-status" | "manager-repair-cleanup"; space: string } | { op: "managers-stop" | "managers-prepare-restart" | "managers-abort-restart" }): Promise<HostedManager | DaemonStatus> {
+export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "manager-start" | "manager-status" | "manager-repair-cleanup"; space: string } | { op: "managers-stop" | "managers-prepare-restart" | "managers-abort-restart" | "connectors-repair" }): Promise<HostedManager | DaemonStatus> {
   const sock = await openVerified(opts);
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
-    // A start may reconcile connectors for up to ten minutes, then wait for Manager readiness.
-    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" || request.op === "manager-repair-cleanup" ? 730_000 : 130_000)) as DaemonResponse;
+    // A start or a connector repair may reconcile connectors for up to ten minutes.
+    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" || request.op === "manager-repair-cleanup" || request.op === "connectors-repair" ? 730_000 : 130_000)) as DaemonResponse;
     if (!reply.ok) {
       const cleanup = request.op === "manager-repair-cleanup";
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", cleanup ? `the old registration was not removed: ${reply.error.code} ${reply.error.message}` : `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : cleanup ? "run `cotal daemon repair` to check this computer again" : "inspect the daemon's hosting records and retry the operation") });

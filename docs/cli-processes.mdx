@@ -662,7 +662,8 @@ installation reports a conflict and leaves the running daemon alone.
 
 `cotal daemon repair` checks this computer's background service and prints what it would fix, in
 order: the service is installed by this installation, it runs this installation's version, the
-service finds the installed agent applications, every hosted space runs, no old registration of
+service finds the installed agent applications, the agent app connectors are set up, every hosted space
+runs, no old registration of
 this computer's agent host is left, and no account needs sign-in again. It changes nothing and
 prints a plan digest. `cotal daemon repair --apply <digest>` runs that plan and nothing else, and refuses
 `CONFLICT` with cause `PLAN_CHANGED` when the computer changed since it was printed.
@@ -681,6 +682,15 @@ Every step that changes the service (set-up, start, restart, move, space start a
 removal) runs while Repair holds the agent-app admission lock (`agent-app.lock`), so no agent-app
 install, sign-in or pickup runs across it. A held lock fails the first such step with
 `LIFECYCLE_BLOCKED` and changes nothing.
+
+When a hosted Manager refused because its connector setup failed (its reason starts "hosted
+connector reconciliation failed"), the `connectors` step sets the connectors up again before the
+spaces step starts that space. The service runs its own installed CLI's `ext seed --repair`, so no
+terminal is needed, and a running connector setup finishes first. A refusal from a replaced
+installation is not this step's: the service-running step restarts the service with this version.
+The step stops nothing, so it asks nothing. The daemon request is `connectors-repair`, with no
+fields. A failed step's `detail` that names a command or a path stays out of the desktop app's
+Details, which shows the step's plain words instead.
 
 With `--json`, the plan is `{digest, steps}`. Each step has `step`, `outcome` (`ok`, `fix`,
 `needs-you`, `cannot` or `unchecked`) and `found`, and may have `change`, `consent`, `space`, `spaces`,
