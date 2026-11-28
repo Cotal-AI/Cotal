@@ -1145,9 +1145,9 @@ if (process.platform !== "win32") {
   const prefix = join(xdg, "cotal", "extensions");
   const pkg = "@cotal-ai/orca";
   const installedDir = join(prefix, "node_modules", "@cotal-ai", "orca");
+  const runtime = { kind: "runtime", name: "orca" };
   const prefixAt = (version: string, onDisk = version): void => {
     rmSync(prefix, { recursive: true, force: true });
-    const runtime = { kind: "runtime", name: "orca" };
     writePluginFixture(installedDir, {
       name: pkg, version: onDisk, core: onDisk, provides: [runtime],
       factorySource: `export default host => host.register(${JSON.stringify(runtime)});\n`,
@@ -1161,7 +1161,7 @@ if (process.platform !== "win32") {
 
   };
   const run = async (entry: InstalledExtension) => {
-    const r = updateRuntime({ extensions: [{ ...entry, installId: "update-smoke" }], verifyExtension: verifyCurrentExtension });
+    const r = updateRuntime({ extensions: [{ ...entry, installId: "update-smoke", provides: [runtime] }], verifyExtension: verifyCurrentExtension });
     assert.equal(await executeUpdate(false, r.rt), 0);
     return { ...r, replays: r.events.filter((event) => event.startsWith("spawn:")) };
   };
