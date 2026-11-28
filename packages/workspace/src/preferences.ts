@@ -156,10 +156,12 @@ export function preferencesPath(): string {
   return join(globalConfigDir(), "preferences.json");
 }
 
-const invalid = (problem: string): CommandFailure =>
-  new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesPath()} is invalid: ${problem}`, {
-    remedy: `fix or remove ${preferencesPath()}; nothing resets it`,
+function invalid(problem: string): CommandFailure {
+  const preferencesFile = preferencesPath();
+  return new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesFile} is invalid: ${problem}`, {
+    target: { preferencesFile }, remedy: `fix or remove ${preferencesFile}; nothing resets it`,
   });
+}
 
 const SPACE_NAME_REMEDY = "run `cotal space` for the names of the spaces this machine knows";
 
