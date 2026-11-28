@@ -21,7 +21,7 @@ import { MAX_CHANNEL_LENGTH, subjectMatches } from "../src/subject-grammar.js";
 import { historyMessageFromDelivery, kindFromParsed } from "../src/endpoint-messages.js";
 import {
   PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel, legacyPluginChannelFilters,
-  pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
+  parsePluginChannelSubject, pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
 } from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
@@ -48,6 +48,10 @@ c("plugin subject pins owner then actor", pluginSubject === `${pluginWire}.u_abc
 const parsedPlugin = parseSubject(pluginSubject);
 c("shared parser restores the plugin logical channel", parsedPlugin?.kind === familyRoot &&
   parsedPlugin.owner === "u_abc" && parsedPlugin.actor === "act1" && parsedPlugin.sender === "u_abc.act1" && parsedPlugin.rest === issue);
+const parsedRoute = parsePluginChannelSubject(pluginSubject);
+c("plugin parser restores the logical channel", parsedRoute?.kind === familyRoot && parsedRoute.space === "demo" &&
+  parsedRoute.owner === "u_abc" && parsedRoute.actor === "act1" && parsedRoute.sender === "u_abc.act1" && parsedRoute.rest === issue);
+c("plugin parser leaves ordinary chat alone", parsePluginChannelSubject(cs) === null);
 const verifiedOwner = "u_nd77wkm3o3eyk6qvuwhy76b2nm";
 const receiverSubject = pluginChannelSubject("demo", verifiedOwner, "act1", issue);
 const receiverRow = {
@@ -62,7 +66,7 @@ c("authenticated plugin history takes the channel from the wire and clears advis
 c("plugin history still rejects mismatched sender claims", readPluginRow({ ...receiverRow, from: { ...receiverRow.from, id: `${verifiedOwner}.other` } }) === undefined);
 const legacyPlugin = chatSubject("demo", "u_abc", "act1", `${linear}.inbox`);
 c("legacy plugin address remains CHAT with its original logical name", parseSubject(legacyPlugin)?.kind === "chat" &&
-  parseSubject(legacyPlugin)?.rest === `${linear}.inbox`);
+  parseSubject(legacyPlugin)?.rest === `${linear}.inbox` && parsePluginChannelSubject(legacyPlugin) === null);
 c("legacy delivery classifier does not include plugin traffic", deliveryOf(legacyPlugin) === "chat" && deliveryOf(pluginSubject) === null);
 c("legacy subscription extraction does not include plugin traffic", channelFromChatSubscription("demo", legacyPlugin) === `${linear}.inbox` &&
   channelFromChatSubscription("demo", pluginSubject) === null);
@@ -73,7 +77,8 @@ for (const resource of [">", "*", "agtec-6270.>"]) {
   const parsed = parseSubject(filter);
   c(`plugin filter round trip: ${pattern}`, family.kind === familyRoot && family.plugin === "linear" &&
     filter === `${pluginWire}.*.*.linear.${resource}` && family.resource === resource && parsed?.owner === "*" &&
-    parsed.actor === "*" && parsed.kind === familyRoot && parsed.sender === "*.*" && parsed.rest === pattern);
+    parsed.actor === "*" && parsed.kind === familyRoot && parsed.sender === "*.*" && parsed.rest === pattern &&
+    parsePluginChannelSubject(filter)?.rest === pattern);
 }
 for (const ordinary of [">", "*", "*.linear.>", `team.${linear}`, `${familyRoot.toUpperCase()}.linear.inbox`, `${familyRoot}-other.linear.inbox`]) {
   c(`only the literal reserved root selects the plugin family: ${ordinary}`, classifyChannel(ordinary).kind === "chat");
@@ -88,7 +93,7 @@ for (const bad of [`${pluginWire}.u_abc.act1.linear`, `${pluginWire}.u_abc.act1.
   `wrong.demo.${familyRoot}.u_abc.act1.linear.inbox`, `cotal.de mo.${familyRoot}.u_abc.act1.linear.inbox`,
   `${pluginWire}..act1.linear.inbox`, `${pluginWire}.u_abc.act*.linear.inbox`, `${pluginWire}.*.*.*.>`,
   `${pluginWire}.>`, `${pluginWire}.*.*.linear.`, `${pluginWire}.*.*.linear.${"x".repeat(MAX_CHANNEL_LENGTH)}`]) {
-  c(`shared parser rejects ${bad.length > 90 ? `${bad.slice(0, 90)}…` : bad}`, parseSubject(bad) === null);
+  c(`plugin parsers reject ${bad.length > 90 ? `${bad.slice(0, 90)}…` : bad}`, parseSubject(bad) === null && parsePluginChannelSubject(bad) === null);
 }
 c("plugin subject builder rejects an ordinary channel", rejects(() => pluginChannelSubject("demo", "u_abc", "act1", "team.backend")));
 c("plugin subject builder rejects a dotted owner", rejects(() => pluginChannelSubject("demo", "u_abc.extra", "act1", `${linear}.inbox`)));
