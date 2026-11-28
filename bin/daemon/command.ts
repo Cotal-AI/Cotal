@@ -172,7 +172,7 @@ function statusView(s: DaemonStatus): Report {
       ? [{ kind: "lines" as const, lines: [inventory.message] }]
       : inventory.agents.length ? inventory.agents.map(agent => ({ kind: "fields" as const, rows: [["Name", agent.name], ["Application", agent.application], ["Model", agent.model ?? "not pinned"], ["Space", inventory.space], ["Folder", agent.cwd], ["Started", agent.startedAt], ["State", agent.state]] as [string, string][] }))
         : [{ kind: "lines" as const, lines: ["No agents running. Start agents from the dashboard."] }] })),
-    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.registrationCleanup ? [["Registration cleanup", manager.registrationCleanup]] : []), ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
+    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ...(manager.connection ? [["Connection", `${manager.connection.state}: ${manager.connection.reason}`]] : []), ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.registrationCleanup ? [["Registration cleanup", manager.registrationCleanup]] : []), ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
 }
 
@@ -356,9 +356,13 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
-  const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
-  const ok = op === "service-status" && r.manager && r.manager.state !== "stopped"
-    ? r.manager.state === "answering"
+  // service-status judges a hosted Manager by the Manager; its refusal names what the Manager lacks.
+  const manager = op === "service-status" && r.manager && r.manager.state !== "stopped" ? r.manager : undefined;
+  const nativeCode = manager?.connection ? (manager.connection.state === "offline" ? "OFFLINE" : "SPACE_UNREACHABLE")
+    : manager ? `MANAGER_${manager.state}` : r.state === "ended" && r.reason ? r.reason : r.state;
+  const native = { native: { code: nativeCode.toUpperCase().replaceAll("-", "_") } };
+  const ok = manager
+    ? manager.state === "answering" && !manager.connection
     : r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
   if (!ok) {
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
@@ -370,11 +374,11 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
     const remedy = r.remedy ?? r.manager?.next;
-    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(remedy ? { remedy } : {}) });
+    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}${r.manager.connection ? `; connection ${r.manager.connection.state}: ${r.manager.connection.reason}` : ""}` : ""}`, { ...native, ...(remedy ? { remedy } : {}) });
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
     { title: "Machine service and Manager", blocks: [
-      { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
+      { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ...(r.manager.connection ? [["Connection", `${r.manager.connection.state}: ${r.manager.connection.reason}`]] : []), ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
       { kind: "lines", lines: [{ text: r.message, tone: "hint" }] },
     ] },
   ] }));

@@ -33,6 +33,8 @@
  * never-exported row). Rotation of the incarnation's root remains exclusively a barrier's job.
  */
 import { EpEnvelopeError, mintLifecycleUid } from "@cotal-ai/core";
+import { grantCommandLine } from "./grant-command.js";
+import type { ActorKind, ActorRow } from "./ledger.js";
 import {
   assertOrdinaryRegistryMutation,
   activateLifecycleAtUid,
@@ -57,6 +59,20 @@ import {
  *  every new exchange/connect until the actor is re-granted (a fresh incarnation). Named
  *  residual: rotation wiring is the takeover slice's job, not a TTL policy knob here. */
 export const ROOT_CREDENTIAL_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+const NO_REPAIR_COORDINATES = "Ask the operator who granted this identity to provision a fresh lifecycle with the same access.";
+
+function rootRepair(row: (ActorRow & { kind: ActorKind }) | undefined, space: string): string {
+  const spaceFlag = `--space '${space.replaceAll("'", "'\\''")}'`;
+  if (row?.kind === "interactive" && row.eventPayloads !== false) {
+    const parent = row.parent ? ` --parent '${row.parent.replaceAll("'", "'\\''")}'` : "";
+    return `Ask the space operator to re-grant exactly the same access with \`${grantCommandLine(row.owner, row.actor, row)}${parent} ${spaceFlag}\` on the machine that holds the grant.`;
+  }
+  if (row?.kind === "interactive") return "Ask the space operator to re-grant this actor with the same access and event payload restriction.";
+  if (row?.custody?.kind === "foreground") return "End this foreground launch. In the original `cotal spawn` command, change `--name` to `<new_name>`, or add `--name <new_name>` if it had none. Rerun the command to start a new agent. The old name stays taken, and no command in this release frees it. The old agent's permissions don't move. Messages to its old name and direct messages already queued for it won't reach the new agent.";
+  if (row?.custody) return `Find this lifecycle's seat with \`cotal ps --wide --on ${row.custody.instanceId} ${spaceFlag}\` and stop that seat on the same manager. Then rerun its original \`cotal spawn\` command.`;
+  return NO_REPAIR_COORDINATES;
+}
 
 /** Leader-semantics single-row read on the auth store (the bucket is `allow_direct=false` by
  *  shape, so `kv.get` is leader-served). A DEL/PURGE marker refuses loudly — a revoked
@@ -85,6 +101,7 @@ async function readCredRow(reg: LifecycleRegistry, lifecycleUid: string, credent
 export async function ensureRootCredential(
   reg: LifecycleRegistry,
   args: { owner: string; actor: string; lifecycleUid: string; managerInstance: string; now?: () => number },
+  repair?: () => readonly [row: (ActorRow & { kind: ActorKind }) | undefined, space: string],
 ): Promise<string> {
   await assertOrdinaryRegistryMutation(reg, args);
   const now = args.now ?? Date.now;
@@ -102,8 +119,11 @@ export async function ensureRootCredential(
         throw new EpEnvelopeError("permission-denied", `the root credential for "${owner}/${actor}" (${credid}) is ${row.state}; rotating a root credential is the family-revoke barrier's job, never a re-mint - re-grant (respawn) the actor for a fresh incarnation (SPEC 13.1)`);
       if (row.holderPrincipal !== holder || row.lifecycleUid !== lifecycleUid)
         throw new EpEnvelopeError("internal", `the root credential row for "${owner}/${actor}" binds "${row.holderPrincipal}"/${row.lifecycleUid}, not this incarnation; garbled trusted-path state never authorizes (SPEC 13.1)`);
-      if (row.exp <= now())
-        throw new EpEnvelopeError("permission-denied", `the root credential for "${owner}/${actor}" expired at ${row.exp}; rotation is the barrier's job - re-grant (respawn) the actor (SPEC 13.1)`);
+      if (row.exp <= now()) {
+        let next = NO_REPAIR_COORDINATES;
+        try { if (repair) next = rootRepair(...repair()); } catch { /* A diagnostic read cannot change the refusal. */ }
+        throw new EpEnvelopeError("permission-denied", `The root credential for "${owner}/${actor}" expired at ${new Date(row.exp).toISOString()} (UTC). ${next}`);
+      }
       return credid;
     }
 

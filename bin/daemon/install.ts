@@ -49,13 +49,13 @@ import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
-import { missingSystemdProgram, observeSystemdRepairUnit } from "./install-linux-repair.js";
+import { finishRecordedOomPolicyIntent, missingSystemdProgram, observeSystemdRepairUnit, reconcileInstalledSystemdOomPolicy as reconcileSystemdOomPolicy } from "./install-linux-repair.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy, windowsDaemonFirstStart } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
-import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, serviceRepairFile, sourceDigest } from "./service-repair.js";
+import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, servicePolicyRepairFile, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -137,6 +137,7 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     "RestartSec=2",
     "TimeoutStopSec=90",
     "KillMode=mixed",
+    "OOMPolicy=continue",
     "",
     "[Install]",
     "WantedBy=default.target",
@@ -280,7 +281,7 @@ function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): vo
 function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">): void {
   if (process.platform !== "darwin" && process.platform !== "linux") return;
   const held = inspectLock(join(paths.state, "service-repair.lock"));
-  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state)) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
+  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state) || (process.platform === "linux" && readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)))) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
@@ -587,6 +588,11 @@ function reconcileShellRuntime(paths: Pick<DaemonPaths, "state">, root: string):
   submitSystemdUnitRegistration("reload", plan.unit, daemonUserServiceEnv());
 }
 
+/** Upgrade an unmodified same-installation Linux unit's OOMPolicy in place without restarting running seats. */
+export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "state">, daemonHome?: string, report?: (line: string) => void): boolean {
+  return reconcileSystemdOomPolicy(paths, daemonHome, daemonUnitName(daemonHome), report);
+}
+
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
 export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string } {
   const recorded = recordedUnit(paths, daemonHome);
@@ -607,9 +613,10 @@ export function linuxMissingProgram(paths: Pick<DaemonPaths, "state">): boolean 
 }
 
 /** Replace only a verified native unit whose program is gone. Keep sign-in and hosting records. */
-export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHome?: string): Promise<boolean> {
+export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHome?: string, report?: (line: string) => void): Promise<boolean> {
   const linux = process.platform === "linux";
   if (!linux && process.platform !== "darwin") return false;
+  if (linux) await finishRecordedOomPolicyIntent(paths, daemonHome, daemonUnitName(daemonHome), report);
   const remedy = `inspect the recorded service. To replace a verified installation, run ${codeSpan(daemonCommandCopy("uninstall", daemonHome, ["--yes"]) + " && " + daemonCommandCopy("install", daemonHome))}`;
   const missing = (receipt: UnitReceipt) => linux ? missingSystemdProgram(readFileSync(receipt.unitPath, "utf8")) : missingLaunchAgentProgram(receipt);
   const failure = (detail: string, code: "CONFLICT" | "TARGET_UNAVAILABLE" | "LIFECYCLE_BLOCKED" = "CONFLICT") =>
@@ -814,7 +821,7 @@ export interface DaemonOwnershipObservation {
 export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
-    const intent = process.platform === "darwin" || process.platform === "linux" ? readServiceRepair(paths.state) : undefined;
+    const intent = process.platform === "darwin" || process.platform === "linux" ? (readServiceRepair(paths.state) ?? (process.platform === "linux" ? readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)) : undefined)) : undefined;
     const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
     if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };

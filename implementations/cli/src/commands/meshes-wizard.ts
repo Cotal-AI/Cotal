@@ -14,7 +14,6 @@ import {
   checkSpaceName,
   checkTrust,
   checkUserBundle,
-  isDir,
   openSpaceNames,
   persistRemoteUserEntry,
   probeEnforcement,
@@ -514,12 +513,13 @@ async function askRoot(io: WizardIO, cwd: string, defaultTo: string | undefined)
         validate: (v) => {
           const candidate = v || defaultTo;
           if (!candidate) return "Required - the folder that holds this mesh's .cotal/auth and .cotal/agents.";
-          return isDir(candidate) ? undefined : "Not a directory - it must already exist.";
+          const root = checkRoot(candidate, cwd);
+          return root.ok ? undefined : withRemedy(root);
         },
       });
     const r = checkRoot(typed || (defaultTo as string), cwd);
     if (r.ok) return r.value;
-    io.log.error(r.message);
+    io.log.error(withRemedy(r));
   }
 }
 
