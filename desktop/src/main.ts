@@ -709,6 +709,7 @@ function updateCountdown(): void {
   text("approval-expiry", remaining ? `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}` : "This code has expired.");
   el<HTMLButtonElement>("copy-code").disabled = remaining === 0;
   el<HTMLButtonElement>("open-approval").disabled = remaining === 0;
+  el<HTMLButtonElement>("copy-link").disabled = remaining === 0;
   if (!remaining && problem !== "EXPIRED") {
     problem = "EXPIRED";
     text("refusal-detail", "The approval code expired before sign-in was confirmed."); el("details").hidden = false;
@@ -719,6 +720,29 @@ function updateCountdown(): void {
 el("copy-code").addEventListener("click", () => {
   void navigator.clipboard.writeText(el("approval-code").textContent ?? "").then(() => { text("copy-code", "Copied"); text("announcer", "Approval code copied."); }).catch(() => notice("The code could not be copied. Select the code and copy it manually.", true));
 });
+async function openApprovalPage(): Promise<void> {
+  const url = approval, expires = approvalExpires, signingIn = loginActive;
+  if (!url || expires <= Date.now()) return;
+  try { await invoke("open_browser", { url }); }
+  catch (error) {
+    if (approval !== url || approvalExpires !== expires || expires <= Date.now()) return;
+    if (!signingIn) { refusal(error); return; }
+    if (!loginActive) return;
+    const help = el("approval-browser-help");
+    if (help.hidden) {
+      help.hidden = false;
+      announce(el("approval-browser-message").textContent ?? "");
+    }
+  }
+}
+el("copy-link").addEventListener("click", async () => {
+  const url = approval, expires = approvalExpires;
+  if (!loginActive || !url || expires <= Date.now() || el("approval-browser-help").hidden) return;
+  let message = "Approval link copied.";
+  try { await navigator.clipboard.writeText(url); }
+  catch { message = "The link could not be copied. Select the link and copy it manually."; }
+  if (loginActive && approval === url && approvalExpires === expires && expires > Date.now()) text("copy-link-status", message);
+});
 async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
   events.onmessage = (frame) => {
@@ -727,6 +751,9 @@ async function request(body: Request): Promise<Record<string, unknown>> {
     try {
       approval = approvalUrl(frame.prompt.verificationUriComplete);
       text("approval-code", String(frame.prompt.userCode ?? ""));
+      el("approval-browser-help").hidden = true;
+      text("approval-link", loginActive ? approval : "");
+      text("copy-link-status", "");
       const expiry = new Date(String(frame.prompt.expiresAt ?? ""));
       approvalExpires = expiry.valueOf();
       if (!Number.isFinite(approvalExpires)) throw new Error("The approval code has no valid expiry.");
@@ -737,7 +764,7 @@ async function request(body: Request): Promise<Record<string, unknown>> {
       el("approval").hidden = false;
       notice("");
       if (loginActive) showStage("sign-in");
-      if (approvalExpires > Date.now()) void invoke("open_browser", { url: approval }).catch(refusal);
+      void openApprovalPage();
     } catch (error) { refusal(error); }
   };
   const result = requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
@@ -1067,7 +1094,12 @@ el("login-form").addEventListener("submit", (event) => {
       // The account switch stands; credential files of the previous account it could not delete are named.
       const kept = keptCredentialsNotice(result);
       if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
-    } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
+    } finally {
+      loginActive = false; approval = undefined;
+      if (countdown) clearInterval(countdown);
+      el("approval").hidden = true; el("approval-browser-help").hidden = true;
+      text("approval-link", ""); text("copy-link-status", "");
+    }
   });
 });
 el("recover").addEventListener("click", () => {
@@ -1104,7 +1136,7 @@ async function startService(): Promise<void> {
   try { await request({ op: "install" }); }
   finally { progress = progressNames.map(() => "waiting"); renderProgress(); }
 }
-el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
+el("open-approval").addEventListener("click", () => void openApprovalPage());
 function beginSignIn(): void {
   if (busy) return;
   editing = true;
