@@ -15,7 +15,7 @@ import { createAccount } from "@nats-io/nkeys";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
+  SERVICE_ACCESS_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
   serveAuthenticityOf, singleDocumentClosure, type ParsedArgs, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
 import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
@@ -30,10 +30,12 @@ import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo } from "../s
 import { serviceEndpointHostCall } from "../src/service-host-client.js";
 import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
+import { SERVICE_EVICTION_HOLD_MARGIN_S, SERVICE_EVICTION_HOLD_ROUNDING_S } from "../src/service-host-decisions.js";
 import { serviceHostOperationId } from "../src/service-host-kernel.js";
 import { serviceMarkerCeilSeconds } from "../src/service-host-ops.js";
 import { authServiceConfiguration } from "../src/service.js";
 import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
+import { CLOCK_TOLERANCE_SEC } from "../src/token.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -516,19 +518,32 @@ try {
     mReg2.state === "approval-required" && /fetch failed/.test(mLost) && mLostId !== undefined
     && mUnseen?.state === "present" && (mUnseen.record.value as { state: string }).state === "proposed"
     && m4?.answer.state === "approved" && m4.answer.outcome === "applied" && m4.requestId === mLostId, { mLost, mUnseen, m4 });
+  const expectedHoldMargin = SERVICE_ACCESS_TTL_SECONDS + 2 * CLOCK_TOLERANCE_SEC + SERVICE_EVICTION_HOLD_ROUNDING_S;
   const jsm = await jetstreamManager(harness.nc), authBucket = epAuthBucket(space);
   const i1GateMsg = await jsm.streams.getMessage(`KV_${authBucket}`, { last_by_subj: `$KV.${authBucket}.${epgateKey(endpoint, i1)}` });
   const i1DeniedAt = serviceMarkerCeilSeconds(i1GateMsg?.timestamp);
+  let midWindowHeld = false;
   if (i1DeniedAt !== undefined) {
-    const waitMs = (i1DeniedAt + 71) * 1000 - Date.now() + 250;
+    const midWaitMs = (i1DeniedAt + SERVICE_ACCESS_TTL_SECONDS + 2) * 1000 - Date.now();
+    if (midWaitMs > 0) await new Promise((r) => setTimeout(r, midWaitMs));
+    if (Math.floor(Date.now() / 1000) < i1DeniedAt + expectedHoldMargin) {
+      const midReplay = await call(host, i1RevokeReq);
+      midWindowHeld = Math.floor(Date.now() / 1000) >= i1DeniedAt + expectedHoldMargin
+        || (midReplay.state === "held" && midReplay.reason === "eviction-unverified" && midReplay.phase === "V5-evict" && midReplay.denyNew === "landed");
+    } else {
+      midWindowHeld = true;
+    }
+    const waitMs = (i1DeniedAt + expectedHoldMargin) * 1000 - Date.now() + 250;
     if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
   }
   const revokedAfterBound = await call(host, i1RevokeReq);
   const i1DoneOp = revokedAfterBound.state === "pending" ? await opRead(revokedAfterBound.operationId) : undefined;
-  c.check("I1b without a delivery daemon, replay after the 71 s credential-lifetime bound from the revoked gate's broker timestamp reaches cancelled-nonterminal",
-    i1DeniedAt !== undefined && revokedAfterBound.state === "pending" && revokedAfterBound.phase === "cancelled-nonterminal" && revokedAfterBound.denyNew === "landed"
+  c.check("I1b without a delivery daemon, replay holds past 60 s before ceil(T) + margin and reaches cancelled-nonterminal once the derived bound elapses",
+    SERVICE_EVICTION_HOLD_ROUNDING_S === 1 && SERVICE_EVICTION_HOLD_MARGIN_S === expectedHoldMargin
+      && i1DeniedAt !== undefined && midWindowHeld
+      && revokedAfterBound.state === "pending" && revokedAfterBound.phase === "cancelled-nonterminal" && revokedAfterBound.denyNew === "landed"
       && i1DoneOp?.state === "present" && JSON.stringify((i1DoneOp.record.value as { progress?: unknown }).progress) === JSON.stringify({ state: "pending", phase: "cancelled-nonterminal" }),
-    { i1DeniedAt, revokedAfterBound, i1DoneOp });
+    { expectedHoldMargin, SERVICE_EVICTION_HOLD_MARGIN_S, i1DeniedAt, midWindowHeld, revokedAfterBound, i1DoneOp });
   const m4Asg = m4?.answer.state === "approved" ? m4.answer.approval.assignment : undefined;
   const m4RevokeReq = { v: 1 as const, kind: "service-endpoint-host" as const, requestId: rid(), operation: "revoke" as const, granter: { kind: "owner" as const, owner: ownerA },
     input: { endpoint: m4Asg?.endpoint ?? endpoint, instanceId: m4Asg?.instanceId ?? "", expectedAssignmentDigest: m4Asg?.assignmentDigest ?? "", cause: "owner-request" as const } };

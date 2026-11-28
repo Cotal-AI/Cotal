@@ -1,15 +1,32 @@
 /** The service host's decisions: the shared proposal closes, decide (approve and refuse, A1-A5) and
  *  revoke (V0-V5). openServiceHostOperations builds them once over its closure. */
-import { EpEnvelopeError, mintLifecycleUid, parseEndpointCapabilities, principalKey, serviceEndpointActor, type EvictionResult, type ServiceUidCustodyV1 } from "@cotal-ai/core";
+import { EpEnvelopeError, SERVICE_ACCESS_TTL_SECONDS, mintLifecycleUid, parseEndpointCapabilities, principalKey, serviceEndpointActor, type EvictionResult, type ServiceUidCustodyV1 } from "@cotal-ai/core";
 import { DELIVERY_ADMIN_REQUEST_TIMEOUT_MS } from "./delivery-admin.js";
 import { approvedServiceGateRow, assertApprovableServiceGate } from "./native-service-gate.js";
 import { cancelServiceCustody, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceAssignmentGate, type ServiceCancelResult } from "./service-custody.js";
 import type { ServiceApprovalResult, ServiceDenyNew, ServiceHostDebt, ServiceHostOutcome, ServiceHostRequest, ServiceOperationRefusal, ServiceProposalCloseReason, ServiceProposalTombstoneView } from "./service-host-contract.js";
 import { readRegistryServiceRoot } from "./service-root-reader.js";
-import { Held, bounded, endpoint, held, message, readyAfter, readyBefore, write, type Ctx, type EndpointClass } from "./service-write.js";
-import { SERVICE_CUTOFF_MARGIN_S, ceilingEntryAdmitted, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceAssignmentRecord, enc, requestDigestOf, serviceMarkerCeilSeconds, type ApprovePlan, type RefusePlan, type RefuseResult, type Final, type OpLive, type Op, type ProposalLive, type ProposalTerminal, type Proposal, type Cancel, type Assignment } from "./service-host-records.js";
+import { Held, S1_REQUEST_TIMEOUT_MS, bounded, endpoint, held, message, readyAfter, readyBefore, write, type Ctx, type EndpointClass } from "./service-write.js";
+import { ceilingEntryAdmitted, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceAssignmentRecord, enc, requestDigestOf, serviceMarkerCeilSeconds, type ApprovePlan, type RefusePlan, type RefuseResult, type Final, type OpLive, type Op, type ProposalLive, type ProposalTerminal, type Proposal, type Cancel, type Assignment } from "./service-host-records.js";
 import { S2A_OPERATION_TTL_MS, S2A_MAX_REDECIDE, opKey, proposalKey, assignmentKey, seconds, serviceHostOperationId, expiryOperationId, expiryRequestDigest, approvalDigestOf, type Read, readOp, readProposal, readCapacity, readAssignment, readAdmission, put, isEntry, eligible, nameOf, release, isFinal, sameDebt, updateOp, settle, outcomeOf, debtOf, retryDebt, type Arms, type Inv, denied, finalArm, type Live } from "./service-host-kernel.js";
 import type { ServiceHostScopeTarget } from "./service-host-ops.js";
+import { CLOCK_TOLERANCE_SEC } from "./token.js";
+
+/** Whole-second rounding margin beyond `ceil(T)`: `admittedAt`, NATS JWT `exp` and
+ *  `seconds(Date.now())` are floored whole seconds, so 1 s ensures the entire `exp` second has
+ *  elapsed even when `T` carries no fractional second (`ceil(T) === T`). */
+export const SERVICE_EVICTION_HOLD_ROUNDING_S = 1;
+
+/** Seconds past `ceil(T)` (from the terminal `revoked` endpoint gate's stored broker timestamp
+ *  `T`) after which no serving connection admitted before deny-new can remain live: the serving
+ *  credential's maximum lifetime (`SERVICE_ACCESS_TTL_SECONDS`), two-sided clock tolerance
+ *  (`2 * CLOCK_TOLERANCE_SEC`), and {@link SERVICE_EVICTION_HOLD_ROUNDING_S}. */
+export const SERVICE_EVICTION_HOLD_MARGIN_S = SERVICE_ACCESS_TTL_SECONDS + 2 * CLOCK_TOLERANCE_SEC + SERVICE_EVICTION_HOLD_ROUNDING_S;
+
+/** Outer `V5-evict` budget: the inner `DELIVERY_ADMIN_REQUEST_TIMEOUT_MS` (15 s) delivery-admin
+ *  request plus one `S1_REQUEST_TIMEOUT_MS` (5 s) allowance for `withDeliveryAdminEndpoint`
+ *  connect and stop, clipped to the remaining invocation deadline by `bounded()`. */
+export const SERVICE_EVICTION_BOUNDED_TIMEOUT_MS = DELIVERY_ADMIN_REQUEST_TIMEOUT_MS + S1_REQUEST_TIMEOUT_MS;
 
 /** What serviceHostDecisions reads from the service host closure. Each is a closure constant
  *  bound once at construction, never reassigned, so a destructured copy is the same binding's value. */
@@ -31,23 +48,24 @@ export interface ServiceHostDecisionsDeps {
 
 /** V5: once deny-new has landed, evict any open serving connection for the assignment's
  *  principal until it is verified gone before cancellation reports nonterminal completion. A
- *  serving connection cannot outlive its 60 s credential and none is minted after deny-new lands,
- *  so once `SERVICE_CUTOFF_MARGIN_S` past the revoked endpoint gate's stored broker timestamp has
- *  elapsed, a replay completes without an eviction answer. */
+ *  serving connection cannot outlive its `SERVICE_ACCESS_TTL_SECONDS` credential and none is
+ *  minted after deny-new lands, so once `SERVICE_EVICTION_HOLD_MARGIN_S` past `ceil(T)` from the
+ *  revoked endpoint gate's stored broker timestamp `T` has elapsed, a replay completes without
+ *  an eviction answer. */
 async function verifyAssignmentEvicted(
-  ctx: Ctx, inv: Inv, operationId: string, assignmentDigest: string, owed: ServiceHostDebt[],
+  ctx: Ctx, operationId: string, assignmentDigest: string, owed: ServiceHostDebt[],
   asg: Extract<Assignment, { state: "bound" }>, gate: EndpointClass | undefined,
   evictPrincipal: ServiceHostDecisionsDeps["evictPrincipal"],
 ): Promise<Arms | undefined> {
   if (evictPrincipal === undefined) return undefined;
   const deniedAt = gate?.kind === "revoked" ? serviceMarkerCeilSeconds(gate.timestamp) : undefined;
-  const cutoffElapsed = () => deniedAt !== undefined && seconds(Date.now()) >= deniedAt + SERVICE_CUTOFF_MARGIN_S;
+  const cutoffElapsed = () => deniedAt !== undefined && seconds(Date.now()) >= deniedAt + SERVICE_EVICTION_HOLD_MARGIN_S;
   if (cutoffElapsed()) return undefined;
   try {
     ctx.step = "V5-evict";
     await readyBefore(ctx);
     const principal = principalKey(asg.owner, serviceEndpointActor({ accountPublicKey: ctx.h.accountPublicKey, space: ctx.h.space, owner: asg.owner, endpoint: asg.endpoint, instanceId: asg.instanceId })).key;
-    const r = await bounded(ctx, () => evictPrincipal(principal), DELIVERY_ADMIN_REQUEST_TIMEOUT_MS);
+    const r = await bounded(ctx, () => evictPrincipal(principal), SERVICE_EVICTION_BOUNDED_TIMEOUT_MS);
     await readyAfter(ctx);
     if (r.ok && r.value.principal === principal && r.value.verifiedGone && r.value.scanComplete && r.value.remaining === 0) return undefined;
     if (cutoffElapsed()) return undefined;
@@ -55,7 +73,7 @@ async function verifyAssignmentEvicted(
     held("eviction-unverified", ctx.step, r.value.note ?? "endpoint connection eviction could not be verified");
   } catch (err) {
     if (!(err instanceof Held)) throw err;
-    const reason = err.reason === "deadline" && Date.now() >= inv.endMs ? "reconcile-pending" : err.reason;
+    const reason = err.reason === "deadline" ? "reconcile-pending" : err.reason;
     return { state: "held", operationId, reason, phase: err.step, assignmentDigest, denyNew: "landed", ...(owed.length ? { debt: owed } : {}) };
   }
 }
@@ -563,7 +581,7 @@ export function serviceHostDecisions(deps: ServiceHostDecisionsDeps) {
         if (run.denyNew === "landed") await keepDebt(await v4(ctx, row, run.gate));
         const s1 = run.s1;
         if (s1.kind === "pending" && run.denyNew === "landed") {
-          const evictHeld = await verifyAssignmentEvicted(ctx, inv, operationId, a, owed, row, run.gate, evictPrincipal);
+          const evictHeld = await verifyAssignmentEvicted(ctx, operationId, a, owed, row, run.gate, evictPrincipal);
           if (evictHeld !== undefined) return evictHeld;
           await progress("cancelled-nonterminal");
           return { state: "pending", operationId, phase: "cancelled-nonterminal", assignmentDigest: a, denyNew: "landed", root: s1.root, ...owing() };
