@@ -62,38 +62,13 @@ test("a refusal shows its first line, and its installer output as detail", () =>
 });
 
 test("a finished install says it is installed, also when the background service has not picked it up yet", () => {
-  assert.deepEqual(installedMessage("Hermes", { service: "refreshed" }), { text: "Hermes is installed.", warning: false });
-  assert.deepEqual(installedMessage("Codex", { service: "none", pathAdded: "your user PATH" }), { text: "Codex is installed. Cotal added its folder to PATH in your user PATH.", warning: false });
-  assert.deepEqual(installedMessage("Pi", { service: "waiting" }), { text: "Pi is installed. Your spaces can start it once the agents running on this computer stop.", warning: false });
-  assert.deepEqual(installedMessage("Hermes", { service: "failed", serviceError: "the daemon did not answer within 60s" }), { text: "Hermes is installed, but the background service has not picked it up yet: the daemon did not answer within 60s. Choose Check again to try once more.", warning: true });
+  assert.equal(installedMessage("Hermes", { serviceRefresh: { state: "refreshed" } }), "Hermes is installed.");
+  assert.equal(installedMessage("Codex", { pathAdded: "your user PATH" }), "Codex is installed. Cotal added its folder to PATH in your user PATH.");
+  assert.equal(installedMessage("Pi", { serviceRefresh: { state: "pending", reason: "agents-running" } }), "Pi is installed. Your spaces can use it once the running agents finish.");
+  assert.equal(installedMessage("Hermes", { serviceRefresh: { state: "pending", reason: "unconfirmed" } }), "Hermes is installed. Cotal couldn't confirm that the background service can use it. Choose Check again.");
   // The sign-in that follows an install keeps what the service has not done yet.
-  assert.deepEqual(installedMessage("Codex", {}, true), { text: "Codex is ready.", warning: false });
-  assert.deepEqual(installedMessage("Codex", { service: "refreshed", pathAdded: "your user PATH" }, true), { text: "Codex is ready. Cotal added its folder to PATH in your user PATH.", warning: false });
-  assert.deepEqual(installedMessage("Claude Code", { service: "waiting" }, true), { text: "Claude Code is signed in. Your spaces can start it once the agents running on this computer stop.", warning: false });
-  assert.deepEqual(installedMessage("Claude Code", { service: "failed", serviceError: "x" }, true), { text: "Claude Code is signed in, but the background service has not picked it up yet: x. Choose Check again to try once more.", warning: true });
-});
-
-test("another Cotal installation owning the service is a warning naming the copy and the step that works there", () => {
-  // The app copy with a known Applications folder: the folder is named.
-  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app", location: "/Applications" } }), {
-    text: "OpenCode is installed. Another copy of Cotal runs the background service (the Cotal app in your Applications folder), so OpenCode can't be used yet. Open that copy and choose Check again in its Agent apps.",
-    warning: true,
-  });
-  // An app copy elsewhere: the folder it is in is named, still plain words and no executable path.
-  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app", location: "/opt/Cotal" } }), {
-    text: "OpenCode is installed. Another copy of Cotal runs the background service (the Cotal app in /opt/Cotal), so OpenCode can't be used yet. Open that copy and choose Check again in its Agent apps.",
-    warning: true,
-  });
-  // An app copy with no known folder: only what is known is said.
-  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app" } }), {
-    text: "OpenCode is installed. Another copy of Cotal runs the background service (the Cotal app), so OpenCode can't be used yet. Open that copy and choose Check again in its Agent apps.",
-    warning: true,
-  });
-  // A command-line owner names the install kind and its own setup step; no path in prose.
-  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "cli" } }, true), {
-    text: "OpenCode is signed in. Another copy of Cotal runs the background service (a command-line install of Cotal), so OpenCode can't be used yet. Run setup again from that install.",
-    warning: true,
-  });
-  // No owner: the service reason is kept and the panel still offers its own Check again.
-  assert.equal(installedMessage("Hermes", { service: "failed", serviceError: "the daemon did not answer" }).warning, true);
+  assert.equal(installedMessage("Codex", {}, true), "Codex is ready.");
+  assert.equal(installedMessage("Codex", { serviceRefresh: { state: "refreshed" }, pathAdded: "your user PATH" }, true), "Codex is ready. Cotal added its folder to PATH in your user PATH.");
+  assert.equal(installedMessage("Claude Code", { serviceRefresh: { state: "pending", reason: "agents-running" } }, true), "Claude Code is signed in. Your spaces can use it once the running agents finish.");
+  assert.equal(installedMessage("Claude Code", { serviceRefresh: { state: "pending", reason: "unconfirmed" } }, true), "Claude Code is signed in. Cotal couldn't confirm that the background service can use it. Choose Check again.");
 });

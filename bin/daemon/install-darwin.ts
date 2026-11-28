@@ -209,6 +209,7 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     check(receipt: UnitReceipt) {
       owned(receipt);
     },
+    stopped(receipt) { return !owned(receipt); },
     isEnabled(receipt: UnitReceipt): boolean {
       const id = uid();
       owned(receipt);
