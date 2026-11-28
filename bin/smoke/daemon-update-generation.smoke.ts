@@ -425,11 +425,14 @@ async function proveStagedPreinstallDuringSpawn(ctx: HostedPtyProof, manager: st
     assert.ok(existsSync(entered), launch.text());
     const request = { v: 1, nonce: "e".repeat(32), installedEntry: ctx.entry, daemonArgv, flags: { space: ctx.space } };
     stage = spawnProof(ctx, join(dirname(ctx.entry), "execution-preinstall.js"), [JSON.stringify(request)], { ...ctx.env, PATH: `${native}:${ctx.env.PATH}` });
-    await waitForCommandText(stage, `COTAL_PREINSTALL_PROGRESS Waiting for a hosted spawn to settle in space ${ctx.space}.`);
-    assert.equal(stage.child.exitCode, null, "the target preinstall has not returned a receipt while the launch is pending");
+    const progress = `COTAL_PREINSTALL_PROGRESS Waiting for a hosted spawn to settle in space ${ctx.space}.`;
+    await waitForCommandText(stage, progress);
+    await new Promise(resolve => setTimeout(resolve, 16_000));
+    assert.equal(stage.child.exitCode, null, "the target preinstall is still waiting beyond fifteen seconds");
     writeFileSync(release, "release");
     assert.notEqual(await launch.exited, 0, launch.text());
     assert.equal(await stage.exited, 0, stage.text());
+    assert.equal(stage.text().split(progress).length, 2, "the target preinstall prints one progress line");
     const result = /^COTAL_PREINSTALL_RESULT (.+)$/m.exec(stage.text());
     assert.ok(result, stage.text());
     assert.deepEqual(JSON.parse(result[1]!).admission, { disposition: "restart-empty", occupied: 0, hostedSpaces: [ctx.space] });
