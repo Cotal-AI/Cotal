@@ -149,6 +149,17 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       ? { holder: conflict.holder, candidate: conflict.candidate } : undefined;
   };
   return { apply, localRemoval, localAddition, serial,
+    reconcileMigratedOwner(oldOwner: string, newOwner: string) {
+      let changed = false;
+      for (const [space, state] of Object.entries(saved.spaces)) {
+        if (state.owner !== oldOwner) continue;
+        const entry = findMesh(space);
+        if (entry?.origin === "catalog" && entry.catalogOwner === newOwner) {
+          state.owner = newOwner; conflicts.delete(space); refusals.delete(space); retryAt.delete(space); changed = true;
+        }
+      }
+      if (changed) persist();
+    },
     accountHealth(owner: string, answering: boolean) {
       health.set(owner, answering ? 0 : (health.get(owner) ?? 0) + 1);
     },

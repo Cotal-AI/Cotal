@@ -82,6 +82,21 @@ async function filterSupersededAccounts(results: readonly AuthSpaceCatalogResult
   };
 }
 
+async function detectSignedInMigration(signedInProviders: readonly string[], entries: readonly MeshEntry[]): Promise<EndorsedMigration | undefined> {
+  if (signedInProviders.length < 2) return undefined;
+  const signedInSet = new Set(signedInProviders.map((url) => normalizeIdpUrl(url)));
+  for (const fromUrl of signedInSet) {
+    if (!fromUrl.startsWith("https://")) continue;
+    const oldSpaces = entries.filter((entry) => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === fromUrl).map((entry) => entry.space);
+    if (!oldSpaces.length) continue;
+    const endorsement = await readEndorsedTarget(fromUrl, entries);
+    if (endorsement && endorsement !== fromUrl && signedInSet.has(endorsement)) {
+      return { fromIdp: fromUrl, toIdp: endorsement, spaces: oldSpaces.sort() };
+    }
+  }
+  return undefined;
+}
+
 export async function desktopSpaces(sessionDir: string, refresh: boolean): Promise<DaemonSpaces> {
   let outcome: DaemonSpaces["refresh"] = "not-requested";
   let collisions = 0;
@@ -99,8 +114,9 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
     else outcome = failures === 0 ? (collisions ? "partial" : "complete") : failures === results.length ? "failed" : "partial";
   }
   const { entries, unusable } = readMeshRegistry();
+  const signedInProviders = listIdpAccounts(sessionDir).filter((account) => account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp);
   const collisionDetails = collisions ? collectCollisions(refreshResults, entries) : [];
-  const migration = collisionDetails.length ? await detectEndorsedMigration(collisionDetails, entries) : undefined;
+  const migration = collisionDetails.length ? await detectEndorsedMigration(collisionDetails, entries) : await detectSignedInMigration(signedInProviders, entries);
   const addressable = entries.filter((entry) => isDaemonSpaceName(entry.space));
   return {
     kind: "spaces",
@@ -110,7 +126,7 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
     ...(collisionDetails.length ? { collisionDetails } : {}),
     ...(migration ? { migration } : {}),
     failedProviders,
-    signedInProviders: listIdpAccounts(sessionDir).filter((account) => account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp),
+    signedInProviders,
     spaces: addressable.map((entry) => ({
       space: entry.space,
       label: entry.catalogName ?? entry.space,

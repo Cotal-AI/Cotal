@@ -29,7 +29,7 @@ import { createServiceConnections } from "./service.js";
 import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces, resolveSpaceConflict } from "./desktop-state.js";
-import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
+import { idpTimeoutMs, normalizeIdpUrl, signedInMachineAccounts, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
@@ -560,7 +560,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
         onResult: async (attempt, result) => {
           owned.delete(attempt);
-          if (result.outcome === "signed-in") account.signedIn();
+          if (result.outcome === "signed-in") {
+            if (req.migrateFrom !== undefined) {
+              const accounts = signedInMachineAccounts(machineHome);
+              const oldAcc = accounts.find((a) => a.idpUrl === normalizeIdpUrl(req.migrateFrom!));
+              const newAcc = accounts.find((a) => a.idpUrl === normalizeIdpUrl(result.idp));
+              if (oldAcc && newAcc && oldAcc.sub === newAcc.sub) reconciler.reconcileMigratedOwner(oldAcc.ownerKey, newAcc.ownerKey);
+            }
+            account.signedIn();
+          }
           await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-result", attempt, result });
         },
       });

@@ -9,7 +9,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type EndorsedMigration, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type EndorsedMigration, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -750,7 +750,8 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
+  const migration = spaceConflicts.migration;
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), migration, busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -761,15 +762,30 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
+    const rowRefusal = accountRow && (accountRow.lastRefusal || accountRow.custodyRecovery) ? spaceRowRefusal(accountRow, migration) : undefined;
+    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal ? managerReasons.get(space) : undefined; detail.textContent = `${rowRefusal?.text ?? computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const recovery = accountRow?.custodyRecovery;
-    const label = recovery ? "Use signed-in account" : restore ? "Add" : "Remove";
-    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", recovery ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
+    const label = rowRefusal && rowRefusal.action !== "remove" ? rowRefusal.label : restore ? "Add" : "Remove";
+    const forAria = rowRefusal && (rowRefusal.action === "recover" || rowRefusal.action === "move");
+    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", forAria ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
     button.addEventListener("click", () => {
-      if (recovery && !window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
-      void rowAction(space, restore, recovery);
+      if (rowRefusal?.action === "move" && migration) {
+        if (!window.confirm(`Move ${name.textContent} to the account you're signed in with?`)) return;
+        void runEndorsedMove(migration);
+        return;
+      }
+      if (rowRefusal?.action === "check") {
+        void rowAction(space, false, undefined, true);
+        return;
+      }
+      if (rowRefusal?.action === "recover" && recovery) {
+        if (!window.confirm(`Move ${name.textContent} to the account you're signed in with?`)) return;
+        void rowAction(space, false, recovery);
+        return;
+      }
+      void rowAction(space, restore);
     });
     if (rowOperation?.space === space) {
       row.setAttribute("aria-busy", "true");
@@ -778,15 +794,19 @@ function renderConnections(): void {
     row.append(copy, button); return row;
   }));
 }
-async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }): Promise<void> {
+async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }, checkOnly = false): Promise<void> {
   if (busy || rowOperation) return;
-  const operation = { space, label: `${recovery ? "Moving" : restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
+  const operation = { space, label: `${checkOnly ? "Checking" : recovery ? "Moving" : restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
   rowOperation = operation; refreshGeneration++; renderConnections();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       (async () => {
-        if (recovery || restore) {
+        if (checkOnly) {
+          await spaces(true);
+          if (rowOperation !== operation) return;
+          await refresh();
+        } else if (recovery || restore) {
           await request(recovery ? { op: "space-recover", space, ...recovery } : { op: "space-intent", space, enabled: true });
           if (rowOperation !== operation) return;
           await refresh();
@@ -1121,6 +1141,7 @@ function applySpacesPayload(result: Record<string, unknown>, activeProvider?: st
   const message = catalogRefreshNotice(result, activeProvider ?? providers.get(select.value));
   if (spaceConflicts.hasUnresolved && !result.failedProviders?.toString()) notice("");
   else if (message) notice(message);
+  renderConnections();
   buttons();
 }
 async function spaces(refreshCatalog: boolean, resetKept = false): Promise<void> {

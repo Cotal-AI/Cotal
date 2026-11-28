@@ -104,7 +104,7 @@ export function nativeStub(scenario) {
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") {
         const collisionDetails = request.refresh ? (state.collisionDetails ?? []) : [];
-        const migration = request.refresh ? state.migration : undefined;
+        const migration = request.refresh ? state.migration : (state.signedInMigration ?? undefined);
         return ok({
           signedInProviders: state.signedInProviders ?? (state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : []),
           refresh: request.refresh ? (state.otherProviderFailed || collisionDetails.length ? "partial" : "complete") : "not-requested",
@@ -173,9 +173,10 @@ export function nativeStub(scenario) {
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: `${new URL(request.idp ?? "https://cloud.cotal.ai/api/auth").origin}/device?user_code=WDJB-MJHT`, userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
         if (state.waiting || state.expired) await new Promise(() => {});
         state.signedIn = true;
-        if (request.migrateFrom && state.migration) {
+        if (request.migrateFrom && (state.migration || state.signedInMigration)) {
           state.collisionDetails = [];
           delete state.migration;
+          delete state.signedInMigration;
           state.signedInProviders = [request.idp];
           if (state.migratedCatalogSpaces) state.catalogSpaces = state.migratedCatalogSpaces;
           if (state.accountAfterMigration) state.account = state.accountAfterMigration;
@@ -333,15 +334,69 @@ export const scenarios = [
     name: `custody-recovery-${confirm ? "confirm" : "cancel"}`,
     state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected", lastRefusal: "The local space connection is held by https://old.example/api/auth.", custodyRecovery: { holder: "https://old.example/api/auth", candidate: "b".repeat(64) } }] } },
     expect: async page => {
-      const button = page.getByRole("button", { name: /^Use signed-in account for / });
+      const button = page.getByRole("button", { name: /^Move to this account for / });
       await button.waitFor();
-      assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /old.example/);
-      page.once("dialog", dialog => confirm ? dialog.accept() : dialog.dismiss());
+      const rowText = await page.locator('[data-testid="connected-space-row"]').textContent();
+      assert.match(rowText, /This space is set up under another sign-in on this computer\./);
+      assert.doesNotMatch(rowText, /old\.example/);
+      page.once("dialog", dialog => {
+        assert.equal(dialog.message(), "Move Acme team to the account you're signed in with?");
+        return confirm ? dialog.accept() : dialog.dismiss();
+      });
       await button.click();
       if (confirm) await page.waitForFunction(() => window.__renderState.accountRequests.some(row => row.op === "space-recover"));
       assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "space-recover")), confirm ? [
         { op: "space-recover", space: "acme-team", candidate: "b".repeat(64), holder: "https://old.example/api/auth" },
       ] : []);
+    },
+  })),
+  ...[false, true].map(confirm => ({
+    name: `space-row-move-${confirm ? "confirm" : "cancel"}`,
+    state: {
+      installed: true,
+      signedIn: true,
+      connected: true,
+      readyAccountSpaces: true,
+      signedInProviders: ["https://cloud.cotal.ai/api/auth", "https://cotal.cloud/api/auth"],
+      signedInMigration: { fromIdp: "https://cloud.cotal.ai/api/auth", toIdp: "https://cotal.cloud/api/auth", spaces: ["acme-team"] },
+      migration: { fromIdp: "https://cloud.cotal.ai/api/auth", toIdp: "https://cotal.cloud/api/auth", spaces: ["acme-team"] },
+      migratedCatalogSpaces: [
+        { space: "acme-team", label: "Acme team", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_acme", kind: "team", role: "owner" },
+      ],
+      accountAfterMigration: {
+        idpUrl: "https://cotal.cloud/api/auth",
+        sub: "user_1",
+        mode: "account",
+        hostSupport: "supported",
+        spaces: [{ space: "acme-team", desired: true, observed: "connected" }],
+      },
+      account: {
+        idpUrl: "https://cotal.cloud/api/auth",
+        sub: "user_1",
+        mode: "account",
+        hostSupport: "supported",
+        spaces: [{ space: "acme-team", desired: true, observed: "connected", lastRefusal: "The local space connection is held by https://cloud.cotal.ai/api/auth." }],
+      },
+    },
+    expect: async page => {
+      const button = page.getByRole("button", { name: "Move to this account for Acme team" });
+      await button.waitFor();
+      const rowText = await page.locator('[data-testid="connected-space-row"]').textContent();
+      assert.match(rowText, /This space is set up under another sign-in on this computer\./);
+      assert.doesNotMatch(rowText, /cloud\.cotal\.ai/);
+      page.once("dialog", dialog => {
+        assert.equal(dialog.message(), "Move Acme team to the account you're signed in with?");
+        return confirm ? dialog.accept() : dialog.dismiss();
+      });
+      await button.click();
+      if (confirm) {
+        await page.waitForFunction(() => (window.__renderState.loginRequests ?? []).some(row => row.migrateFrom === "https://cloud.cotal.ai/api/auth"));
+        assert.deepEqual(await page.evaluate(() => window.__renderState.loginRequests), [
+          { op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cloud.cotal.ai/api/auth" },
+        ]);
+      } else {
+        assert.deepEqual(await page.evaluate(() => window.__renderState.loginRequests ?? []), []);
+      }
     },
   })),
   { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },

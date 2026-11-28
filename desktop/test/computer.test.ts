@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown } from "../src/model.ts";
+import { computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, spaceStateKnown } from "../src/model.ts";
 
 test("computer list follows desired intent while retaining connected local spaces", () => {
   const desired = { space: "mine", desired: true, observed: "starting" };
@@ -26,6 +26,27 @@ test("computer rows use observed account state and actionable refusal", () => {
   assert.equal(computerSpaceState({ ...row, observed: "disconnected" }), "Disconnected");
   assert.equal(computerSpaceState({ ...row, lastRefusal: "Ask the owner to approve this computer." }), "Ask the owner to approve this computer.");
   assert.equal(computerSpaceState({ ...row, observed: "refused", lastRefusal: "Ask the owner." }), "Ask the owner.");
+  const heldRow = { ...row, lastRefusal: "The local space connection is held by https://cloud.cotal.ai/api/auth." };
+  assert.equal(computerSpaceState(heldRow), "This space is set up under another sign-in on this computer.");
+  assert.deepEqual(spaceRowRefusal(heldRow), {
+    text: "This space is set up under another sign-in on this computer.",
+    action: "remove",
+    label: "Remove",
+  });
+  assert.deepEqual(spaceRowRefusal({ ...heldRow, custodyRecovery: { holder: "https://cloud.cotal.ai/api/auth", candidate: "b".repeat(64) } }), {
+    text: "This space is set up under another sign-in on this computer.",
+    action: "recover",
+    label: "Move to this account",
+  });
+  assert.deepEqual(spaceRowRefusal(heldRow, {
+    fromIdp: "https://cloud.cotal.ai/api/auth",
+    toIdp: "https://cotal.cloud/api/auth",
+    spaces: ["mine"],
+  }), {
+    text: "This space is set up under another sign-in on this computer.",
+    action: "move",
+    label: "Move to this account",
+  });
 });
 
 test("window title and tray share one summary of the listed spaces", () => {

@@ -64,6 +64,41 @@ try {
   assert.equal(readMesh("alpha")!.catalogOwner, "new", "legacy catalog replay stays a collision");
   recordMeshes([{ ...original, origin: "manual" }]);
   assert.throws(() => prepareCatalogMigration(old, next, snapshot()), /undamaged registry/);
+  // Mixed ownership (6 old-owned + 1 already imported under new account during an earlier sign-in before moving):
+  rmSync(home, { recursive: true, force: true });
+  const oldSlugs = ["space-1", "space-2", "space-3", "space-4", "space-5", "space-6"];
+  for (const slug of oldSlugs) importAccountComputerSpace(old, row(old, slug, `stable-${slug}`));
+  importAccountComputerSpace(next, row(next, "member-7", "stable-member-7"));
+  const existingNew = readMesh("member-7")!;
+  const existingNewCreds = readFileSync(existingNew.userAuth!.sentinelCredsPath!, "utf8");
+  const mixedSnapshot: SpaceCatalogSnapshot = {
+    v: 1,
+    account: next,
+    spaces: [
+      ...oldSlugs.map(slug => row(next, slug, `stable-${slug}`)),
+      row(next, "member-7", "stable-member-7"),
+    ],
+  };
+  // Real losses or unaccounted rows still refuse under mixed ownership:
+  assert.throws(() => prepareCatalogMigration(old, next, {
+    ...mixedSnapshot,
+    spaces: mixedSnapshot.spaces.filter(s => s.slug !== "space-6"),
+  }), /preserve the owned space ID set/);
+  assert.throws(() => prepareCatalogMigration(old, next, {
+    ...mixedSnapshot,
+    spaces: [...mixedSnapshot.spaces.slice(0, 6), row(next, "member-renamed", "stable-member-7")],
+  }), /preserve owned space IDs and slugs/);
+  assert.throws(() => prepareCatalogMigration(old, next, {
+    ...mixedSnapshot,
+    spaces: [...mixedSnapshot.spaces, row(next, "unaccounted-8", "stable-8")],
+  }), /preserve owned space IDs and slugs/);
+  const commitMixed = prepareCatalogMigration(old, next, mixedSnapshot);
+  commitMixed();
+  for (const slug of oldSlugs) {
+    assert.equal(readMesh(slug)!.catalogOwner, "new", `${slug} moved to new account`);
+  }
+  assert.deepEqual(readMesh("member-7"), existingNew, "already new-owned space stays untouched");
+  assert.equal(readFileSync(existingNew.userAuth!.sentinelCredsPath!, "utf8"), existingNewCreds);
   console.log("catalog migration representative API smoke passed");
 } finally {
   if (previousHome === undefined) delete process.env.COTAL_HOME;

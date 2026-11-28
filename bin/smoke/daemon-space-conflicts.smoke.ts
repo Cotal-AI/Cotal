@@ -197,10 +197,12 @@ try {
   assert.equal(manualResolved.result.collisions, 2);
 
   // 4. One-button endorsed account move via login + migrateFrom updates both old catalog spaces to newIdp
-  // (when the account's space ID set matches its migrated catalog, as in cloud.cotal.ai -> cotal.cloud).
+  // EVEN when newIdp already owns a third space (`new-only`, mixed ownership: 2 old-owned + 1 new-owned).
+  const existingNewOnly = readMesh("new-only")!;
   newSpaces = [
     catalogRow("personal-home", "Personal", "personal", newIdp),
     catalogRow("cotal-team", "Cotal team", "team", newIdp),
+    catalogRow("new-only", "New only", "team", newIdp),
   ];
   const moveFrames = await bridge({ op: "login", idp: newIdp, migrateFrom: oldIdp });
   migrationPrompts = moveFrames.filter((f) => f.event === "login-prompt").length;
@@ -211,6 +213,7 @@ try {
   assert.equal(loadIdpSession(homeCotalDir(), newIdp)?.token, "migrated-fresh-session");
   assert.equal(readMesh("personal-home")?.userAuth?.idp.url, newIdp);
   assert.equal(readMesh("cotal-team")?.userAuth?.idp.url, newIdp);
+  assert.deepEqual(readMesh("new-only"), existingNewOnly, "already new-owned space remains untouched during endorsed move");
 
   // 5. Immediately after migration (EVEN while old session is retained on disk, matching stock
   // `cotal login --migrate-from`), spaces refresh ignores the superseded old account and reports 0 collisions!

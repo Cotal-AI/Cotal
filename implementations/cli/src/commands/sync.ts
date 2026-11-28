@@ -228,20 +228,32 @@ export function prepareCatalogMigration(oldAccount: AuthSpaceCatalogAccount, new
   const before = readState();
   const serialized = JSON.stringify(before);
   const owned = before.filter((entry) => entry.catalogOwner === oldAccount.ownerKey);
+  if (!owned.length) throw new Error("catalog migration must preserve the owned space ID set");
   const byId = new Map<string, MeshEntry>();
   for (const entry of owned) {
     if (entry.origin !== "catalog" || !entry.catalogId || byId.has(entry.catalogId))
       throw new Error("catalog migration requires unique catalog-owned stable space IDs");
     byId.set(entry.catalogId, entry);
   }
-  if (owned.length !== snapshot.spaces.length)
-    throw new Error("catalog migration must preserve the owned space ID set");
+  const newOwned = before.filter((entry) => entry.catalogOwner === account.ownerKey);
+  const newOwnedById = new Map<string, MeshEntry>();
+  for (const entry of newOwned) {
+    if (entry.origin !== "catalog" || !entry.catalogId || newOwnedById.has(entry.catalogId) || byId.has(entry.catalogId))
+      throw new Error("catalog migration requires unique catalog-owned stable space IDs");
+    newOwnedById.set(entry.catalogId, entry);
+  }
   const seen = new Set<string>();
-  const planned = snapshot.spaces.map((row) => {
+  let migratedCount = 0;
+  const planned = snapshot.spaces.flatMap((row) => {
     if (seen.has(row.id)) throw new Error("catalog migration repeats a space ID");
     seen.add(row.id);
     const old = byId.get(row.id);
-    if (!old || old.space !== row.slug || old.catalogSlug !== row.slug)
+    if (!old) {
+      const existingNew = newOwnedById.get(row.id);
+      if (existingNew && existingNew.space === row.slug && existingNew.catalogSlug === row.slug) return [];
+      throw new Error("catalog migration must preserve owned space IDs and slugs");
+    }
+    if (old.space !== row.slug || old.catalogSlug !== row.slug)
       throw new Error("catalog migration must preserve owned space IDs and slugs");
     if ("unavailable" in row) throw new Error("catalog migration cannot migrate an unavailable owned space");
     if (!old.userAuth || old.userAuth.idp.audience !== row.registration.userAuth.idp.audience)
@@ -251,8 +263,11 @@ export function prepareCatalogMigration(oldAccount: AuthSpaceCatalogAccount, new
     assertRegistrationAccountBinding({ ...row.registration, userAuth: { ...old.userAuth, endpoints: { ...old.userAuth.endpoints, url: old.userAuth.endpoints.url } } }, oldAccount, `old catalog entry "${old.space}"`);
     const next = entryFor(account, row, old);
     if (old.userAuth.sentinelCredsPath) next.userAuth!.sentinelCredsPath = old.userAuth.sentinelCredsPath;
-    return { next, row };
+    migratedCount++;
+    return [{ next, row }];
   });
+  if (migratedCount !== owned.length)
+    throw new Error("catalog migration must preserve the owned space ID set");
   return () => {
     if (JSON.stringify(readState()) !== serialized)
       throw new Error("catalog migration registry changed after preparation");

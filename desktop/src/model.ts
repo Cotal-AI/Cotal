@@ -24,6 +24,23 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }
+export interface SpaceRowRefusal { text: string; action: "recover" | "move" | "sign-in" | "apps" | "check" | "remove"; label: string }
+const HELD_BY_RE = /^The local space connection is held by (.+)\.$/;
+export function spaceRowRefusal(row: ComputerSpace, migration?: EndorsedMigration): SpaceRowRefusal {
+  const held = row.lastRefusal ? HELD_BY_RE.exec(row.lastRefusal) : null;
+  if (held || row.custodyRecovery) {
+    const text = "This space is set up under another sign-in on this computer.";
+    if (row.custodyRecovery) return { text, action: "recover", label: "Move to this account" };
+    let sameAccountMove = false;
+    if (held && migration) {
+      try { sameAccountMove = canonicalProvider(held[1]!) === canonicalProvider(migration.fromIdp); }
+      catch { sameAccountMove = held[1] === migration.fromIdp; }
+    }
+    if (sameAccountMove) return { text, action: "move", label: "Move to this account" };
+    return { text, action: "remove", label: "Remove" };
+  }
+  return { text: row.lastRefusal ?? "Refused", action: "remove", label: "Remove" };
+}
 /** States a space passes through without anyone acting. A space that was just turned on reports `not-requested` while its Manager boots. */
 const PASSING_SPACE_STATE: Record<string, string> = {
   "not-requested": "Starting",
@@ -54,7 +71,7 @@ export function spaceStateKnown(observed: string): boolean {
   return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
 }
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
-  if (row.lastRefusal) return row.lastRefusal;
+  if (row.lastRefusal || row.custodyRecovery) return spaceRowRefusal(row).text;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
