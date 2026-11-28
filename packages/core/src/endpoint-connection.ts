@@ -64,6 +64,7 @@ export class EndpointConnection {
   private bearerRefusalSurfaced = false;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
+  private reestablishFlight?: Promise<void>;
   /** The observer feeds {@link tap} was asked for. This is INTENT, re-subscribed by {@link bindTap}
    *  on every (re)connect: a rebuild after an outage the library could not ride out closes the old
    *  connection and every subscription on it, so a tap bound once went silent while the endpoint
@@ -508,10 +509,13 @@ export class EndpointConnection {
 
   /** Rebuild with backoff until it sticks or we're stopped. Interruptible: a manual
    *  {@link reconnect} kicks the backoff so the next attempt runs immediately instead of
-   *  awaiting the full delay. One loop at a time ({@link reestablishing}); concurrent
-   *  triggers coalesce via {@link EndpointReconnect.rebuild}. */
-  async reestablishLoop(): Promise<void> {
-    if (this.lifecycle.reestablishing) return;
+   *  awaiting the full delay. Concurrent callers share the recovery flight and its final bind. */
+  reestablishLoop(): Promise<void> {
+    return this.reestablishFlight ??= Promise.resolve().then(() => this.reestablish())
+      .finally(() => { this.reestablishFlight = undefined; });
+  }
+
+  private async reestablish(): Promise<void> {
     this.lifecycle.reestablishing = true;
     try {
       while (!this.lifecycle.stopped) {
