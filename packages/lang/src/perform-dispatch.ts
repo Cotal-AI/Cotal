@@ -5,7 +5,7 @@ import { InterpreterDefect, RuntimeFault } from "./errors.js";
 import { atMostOnce, requestId, stepKeyString } from "./keys.js";
 import { type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, deepFreeze } from "./values.js";
-import { HOLDABLE_KINDS, PRIMITIVES } from "./primitives.js";
+import { HOLDABLE_KINDS, PRIMITIVES, WAIT_UNTIL_MIN_EVERY_MS } from "./primitives.js";
 import { parseDuration } from "./duration.js";
 import { notifyFactViolation } from "./notify-fact.js";
 import {
@@ -21,6 +21,7 @@ import {
 import {
   agentHandle,
   agentHandles,
+  chargeEffect,
   type EffectFrame,
   type EffectHost,
   enterStep,
@@ -218,7 +219,7 @@ async function performWaitUntil(
  */
 async function observeUntil(
   host: EffectHost,
-  { key, pending, ctx }: LiveStep,
+  { key, ctx }: LiveStep,
   name: string,
   probe: (frame: EffectFrame) => Promise<unknown>,
   terminal: ((frame: EffectFrame, observation: unknown) => Promise<unknown>) | undefined,
@@ -236,7 +237,7 @@ async function observeUntil(
 
   // Which observation this is, carried on the request. It is not `ctx.attempt`, the attempt the
   // request id names, which every observation shares.
-  let attempt = (pending?.observations ?? []).length;
+  let attempt = (host.journal.get(key)?.observations ?? []).length;
   for (;;) {
     // EACH OBSERVATION GETS ITS OWN KEY NAMESPACE, and this is the half of the fix that is easy
     // to miss. The probe reaches the world by performing effects, and those effects allocate keys
@@ -281,6 +282,13 @@ async function observeUntil(
       throw new EffectError(error.code, error.kind, error.message, error.detail);
     }
 
+    // Reserve the next recorded look BEFORE its probe can dispatch effects. A cadence that
+    // expires or throws records no look and spends nothing. A probe/predicate/append failure also
+    // refunds this reservation, while effects the probe actually journalled keep their cost.
+    const charged = attempt > 0;
+    if (charged) chargeEffect(host);
+    let recorded = false;
+    try {
     // THE PROBE IS THE PROGRAM'S OWN CODE, called by the runtime. Its answer is refused here if it
     // has no canonical form, with its own code: it is about to be journalled AND handed back to
     // the program, so the two things a recorded value must be able to do are exactly what it
@@ -319,6 +327,7 @@ async function observeUntil(
       // wait is over; `observations` keeps the whole history, so the record says how long the
       // world took to get there rather than only where it ended up.
       await host.journal.observe(key, observation, at);
+      recorded = true;
       await host.journal.settle(key, { status: "ok", result: deepFreeze(observation) }, at);
       frame.clock.advance(at);
       return observation;
@@ -329,8 +338,12 @@ async function observeUntil(
     // runs, and the world is observed again — instead of the recorded "pending" being handed back
     // as though it were still true.
     await host.journal.observe(key, observation, at);
+    recorded = true;
     frame.clock.advance(at);
     attempt += 1;
+    } finally {
+      if (charged && !recorded) host.effectCount -= 1;
+    }
   }
 }
 
@@ -729,12 +742,12 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // ZERO IS REFUSED BEFORE THE COMPARISON, because `0 > deadline` is false and a bare ordering
       // test therefore ACCEPTS the one cadence that is not a cadence at all. A wait that pauses for
       // nothing between looks is a busy loop against a resource the run does not own, and every
-      // turn of it appends to a journal that is rewritten whole. This is the computed-bag case the
-      // validator cannot see.
-      if (everyMs <= 0) {
+      // turn of it appends to a journal that is rewritten whole. The same holds for any cadence
+      // under the floor. This is the computed-bag case the validator cannot see.
+      if (everyMs < WAIT_UNTIL_MIN_EVERY_MS) {
         throw new RuntimeFault(
           "L3047",
-          `this \`waitUntil\` observes every ${every}, which is no pause at all: it would poll the resource as fast as the run can turn and journal an observation each time. Give \`every\` a real interval, the slowest one that still notices in time.`,
+          `this \`waitUntil\` observes every ${every}, under the ${WAIT_UNTIL_MIN_EVERY_MS / 1000}s floor: every observation is a durable journal append and counts toward the run's effect ceiling. Give \`every\` a real interval of at least ${WAIT_UNTIL_MIN_EVERY_MS / 1000}s, the slowest one that still notices in time.`,
         );
       }
       if (everyMs > deadlineMs) {

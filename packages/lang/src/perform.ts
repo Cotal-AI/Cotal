@@ -134,14 +134,22 @@ function countEffect(host: EffectHost, verdict: LookupVerdict, kind: EffectKind)
   const count = limit === undefined ? undefined : host.kindCounts.get(kind) ?? host.journal.dispatchedEffects(kind);
   if (limit !== undefined && count !== undefined && count >= limit)
     throw new RuntimeFault("L4029", `This run has reached its pinned ${kind} ceiling of ${limit}. No new ${kind} effect was dispatched. Other effect kinds keep their own limits.`);
-  host.effectCount += 1;
-  if (host.effectCount > host.ceiling) {
+  chargeEffect(host);
+  if (count !== undefined) host.kindCounts.set(kind, count + 1);
+}
+
+/**
+ * Charge one dispatch against the run's effect ceiling (L4009). A recorded `waitUntil` look after the
+ * first is charged here too, and only here: a pinned kind ceiling limits dispatches, not looks.
+ */
+export function chargeEffect(host: EffectHost): void {
+  if (host.effectCount >= host.ceiling) {
     throw new RuntimeFault(
       "L4009",
-      `this run has performed more than ${host.ceiling} effects, which means a loop is not terminating. Add an exit condition or a permit.`,
+      `this run has reached its ceiling of ${host.ceiling} effects, including recorded wait observations. Bound loops and waits, or ask the embedder for a higher effect ceiling.`,
     );
   }
-  if (count !== undefined) host.kindCounts.set(kind, count + 1);
+  host.effectCount += 1;
 }
 
 /**

@@ -88,8 +88,13 @@ refuses a fork prefix containing a spawn with `"respawn"`, with L5019.
 The [event constructors](../spec/cotal-lang.md#66-events) build descriptors for `wait`.
 
 `waitUntil` calls `probe` until `terminal(observation)` holds, by default when the observation
-is not `null`. `every` and `deadline` are required. A zero cadence or one longer than the
-deadline is L3047. The first observation has no cadence delay.
+is not `null`. `every` and `deadline` are required. A cadence under 1s or one longer than the
+deadline is L3047. The first observation has no cadence delay. Each later recorded observation
+counts toward the run's effect ceiling (L4009), on a resume too. Probe effects share the same budget.
+`every` times the remaining ceiling caps the polling horizon: every 5 s for 24 h needs 17,280
+observations, above the default 10,000. No CLI or hosted start surface raises that ceiling today;
+only an embedder can set it. An in-flight sub-second cadence raises catchable L3047 on resume,
+so a program that catches L3047 takes its catch branch instead of continuing that cadence.
 
 Pending waits observe again on resume. Only a terminal observation settles the result.
 An elapsed deadline raises catchable L4023. A non-canonical observation or non-boolean

@@ -585,8 +585,11 @@ export class Journal {
       occurrence: key.occurrence,
       inputHash,
       ...(requestId !== undefined ? { requestId, attempt: 0 } : {}),
+      // A wait may be refused on a later cadence, after earlier looks were durably recorded.
+      // Re-begin retries the unperformed look, not the history or its effect-ceiling cost.
+      ...(key.kind === "waitUntil" && existing?.observations !== undefined ? { observations: existing.observations } : {}),
       state: "pending",
-      startedAt,
+      startedAt: key.kind === "waitUntil" && existing !== undefined ? existing.startedAt : startedAt,
     };
     await this.persist(k, entry);
     this.byKey.set(k, entry);
@@ -808,11 +811,16 @@ export class Journal {
    *
    * A `conclave` counts, because its open is a dispatch and the interpreter counts it as one; the
    * other scope kinds dispatch nothing of their own, so their entries do not.
+   *
+   * A `waitUntil` counts once per recorded observation in the run total: each one is a durable append
+   * the run made, and the interpreter counts each look after the first as it makes it. Its key covers
+   * the first. A count for one `kind` counts keys only, as a pinned kind ceiling limits dispatches.
    */
   dispatchedEffects(kind?: EffectKind): number {
     let n = 0;
     for (const e of this.byKey.values()) {
       if ((EFFECT_KINDS as readonly string[]).includes(e.kind) && (kind === undefined || e.kind === kind)) n += 1;
+      if (kind === undefined && e.kind === "waitUntil" && e.observations !== undefined && e.observations.length > 1) n += e.observations.length - 1;
     }
     return n;
   }

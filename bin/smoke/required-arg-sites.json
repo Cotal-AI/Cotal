@@ -187,6 +187,7 @@
   "implementations/runtime/smoke/manager-caller-transport.smoke.ts": 5,
   "implementations/runtime/smoke/run-command.smoke.ts": 8,
   "implementations/runtime/smoke/run-driver-auth.smoke.ts": 1,
+  "implementations/runtime/smoke/wait-until-bounds.smoke.ts": 1,
   "implementations/runtime/src/run-command.ts": 5,
   "implementations/runtime/src/seat-turn-command.ts": 1,
   "packages/core/smoke/artifact-store-no-reserve.smoke.ts": 3,
