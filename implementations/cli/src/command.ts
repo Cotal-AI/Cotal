@@ -1336,6 +1336,7 @@ async function executeDispatchedCommand(
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
+      if (scope.reportedFailure) recordTelemetryFailure(scope.reportedFailure.outcome, scope.reportedFailure.code);
     });
   });
   if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);

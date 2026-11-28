@@ -87,6 +87,14 @@ const MINIMAL = [...COMMON, "command", "outcome", "exitCode", "durationMs"];
 const REGULAR = [...MINIMAL, "account", "subcommand", "flags", "errorCode", "errorMessage", "errorStack", "interactive", "shell", "terminal"];
 const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMethod", "connectors", "extensions", "runtimes", "meshes", "hostedMesh", "uptimeDays"];
 
+{
+  const s = sandbox(), file = "fixture-private-workflow.cotal.js";
+  writeFileSync(join(s.project, file), "const = ;");
+  const r = await s.run(["run", "validate", file, "--json"]), event = r.sent.find(row => row.event === "command");
+  check("invalid workflow findings stay local while telemetry matches the refusal", r.status === 1 && r.envelope?.outcome === "refused" && r.stdout.includes("SCHEMA_INVALID") && r.stdout.includes(file) &&
+    event?.outcome === "refused" && event.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(file), shown(r));
+}
+
 // ---- regular: the first command of the day sends the install event, then its own ----
 {
   const s = sandbox();
@@ -216,6 +224,15 @@ for (const level of ["regular", "minimal"]) {
     configEvent?.errorCode === "SCHEMA_INVALID" && configEvent.errorMessage === null && configEvent.errorStack === null && !JSON.stringify(blocked.sent).includes(marker), shown(blocked));
   check("an unexpanded store path names the working folder only locally", r.status === 1 && r.stdout.includes(marker) && !existsSync(join(s.project, "artifact")) &&
     event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
+{
+  const s = sandbox(), marker = "fixture-preferences-marker", config = join(s.home, `config ${marker}`);
+  const dir = join(config, "cotal"), file = join(dir, "preferences.json");
+  mkdirSync(dir, { recursive: true }); writeFileSync(file, "{", { mode: 0o600 });
+  const r = await s.run(["history", "--json"], { XDG_CONFIG_HOME: config }), event = r.sent.find(row => row.event === "command");
+  check("invalid preferences name the file and parse error only locally", r.status === 1 && r.stdout.includes(marker) && r.stdout.includes("not JSON") && readFileSync(file, "utf8") === "{" &&
+    event?.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
 }
 
 {
