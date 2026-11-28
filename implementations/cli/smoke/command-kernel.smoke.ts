@@ -2085,6 +2085,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   } catch (error) {
     thrown = error;
   }
+  await new Promise<void>((resolve) => setImmediate(resolve));
   if (signal === "SIGHUP") {
     assert.equal(thrown, undefined);
     assert.equal(status, 129, "SIGHUP during staging exits 129");

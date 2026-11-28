@@ -1534,19 +1534,9 @@ async function ptyRealChildHangupCell(entry, parent) {
     const driver = join(root, 'real-child-pty.py');
     const resultFile = join(root, 'real-child-result.json');
     writeFileSync(driver, [
-      'import json, os, pty, select, signal, subprocess, sys, time',
+      'import json, os, pty, signal, subprocess, sys',
       'result_file, node_bin, entry_js, target_ver = sys.argv[1:5]',
-      'holder_pid, master_fd = pty.fork()',
-      'if holder_pid == 0:',
-      '    while True:',
-      '        time.sleep(10)',
-      'deadline = time.monotonic() + 5.0',
-      'slave_path = f"/proc/{holder_pid}/fd/1"',
-      'while not os.path.exists(slave_path) and time.monotonic() < deadline:',
-      '    time.sleep(0.01)',
-      'slave_fd = os.open(slave_path, os.O_RDWR | os.O_NOCTTY)',
-      'os.kill(holder_pid, signal.SIGKILL)',
-      'os.waitpid(holder_pid, 0)',
+      'master_fd, slave_fd = pty.openpty()',
       'os.close(master_fd)',
       'err_r, err_w = os.pipe()',
       'child_env = dict(os.environ)',
