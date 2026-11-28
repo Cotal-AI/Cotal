@@ -16,7 +16,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, retryAfterSeconds, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -147,7 +147,14 @@ export const cotalAuthProvider: AuthProvider = {
         if (request.operator && request.operator.answers === undefined) {
           const message = error instanceof ManagerAuthorityRefusal && isManagerAuthorityOutage(error.status)
             ? "the run authority is temporarily unavailable; retry the read in a few seconds" : error.message;
-          throw new EpEnvelopeError("unavailable", message, undefined, "not-executed");
+          const read = new EpEnvelopeError("unavailable", message, undefined, "not-executed");
+          const status = error instanceof ManagerAuthorityRefusal ? error.status : error instanceof IdpRateLimitedError ? error.status : undefined;
+          const retryAfter = error instanceof IdpRateLimitedError ? error.retryAfterSeconds
+            : error instanceof ManagerAuthorityRefusal ? error.retryAfterSeconds : undefined;
+          throw Object.assign(read, {
+            ...(status === 429 || status === 501 ? { status } : {}),
+            ...(status === 429 && retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
+          });
         }
         if (request.attempt && request.attempt.served === undefined) {
           const unavailable = new EpEnvelopeError("unavailable", error.message, undefined,
@@ -1007,12 +1014,13 @@ async function postManagerAuthority(
   // A stand-in object would reach the caller as a result the endpoint never sent.
   const body = await response.json().catch((error: unknown) => {
     const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
-    if (isManagerAuthorityOutage(response.status)) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    if (isManagerAuthorityOutage(response.status) || response.status === 429 || response.status === 501)
+      throw new ManagerAuthorityRefusal(message, response.status, undefined, retryAfterSeconds(response.headers.get("retry-after")));
     if (response.ok && isManagerAuthorityTransportOutage(error)) throw new ManagerAuthorityTransportError(message, { cause: error });
     throw new Error(message);
   });
   signal?.throwIfAborted();
-  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status, retryAfterHeaderSeconds(response));
+  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status, retryAfterSeconds(response.headers.get("retry-after")));
   return body;
 }
 
@@ -1022,15 +1030,6 @@ const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import
 
 function isManagerAuthorityOutage(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
-}
-
-/** The whole-second wait a `Retry-After` header names, or undefined when it names none. A date
- *  value is the same wait, counted from now. */
-function retryAfterHeaderSeconds(response: { headers: { get(name: string): string | null } }): number | undefined {
-  const value = response.headers.get("retry-after")?.trim();
-  if (value === undefined || value === "") return undefined;
-  const seconds = /^\d+$/.test(value) ? Number(value) : Math.ceil((Date.parse(value) - Date.now()) / 1000);
-  return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
 class ManagerAuthorityTransportError extends Error {}
