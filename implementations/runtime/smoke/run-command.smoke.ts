@@ -1225,6 +1225,7 @@ const takeoverRun = startedId()!;
   const openServers = `nats://127.0.0.1:${openPort}`;
   writeFileSync(join(openDir, "server.conf"), openServerConfig({ transport: { kind: "plaintext" }, port: openPort, storeDir: join(openDir, "js") }));
   const openBroker = spawn("nats-server", ["-c", join(openDir, "server.conf")], { stdio: "ignore" });
+  teardownOnSignal(openBroker, openDir);
   const openRoot = mkdtempSync(join(tmpdir(), "cotal-wfjopen-root-"));
   mkdirSync(join(openRoot, ".cotal"), { recursive: true });
   let openUp = false;
