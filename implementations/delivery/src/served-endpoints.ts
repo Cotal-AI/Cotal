@@ -13,12 +13,17 @@
  * (`endpoint-bind.ts`).
  */
 import type { JetStreamManager } from "@nats-io/jetstream";
-import type { CotalEndpoint, NativeConnectionBinding, SecretStore } from "@cotal-ai/core";
-import { daemonEndpointKey, DAEMON_ENDPOINT_SERVE_CREDS_KIND, readDaemonEndpointInstanceId, readDaemonEndpointServeId } from "@cotal-ai/workspace";
+import { ARTIFACT_STORE_KIND, ARTIFACTS_ENDPOINT, isArtifactStoreBlockBytes, registry, type ArtifactStore, type CotalEndpoint, type NativeConnectionBinding, type SecretStore } from "@cotal-ai/core";
+import { daemonEndpointKey, DAEMON_ENDPOINT_SERVE_CREDS_KIND, readArtifactStoreBinding, readDaemonEndpointInstanceId, readDaemonEndpointServeId } from "@cotal-ai/workspace";
 import { DaemonEndpointBinder, type DaemonServedEndpoint, type ServeState } from "./endpoint-bind.js";
+import { JETSTREAM_ARTIFACT_STORE } from "./stores/jetstream-name.js";
 
-/** Every endpoint a delivery daemon knows how to serve, by name. A name outside this table is refused
- *  at start, before anything dials. Each factory gets what it needs to open its own connections. */
+/** Every endpoint a delivery daemon knows how to serve, by name. A name outside this list is refused
+ *  at start, before anything dials. Names only: the factories are built per daemon, after what they
+ *  depend on (the artifact store) is resolved. */
+export const SERVED_ENDPOINT_NAMES: readonly string[] = Object.freeze([ARTIFACTS_ENDPOINT]);
+
+/** One daemon's factories for the endpoints it serves, built once its dependencies are resolved. */
 export type ServedEndpointCatalog = Readonly<Record<string, (ctx: ServedEndpointContext) => DaemonServedEndpoint>>;
 
 /** What a served endpoint's factory is handed: where to dial, the store holding its material, the
@@ -36,15 +41,31 @@ export interface ServedEndpointContext {
   log: (line: string) => void;
 }
 
-/** Parse `--serve <a,b>` into endpoint names: deduplicated, each one in the catalog. */
-export function parseServeFlag(raw: string | undefined, catalog: ServedEndpointCatalog): string[] {
+/** Parse `--serve <a,b>` into endpoint names: deduplicated, each one a name this daemon serves. */
+export function parseServeFlag(raw: string | undefined, known: readonly string[]): string[] {
   if (raw === undefined) return [];
   const names = raw.split(",").map((n) => n.trim()).filter((n) => n.length > 0);
   if (names.length === 0) throw new Error("delivery: --serve needs an endpoint name (for example --serve artifacts)");
-  const unknown = names.filter((n) => !Object.hasOwn(catalog, n));
+  const unknown = names.filter((n) => !known.includes(n));
   if (unknown.length)
-    throw new Error(`delivery: --serve ${unknown.join(",")}: this daemon serves only ${Object.keys(catalog).join(", ") || "no endpoint"}`);
+    throw new Error(`delivery: --serve ${unknown.join(",")}: this daemon serves only ${known.join(", ") || "no endpoint"}`);
   return [...new Set(names)];
+}
+
+/** The artifact store a daemon serving `artifacts` for `space` uses, resolved once at start and
+ *  before anything dials (A2). The space's binding names it; no binding means the default store. A
+ *  binding that is not a store name, a name nobody registered, or a store whose block size is out of
+ *  range refuses by name, and nothing falls back to another store. The daemon logs which store it took. */
+export async function resolveArtifactStore(store: SecretStore, space: string, log: (line: string) => void): Promise<ArtifactStore> {
+  const bound = await readArtifactStoreBinding(store, space);
+  const name = bound ?? JETSTREAM_ARTIFACT_STORE;
+  let resolved: ArtifactStore;
+  try { resolved = registry.resolve<ArtifactStore>(ARTIFACT_STORE_KIND, name); }
+  catch { throw new Error(`delivery: no artifact store "${name}" is registered; nothing was started`); }
+  if (!isArtifactStoreBlockBytes(resolved.blockBytes))
+    throw new Error(`delivery: artifact store "${name}" declares an invalid block size; nothing was started`);
+  log(`• ${ARTIFACTS_ENDPOINT}: artifact store "${name}" (${bound === undefined ? "no binding: the default" : "bound for this space"})`);
+  return resolved;
 }
 
 /** The daemon's served endpoints: one binder each, and the two delivery-admin hooks. */

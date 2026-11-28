@@ -1,5 +1,7 @@
 /**
- * The artifacts service's object store layer (plan section 4, C5; security S2, S10).
+ * The `jetstream` artifact store (plan section 4, C5; security S2, S10; A2): the default store, the
+ * space's own object stream on the broker. It is the A1 object code, moved behind the
+ * `artifact-store` contract and not rewritten.
  *
  * Layout: chunk `i` of digest `h` is the one message on `$O.<obj>.C.<h>.<i>`, every chunk but the last
  * {@link ARTIFACT_STORE_CHUNK_BYTES} long whatever transport chunks carried the bytes, and the meta
@@ -13,22 +15,23 @@
  * written only for bytes this service hashed to the digest the caller declared. A crash between the
  * chunks and the meta leaves chunks with no meta, which the sweep reclaims behind its reservation.
  *
- * The delete side (filtered purges by subject) lives in the sweep, on the sweeper credential, which
- * holds no `$O` publish and no read of object bytes.
+ * The store opens over two handles. Reads and writes use `data` (the `artifact-data` credential). The
+ * delete side (filtered purges by subject) and the inventory (`STREAM.INFO` with a subjects filter)
+ * use `sweeper` (the `artifact-sweeper` credential), which holds no `$O` publish and no read of object
+ * bytes. Neither handle stands in for the other.
  */
 import { headers, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
-import { artifactBucket, EpEnvelopeError, isCasLoss, objectStoreStream } from "@cotal-ai/core";
-import { digestToken } from "./artifact-keys.js";
+import {
+  ARTIFACT_STORE_KIND, ARTIFACT_STORE_MAX_BLOCK_BYTES, artifactBucket, EpEnvelopeError, isCasLoss, objectStoreStream, registry,
+  type ArtifactStore, type ArtifactStoreGuard, type ArtifactStoreHandles, type ArtifactStoreRecord, type ArtifactStoreSpace,
+} from "@cotal-ai/core";
+import { digestToken } from "../artifact-keys.js";
+import { JETSTREAM_ARTIFACT_STORE } from "./jetstream-name.js";
 
-/** The commit record: what the store verified, not what any message claims. */
-export interface ArtifactMeta {
-  digest: string;
-  size: number;
-  chunks: number;
-  name: string;
-  mediaType: string;
-}
+/** The commit record: what the store verified, not what any message claims. The stored JSON keeps
+ *  its `chunks` key; in memory the count is the contract's `blocks`. */
+export type ArtifactMeta = ArtifactStoreRecord;
 
 /** The size of every stored chunk but the last (E17). Storage framing is fixed and independent of how
  *  the bytes arrived: one digest names one byte string, so it names one chunk at every index, and a
@@ -79,10 +82,12 @@ export function digestOfChunkSubject(space: string, subject: string): string | u
   return m ? `sha256:${m[1]}` : undefined;
 }
 
-/** The store over one `artifact-data` connection. */
-export class ArtifactObjects {
+/** The store over one space's `artifact-data` and `artifact-sweeper` connections. */
+export class ArtifactObjects implements ArtifactStoreSpace {
+  readonly blockBytes = ARTIFACT_STORE_CHUNK_BYTES;
   private jsm?: JetStreamManager;
-  constructor(private readonly nc: NatsConnection, private readonly space: string) {}
+  private sweeperJsm?: JetStreamManager;
+  constructor(private readonly nc: NatsConnection, private readonly space: string, private readonly sweeper: NatsConnection) {}
 
   private async manager(): Promise<JetStreamManager> {
     // `checkAPI: false`: the credential holds no account-info read beyond `$JS.API.INFO`, and needs none.
@@ -90,21 +95,48 @@ export class ArtifactObjects {
     return this.jsm;
   }
 
+  private async sweeperManager(): Promise<JetStreamManager> {
+    this.sweeperJsm ??= await jetstreamManager(this.sweeper, { checkAPI: false });
+    return this.sweeperJsm;
+  }
+
   /** The commit record, or `undefined` when the digest has no live meta. A last-by-subject direct get. */
-  async readMeta(digest: string): Promise<ArtifactMeta | undefined> {
+  async stat(digest: string): Promise<ArtifactMeta | undefined> {
     const m = await (await this.manager()).direct.getMessage(objectStoreStream(artifactBucket(this.space)), { last_by_subj: metaSubject(this.space, digest) });
     if (m === null) return undefined;
-    let o: Partial<ArtifactMeta> & { deleted?: boolean };
+    let o: Partial<Omit<ArtifactMeta, "blocks">> & { chunks?: number; deleted?: boolean };
     try { o = JSON.parse(m.string()); } catch { return undefined; }
     if (o.deleted === true || o.digest !== digest || !Number.isSafeInteger(o.size) || !Number.isSafeInteger(o.chunks)
       || typeof o.name !== "string" || typeof o.mediaType !== "string") return undefined;
-    return { digest, size: o.size!, chunks: o.chunks!, name: o.name, mediaType: o.mediaType };
+    return { digest, size: o.size!, blocks: o.chunks!, name: o.name, mediaType: o.mediaType };
   }
 
   /** Chunk `index` of `digest`, or `undefined` when it is gone. A last-by-subject direct get. */
-  async readChunk(digest: string, index: number): Promise<Uint8Array | undefined> {
+  private async readChunk(digest: string, index: number): Promise<Uint8Array | undefined> {
     const m = await (await this.manager()).direct.getMessage(objectStoreStream(artifactBucket(this.space)), { last_by_subj: chunkSubject(this.space, digest, index) });
     return m === null ? undefined : m.data;
+  }
+
+  /** Bytes `[offset, offset + length)` of `digest`: one direct get per stored chunk the range touches,
+   *  sliced and joined, or `undefined` as soon as one is gone. A range that is not a positive length
+   *  of at most 1 MiB at a non-negative offset refuses. The caller bounds the range by the artifact's
+   *  size (the handler checks the offset against `stat` first); a range that runs past the artifact's
+   *  short final chunk refuses rather than returning fewer bytes. A range wholly past the last chunk
+   *  finds no chunk and reads as gone, which is why the caller bounds it. */
+  async read(digest: string, offset: number, length: number): Promise<Uint8Array | undefined> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length <= 0 || length > ARTIFACT_STORE_MAX_BLOCK_BYTES)
+      throw new Error(`artifacts: the jetstream store cannot read ${length} bytes at offset ${offset}`);
+    const first = Math.floor(offset / ARTIFACT_STORE_CHUNK_BYTES), last = Math.floor((offset + length - 1) / ARTIFACT_STORE_CHUNK_BYTES);
+    const parts: Uint8Array[] = [];
+    for (let i = first; i <= last; i++) {
+      const c = await this.readChunk(digest, i);
+      if (c === undefined) return undefined;
+      const from = i === first ? offset - i * ARTIFACT_STORE_CHUNK_BYTES : 0;
+      const to = i === last ? offset + length - i * ARTIFACT_STORE_CHUNK_BYTES : c.byteLength;
+      if (to > c.byteLength || (i < last && c.byteLength !== ARTIFACT_STORE_CHUNK_BYTES)) throw new Error(`artifacts: ${digest} ends before byte ${offset + length}; the range is past the artifact`);
+      parts.push(from === 0 && to === c.byteLength ? c : c.subarray(from, to));
+    }
+    return parts.length === 1 ? parts[0]! : Buffer.concat(parts);
   }
 
   /** Why this connection cannot store an artifact of `size` bytes, or `undefined` when it can: the
@@ -112,7 +144,7 @@ export class ArtifactObjects {
    *  {@link ARTIFACT_STORE_CHUNK_BYTES}) plus {@link STORE_HEADER_ALLOWANCE} bytes of headers (E23). Asked at
    *  `put-begin`, before any byte is staged, and again under the commit's digest lock, before its
    *  reservation. */
-  storeRefusal(size: number): string | undefined {
+  admits(size: number): string | undefined {
     const max = this.nc.info?.max_payload;
     const need = Math.min(size, ARTIFACT_STORE_CHUNK_BYTES) + STORE_HEADER_ALLOWANCE;
     return typeof max === "number" && max < need
@@ -131,16 +163,18 @@ export class ArtifactObjects {
    *  the subject holds something this layout did not write, which refuses the commit before its meta
    *  record. A meta record already there must describe the same size and chunk count; it is kept as
    *  it is (E17). */
-  async write(meta: Omit<ArtifactMeta, "chunks" | "size">, blocks: readonly Uint8Array[], guard: (what: string) => void): Promise<ArtifactMeta> {
+  async put(meta: Omit<ArtifactMeta, "blocks" | "size">, blocks: readonly Uint8Array[], guard: ArtifactStoreGuard): Promise<ArtifactMeta> {
     const size = blocks.reduce((n, b) => n + b.byteLength, 0);
     if (blocks.some((b, i) => b.byteLength !== storedChunkLength(size, i)) || blocks.length !== storedChunkCount(size))
       throw new Error(`the bytes of ${meta.digest} are not in storage framing; nothing was written`);
     // The caller checked the same limit before its reservation; a limit that moved in between is a
     // failure after that write, so it says so.
-    const tooSmall = this.storeRefusal(size);
+    const tooSmall = this.admits(size);
     if (tooSmall !== undefined) throw new EpEnvelopeError("resource-exhausted", tooSmall, undefined, "unknown");
     const js = jetstream(this.nc);
-    const record: ArtifactMeta = { ...meta, size, chunks: blocks.length };
+    const record: ArtifactMeta = { ...meta, size, blocks: blocks.length };
+    // The stored JSON keeps A1's `chunks` key, so nothing already stored changes shape.
+    const stored = { digest: record.digest, name: record.name, mediaType: record.mediaType, size, chunks: blocks.length };
     const createOnly = () => { const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0"); return h; };
     for (const [i, chunk] of blocks.entries()) {
       guard(`chunk ${i}`);
@@ -153,14 +187,68 @@ export class ArtifactObjects {
       }
     }
     guard("the meta record");
-    try { await js.publish(metaSubject(this.space, meta.digest), JSON.stringify(record), { headers: createOnly() }); }
+    try { await js.publish(metaSubject(this.space, meta.digest), JSON.stringify(stored), { headers: createOnly() }); }
     catch (e) {
       if (!isCasLoss(e)) throw e;
-      const there = await this.readMeta(meta.digest);
-      if (there === undefined || there.size !== record.size || there.chunks !== record.chunks)
-        throw new Error(`the meta record of ${meta.digest} already describes ${there ? `${there.size} bytes in ${there.chunks} chunks` : "something unreadable"}; nothing was committed over it`);
+      const there = await this.stat(meta.digest);
+      if (there === undefined || there.size !== record.size || there.blocks !== record.blocks)
+        throw new Error(`the meta record of ${meta.digest} already describes ${there ? `${there.size} bytes in ${there.blocks} chunks` : "something unreadable"}; nothing was committed over it`);
       return there;
     }
     return record;
   }
+
+  /** Purge `digest`'s meta subject on the sweeper connection. The guard runs after the manager is
+   *  ready and immediately before the purge request (E18, E9). */
+  async removeRecord(digest: string, guard: ArtifactStoreGuard): Promise<void> {
+    const jsm = await this.sweeperManager();
+    guard("the meta purge");
+    await jsm.streams.purge(objectStoreStream(artifactBucket(this.space)), { filter: metaSubject(this.space, digest) });
+  }
+
+  /** Purge every chunk subject of `digest` on the sweeper connection, guarded as {@link removeRecord}. */
+  async removeBytes(digest: string, guard: ArtifactStoreGuard): Promise<void> {
+    const jsm = await this.sweeperManager();
+    guard("the chunk purge");
+    await jsm.streams.purge(objectStoreStream(artifactBucket(this.space)), { filter: chunkFilter(this.space, digest) });
+  }
+
+  /** Every digest with a chunk or a meta subject in the object stream, from `STREAM.INFO` subject
+   *  counts on the sweeper connection: names only, no object bytes. */
+  async digests(): Promise<string[]> {
+    const jsm = await this.sweeperManager();
+    const out = new Set<string>();
+    const info = await jsm.streams.info(objectStoreStream(artifactBucket(this.space)), { subjects_filter: `$O.${artifactBucket(this.space)}.>` });
+    for (const subject of Object.keys(info.state.subjects ?? {})) {
+      const d = digestOfChunkSubject(this.space, subject) ?? digestOfMetaSubject(this.space, subject);
+      if (d) out.add(d);
+    }
+    return [...out];
+  }
+
+  /** The object stream's `STREAM.INFO` on the data connection, with A1's refusal text. */
+  async prove(): Promise<void> {
+    const stream = objectStoreStream(artifactBucket(this.space));
+    try { await (await this.manager()).streams.info(stream); }
+    catch (e) { throw new Error(`artifact-data cannot read stream ${stream} (${(e as Error).message})`); }
+  }
 }
+
+/** A handle the jetstream store needs, by name, or a refusal naming it. */
+function connectionHandle(handles: ArtifactStoreHandles, name: "data" | "sweeper"): NatsConnection {
+  const h = handles[name];
+  if (h === null || typeof h !== "object") throw new Error(`artifacts: the jetstream store needs its "${name}" handle`);
+  return h as NatsConnection;
+}
+
+/** The `jetstream` store: one space's object stream, over its `data` and `sweeper` connections. */
+export const jetstreamArtifactStore: ArtifactStore = {
+  kind: ARTIFACT_STORE_KIND,
+  name: JETSTREAM_ARTIFACT_STORE,
+  blockBytes: ARTIFACT_STORE_CHUNK_BYTES,
+  open(space, handles) {
+    return new ArtifactObjects(connectionHandle(handles, "data"), space, connectionHandle(handles, "sweeper"));
+  },
+};
+
+registry.register(jetstreamArtifactStore);

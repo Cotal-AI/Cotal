@@ -28,10 +28,9 @@ import {
   type ArtifactsConfirmAttachInput, type ArtifactsFetchBeginInput, type ArtifactsFetchBeginOutput, type ArtifactsFetchChunkInput,
   type ArtifactsFetchChunkOutput, type ArtifactsPinInput, type ArtifactsPutBeginInput, type ArtifactsPutBeginOutput,
   type ArtifactsPutChunkInput, type ArtifactsPutChunkOutput, type ArtifactsPutCommitInput, type ArtifactsPutCommitOutput,
-  type EpCaller, type EpServeContext,
+  type ArtifactStoreSpace, type EpCaller, type EpServeContext,
 } from "@cotal-ai/core";
 import type { ArtifactIndex, Caller, WriteGuard } from "./artifact-index.js";
-import type { ArtifactObjects } from "./artifact-objects.js";
 import { concreteChannel } from "./artifact-keys.js";
 import type { ChatEntryForConfirm } from "./artifact-chat-read.js";
 import { stagedBlocks, StagingLedger } from "./artifact-staging.js";
@@ -83,7 +82,7 @@ function writeFence(scope: ServeScope): { guard: WriteGuard; reply: (what: strin
  *  gate, and the delivery connection's chat read. */
 export interface VerbDeps {
   space: string;
-  stores: () => { index: ArtifactIndex; objects: ArtifactObjects } | undefined;
+  stores: () => { index: ArtifactIndex; objects: ArtifactStoreSpace } | undefined;
   /** The caller's live lifecycle (S5): refuses unless the ACL row for the caller's alias is this uid. */
   fenceCaller: (caller: EpCaller, command: string) => Promise<Caller>;
   /** The channel read gate (S7), run before any digest-dependent branch. */
@@ -145,11 +144,12 @@ export class ArtifactVerbs {
     if (args.size === 0) throw notExecuted("bad-request", "put-begin: an artifact holds at least one byte; nothing was staged");
     const over = this.staging.refusal(caller, args.size);
     if (over !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${over}`);
-    const tooSmall = this.stores("put-begin").objects.storeRefusal(args.size);
+    const { objects } = this.stores("put-begin");
+    const tooSmall = objects.admits(args.size);
     if (tooSmall !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${tooSmall}; nothing was staged`);
     scope.fence.check(scope.generation, "staging the upload");
     const uploadId = randomBytes(16).toString("hex");
-    this.staging.begin(uploadId, { caller, name: args.name, mediaType: args.mediaType, size: args.size, digest: args.digest });
+    this.staging.begin(uploadId, { caller, name: args.name, mediaType: args.mediaType, size: args.size, digest: args.digest, blockBytes: objects.blockBytes });
     return { uploadId };
   };
 
@@ -203,13 +203,13 @@ export class ArtifactVerbs {
         scope.fence.check(scope.generation, "the commit's storage check");
         // The limit for THIS artifact, read again right before the reservation: it can have dropped
         // since put-begin, or while this commit waited for the digest (E23).
-        const tooSmall = objects.storeRefusal(s.size);
+        const tooSmall = objects.admits(s.size);
         if (tooSmall !== undefined) throw notExecuted("resource-exhausted", `put-commit: ${tooSmall}; nothing was committed`);
         // Commit order (plan section 6): reservation, chunks, meta, possession. A blob is never visible
         // to the sweep without a live reservation in front of it.
         const reservationId = randomUUID();
         await index.writeReservation(digest, caller, { deadline: this.now() + ARTIFACT_RESERVATION_TTL_MS, reservationId }, fence.guard);
-        const meta = await objects.write({ digest, name: s.name, mediaType: s.mediaType }, blocks, fence.guard);
+        const meta = await objects.put({ digest, name: s.name, mediaType: s.mediaType }, blocks, fence.guard);
         await index.writePossession(digest, caller, { size: meta.size, name: s.name, mediaType: s.mediaType, committedAt: this.now(), reservationId }, fence.guard);
       });
       return { digest, size: s.size };
@@ -231,7 +231,7 @@ export class ArtifactVerbs {
     if (row === undefined) throw notExecuted("not-found", `${command}: ${FETCH_UNKNOWN}`);
     if (row.value.state !== "attached" || (!row.value.pinned && row.value.expiresAt <= this.now()))
       throw notExecuted("not-found", `${command}: ${FETCH_EXPIRED}`);
-    const meta = await objects.readMeta(digest);
+    const meta = await objects.stat(digest);
     if (meta === undefined) throw notExecuted("not-found", `${command}: ${FETCH_EXPIRED}`);
     return { row: row.value, meta, objects };
   }
@@ -278,7 +278,7 @@ export class ArtifactVerbs {
       const possession = await index.readPossession(args.digest, caller);
       if (possession === undefined) throw confirmRefused();
       // No attachment is ever created for swept bytes (plan section 6).
-      if ((await objects.readMeta(args.digest)) === undefined) throw confirmRefused();
+      if ((await objects.stat(args.digest)) === undefined) throw confirmRefused();
       const now = this.now();
       const inserted = await index.attachIfAbsent(channel, args.digest, {
         state: "attached", confirmerLifecycleUid: caller.uid, name: possession.value.name, mediaType: possession.value.mediaType,
@@ -319,23 +319,25 @@ export class ArtifactVerbs {
 /** The bytes one `fetch-chunk` reply carries from `offset`: whole stored chunks while the ACTUAL reply
  *  still fits, or, when not even the rest of the first chunk fits, the largest prefix of it that does (a
  *  measured binary search), so every call makes progress or refuses by name. Stored chunks are fixed
- *  size, so the chunk holding `offset` is found without reading the ones before it. */
+ *  size, so the chunk holding `offset` is found without reading the ones before it. Each read asks the
+ *  store for exactly one stored chunk's byte range, in A1's order (A2). */
 async function collectChunk(
-  objects: ArtifactObjects,
-  meta: { digest: string; size: number; chunks: number },
+  objects: ArtifactStoreSpace,
+  meta: { digest: string; size: number; blocks: number },
   offset: number,
   fits: (data: unknown, ceiling: number) => boolean,
 ): Promise<Buffer> {
-  const read = async (j: number) => {
-    const c = await objects.readChunk(meta.digest, j);
+  const read = async (j: number, stride: number) => {
+    const from = j * stride, length = Math.min(stride, meta.size - from);
+    const c = await objects.read(meta.digest, from, length);
     if (c === undefined) throw notExecuted("not-found", `fetch-chunk: ${FETCH_EXPIRED}`);
     return c;
   };
-  const stride = (await read(0)).byteLength;
-  const first = Math.min(Math.floor(offset / stride), Math.max(0, meta.chunks - 1));
+  const stride = (await read(0, objects.blockBytes)).byteLength;
+  const first = Math.min(Math.floor(offset / stride), Math.max(0, meta.blocks - 1));
   let collected = Buffer.alloc(0);
-  for (let j = first; j < meta.chunks; j++) {
-    const c = await read(j);
+  for (let j = first; j < meta.blocks; j++) {
+    const c = await read(j, stride);
     const from = j === first ? offset - first * stride : 0;
     const next = Buffer.concat([collected, Buffer.from(c.subarray(from))]);
     const done = offset + next.byteLength >= meta.size;

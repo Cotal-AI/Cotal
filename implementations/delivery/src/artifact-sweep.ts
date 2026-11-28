@@ -10,20 +10,17 @@
  *  2. A reservation past its deadline is deleted. It emits `artifact.unconfirmed-commit` only when that
  *     principal's possession row carries the same `reservationId` (S20): the commit finished and its
  *     own confirm never arrived.
- *  3 and 4. A digest found in the object stream, or with possession rows, that has no live attachment
- *     and no live reservation, is reclaimed: its possession rows, then its meta subject, then its chunk
- *     subjects. Absence is read by two completeness-proven scans under the lock: the digest index
+ *  3 and 4. A digest the store holds anything for, or with possession rows, that has no live attachment
+ *     and no live reservation, is reclaimed: its possession rows, then its commit record, then its
+ *     bytes. Absence is read by two completeness-proven scans under the lock: the digest index
  *     `=d.<digestToken>.>` and the reservation family `<digestToken>.>`.
  *
- * The sweeper reads no object bytes and publishes nothing to the object store: the object deletes are
- * filtered purges by subject, and the object inventory is `STREAM.INFO` with a subjects filter.
+ * The sweep reaches the bytes only through the artifact store it is handed: its inventory, and its
+ * two removal steps. It reads no object bytes and writes none.
  */
-import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import type { NatsConnection } from "@nats-io/transport-node";
-import { ARTIFACT_ATTACHMENT_TTL_MS, artifactBucket, liveKvEntries, objectStoreStream } from "@cotal-ai/core";
+import { ARTIFACT_ATTACHMENT_TTL_MS, liveKvEntries, type ArtifactStoreSpace } from "@cotal-ai/core";
 import { attachmentIndexKey, attachmentKey, digestIndexFilter, digestOfToken, digestPrincipalFilter, indexKeyChannel, isIndexKey, parseAttachmentKey } from "./artifact-keys.js";
-import { chunkFilter, digestOfChunkSubject, digestOfMetaSubject, metaSubject } from "./artifact-objects.js";
 import type { AttachmentRow, PossessionRow, ReservationRow } from "./artifact-index.js";
 import type { DigestLocks } from "./artifact-verbs.js";
 
@@ -32,7 +29,8 @@ export const UNCONFIRMED_COMMIT_EVENT = "artifact.unconfirmed-commit";
 
 export interface SweepDeps {
   space: string;
-  nc: NatsConnection;
+  /** The space's artifact store, opened over the sweeper's handles. */
+  objects: ArtifactStoreSpace;
   kv: { attach: KV; possess: KV; reserve: KV };
   locks: DigestLocks;
   /** Throws when the serving generation this sweep runs under has ended. Called immediately before
@@ -42,7 +40,7 @@ export interface SweepDeps {
   emit: (event: { event: typeof UNCONFIRMED_COMMIT_EVENT; digest: string; principal: string; lifecycleUid: string }) => void;
   now?: () => number;
   /** Ordered test barriers, awaited under the digest lock: after the reclaim decision, and between the
-   *  meta and chunk purges. Absent in a running daemon. */
+   *  commit record's removal and the bytes'. Absent in a running daemon. */
   hold?: (point: "reclaim-decided" | "between-purges", digest: string) => Promise<void>;
 }
 
@@ -76,7 +74,6 @@ function splitPrincipalKey(key: string): { digest: string; principal: string; li
 export async function sweepOnce(deps: SweepDeps): Promise<SweepReport> {
   const now = deps.now?.() ?? Date.now();
   const report: SweepReport = { tombstoned: 0, tombstonesDeleted: 0, reservationsDeleted: 0, unconfirmedCommits: 0, digestsReclaimed: 0 };
-  const jsm = await jetstreamManager(deps.nc, { checkAPI: false });
 
   // Pass 1: lapse attachments, and delete old tombstones.
   for (const e of await liveKvEntries(deps.kv.attach)) {
@@ -133,7 +130,7 @@ export async function sweepOnce(deps: SweepDeps): Promise<SweepReport> {
   // Passes 3 and 4: every digest anything names, reclaimed when nothing live holds it.
   const candidates = new Set<string>();
   for (const e of await liveKvEntries(deps.kv.possess)) { const k = splitPrincipalKey(e.key); if (k) candidates.add(k.digest); }
-  for (const d of await objectDigests(jsm, deps.space)) candidates.add(d);
+  for (const d of await deps.objects.digests()) candidates.add(d);
   for (const digest of candidates) {
     await deps.locks.run(digest, async () => {
       const attached = await liveKvEntries(deps.kv.attach, digestIndexFilter(digest));
@@ -155,12 +152,10 @@ export async function sweepOnce(deps: SweepDeps): Promise<SweepReport> {
         deps.fence("the possession row delete");
         await deps.kv.possess.delete(p.key);
       }
-      const stream = objectStoreStream(artifactBucket(deps.space));
-      deps.fence("the meta purge");
-      await jsm.streams.purge(stream, { filter: metaSubject(deps.space, digest) });
+      // The store runs the fence immediately before each removal's effect (E18).
+      await deps.objects.removeRecord(digest, deps.fence);
       await deps.hold?.("between-purges", digest);
-      deps.fence("the chunk purge");
-      await jsm.streams.purge(stream, { filter: chunkFilter(deps.space, digest) });
+      await deps.objects.removeBytes(digest, deps.fence);
       report.digestsReclaimed++;
     });
   }
@@ -186,17 +181,4 @@ export function startSweeps(opts: {
   }, opts.intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);
-}
-
-/** Every digest with a chunk or a meta subject in the object stream, from `STREAM.INFO` subject
- *  counts: names only, no object bytes. */
-async function objectDigests(jsm: JetStreamManager, space: string): Promise<string[]> {
-  const stream = objectStoreStream(artifactBucket(space));
-  const out = new Set<string>();
-  const info = await jsm.streams.info(stream, { subjects_filter: `$O.${artifactBucket(space)}.>` });
-  for (const subject of Object.keys(info.state.subjects ?? {})) {
-    const d = digestOfChunkSubject(space, subject) ?? digestOfMetaSubject(space, subject);
-    if (d) out.add(d);
-  }
-  return [...out];
 }

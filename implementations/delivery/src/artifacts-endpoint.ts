@@ -4,10 +4,13 @@
  *
  * Connections (plan section 1). The serve connection is pure rails (`endpoint-bind.ts`). The handlers
  * use two more, each on its own daemon-only credential the signer holder minted:
- *  - `artifact-data`: point reads and writes of index rows by validated key, and the object store's
- *    chunk and meta subjects. Unused by `list`; opened here so a bind proves it authenticates;
+ *  - `artifact-data`: point reads and writes of index rows by validated key, and the artifact store's
+ *    reads and writes. Unused by `list`; opened here so a bind proves it authenticates;
  *  - `artifact-sweeper`: completeness-proven scans of the index buckets (an ordered consumer on the
- *    primary, leader-served). `list` pages one channel with it.
+ *    primary, leader-served), and the artifact store's removals and inventory. `list` pages one
+ *    channel with it.
+ * The bytes sit in the artifact store this endpoint is built with (A2): the daemon resolved it from the
+ * space's binding before it dialed anything, and the endpoint opens it over these two connections.
  * The live read ACL rides the daemon's own delivery connection, which holds the ACL KV read.
  *
  * Caller fence (S5): the subject caller's lifecycle token must be the one the live ACL row for its
@@ -22,16 +25,15 @@ import {
   AmbiguousAclAlias, ARTIFACTS_COMMANDS, ARTIFACTS_CONTRACTS, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, ARTIFACTS_LIST_PAGE_LIMIT,
   ARTIFACTS_CONFIRM_ATTACH_COMMAND, ARTIFACTS_FETCH_BEGIN_COMMAND, ARTIFACTS_FETCH_CHUNK_COMMAND, ARTIFACTS_PIN_COMMAND,
   ARTIFACTS_PUT_BEGIN_COMMAND, ARTIFACTS_PUT_CHUNK_COMMAND, ARTIFACTS_PUT_COMMIT_COMMAND, type EpCommandDef,
-  artifactAttachBucket, artifactBucket, artifactIndexStreamNames, artifactPossessBucket, artifactReserveBucket,
+  artifactAttachBucket, artifactIndexStreamNames, artifactPossessBucket, artifactReserveBucket,
   artifactsClusterArtifacts, assertLifecycleToken, channelInAllow, dialerFor, drainAndClose,
-  EpEnvelopeError, liveKvEntries, objectStoreStream, principalKey, standaloneConnectOpts, watchNativeConnection,
+  EpEnvelopeError, liveKvEntries, principalKey, standaloneConnectOpts, watchNativeConnection,
   type ArtifactsListInput, type ArtifactsListOutput, type ArtifactsListRow, type EpCaller, type EpServeContext,
-  type NativeConnectionBinding,
+  type ArtifactStore, type ArtifactStoreSpace, type NativeConnectionBinding,
 } from "@cotal-ai/core";
 import { ARTIFACT_DATA_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, daemonEndpointKey } from "@cotal-ai/workspace";
 import { attachmentKeyDigest, channelAttachmentsFilter, concreteChannel } from "./artifact-keys.js";
 import { ArtifactIndex } from "./artifact-index.js";
-import { ArtifactObjects } from "./artifact-objects.js";
 import { ArtifactVerbs, DigestLocks, fenceCallerWith, fenceRefusals } from "./artifact-verbs.js";
 import { readChatEntryForConfirm } from "./artifact-chat-read.js";
 import { startSweeps, UNCONFIRMED_COMMIT_EVENT } from "./artifact-sweep.js";
@@ -93,8 +95,9 @@ function listRow(digest: string, raw: unknown, now: number): ArtifactsListRow | 
   };
 }
 
-/** Build the `artifacts` served endpoint over its store material. */
-export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServedEndpoint {
+/** Build the `artifacts` served endpoint over its store material, with the artifact store the daemon
+ *  resolved for this space. The store is required: this factory selects none. */
+export function artifactsServedEndpoint(ctx: ServedEndpointContext, store: ArtifactStore): DaemonServedEndpoint {
   /** The installed set: what the handlers read and write now. Replaced only by a committed stage. */
   let installed: StoreSet | undefined;
   const locks = new DigestLocks();
@@ -116,7 +119,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
       const set = installed, scope = sweepScope;
       if (set === undefined || scope === undefined) return undefined;
       return {
-        space: ctx.space, nc: set.sweeper.nc, kv: set.sweepKv, locks,
+        space: ctx.space, objects: set.objects, kv: set.sweepKv, locks,
         fence: (what: string) => scope.fence.check(scope.generation, what),
         emit: (event) => ctx.log(`${UNCONFIRMED_COMMIT_EVENT} ${JSON.stringify(event)}`),
       };
@@ -133,10 +136,12 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
   };
 
   /** Open a candidate set from the store material and prove it, without touching the installed set
-   *  (E12, E13). The proof is one STREAM.INFO per stream the handlers need, each on the credential
-   *  that will use it: the three index buckets and the object stream on `artifact-data`, the three
-   *  index buckets on `artifact-sweeper`. A missing stream or an under-granted credential refuses here,
-   *  before the serve candidate dials. A credential that has not changed reuses its live connection. */
+   *  (E12, E13). The proof is one STREAM.INFO per index stream the handlers need, each on the
+   *  credential that will use it, and the artifact store's own proof, in A1's order: the three index
+   *  buckets on `artifact-data`, then the store (for `jetstream`, the object stream on `artifact-data`),
+   *  then the three index buckets on `artifact-sweeper`. A missing stream or an under-granted
+   *  credential refuses here, before the serve candidate dials. A credential that has not changed
+   *  reuses its live connection. */
   const stage = async (): Promise<StagedStores> => {
     const opened: NatsConnection[] = [];
     const reuseOrOpen = async (slot: "data" | "sweeper", label: "artifact-data" | "artifact-sweeper", kind: string): Promise<StoreConn> => {
@@ -150,7 +155,9 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     try {
       const data = await reuseOrOpen("data", "artifact-data", ARTIFACT_DATA_CREDS_KIND);
       const sweeper = await reuseOrOpen("sweeper", "artifact-sweeper", ARTIFACT_SWEEPER_CREDS_KIND);
-      await proveStreams(data.nc, [...artifactIndexStreamNames(ctx.space), objectStoreStream(artifactBucket(ctx.space))], "artifact-data");
+      const objects = openStore(store, ctx.space, data.nc, sweeper.nc);
+      await proveStreams(data.nc, artifactIndexStreamNames(ctx.space), "artifact-data");
+      await objects.prove();
       await proveStreams(sweeper.nc, artifactIndexStreamNames(ctx.space), "artifact-sweeper");
       const kvmData = new Kvm(data.nc);
       const set: StoreSet = {
@@ -166,7 +173,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
           possess: await kvmData.open(artifactPossessBucket(ctx.space)),
           reserve: await kvmData.open(artifactReserveBucket(ctx.space)),
         }),
-        objects: new ArtifactObjects(data.nc, ctx.space),
+        objects,
       };
       return {
         install: (scope) => {
@@ -281,7 +288,16 @@ interface StoreSet {
   /** The three index buckets on the sweeper connection: scans, deletes and tombstones only. */
   sweepKv: { attach: KV; possess: KV; reserve: KV };
   index: ArtifactIndex;
-  objects: ArtifactObjects;
+  objects: ArtifactStoreSpace;
+}
+
+/** Open `store` for `space` over the two store connections, and refuse a space whose block size is
+ *  not the one the store declared and the daemon checked when it resolved it. */
+function openStore(store: ArtifactStore, space: string, data: NatsConnection, sweeper: NatsConnection): ArtifactStoreSpace {
+  const objects = store.open(space, { data, sweeper });
+  if (objects.blockBytes !== store.blockBytes)
+    throw new Error(`artifact store "${store.name}" opened with block size ${objects.blockBytes}, not the ${store.blockBytes} it declares`);
+  return objects;
 }
 
 /** One STREAM.INFO per stream, on this connection: each proves the stream exists and this credential may
