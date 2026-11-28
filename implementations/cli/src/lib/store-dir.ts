@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
 import { authDir, boundedValue, c, codeSpan, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, oneLine, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -265,7 +266,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: purpose === "restore" ? `${NEW_RESTORE_STORE}. Choose a parent outside the control directory.` : "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" });
   if (!stat) return;
   if (!stat.isDirectory())
-    throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: purpose === "restore" ? NEW_RESTORE_STORE : "name a directory, or a path to create in one, with --store-dir" });
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: purpose === "restore" ? NEW_RESTORE_STORE : "name a directory, or a path to create in one, with --store-dir" }));
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
   if (purpose === "restore" && existing !== dirname(path)) throw missingRestoreStoreParent(path);

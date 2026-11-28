@@ -458,10 +458,17 @@ covers service startup and the target daemon's authenticated status, and the par
 the daemon to answer at the target version before completing the update rather than accepting a zero
 exit code from the reconciliation child alone. Protection starts with the first release that carries
 each recovery step, and the transition into that release is guarded by the candidate-to-next upgrade
-matrix cells. Newly installed Linux daemon units use `Type=notify` and `TimeoutStartSec=60`.
+matrix cells. Newly installed Linux daemon units use `Type=notify`, `TimeoutStartSec=60` and `OOMPolicy=continue`.
 The daemon sends readiness only after its local control listener is ready. If startup hangs,
 systemd terminates it and restarts the unit even when the updater's readiness observer has died.
-Existing units retain their installed policy until reinstalled. This does not prove that a mesh
+Existing units retain their startup readiness policy until reinstalled, while `cotal update` adds
+`OOMPolicy=continue` in place to an unmodified default-home unit (`cotal-daemon.service` under `~/.cotal/daemon`)
+from the same installation without restarting running seats, leaving edited units, units with drop-ins, managers with
+pending unit reloads, and isolated `--daemon-home` units untouched (reinstall an isolated `--daemon-home` unit with
+`cotal daemon uninstall --daemon-home <dir> --yes && cotal daemon install --daemon-home <dir>` to pick up the new
+policy). `cotal update` and automatic updates leave the existing unit alone during the update that installs the release
+carrying that step, and write `OOMPolicy=continue` on the next update run by that release. Upgrading through the
+installer script runs the new release's reconciliation step and writes `OOMPolicy=continue` during that install. This does not prove that a mesh
 connection or hosted Manager is ready. On macOS, launchd has no startup readiness timeout, and
 Windows Task Scheduler's `ExecutionTimeLimit` bounds the whole process lifetime rather than startup.
 On those platforms a non-exiting startup hang remains unbounded after the live observer dies.

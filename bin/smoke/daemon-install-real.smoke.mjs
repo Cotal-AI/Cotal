@@ -167,8 +167,9 @@ try {
       assert.equal(result.status, 0, `systemctl ${args[0]}: ${result.stderr}`);
       return result.stdout.trim();
     };
-    check("native unit requires readiness within 60 seconds", native("show", plan.unit, "--property=Type", "--value") === "notify"
-      && native("show", plan.unit, "--property=TimeoutStartUSec", "--value") === "1min");
+    check("native unit requires readiness within 60 seconds and keeps service running on child OOM", native("show", plan.unit, "--property=Type", "--value") === "notify"
+      && native("show", plan.unit, "--property=TimeoutStartUSec", "--value") === "1min"
+      && native("show", plan.unit, "--property=OOMPolicy", "--value") === "continue");
     const dropin = `${plan.unitPath}.d`;
     const hang = join(root, "startup-hang.mjs");
     writeFileSync(hang, "setInterval(() => {}, 1000); await new Promise(() => {});\n");
