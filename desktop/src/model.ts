@@ -87,7 +87,7 @@ export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnect
   const lost = networkState(summary);
   if (lost) return { word: CONNECTION_COPY[lost].pill, dot: "problem", title: CONNECTION_COPY[lost].title, description: CONNECTION_COPY[lost].description };
   if (input.diskFull) return { word: "Disk full", dot: "problem", title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room." };
-  if (input.signedOut) return { word: "Sign in required", dot: "problem", title: "Signed out", description: "Sign in to use this computer from your spaces again." };
+  if (input.signedOut) return { word: "Not set up", dot: "waiting", title: "You signed out", description: "Sign in to use this computer from your spaces again." };
   if (input.signInRequired) return { word: "Sign in required", dot: "problem", title: "Sign in to keep this computer connected", description: "Approve this computer in your browser to keep managing its spaces." };
   if (input.service === "stopped") return { word: "Service stopped", dot: "problem", title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again." };
   if (input.service === "not-set-up") return { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };

@@ -796,13 +796,14 @@ export const scenarios = [
     assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
   } },
   { name: "account-signedout-window", state: { installed: true, signedIn: false, connected: false, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "signed-out", hostSupport: "unknown", spaces: [] } }, expect: async page => {
-    assert.equal(await page.locator("#connection-title").textContent(), "Signed out");
+    assert.equal(await page.locator("#connection-title").textContent(), "You signed out");
     assert.equal(await page.locator("#connection-description").textContent(), "Sign in to use this computer from your spaces again.");
     assert.equal(await page.locator("#sign-in-again").isVisible(), true);
     assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
-    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Sign in required");
-    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
-    assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Sign in required" });
+    assert.deepEqual(await page.locator("#connection-view button:visible").allTextContents(), ["Sign in"]);
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Not set up");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "waiting");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Not set up" });
     assert.equal(await page.locator("#dashboard").isVisible(), false);
   } },
   ...["signout", "disconnect"].flatMap(action => (action === "signout" ? ["confirmation", "agents-confirmation", "cancel", "success", "refusal", "disconnect-refusal", "retry", "busy"] : ["confirmation", "cancel", "success", "refusal", "partial", "unknown", "outcome-back", "busy"]).map(mode => ({
@@ -877,12 +878,13 @@ export const scenarios = [
         assert.equal(snapshot.signedIn, false);
         assert.equal(await page.locator("#settings-panel").isVisible(), false);
         assert.equal(await page.locator("#view-connection").getAttribute("aria-selected"), "true");
-        assert.equal(await page.locator("#connection-title").textContent(), "Signed out");
+        assert.equal(await page.locator("#connection-title").textContent(), "You signed out");
         assert.equal(await page.locator("#connection-description").textContent(), "Sign in to use this computer from your spaces again.");
         assert.equal(await page.locator("#sign-in-again").isVisible(), true);
-        assert.equal(await page.locator("#sidebar-status-word").textContent(), "Sign in required");
-        assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
-        assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Sign in required" });
+        assert.deepEqual(await page.locator("#connection-view button:visible").allTextContents(), ["Sign in"]);
+        assert.equal(await page.locator("#sidebar-status-word").textContent(), "Not set up");
+        assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "waiting");
+        assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Not set up" });
         return;
       }
       assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), true);
@@ -994,7 +996,9 @@ export const scenarios = [
       }
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
+        assert.equal(await page.locator("#connection-description").textContent(), "Approve this computer in your browser to keep managing its spaces.");
         assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
+        assert.deepEqual(await page.locator("#connection-view button:visible").allTextContents(), ["Sign in"]);
         assert.equal(await page.locator("#sign-in-again").evaluate(el => el.classList.contains("primary")), true);
       }
     },

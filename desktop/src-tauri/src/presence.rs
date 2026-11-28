@@ -113,7 +113,10 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
         return if not_set_up { "Sign in required" } else { "Needs attention" }.into();
     }
     let result = &frame["result"];
-    if matches!(result["account"]["mode"].as_str(), Some("signed-out" | "sign-in-required")) {
+    if result["account"]["mode"] == "signed-out" {
+        return "Not set up".into();
+    }
+    if result["account"]["mode"] == "sign-in-required" {
         return "Sign in required".into();
     }
     if let Some(connected) = account_connected(result) {
@@ -301,7 +304,7 @@ mod tests {
         assert_eq!(has_connected_space(&result), Some(false));
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Sign in required");
         result["account"] = json!({"mode":"signed-out","hostSupport":"unknown","spaces":[]});
-        assert_eq!(tray_status(&json!({"ok":true,"result":result})), "Sign in required");
+        assert_eq!(tray_status(&json!({"ok":true,"result":result})), "Not set up");
     }
     #[test]
     fn login_defaults_only_when_connected_and_opt_out_survives_reconnect() {

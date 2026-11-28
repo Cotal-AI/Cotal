@@ -887,12 +887,14 @@ for (const idpUrl of [COTAL_CLOUD_IDP, "https://example.com/api/auth"]) {
       account: { idpUrl, sub: undefined, mode: "signed-out", hostSupport: "unknown", spaces: [] },
     });
     try {
-      assert.equal(a.node("connection-title").textContent, "Signed out");
+      assert.equal(a.node("connection-title").textContent, "You signed out");
       assert.equal(a.node("connection-description").textContent, "Sign in to use this computer from your spaces again.");
       assert.equal(a.node("sign-in-again").hidden, false);
       assert.equal(a.node("sign-in-again").textContent, "Sign in");
-      assert.equal(a.node("sidebar-status-word").textContent, "Sign in required");
-      assert.equal(a.node("sidebar-status-dot").dataset.tone, "problem");
+      assert.equal(a.node("dashboard").hidden, true);
+      assert.equal(a.node("another-space").hidden, true);
+      assert.equal(a.node("sidebar-status-word").textContent, "Not set up");
+      assert.equal(a.node("sidebar-status-dot").dataset.tone, "waiting");
       a.options.account = {
         idpUrl,
         sub: "user-1",
