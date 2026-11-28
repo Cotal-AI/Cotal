@@ -64,7 +64,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { cotalOnPath, displayCmd, displayRemedy, isNpx, isPnpmDlx, selfArgv } from "../lib/self-exec.js";
+import { cotalOnPath, displayCmd, displayRemedy, isNpx, isPnpmDlx, selfArgv, serviceHiddenApplicationSuffix } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
@@ -992,11 +992,14 @@ function setupView(r: SetupResult, connectionRefused = false): Report {
     : r.harness.failed
       ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }
       : r.harness.name;
+  const hidden = r.destination !== "local" && r.harness.missing.length === 0 && !r.harness.unavailable && !r.harness.failed
+    ? serviceHiddenApplicationSuffix(r.harness.name)
+    : "";
   const fields: [string, Cell][] = [
     ["destination", r.destination],
     ["project", r.project],
     ["space", `${r.space} · ${SPACE_STATE[r.spaceState]}`],
-    ["application", application],
+    ["application", typeof application === "string" ? `${application}${hidden}` : { ...application, text: `${application.text}${hidden}` }],
     ...r.runtimes.filter((x) => x.selected || x.state !== "left-out").map((x): [string, Cell] => ["runtime", runtimeCell(x)]),
     ...(leftOut.length === 0 ? [] : [["not set up", leftOut.join(", ")] as [string, Cell]]),
     ...r.actions.map((a): [string, Cell] => ["ran", `${a.title}${a.detail ? ` · ${a.detail}` : ""}`]),

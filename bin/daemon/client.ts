@@ -174,6 +174,27 @@ export function daemonConnectionLost(error: unknown): boolean {
  *  so no sign-in event can arrive on its connection. */
 type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
 
+/**
+ * The first `status-watch` frame. The server builds it from the hosted Managers it already holds
+ * (`snapshotStatus(true)`), so this read does not ask a Manager to refresh. The socket closes after
+ * that frame. A missing daemon, a peer that does not hold this installation's lifetime lock, or a
+ * reply that is not that frame yields nothing. It never sends `status`, which does refresh.
+ */
+export async function cachedDaemonStatus(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid">): Promise<DaemonStatus | undefined> {
+  let sock: Socket;
+  try { sock = await openVerified({ ...opts, timeoutMs: 1000 }); }
+  catch { return undefined; }
+  const id = randomUUID().replaceAll("-", "");
+  try {
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "status-watch" }));
+    const reply = JSON.parse(await readLine(sock, 1000)) as DaemonResponse;
+    if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || !reply.ok || !("event" in reply) || reply.event !== "status") return undefined;
+    if (reply.result.account !== undefined && !validAccountComputerStatus(reply.result.account)) return undefined;
+    return reply.result;
+  } catch { return undefined; }
+  finally { sock.destroy(); }
+}
+
 /** Send one request and return the daemon's parsed reply. */
 export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
   const sock = await openVerified(opts);

@@ -17,9 +17,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { connect } from "node:net";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { delimiter, dirname, join, sep } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
@@ -959,4 +960,39 @@ if (process.platform !== "win32") {
 
 if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);
 }
+
+if (process.platform === "linux" && !brokerDisplayOnly && !pidfileOnly) {
+  const { home, run } = sandbox();
+  const bin = join(home, "apps");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "aa-bin"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const manifest = join(home, ".config", "cotal", "extensions");
+  mkdirSync(join(manifest, "node_modules", "@fixture", "aa", "node_modules", "@cotal-ai"), { recursive: true });
+  writeFileSync(join(manifest, "node_modules", "@fixture", "aa", "package.json"), JSON.stringify({ name: "@fixture/aa", version: VERSION, type: "module" }));
+  writeFileSync(join(manifest, "node_modules", "@fixture", "aa", "index.js"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "connector", name: "aa", requires: ["aa-bin"], buildLaunch: () => ({ command: "aa-bin", args: [] }) });
+`);
+  symlinkSync(dirname(fileURLToPath(import.meta.resolve("@cotal-ai/core"))), join(manifest, "node_modules", "@fixture", "aa", "node_modules", "@cotal-ai", "core"));
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [{
+    pkg: "@fixture/aa", version: VERSION, spec: `@fixture/aa@${VERSION}`,
+    provides: [{ kind: "connector", name: "aa" }], commands: [],
+    connectors: [{ name: "aa", requires: ["aa-bin"], eventPlane: false, setup: null }],
+  }] }));
+  const project = join(home, "project");
+  mkdirSync(project);
+  const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const status = run(["status", "--space", "nosuch", "--plain"], onPath);
+  const statusLine = status.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)) ?? "";
+  check("status lists the application and does not name a repair without a service report",
+    status.status === 0 && statusLine.includes("aa") && !status.stdout.includes("background service cannot see") && !status.stdout.includes("daemon setup"), shown(status));
+  const setup = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
+    cwd: project,
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath, NO_COLOR: "1" },
+    encoding: "utf8", timeout: 120_000,
+  });
+  const setupLine = (setup.stdout ?? "").split("\n").find(line => line.includes("application:")) ?? "";
+  check("setup lists the application and does not name a repair without a service report",
+    setup.status === 0 && setupLine.includes("aa") && !(setup.stdout ?? "").includes("background service cannot see") && !(setup.stdout ?? "").includes("daemon setup"), { status: setup.status, stdout: (setup.stdout ?? "").slice(0, 900), stderr: (setup.stderr ?? "").slice(0, 600) });
+}
+
 finish();

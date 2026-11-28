@@ -286,3 +286,27 @@ export function selfCotal(): string {
     .map((a) => `"${a}"`)
     .join(" ");
 }
+
+/**
+ * The applications sentence for the background service, filled by the composition root from the
+ * service's own cached status. Empty unless that read found names and a command that can refresh
+ * this installation. A command never fills this itself.
+ */
+let serviceHiddenNote: { readonly command: string; readonly names: readonly string[] } | undefined;
+
+/** Record the applications the service's cached report says this shell can see and the service cannot,
+ *  with the command that refreshes this installation. No command means the line stays as it is. */
+export function noteServiceHiddenApplications(command: string | undefined, names: readonly string[]): void {
+  serviceHiddenNote = command && names.length ? { command, names: Object.freeze([...new Set(names)].sort()) } : undefined;
+}
+
+/** The applications recorded by {@link noteServiceHiddenApplications}, or none. */
+export function serviceHiddenApplicationNames(): readonly string[] {
+  return serviceHiddenNote?.names ?? [];
+}
+
+/** The sentence suffix for one application the service cannot see, or empty when this command names none. */
+export function serviceHiddenApplicationSuffix(name: string): string {
+  if (!serviceHiddenNote || !serviceHiddenNote.names.includes(name)) return "";
+  return ` · the background service cannot see ${name}; run \`${displayCmd()} ${serviceHiddenNote.command}\` in this terminal`;
+}

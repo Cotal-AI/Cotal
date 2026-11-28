@@ -16,7 +16,7 @@ import {
   spaceStreamsAbsent,
 } from "@cotal-ai/workspace";
 import { storeWriteRepair } from "../lib/broker-store-health.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, serviceHiddenApplicationSuffix } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { onRerun } from "../lib/control.js";
 import { rolledBackNotes } from "../lib/restore.js";
@@ -228,13 +228,17 @@ function setUpApplications(m: StatusResult["machine"]): string[] {
   return (m.connectors ?? []).filter((connector) => !connector.missing.length).map((connector) => connector.name);
 }
 
-/** The applications line: the names that are set up, and how many more `cotal setup` would add. */
-function applicationsCell(m: StatusResult["machine"], interactive: boolean): Cell {
+/** The applications line: the names that are set up, and how many more `cotal setup` would add.
+ *  A name the background service's own cached report says it cannot see adds the command that
+ *  refreshes this installation, and only while that command can. */
+function applicationsCell(m: StatusResult["machine"], interactive: boolean, beyondService: readonly string[] = []): Cell {
   if (m.connectors === null) return stateCell("could not be read", "failed");
   const setUp = setUpApplications(m), others = m.connectors.length - setUp.length;
-  if (!interactive) return setUp.length ? stateCell(`${setUp.join(", ")}${others ? ` · ${others} not set up` : ""}`, "ok") : stateCell("not set up", "hint");
+  const hidden = beyondService.filter(name => setUp.includes(name));
+  const service = hidden.map(serviceHiddenApplicationSuffix).join("");
+  if (!interactive) return setUp.length ? stateCell(`${setUp.join(", ")}${others ? ` · ${others} not set up` : ""}${service}`, "ok") : stateCell("not set up", "hint");
   if (!setUp.length) return stateCell(`not set up · \`${displayCmd()} setup\` adds one`, "hint");
-  return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with \`${displayCmd()} setup\`` : ""}`, "ok");
+  return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with \`${displayCmd()} setup\`` : ""}${service}`, "ok");
 }
 
 /** The extensions line: one count at the version they share, naming only those that differ from it.
@@ -267,7 +271,7 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * with the same version spelled out on each, and the broker executable's full bundled path on a
  * healthy machine: a block of text whose signal a reader had to hunt for.
  */
-function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, seed?: ReturnType<typeof readCursor>): Section {
+function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, seed?: ReturnType<typeof readCursor>, beyondService: readonly string[] = []): Section {
   const m = r.machine;
   const tones = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
   const setUp = setUpApplications(m);
@@ -276,7 +280,7 @@ function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, s
   const rows: [string, Cell][] = wide
     ? m.integrations.map((item) => [item.name, stateCell(item.text, tones[item.state])])
     : m.integrations.filter((item) => item.client ? item.state === "warn" || item.state === "error" : item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
-  rows.unshift(["Agent applications", applicationsCell(m, interactive)]);
+  rows.unshift(["Agent applications", applicationsCell(m, interactive, beyondService)]);
   if (wide)
     for (const connector of m.connectors ?? []) {
       if (m.integrations.some((item) => item.name.toLowerCase().includes(connector.name.toLowerCase()))) continue;
@@ -747,7 +751,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false, stackStarting = false, selectedStarting = false, currentJournalUnreadable = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean; stackStarting?: boolean; selectedStarting?: boolean; currentJournalUnreadable?: boolean } = {}): Report {
+export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false, stackStarting = false, selectedStarting = false, currentJournalUnreadable = false, beyondService = [] }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean; stackStarting?: boolean; selectedStarting?: boolean; currentJournalUnreadable?: boolean; beyondService?: readonly string[] } = {}): Report {
   const selected = selectedOverview(r, stackStarting, selectedStarting);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder, stackStarting) : [];
@@ -755,7 +759,7 @@ export function statusView(r: StatusResult, verbose = false, wide = false, { int
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
-  const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed), currentJournalUnreadable), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  const sections = [machineOverview(r, wide, interactive, seed, beyondService), spacesOverview(r, wide, Boolean(seed), currentJournalUnreadable), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes, currentJournalUnreadable), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
   sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness, stoppedForeignListener, stackStarting, selectedStarting));
   return { sections };

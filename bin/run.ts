@@ -88,6 +88,10 @@ await runCli(registry, argv, {
     if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
     else await importing(...(Object.keys(surfaces) as Surface[]))();
     if (word === "update") await import("./daemon/update-entry.js");
+    // `cotal status` and `cotal setup` name an application the background service cannot see only
+    // when its cached report says so and `cotal daemon setup` can refresh this installation.
+    // The first status-watch frame is that cache. Anything else leaves the note empty.
+    if ((word === "status" || word === "setup") && !help) await noteHiddenApplications();
 
     // Handle a closed pipe or a failed file write before any command emits output.
     process.stdout.on("error", stdoutError);
@@ -95,3 +99,25 @@ await runCli(registry, argv, {
   },
   startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt },
 });
+
+/** Names from a hosted Manager's cached connector rows that this shell can run and the service
+ *  reports missing, and only when `cotal daemon setup` can refresh this installation. No unexpired
+ *  local sign-in, no report, no such row, more or fewer than one unexpired sign-in, a missing unit,
+ *  a unit another installation recorded, a relative PATH entry, or an unfinished repair all leave
+ *  the note empty. */
+async function noteHiddenApplications(): Promise<void> {
+  const { noteServiceHiddenApplications } = await import("@cotal-ai/cli/self-exec");
+  try {
+    const { cachedDaemonStatus } = await import("./daemon/client.js");
+    const { daemonPaths } = await import("./daemon/endpoint.js");
+    const { applicationsHiddenByReport, serviceHiddenCommand } = await import("./daemon/service-hidden.js");
+    const { listIdpAccounts } = await import("@cotal-ai/auth");
+    const { homeCotalDir } = await import("@cotal-ai/workspace");
+    const paths = daemonPaths();
+    const now = Math.floor(Date.now() / 1000);
+    const providers = listIdpAccounts(homeCotalDir()).filter((account) => account.expiresAt > now);
+    const command = serviceHiddenCommand(paths);
+    const hidden = applicationsHiddenByReport(await cachedDaemonStatus({ paths }), providers.length === 1);
+    if (command && hidden.length) noteServiceHiddenApplications(command, hidden);
+  } catch { /* no report, or a repair this command cannot run: the application line stays as it is */ }
+}

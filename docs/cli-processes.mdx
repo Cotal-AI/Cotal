@@ -655,6 +655,8 @@ Relative paths, control characters and malformed quoting are refused.
 
 On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation. It leaves the unit, receipt and running daemon unchanged. It reports `Already installed` when the unit is enabled and linger is on. Otherwise, it reports why autostart is unavailable or could not be verified. `cotal daemon status` reports confirmed autostart problems even when the daemon is running. A modified source or another installation still refuses installation.
 
+When the running service's own cached report says an application is missing, and this shell can run that application, `cotal status` and `cotal setup` say the background service cannot see it and name `cotal daemon setup`. They name that command only while one sign-in is unexpired, the recorded unit pins this installation, this shell's PATH holds only absolute entries, and no unfinished service repair is recorded. The report is the service's first status-watch frame, which does not probe. They stay quiet with no report, no unexpired local sign-in, more than one sign-in, an expired sign-in, no recorded unit, a unit another installation recorded, a relative PATH entry, an unfinished service repair, or a local setup destination. The report itself changes nothing. macOS and Windows take the same path and are untested.
+
 On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
 installation reports a conflict and leaves the running daemon alone.
 
