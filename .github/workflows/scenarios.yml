@@ -70,12 +70,19 @@ jobs:
       fail-fast: false
       matrix:
         scenario: ${{ fromJSON(needs.plan.outputs.scenarios) }}
-        os: [ubuntu, fedora, macos-arm, macos-intel, windows]
+        os: [ubuntu, fedora, opensuse, el10, macos-arm, macos-intel, windows]
         include:
           - os: ubuntu
             runner: ubuntu-24.04
           - os: fedora
             runner: ubuntu-24.04
+            lxd: true
+          - os: opensuse
+            runner: ubuntu-24.04
+            lxd: true
+          - os: el10
+            runner: ubuntu-24.04
+            lxd: true
           - os: macos-arm
             runner: macos-15
           - os: macos-intel
@@ -106,16 +113,16 @@ jobs:
           systemctl --user show-environment > /dev/null
           printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
       - name: Run the scenario
-        if: matrix.os != 'fedora'
+        if: ${{ !matrix.lxd }}
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SCENARIO_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
         run: node scenarios/run.mjs run "$SCENARIO" --version "${VERSION#v}" --out "$RUNNER_TEMP/scenario" --system "$SYSTEM"
-      # GitHub has no Fedora runners, so Fedora is the same LXD virtual machine scenarios/machines/lxd.sh
-      # makes on a test PC, inside an Ubuntu runner.
-      - name: Start LXD for the Fedora machine
-        if: matrix.os == 'fedora'
+      # GitHub has no Fedora, openSUSE or Enterprise Linux runners, so each is the same LXD virtual
+      # machine scenarios/machines/lxd.sh makes on a test PC, inside an Ubuntu runner.
+      - name: Start LXD for the virtual machine
+        if: ${{ matrix.lxd }}
         run: |
           set -euo pipefail
           sudo snap install lxd --channel=6/stable || sudo snap refresh lxd --channel=6/stable
@@ -123,20 +130,20 @@ jobs:
           sudo lxd init --auto
           sudo usermod -aG lxd "$USER"
           sudo iptables -P FORWARD ACCEPT
-      - name: Make the Fedora machine
-        if: matrix.os == 'fedora'
-        run: sg lxd -c 'scenarios/machines/lxd.sh create fedora'
-      - name: Run the scenario on Fedora
-        if: matrix.os == 'fedora'
+      - name: Make the virtual machine
+        if: ${{ matrix.lxd }}
+        run: sg lxd -c "scenarios/machines/lxd.sh create $SYSTEM"
+      - name: Run the scenario in the virtual machine
+        if: ${{ matrix.lxd }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SCENARIO_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
         run: |
           set -euo pipefail
           status=0
-          sg lxd -c "scenarios/machines/lxd.sh run fedora \"$SCENARIO\" --version \"${VERSION#v}\" --system fedora" || status=$?
+          sg lxd -c "scenarios/machines/lxd.sh run $SYSTEM \"$SCENARIO\" --version \"${VERSION#v}\" --system $SYSTEM" || status=$?
           mkdir -p "$RUNNER_TEMP/scenario"
-          cp -R "scenarios/results/fedora-$SCENARIO/." "$RUNNER_TEMP/scenario/"
+          cp -R "scenarios/results/$SYSTEM-$SCENARIO/." "$RUNNER_TEMP/scenario/"
           exit "$status"
       - name: Keep the result
         if: always()
@@ -171,4 +178,4 @@ jobs:
         run: |
           set -euo pipefail
           node scenarios/run.mjs table results --run-url "$RUN_URL" --expect-scenarios "$EXPECT_SCENARIOS" \
-            --expect-systems ubuntu,fedora,macos-arm,macos-intel,windows | tee -a "$GITHUB_STEP_SUMMARY"
+            --expect-systems ubuntu,fedora,opensuse,el10,macos-arm,macos-intel,windows | tee -a "$GITHUB_STEP_SUMMARY"

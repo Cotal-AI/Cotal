@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disposable Ubuntu and Fedora test machines in LXD, each with a "clean" snapshot.
+# Disposable Ubuntu, Fedora, openSUSE and Enterprise Linux 10 test machines in LXD, each with a "clean" snapshot.
 # Usage: scenarios/machines/lxd.sh <create|reset|run|shell|stop|delete|list> [os] [scenario] [runner options]
 set -euo pipefail
 export PATH=$PATH:/snap/bin
@@ -16,13 +16,19 @@ name_of() {
   case "$1" in
     ubuntu) echo cotal-test-ubuntu ;;
     fedora) echo cotal-test-fedora ;;
-    *) die "unknown machine '$1' (ubuntu or fedora)" ;;
+    opensuse) echo cotal-test-opensuse ;;
+    el10) echo cotal-test-el10 ;;
+    *) die "unknown machine '$1' (ubuntu, fedora, opensuse or el10)" ;;
   esac
 }
 image_of() {
   case "$1" in
     ubuntu) echo ubuntu:24.04 ;;
     fedora) echo images:fedora/45/cloud ;;
+    opensuse) echo images:opensuse/tumbleweed/cloud ;;
+    # LXD has no AlmaLinux 10 image; CentOS Stream 10 is the release it is built from. AlmaLinux 9
+    # cannot install the app at all: it has no WebKitGTK 4.1.
+    el10) echo images:centos/10-Stream/cloud ;;
   esac
 }
 exists() { lxc info "$1" >/dev/null 2>&1; }
@@ -57,12 +63,15 @@ quiet() {
 provision_linux() {
   local os=$1 vm=$2
   lxc exec "$vm" -- cloud-init status --wait >/dev/null 2>&1 || true
-  if [ "$os" = ubuntu ]; then
-    quiet "$vm" 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq xvfb xauth x11-utils curl xz-utils ca-certificates'
-  else
-    quiet "$vm" 'dnf install -y -q xorg-x11-server-Xvfb xorg-x11-xauth xwininfo xdpyinfo curl xz ca-certificates which procps-ng'
-  fi
-  lxc exec "$vm" -- sh -c "id $user >/dev/null 2>&1 || useradd -m -u $uid -s /bin/bash $user"
+  case "$os" in
+    ubuntu) quiet "$vm" 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq xvfb xauth x11-utils curl xz-utils ca-certificates' ;;
+    fedora) quiet "$vm" 'dnf install -y -q xorg-x11-server-Xvfb xorg-x11-xauth xwininfo xdpyinfo curl xz ca-certificates which procps-ng' ;;
+    opensuse) quiet "$vm" 'zypper --non-interactive --quiet install xorg-x11-server-Xvfb xauth xwininfo xdpyinfo curl xz tar ca-certificates which procps sudo' ;;
+    # The app's WebKitGTK 4.1 and tray library come from EPEL and CRB, as they would for a person.
+    # Enterprise Linux 10 ships no X server, so the display is a headless Weston with Xwayland.
+    el10) quiet "$vm" 'dnf install -y -q dnf-plugins-core epel-release && dnf config-manager --set-enabled crb && dnf install -y -q weston xorg-x11-server-Xwayland xdotool xdpyinfo xorg-x11-xauth curl xz tar ca-certificates which procps-ng sudo' ;;
+  esac
+  lxc exec "$vm" -- sh -c "getent group $uid >/dev/null || groupadd -g $uid $user; id $user >/dev/null 2>&1 || useradd -m -u $uid -g $uid -s /bin/bash $user"
   lxc exec "$vm" -- sh -c "echo '$user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$user && chmod 0440 /etc/sudoers.d/$user && loginctl enable-linger $user"
   lxc exec "$vm" -- sh -c "set -e; cd /tmp; curl -fsSLo node.tar.xz https://nodejs.org/dist/$node_version/node-$node_version-linux-x64.tar.xz
     echo '$node_sha256  node.tar.xz' | sha256sum -c - >/dev/null

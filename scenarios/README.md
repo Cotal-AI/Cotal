@@ -61,13 +61,17 @@ app opens, its background service runs and nobody is signed in.
 | `npm-first` | `cotal` already installed with npm, with its service running |
 | `offline` | the app installed, but Cotal, GitHub and npm unreachable at first launch |
 
-The **Scenarios** workflow runs them all every night on GitHub's machines: Ubuntu, Fedora, macOS on
-Apple Silicon and Intel, and Windows Server. Its summary page holds one table, scenario by OS. A red
-cell links to that job's log, and the lines under the table name the first check that failed.
+The **Scenarios** workflow runs them all every night on GitHub's machines: Ubuntu, Fedora,
+openSUSE Tumbleweed, CentOS Stream 10 (for AlmaLinux and RHEL 10), macOS on Apple Silicon and Intel,
+and Windows Server. Its summary page holds one table, scenario by OS. A red cell links to that job's
+log, and the lines under the table name the first check that failed. A job that died before
+recording anything still shows, as "no result". AlmaLinux 9 and RHEL 9 are not in it: they have no
+WebKitGTK 4.1, so the app cannot install there. On 10, the app needs EPEL and CRB turned on.
 Run it by hand from the Actions tab (Scenarios > Run workflow), optionally with one release or a
 few scenario names.
 
-To run one scenario on the Ubuntu PC instead: `scenarios/machines/lxd.sh run ubuntu fresh`. It
+To run one scenario on the Ubuntu PC instead: `scenarios/machines/lxd.sh run ubuntu fresh` (or
+`fedora`, `opensuse`, `el10`; make the machine once with `lxd.sh create <name>`). It
 resets its own VM first and leaves the result in `scenarios/results/`.
 
 ## Windows
