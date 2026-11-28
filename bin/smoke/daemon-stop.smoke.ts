@@ -405,9 +405,9 @@ if (process.platform === "linux") {
   let prepared = false;
   const disabled = disableFailedPersonStart(livePaths, { prepareStop() { prepared = true; } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
   check("the real failed-start disable turns the task off and keeps the marker", disabled === true && prepared && existsSync(marker), { disabled, prepared });
-  let blocked = true;
-  const kept = disableFailedPersonStart(livePaths, { prepareStop() { blocked = false; throw new Error("disable refused"); } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
-  check("a failed start whose disable fails keeps the marker", kept === false && blocked === false && existsSync(marker), { kept, blocked });
+  const blocked: { on: boolean } = { on: true };
+  const kept = disableFailedPersonStart(livePaths, { prepareStop() { blocked.on = false; throw new Error("disable refused"); } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
+  check("a failed start whose disable fails keeps the marker", kept === false && blocked.on === false && existsSync(marker), { kept, blocked: blocked.on });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const readFailure = await probeStop("unread");
   check("a macOS start whose automatic start cannot be read says the service started and leaves no stop marker", readFailure.doc?.started === true && readFailure.doc.enabled === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === false, readFailure);
