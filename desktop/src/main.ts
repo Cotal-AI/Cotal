@@ -383,6 +383,20 @@ let observedReadySpaces: string[] = [];
 const managerReasons = new Map<string, string>();
 let poll: ReturnType<typeof setTimeout> | undefined;
 let watchReconnect: ReturnType<typeof setTimeout> | undefined;
+/** The watch pushes only when the daemon's status changes, so silence is normal for an idle
+ *  computer. But a stream that died without a word is also silent. A keepalive bounds how long
+ *  silence is trusted: past it, one status read runs and the watch restarts from its result. */
+const WATCH_KEEPALIVE_MS = 30_000;
+let watchKeepalive: ReturnType<typeof setTimeout> | undefined;
+function armWatchKeepalive(): void {
+  if (watchKeepalive) clearTimeout(watchKeepalive);
+  watchKeepalive = setTimeout(() => {
+    watchKeepalive = undefined;
+    if (!watchActive) return;
+    watchActive = false;
+    if (!tickRunning && !busy && !rowOperation && !appApplyRunning && !loginActive && !setupActive) void refresh();
+  }, WATCH_KEEPALIVE_MS);
+}
 let windowHidden = false;
 let tickRunning = false;
 let lastTickAt = 0;
@@ -919,6 +933,7 @@ function startStatusWatch(): void {
     watchStarting = false;
     watchActive = true;
     setWatchMode(typeof frame.watchMode === "string" ? frame.watchMode : "push");
+    armWatchKeepalive();
     if (busy || rowOperation || selectionPending || appApplyRunning) return;
     lastTickAt = Date.now();
     const space = selectedSpace();
@@ -934,6 +949,7 @@ function startStatusWatch(): void {
   void invoke<Frame>("daemon_request", { request: { op: "status-watch" }, onEvent: events }).then((frame) => {
     watchStarting = false;
     watchActive = false;
+    if (watchKeepalive) { clearTimeout(watchKeepalive); watchKeepalive = undefined; }
     const result = requireResult(frame);
     if (initialized && result.closed === true && !upgradeNeeded) {
       if (watchReconnect) clearTimeout(watchReconnect);
@@ -945,6 +961,7 @@ function startStatusWatch(): void {
   }).catch(async (error) => {
     watchStarting = false;
     watchActive = false;
+    if (watchKeepalive) { clearTimeout(watchKeepalive); watchKeepalive = undefined; }
     if (error instanceof DaemonRefusal && error.code === "VERSION_MISMATCH") {
       const mode = typeof error.detail?.watchMode === "string" ? error.detail.watchMode : "version-mismatch";
       setWatchMode(mode);
@@ -1414,7 +1431,7 @@ document.addEventListener("keydown", event => {
   const primary = [...document.querySelectorAll<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])")].find(button => !button.closest("[hidden]"));
   if (primary) { event.preventDefault(); primary.click(); }
 });
-window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (watchReconnect) clearTimeout(watchReconnect); if (countdown) clearInterval(countdown); });
+window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (watchReconnect) clearTimeout(watchReconnect); if (watchKeepalive) clearTimeout(watchKeepalive); if (countdown) clearInterval(countdown); });
 if (isTauri()) {
   void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke<boolean | null>("first_paint"))
     .then(visible => { if (visible === false) windowHidden = true; return start(); }, error => { notice(String(error), true); return start(); });

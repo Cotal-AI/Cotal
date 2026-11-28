@@ -205,6 +205,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     sock: Socket;
     write: (r: DaemonResponse) => Promise<void>;
     lastKey: string;
+    /** The last frame this watcher received, repeated verbatim on the heartbeat. */
+    lastSnapshot: DaemonStatus;
   }
   const watchers = new Set<StatusWatcher>();
   let watchNotifying = false;
@@ -287,6 +289,20 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
     })();
   };
+  /** A status watch is silent while nothing changes, which is the healthy case. Silence and a
+   *  dead stream are indistinguishable to the reader, so the daemon repeats the last snapshot on
+   *  a heartbeat: an unchanged frame on a timer, never a new probe. The reader's keepalive
+   *  (longer than this interval) then only fires when the stream really is gone. */
+  const WATCH_HEARTBEAT_MS = 15_000;
+  const heartbeatWatchers = (): void => {
+    if (watchers.size === 0) return;
+    for (const w of watchers) {
+      if (w.sock.destroyed || !w.sock.writable) { watchers.delete(w); continue; }
+      void w.write({ v: DAEMON_PROTOCOL_VERSION, id: w.id, ok: true, event: "status", result: w.lastSnapshot }).catch(() => watchers.delete(w));
+    }
+  };
+  const heartbeatTimer = setInterval(heartbeatWatchers, WATCH_HEARTBEAT_MS);
+  heartbeatTimer.unref?.();
 
   const sockets = new Set<Socket>();
   const track = (sock: Socket): void => {
@@ -409,6 +425,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         replyTask(snapshotStatus(true).then((initial) => {
           if (!watchers.has(watcher)) return;
           watcher.lastKey = statusWatchKey(initial);
+          watcher.lastSnapshot = initial;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "status", result: initial });
         }).catch(() => { watchers.delete(watcher); }));
         return;
