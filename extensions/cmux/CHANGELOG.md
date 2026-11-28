@@ -1,5 +1,7 @@
 # @cotal-ai/cmux
 
+## 0.184.1
+
 ## 0.184.0
 
 No changes in this release.
@@ -771,9 +773,9 @@ No changes in this release.
 ### Minor Changes
 
 - e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
-  
+
   The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
-  
+
   A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
 
 ## 0.134.0
@@ -1275,11 +1277,11 @@ No changes in this release.
 ### Patch Changes
 
 - 60e6671: A managed Claude Code seat that stops on Claude's first-run text style picker, its login method choice or its Bypass Permissions warning now fails at the startup bound naming that screen and the step that clears it. It used to fail saying the development-channels prompt did not appear, which pointed at the wrong cause. Cotal still never answers any of these screens: the Bypass Permissions warning stays for the user to accept once, or the launch passes `--opt permission-mode=default` (`launchOptions: {permission-mode: default}` in a manifest). A launch recipe declares such screens in the new optional `LaunchSpec.confirmBlockers`. The pty, custody, tmux, cmux, Orca and Herdr runtimes send no key while one is on screen and name its reason when the bound ends there. A runtime that ignores the field fails as before, with the generic message.
-  
+
   A foreground `cotal spawn` of Claude Code no longer passes `--permission-mode bypassPermissions`. It runs in your terminal, so Claude keeps its own permission mode and you answer its prompts there; before, it opened on the Bypass Permissions warning while the spawn's hint said to press Enter at the development-channels prompt, and Enter there exits Claude. A managed seat keeps bypass as its default, and a permission option you pass still wins in both.
-  
+
   `cotal up -f` no longer prints a success mark for its agents. It says the stack is up and the agents' launch is pending, that it does not wait for them to join, and names `cotal ps --space <space>` and the manager's log, where a failed launch is recorded with its reason.
-  
+
   The quickstart and the team guide now say to finish Claude's first run once before the manager launches Claude Code, and give both permission routes.
 
 ## 0.109.13
@@ -1385,12 +1387,12 @@ No changes in this release.
   with the agent running, and its receipt names the runtime, says the seat runs in the manager's own
   session, and gives `cotal watch` and `cotal send` as the way to reach it. `--json` carries the same
   answer as `result.streamsTerminal`. A `pty` manager still attaches.
-  
+
   `cotal attach <name>` on such a seat is refused once as `UNSUPPORTED`, carrying that runtime's own
   guidance for watching the agent where it runs, and the reconnect loop no longer retries it. The
   manager question's rows name each manager's runtime and whether a terminal attaches to its seats,
   so the choice is informed before a launch.
-  
+
   Breaking for anyone who implements the `Runtime` contract outside this repo: `streamsTerminal` is a
   required field, and a backend that streams no terminal must say so rather than leave a caller to
   find out by catching the throw from `attach()`. The manager reports it to its callers on the launch
