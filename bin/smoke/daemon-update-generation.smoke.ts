@@ -2,14 +2,16 @@ import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { claimUpdateClosureAccess, clearUpdateRecovery, readUpdateRecovery, SEEDED_EXTENSIONS, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
-import { managerViaDaemon, queryDaemon } from "../daemon/client.js";
+import { inspectHostedLaunches, managerViaDaemon, queryDaemon } from "../daemon/client.js";
+import { validHostedLaunches, type HostedLaunches } from "../daemon/protocol.js";
+import { HostedLaunchSettlementTimeout, waitForHostedLaunches } from "../daemon/update-launch-settlement.js";
 import { daemonPaths, EndpointRefusal } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
@@ -20,6 +22,44 @@ import { processStatFields, processStartToken } from "@cotal-ai/seat";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
+
+await proveLaunchSettlementPolicy();
+
+async function proveLaunchSettlementPolicy(): Promise<void> {
+  const name = "_held-name_0123", held = { reserved: 2, held: 1, names: [name] };
+  assert.equal(validHostedLaunches(held), true);
+  for (const invalid of [null, { ...held, held: 3 }, { ...held, names: [] }, { reserved: 2, held: 2, names: [name, name] }, { ...held, names: ["x\n"] }])
+    assert.equal(validHostedLaunches(invalid), false);
+  const observation = (reserved: number, instanceId = "original") => ({ instanceId, agentCount: 7, stopImpact: { reservedLaunches: reserved } });
+  const ordinary = { reserved: 1, held: 0, names: [] };
+  const fixture = (read: (elapsed: number) => ReturnType<typeof observation>, inspect: (elapsed: number) => HostedLaunches | undefined) => {
+    let elapsed = 0, inspections = 0;
+    const lines: string[] = [];
+    const run = () => waitForHostedLaunches("example", "original", async () => read(elapsed), async () => { inspections++; return inspect(elapsed); },
+      "update --self", line => lines.push(line), { now: () => elapsed, sleep: async ms => { elapsed += ms; } });
+    return { run, lines, elapsed: () => elapsed, inspections: () => inspections };
+  };
+  const idle = fixture(() => observation(0), () => { throw new Error("settled seats must not trigger launch inspection"); });
+  assert.equal((await idle.run()).agentCount, 7);
+  assert.deepEqual(idle.lines, []);
+  for (const value of [undefined, ordinary, held]) {
+    const settling = fixture(t => observation(t < 400 ? 1 : 0), () => value);
+    assert.equal((await settling.run()).agentCount, 7);
+    assert.equal(settling.elapsed(), 400);
+    assert.deepEqual(settling.lines, [value === held ? "Waiting for a held hosted PTY launch to settle in space example." : "Waiting for a hosted spawn to settle in space example."]);
+    if (value === undefined) assert.equal(settling.inspections(), 1, "old peers are not queried again");
+  }
+  const ordinaryDeadline = fixture(() => observation(1), t => t < 500 ? held : ordinary);
+  await assert.rejects(ordinaryDeadline.run, error => error instanceof HostedLaunchSettlementTimeout && /retry `(?:pnpm )?cotal update --self`/.test(error.message) && !error.message.includes(name));
+  assert.equal(ordinaryDeadline.elapsed(), 15_000);
+  const heldDeadline = fixture(() => observation(2), () => held);
+  await assert.rejects(heldDeadline.run, error => error instanceof HostedLaunchSettlementTimeout && error.message.includes(`"${name}"`) && /daemon service-disconnect --space example`/.test(error.message) && error.message.includes("No installed packages were changed"));
+  assert.equal(heldDeadline.elapsed(), 15_000);
+  const replaced = fixture(t => observation(1, t ? "successor" : "original"), () => held);
+  await assert.rejects(replaced.run, /identity changed/);
+  assert.equal(replaced.inspections(), 1, "do not consult holds after a Manager identity change");
+}
+
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ug-")));
 const userRuntime = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`;
 const privateRuntime = mkdtempSync("/tmp/cotal-ug-");
@@ -309,6 +349,8 @@ async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, dire
   try {
     for (let i = 0; i < 100 && !existsSync(entered) && launching.child.exitCode === null; i++) await briefly();
     assert.ok(existsSync(entered), `ordinary spawn did not reach the held enrollment: ${launching.text()}`);
+    assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager, 3_000), { reserved: 1, held: 0, names: [] });
+    await assert.rejects(inspectHostedLaunches(ctx.paths, ctx.space, "wrong-instance", 3_000), /identity changed/);
     updating = run(["update", "--space", ctx.space]);
     for (let i = 0; i < 120 && updating.child.exitCode === null && !updating.text().includes("Waiting for a hosted spawn to settle"); i++) await briefly();
     assert.match(updating.text(), /Waiting for a hosted spawn to settle/, `the updater must observe the real reserved launch before release:\n${updating.text()}`);
@@ -317,6 +359,8 @@ async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, dire
     assert.match(launching.text(), /ordinary spawn fixture stopped before process launch/);
     assert.equal(await updating.exited, 0, updating.text());
     assert.match(updating.text(), /Built-in connectors/);
+    assert.equal(updating.text().split("Waiting for a hosted spawn to settle").length, 2, "the real CLI prints one wait line");
+    assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager, 3_000), { reserved: 0, held: 0, names: [] });
   } finally {
     writeFileSync(release, "release");
     for (const command of [launching, updating]) if (command && command.child.exitCode === null && command.child.signalCode === null) await killAndAwaitExit(command.child);
@@ -489,7 +533,12 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     for (const name of names) seats.push(await launch(manager.id, name));
     const root = findRoot(), record = readHost(root);
     const cgroup = userUnits(ctx, ["show", "--property=ControlGroup", "--value", record.scope]);
-    assert.ok(cgroup.startsWith("/") && cgroup.endsWith(`/${record.scope}`), cgroup);
+    const uid = process.getuid?.();
+    const tag = createHash("sha256").update(JSON.stringify([realpathSync(ctx.entry), uid, join(ctx.home, ".cotal", "seats"), join(ctx.home, ".cotal")])).digest("hex");
+    assert.ok(record.scope.startsWith(`cotal-pty-${tag.slice(0, 16)}`), record.scope);
+    assert.equal(cgroup, `/user.slice/user-${uid}.slice/user@${uid}.service/app.slice/${record.scope}`);
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    assert.equal(userUnits(ctx, ["show", "--property=Description", "--value", record.scope]), `Cotal shared PTY ${tag} p-${key} ${manager.pid} ${manager.start} ${bootId}`);
     const host = { ...record, cgroup };
     assert.equal(processStartToken(host.pid), host.start);
     assert.equal(userUnits(ctx, ["show", "--property=MainPID", "--value", host.scope]), String(host.pid));
@@ -540,6 +589,14 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     assert.ok(unitGone(ctx, fourth.host), `${fourth.host.scope} is still running after explicit stop`);
     await proveDeadParentFallback(ctx, store, getManager, launch);
     await killAndAwaitExit(ctx.daemon(), "SIGTERM");
+    const copy = readdirSync(store).find(name => /^[a-f0-9]{64}$/.test(name));
+    assert.ok(copy, "a real runtime copy remains after teardown");
+    assert.equal(statSync(join(store, copy)).mode & 0o777, 0o500, "the runtime copy is read-only before documented removal");
+    for (const [file, args] of [["chmod", ["-R", "u+w", store]], ["rm", ["-rf", store]]] as const) {
+      const removed = spawnSync(file, [...args], { env: ctx.env, encoding: "utf8", timeout: 5_000 });
+      assert.equal(removed.status, 0, `${file}: ${removed.stderr}`);
+    }
+    assert.equal(existsSync(store), false, "the two documented commands remove the closed shared runtime");
     console.log("Hosted shared PTY: Manager and daemon SIGKILL, dead-parent fallback teardown, stopped host, host crash and explicit hosted Managers stop verified");
     console.log("Hosted shared PTY public stop cases skipped: the foreground remote-participant fixture has no standalone Manager service, local stack journal or installed daemon receipt for `cotal manager stop`, `cotal down` or `cotal daemon uninstall`");
   } finally {

@@ -80,30 +80,16 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
   assert.equal(readFileSync(join(root, 'config/cotal/extensions/node_modules/lifecycle-extension/node-path'), 'utf8'), node);
 }
 
-async function assertRefusedGenerationCleanup(run, env, root, prefix, entry) {
-  const tools = join(root, 'refusal-tools');
-  mkdirSync(tools);
-  const npm = spawnSync('/bin/sh', ['-c', 'command -v npm'], { env, encoding: 'utf8' });
-  assert.equal(npm.status, 0, npm.stderr);
-  symlinkSync(realpathSync(npm.stdout.trim()), join(tools, 'npm'));
-  symlinkSync(process.execPath, join(tools, 'node'));
-  assert.equal(spawnSync('/bin/sh', ['-c', 'command -v flock'], { env: { PATH: tools } }).status, 127);
-
+async function assertRefusedGenerationCleanup(run, prefix, entry) {
   const store = join(prefix, 'lib/.cotal-generations');
   const generations = () => readdirSync(store, { withFileTypes: true }).filter(item => item.isDirectory()).map(item => item.name).sort();
   mkdirSync(join(store, 'unrelated'), { recursive: true, mode: 0o700 });
   const before = generations();
-  const { PATH } = env;
-  try {
-    env.PATH = tools;
-    const result = await run(process.execPath, [entry, 'update', '--self'], 60000);
-    assert.equal(result.code, 1, result.output);
-    assert.match(result.output, /target pre-install checks refused: fixture refused after retention; no installed packages were replaced/);
-    assert.deepEqual(generations(), before, 'a refused update leaves the same generation directories');
-    return result;
-  } finally {
-    env.PATH = PATH;
-  }
+  const result = await run(process.execPath, [entry, 'update', '--self'], 60000);
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /target pre-install checks refused: fixture refused after retention; no installed packages were replaced/);
+  assert.deepEqual(generations(), before, 'a refused update leaves the same generation directories');
+  return result;
 }
 
 /** Runs real npm and the built public entry against a loopback registry. */
@@ -163,7 +149,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), `${fail}console.log('cotal-ai ${version}');\n`);
       writeFileSync(join(root, 'payload/package/dist/preinstall.js'), stagingRefused && version === target
         ? `const assert = require('node:assert/strict');
+const { existsSync } = require('node:fs');
+const { resolve } = require('node:path');
 assert.match(__filename, /\\/\\.cotal-generations\\/[a-f0-9]{32}\\/cotal-ai\\/dist\\/preinstall\\.js$/);
+assert.ok(existsSync(resolve(__dirname, '../../inventory.json')), 'retained generation inventory exists before refusal');
 console.error('fixture refused after retention'); process.exitCode = 1;\n`
         : `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
     }
@@ -410,8 +399,9 @@ exec npm "$@"
       assert.equal(existsSync(marker), false);
       assert.equal(existsSync(join(env.COTAL_HOME, 'update-recovery.json')), false);
       allowStaging = true;
-      const afterRetention = await assertRefusedGenerationCleanup(run, env, root, prefix, entry);
+      const afterRetention = await assertRefusedGenerationCleanup(run, prefix, entry);
       assert.deepEqual(readFileSync(entry), before);
+      assert.deepEqual(readFileSync(manifestPath), manifest);
       assert.equal(existsSync(join(env.COTAL_HOME, 'update-recovery.json')), false);
       return { scenario, code: result.code, elapsedMs: Date.now() - started, selected: previous, missing, requests, output: result.output, afterRetention };
     }

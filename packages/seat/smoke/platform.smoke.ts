@@ -14,6 +14,8 @@ import { assertSocketPathFits, unsupportedTransport } from "../src/protocol.js";
 import { nativeHelperPath, unsupportedNativeArch } from "../src/peercred.js";
 import { acquireSharedClosureLease, collectSharedRuntimeClosures } from "../src/shared-closure-lease.js";
 import { acquireSharedExecutionLease } from "../src/shared-execution-lease.js";
+import { parseSharedUnitDescription, sharedInstallationTag, sharedUnitCgroup, sharedUnitDescription, sharedUnitPrefix } from "../src/shared-linux.js";
+import { isSharedScope } from "../src/shared-record.js";
 
 let pass = 0;
 let fail = 0;
@@ -31,6 +33,20 @@ const childEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return env;
 };
+
+{
+  const tag = "fda33c235923dee7fe7984a1ebef6372b8157f02ae03b628a1cb362561f78c06";
+  const lineage = "p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const description = "Cotal shared PTY fda33c235923dee7fe7984a1ebef6372b8157f02ae03b628a1cb362561f78c06 p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2357 90901 8d70adf9-6273-4eaf-aca9-e42c83a51189";
+  const owner = { pid: 2357, start: "90901", bootId: "8d70adf9-6273-4eaf-aca9-e42c83a51189" };
+  const scope = "cotal-pty-fda33c235923dee70123456789abcdef.service";
+  check("cross-release shared PTY installation tag", sharedInstallationTag("/opt/cotal/bin/cotal.js", 1001, "/home/alice/.cotal/seats", "/home/alice/.cotal") === tag);
+  check("cross-release shared PTY scope name", sharedUnitPrefix(tag) === "cotal-pty-fda33c235923dee7" && isSharedScope(scope) && !isSharedScope(scope.replace(".service", ".scope")));
+  check("cross-release shared PTY cgroup", sharedUnitCgroup(scope, 1001) === "/user.slice/user-1001.slice/user@1001.service/app.slice/cotal-pty-fda33c235923dee70123456789abcdef.service");
+  check("cross-release shared PTY Description stays writable", sharedUnitDescription(tag, `/private/${lineage}`, owner) === description);
+  assert.deepEqual(parseSharedUnitDescription(description), { tag, lineage, owner });
+  check("cross-release shared PTY Description stays readable and rejects extra data", parseSharedUnitDescription(`${description} suffix`) === undefined);
+}
 
 for (const [platform, max] of [["darwin", 103], ["linux", 108]] as const) {
   const path = `/${"a".repeat(max - 3)}é`;

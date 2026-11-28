@@ -71,11 +71,12 @@ export interface ClientCounters {
 /** Read the updater-only observation through the authenticated local daemon. Older daemons or
  * children may omit support, in which case the updater keeps its instance-pinned status read. */
 export async function inspectHostedLaunches(paths: DaemonPaths, space: string, instanceId: string, timeoutMs: number): Promise<HostedLaunches | undefined> {
+  const deadline = performance.now() + timeoutMs;
   const sock = await openVerified({ paths, timeoutMs });
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "manager-launch-inspect", space }));
-    const reply = JSON.parse(await readLine(sock, timeoutMs)) as DaemonResponse;
+    const reply = JSON.parse(await readLine(sock, Math.max(1, Math.ceil(deadline - performance.now())))) as DaemonResponse;
     if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("invalid launch inspection reply");
     if (!reply.ok) {
       if (reply.error.code === "UNKNOWN_OP") return undefined;

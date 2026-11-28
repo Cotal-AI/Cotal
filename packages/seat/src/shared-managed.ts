@@ -15,7 +15,7 @@ import { observeSharedHandle, type SharedHandle } from "./shared-handle.js";
 import { privateDirectory, readSharedHost, readSharedSeat, recordedProcess, sharedScopeMatches, sharedSeatRecord, sharedSeatWasRefused, writePrivateRecord, type SharedHostRecord, type SharedSeatRecord } from "./shared-record.js";
 import { prepareSharedRuntimeClosure, prepareStagedSharedRuntime, verifySharedRuntimeClosure, verifyStagedSharedRuntime, type SharedRuntimeClosure, type VerifiedStagedRuntimeSource } from "./shared-runtime-closure.js";
 import { SharedSeatClient } from "./shared-seat-client.js";
-import { sharedUnitDescription } from "./shared-linux.js";
+import { sharedUnitDescription, sharedUnitPrefix } from "./shared-linux.js";
 
 const run = promisify(execFile);
 const closures = new Map<string, SharedRuntimeClosure>();
@@ -44,7 +44,7 @@ async function ensureManagedHost(root: string, store: string, closure: SharedRun
   try {
     const existing = currentHost(root);
     if (existing) return existing;
-    const scope = `cotal-pty-${tag.slice(0, 16)}${seatId().slice(0, 16)}.service`;
+    const scope = `${sharedUnitPrefix(tag)}${seatId().slice(0, 16)}.service`;
     const owner = readControllerClaim(dirname(root));
     if (!owner || owner.pid !== process.pid || recordedProcess(owner.pid, owner.start, owner.bootId) !== "live") return undefined;
     copy = acquireSharedClosureLease(store, closure.digest);

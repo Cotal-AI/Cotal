@@ -107,6 +107,7 @@ export function readSharedSeat(root: string, id: string): SharedSeatRecord {
   return record as SharedSeatRecord;
 }
 
+// Persisted unit names are part of the cross-release contract in shared-linux.ts.
 export function isSharedScope(scope: unknown): scope is string {
   return typeof scope === "string" && /^cotal-pty-[0-9a-f]{32}\.service$/.test(scope);
 }

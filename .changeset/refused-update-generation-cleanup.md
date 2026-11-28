@@ -2,4 +2,4 @@
 "cotal-ai": patch
 ---
 
-Remove the unpublished package copy after a refused `cotal update --self`, even on systems without `flock`.
+Remove the unpublished package copy after `cotal update --self` refuses a staged replacement.
