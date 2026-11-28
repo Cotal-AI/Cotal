@@ -114,8 +114,10 @@ export async function importInstalledExtension(ext: InstalledExtension, advertis
     const entries = loadExtensionsManifest().extensions;
     reconcileExtensionScopes(entries);
     const current = entries.find((entry) => entry.pkg === ext.pkg);
-    if (!current || !sameInstall(current, ext))
-      throw new Error(`extension ${ext.pkg} changed while the command was selected; retry the command`);
+    if (!current || !sameInstall(current, ext)) {
+      const restart = current && extensionRestartReason(current);
+      throw new Error(restart || `extension ${ext.pkg} changed while the command was selected; retry the command`);
+    }
     await loadOne(current, advertised);
   }));
 }
