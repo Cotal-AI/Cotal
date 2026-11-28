@@ -46,9 +46,9 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   const observedState = (space: string) => {
     if (saved.spaces[space]?.removedAt !== undefined) return "removed on this computer";
     const service = services.status(space).state;
-    const manager = managers.status(space).state;
-    // An answering Manager is what lets the account launch here. The machine service is separate.
-    if (manager === "answering") return "connected";
+    const hosted = managers.status(space), manager = hosted.state;
+    // An answering Manager lets the account launch here; one that lost its connection names why.
+    if (hosted.connection || manager === "answering") return hosted.connection?.state ?? "connected";
     return managerOnly.has(space) ? manager : service;
   };
   const machineService = (space: string) => {
