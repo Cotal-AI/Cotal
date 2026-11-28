@@ -58,7 +58,7 @@
           <h2 id="advanced-heading" class="group-heading">Advanced</h2>
           <div class="row-group">
             <div class="settings-row"><div><h3>About</h3><p id="settings-versions"></p></div><button id="release-notes" class="button secondary" type="button">Release notes</button></div>
-            <div class="settings-row"><button id="settings-disconnect" class="text-button" type="button">Disconnect this computer</button></div>
+            <div class="settings-row"><div><h3>Disconnect this computer</h3><p class="muted">Your spaces stop using this computer. It stays in your account.</p></div><button id="settings-disconnect" class="button secondary" type="button">Disconnect</button></div>
             <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
           </div>
         </section>
@@ -67,13 +67,14 @@
       <section id="apps-panel" class="settings-card apps-card" role="tabpanel" aria-labelledby="view-apps" hidden>
         <h1 id="apps-title" class="pane-title" tabindex="-1">Agent apps</h1>
         <p class="pane-description">Manage the apps you use to run agents.</p>
-        <h2 id="apps-group-heading" class="group-heading first-group-heading">Apps on this computer</h2>
+        <div id="apps-actions" class="actions"><button id="apps-refresh" class="button secondary" type="button">Check again</button></div>
+        <h2 id="apps-group-heading" class="group-heading">Apps on this computer</h2>
         <p id="apps-local" class="muted" hidden>You can manage apps on this computer now. Connect it when you’re ready to use them from your spaces.</p>
         <p id="apps-owner" class="apps-message" role="status" hidden></p>
         <button id="apps-fix-connection" class="text-button" type="button" hidden>Fix in Connection</button>
         <p id="apps-message" class="apps-message" role="status"></p>
         <ul id="app-list" class="app-list row-group" data-testid="app-list" aria-labelledby="apps-group-heading"></ul>
-        <div class="apps-footer"><p>Each app installs for your user only, from its maker’s own installer.</p><button id="apps-refresh" class="text-button" type="button">Check again</button></div>
+        <p class="apps-footer footnote">Each app installs for your user only, from its maker’s own installer.</p>
       </section>
       <section id="connection-view" class="connection-card" role="tabpanel" aria-labelledby="view-connection">
         <h1 id="loading-title" class="pane-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>

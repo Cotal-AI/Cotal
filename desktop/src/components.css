@@ -11,7 +11,7 @@
 #journey [data-state=done] .step-marker { color: var(--green); }
 .later-open #journey, #step-caption { display: none; }
 .status-highlight { background: linear-gradient(transparent 64%, var(--gold) 64%); }
-#connected-actions { margin-top: 0; }
+#connected-actions, #apps-actions { margin-top: 0; }
 #connected-actions:not(:has(button:not([hidden]))) { display: none; }
 .context { overflow-wrap: anywhere; }
 .footnote { margin-top: 12px; }
@@ -132,9 +132,7 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .app-row details pre { margin: 4px 0 0; color: var(--dim); font-size: 11px; }
 .app-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; }
 .app-pill .icon { width: 12px; height: 12px; }
-.apps-footer, .dashboard-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
-.apps-footer { justify-content: space-between; }
-.apps-footer p { margin: 0; color: var(--dim); font-size: 12px; }
+.dashboard-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .apps-chip-logos, .apps-logos { display: flex; gap: 4px; }
 .apps-chip-logos .app-logo { width: 20px; height: 20px; border-radius: 50%; }
 .app-badge .icon { width: 12px; height: 12px; }
