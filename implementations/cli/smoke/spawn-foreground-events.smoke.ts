@@ -351,6 +351,10 @@ try {
       if (pin === undefined) delete process.env.COTAL_OPENCODE_BIN; else process.env.COTAL_OPENCODE_BIN = pin;
     }
   }
+  const outside = await openRun(["--agent", "fg-probe-live", "--subscribe", "other"]);
+  check("a foreground subscription outside the persona policy refuses before launch and explains how to retry",
+    outside.exited === 1 && outside.opts === undefined && outside.stderr.includes('subscribe "other" is not within allowSubscribe') &&
+    outside.stderr.includes("omit the conflicting channel override"), outside.stderr);
   // CONTROL FIRST. Without it every assertion below could be passing because the launch never
   // reached the connector at all, which is exactly how the first draft of this suite fooled itself.
   {
@@ -536,7 +540,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 50;
+const EXPECTED = process.platform === "win32" ? 42 : 51;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

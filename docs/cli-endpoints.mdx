@@ -299,7 +299,8 @@ in the path, use shell completion to enter the directory and run the suggested c
 `check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
-endpoint. Authoring takes no space, broker, caller or invocation flags.
+endpoint. Authoring takes no space, broker, caller or invocation flags. If `check` refuses a bare
+`--server`, omit it and keep the contract path. No broker address is needed.
 
 With `--json`, the receipt's `command` is `endpoint init` or `endpoint check`, including when
 the operation is refused.

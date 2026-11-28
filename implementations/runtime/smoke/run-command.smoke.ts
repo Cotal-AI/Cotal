@@ -355,6 +355,11 @@ const takeoverRun = startedId()!;
     }
   }
   c("the checkpoint opens durably", open);
+  const mismatch = await wf(["resume", cid], { file: PURE }).then(() => undefined, (error: unknown) => error);
+  c("a local resume with different source refuses before taking over the pending run",
+    isCommandFailure(mismatch) && mismatch.code === "CONFLICT" && exitCode(mismatch.outcome, mismatch.code) === 2
+      && JSON.stringify(mismatch.target) === JSON.stringify({ space: SPACE, endpoint: EP, run: cid, file: PURE })
+      && mismatch.remedy?.includes("omit --file") === true, mismatch);
   // WHAT IT ASKS, at the surface an operator answers from. `answer <run> <stepKey>` is the whole
   // interface to a checkpoint, and the render used to give the address without the question:
   // everything durable held the input HASH, so learning what "approve" meant took a trip back to
@@ -1189,7 +1194,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 147;
+const DECLARED = 148;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

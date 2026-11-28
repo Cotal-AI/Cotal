@@ -1699,7 +1699,15 @@ async function preservationCommitCrashScenario(): Promise<void> {
     assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], interruptOptions);
     const interrupted = spawnSync(tsx, [cliPath, "down", "--preserve-state"], interruptOptions);
     assert.equal(interrupted.status, 90);
-    assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-committed");
+    const committed = readFileSync(journalPath, "utf8");
+    assert.equal(JSON.parse(committed).state, "cut-committed");
+    for (const flags of [[], ["--no-manager"]]) {
+      const blocked = run("up", ...flags);
+      assert.equal(blocked.status, 2, blocked.stderr);
+      assert.match(blocked.stderr, /LIFECYCLE_BLOCKED/);
+      assert.match(blocked.stderr, /finish the stop with `cotal down --preserve-state`/);
+      assert.equal(readFileSync(journalPath, "utf8"), committed);
+    }
     const recovered = run("down", "--preserve-state");
     assert.equal(recovered.status, 0, `post-manager-commit cut recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
