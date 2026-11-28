@@ -123,6 +123,8 @@ interface SharedViewCase {
   pluginOnlyId: string;
   retained: CotalMessage;
   publishVerified(): Promise<CotalMessage>;
+  updateAttention(mixed: boolean): Promise<number>;
+  updateMembership(mixed: boolean): Promise<number>;
 }
 
 function checkSharedMembership(snapshot: MembershipSnapshot, cell: SharedViewCase): void {
@@ -164,6 +166,60 @@ function hasMessage(events: FeedEvent[], event: string, id: string, channel?: st
   return events.some((row) => row.event === event && row.data.msg?.id === id && (channel === undefined || row.data.channel === channel));
 }
 
+async function checkMetadataUpdates(base: string, cookie: string, feeds: { events: FeedEvent[] }[], cell: SharedViewCase): Promise<void> {
+  const metadata = (rows: FeedEvent[]) => rows.filter(({ event }) => ["roster", "presence-view", "membership", "membership-read-failed"].includes(event));
+  const baseline = feeds.map(({ events }) => {
+    const lastRoster = events.filter(({ event }) => event === "roster").at(-1)!.data as unknown as Presence[];
+    return lastRoster.find(({ card }) => card.id === cell.pluginOnlyId)!.ts;
+  });
+  const checkpoints = () => feeds.map(({ events }) => events.length);
+  const since = (starts: number[]) => feeds.map(({ events }, i) => metadata(events.slice(starts[i])));
+  const attentionStart = checkpoints();
+  const ts = await cell.updateAttention(false);
+  // HTTP returns the live roster without SSE dedup, so the changed raw timestamp proves the web
+  // observer has consumed the update before we allow its debounced broadcast to settle.
+  const untilRead = Date.now() + 10_000;
+  for (;;) {
+    const roster = await fetch(`${base}/api/roster`, { headers: { cookie }, signal: AbortSignal.timeout(10_000) });
+    assert.equal(roster.status, 200);
+    if ((await roster.json() as Presence[]).some((row) => row.card.id === cell.pluginOnlyId && row.ts >= ts)) break;
+    assert.ok(Date.now() < untilRead, "dashboard receives the hidden attention write");
+    await wait(25);
+  }
+  await wait(400);
+  assert.deepEqual(since(attentionStart), [[], []], "plugin-only attention changes emit no metadata frame");
+
+  await cell.updateAttention(true);
+  await until(() => since(attentionStart).every((rows) => rows.some(({ event }) => event === "roster")), "both viewers receive the visible attention change");
+  await wait(400);
+  for (const [i, frames] of since(attentionStart).entries()) {
+    assert.deepEqual(frames.map(({ event }) => event), ["roster"], "mixed attention change emits exactly one roster frame and no health signal");
+    const roster = frames[0].data as unknown as Presence[];
+    const reader = roster.find(({ card }) => card.id === cell.readerId);
+    assert.deepEqual(reader?.channelModes, { [cell.ordinaryChannel]: "muted" }, "only the visible attention change is sent");
+    assert.equal(roster.find(({ card }) => card.id === cell.pluginOnlyId)?.ts, baseline[i], "unchanged peer timestamp does not expose the prior hidden write");
+  }
+
+  const checkMembership = async (mixed: boolean) => {
+    const starts = checkpoints();
+    const asOf = await cell.updateMembership(mixed);
+    await until(() => since(starts).every((rows) => rows.some(({ event, data }) => event === "membership" &&
+      (data as unknown as MembershipSnapshot).asOf === asOf)), "both viewers receive the independent broker heartbeat");
+    await wait(400);
+    for (const frames of since(starts)) {
+      assert.deepEqual(frames.map(({ event }) => event), ["membership"], "membership write and heartbeat produce no extra frame");
+      const members = (frames[0].data as unknown as MembershipSnapshot).members;
+      const reader = members.find(({ id }) => id === cell.readerId);
+      assert.deepEqual(reader?.live, [cell.ordinaryChannel]);
+      assert.deepEqual(reader?.durable, mixed ? [] : [cell.ordinaryChannel]);
+      assert.ok(!members.some(({ id }) => id === cell.pluginOnlyId) && !members.some(({ live, durable }) =>
+        [...live, ...durable].some((name) => name.startsWith(`${PLUGIN_CHANNEL_ROOT}.`))), "membership feed omits hidden bindings");
+    }
+  };
+  await checkMembership(false);
+  await checkMembership(true);
+}
+
 async function checkViewerFeeds(base: string, cookie: string, sender: Pick<CotalEndpoint, "card" | "principal" | "multicast">, frame: Part, enabled?: SharedViewCase): Promise<void> {
   const watching = openFeed(base, cookie);
   const other = openFeed(base, cookie);
@@ -194,6 +250,7 @@ async function checkViewerFeeds(base: string, cookie: string, sender: Pick<Cotal
         assert.ok(!JSON.stringify(events).includes(enabled.channel) && !events.some(({ data }) => data.msg?.id === plugin.id), "neither shared feed names the plugin channel or receives the plugin post");
         await readSharedView(base, cookie, enabled);
       }
+      await checkMetadataUpdates(base, cookie, viewers, enabled);
     }
   } finally {
     watching.close();
@@ -253,6 +310,25 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
         await until(() => delivered.has(post.id), "the scoped subscriber receives the new plugin post live");
         return post;
       },
+      async updateAttention(mixed) {
+        const agent = mixed ? reader : pluginOnly;
+        const mode = mixed ? "muted" : "normal";
+        await agent.setChannelModes(mixed ? { [channel]: "muted", [chatChannel]: "muted" } : {});
+        const peer = () => observer.getRoster().find(({ card }) => card.id === agent.card.id);
+        await until(() => !!peer() && (peer()?.channelModes?.[channel] ?? "normal") === mode, "raw broker observer witnesses the changed plugin attention setting");
+        return peer()!.ts;
+      },
+      async updateMembership(mixed) {
+        const id = mixed ? readCred.principal : pluginOnlyCred.principal;
+        const live = mixed ? [chatChannel, fixture.hiddenChannel] : [fixture.hiddenChannel];
+        const durable = [fixture.hiddenChannel];
+        await fixture.seedMembership(id, { live, durable });
+        const snapshot = await observer.readMembership();
+        const raw = snapshot.members.find((row) => row.id === id);
+        assert.deepEqual([raw?.live, raw?.durable], [live, durable], "raw broker membership records the hidden write");
+        assert.ok(snapshot.asOf !== undefined);
+        return snapshot.asOf;
+      },
     });
   } finally {
     try { await stopDashboard(); } finally { await fixture.close(); }
@@ -297,7 +373,7 @@ try {
     await stopDashboard();
   }
   await checkEnabledSpace(frame as unknown as Part);
-  console.log("COTAL_SMOKE_SENTINEL cells=31 passed=31 failed=0");
+  console.log("COTAL_SMOKE_SENTINEL cells=35 passed=35 failed=0");
 } finally {
   await agent?.stop();
   await stopDashboard();

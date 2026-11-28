@@ -64,7 +64,7 @@ import {
   agentIdFromPath,
   classifyTap,
 } from "./web-request.js";
-import { sharedChannels } from "./shared-channels.js";
+import { sharedChannels, sharedFeedUpdates } from "./shared-channels.js";
 export {
   BadRequest,
   BrokerRefused,
@@ -481,6 +481,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? `! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message)));
   await ep.start();
   const shared = sharedChannels(() => ep.channelRoutingMode());
+  const feedUpdate = sharedFeedUpdates(() => ep.channelRoutingMode());
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
   // the client can say so honestly without deriving progress from the heartbeat.
@@ -490,8 +491,11 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   }));
 
   const clients = new Set<ServerResponse>();
-  const send = (res: ServerResponse, event: string, data: unknown, kind?: FeedWrite) =>
-    writeFeed(res, event, data, kind);
+  const send = (res: ServerResponse, event: string, data: unknown, kind?: FeedWrite) => {
+    if (res.writableEnded) return;
+    const update = feedUpdate(res, event, data, kind === "snapshot");
+    if (update !== undefined) writeFeed(res, event, update, kind);
+  };
   const broadcast = (event: string, data: unknown) => {
     for (const res of clients) if (!res.writableEnded) send(res, event, data);
   };
@@ -510,36 +514,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     broadcast("presence-view", view),
   );
 
-  // Broker-sourced channel membership (the authoritative graph spokes): push a `membership` SSE event
-  // on every feed change (debounced; the client re-reads the snapshot). Best-effort — a space without the
-  // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
-  // degrades to traffic-only. The admin cred carries the read grant; agents never do.
-  let membershipWatch: { stop(): Promise<void> } | undefined;
-  let lastMembership: MembershipSnapshot | undefined;
-  const pushMembership = debounce(() => {
-    // A rejected membership read clears `lastMembership` and broadcasts `MEMBERSHIP_READ_FAILED`;
-    // swallowing it would leave the graph showing its last good snapshot as current.
-    void ep.readMembership()
-      .then((m) => { lastMembership = m; broadcast("membership", shared.membership(m)); })
-      .catch((e) => { lastMembership = undefined; broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
-  }, 150);
-  // The daemon rewrites the heartbeat key every poll with nothing else changed; re-reading the whole
-  // bucket for it was a full ordered-consumer rescan per heartbeat per dashboard (#4904). The watch
-  // delivers the heartbeat's `asOf`, so only a member change (or a failed last read) costs a read.
-  const onMembership = (change: MembershipChange) => {
-    if (change.type === "replayed") return;
-    if (change.type === "heartbeat" && change.update && lastMembership) {
-      lastMembership = { ...lastMembership, asOf: change.asOf };
-      broadcast("membership", shared.membership(lastMembership));
-      return;
-    }
-    pushMembership();
-  };
-  try {
-    membershipWatch = await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
-  } catch (e) {
-    console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
-  }
+  const membershipWatch = await watchWebMembership(ep, shared, broadcast);
   // Tap each authorized messaging plane separately. A space-wide tap would also subscribe to
   // endpoint request rails.
   //
@@ -1287,6 +1262,51 @@ function debounce(fn: () => void, ms: number): () => void {
     if (t) clearTimeout(t);
     t = setTimeout(fn, ms);
   };
+}
+
+/** Watch broker membership for the shared graph. Without a readable feed it shows traffic only. */
+async function watchWebMembership(
+  ep: CotalEndpoint,
+  shared: ReturnType<typeof sharedChannels>,
+  broadcast: (event: string, data: unknown) => void,
+): Promise<Awaited<ReturnType<CotalEndpoint["watchMembership"]>> | undefined> {
+  let lastMembership: MembershipSnapshot | undefined;
+  let membershipRevision = 0;
+  let membershipReadRevision = 0;
+  const pushMembership = debounce(() => {
+    const revision = membershipRevision;
+    void ep.readMembership()
+      .then((m) => {
+        if (revision < membershipReadRevision) return;
+        membershipReadRevision = revision;
+        lastMembership = m;
+        broadcast("membership", shared.membership(m));
+      })
+      .catch((e) => {
+        if (revision < membershipReadRevision) return;
+        membershipReadRevision = revision;
+        lastMembership = undefined;
+        broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message });
+      });
+  }, 150);
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    // A heartbeat alone can use the cached graph. In a filtered view, let an outstanding member
+    // refresh carry the latest heartbeat instead of sending a second snapshot with older rows.
+    const legacy = ep.channelRoutingMode() === "legacy";
+    if (change.type === "heartbeat" && change.update && lastMembership && (legacy || membershipRevision === membershipReadRevision)) {
+      lastMembership = { ...lastMembership, asOf: change.asOf };
+      broadcast("membership", shared.membership(lastMembership));
+      return;
+    }
+    membershipRevision++;
+    pushMembership();
+  };
+  try {
+    return await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
+  } catch (e) {
+    console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
+  }
 }
 
 /** Race the whole delete upload, not the gaps between chunks. On expiry the request frame sends

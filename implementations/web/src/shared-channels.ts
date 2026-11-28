@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { PLUGIN_CHANNEL_ROOT, type MembershipSnapshot, type Presence } from "@cotal-ai/core";
 
 type RoutingMode = "legacy" | "isolated" | undefined;
@@ -6,6 +7,49 @@ const SHARED_VIEW_NOTICE = "Plugin channels are not shown in this shared view.";
 
 function sharedChannelVisible(mode: RoutingMode, channel: string): boolean {
   return mode === "legacy" || (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
+}
+
+function rosterFields({ ts: _ts, channelModes, ...row }: Presence) {
+  return { ...row, channelModes };
+}
+
+function stabilizeFeed(event: string, data: unknown, previous: unknown): unknown {
+  if (event === "roster") {
+    const prior = new Map((previous as Presence[]).map((row) => [row.card.id, row]));
+    return (data as Presence[]).map((row) => {
+      const last = prior.get(row.card.id);
+      return last && isDeepStrictEqual(rosterFields(last), rosterFields(row)) ? last : row;
+    });
+  }
+  if (event === "membership") {
+    const { asOf, members } = data as MembershipSnapshot;
+    const prior = new Map((previous as MembershipSnapshot).members.map((row) => [row.id, row]));
+    const next = new Map(members.map((row) => {
+      const last = prior.get(row.id);
+      return [row.id, last && isDeepStrictEqual(last.live, row.live) && isDeepStrictEqual(last.durable, row.durable) ? last : row];
+    }));
+    // KV reads can order members by the revision of their last write. Keep the prior order of
+    // surviving rows, and carry the independent heartbeat even when the graph does not change.
+    const ordered = new Set([...prior.keys(), ...next.keys()]);
+    return { asOf, members: [...ordered].flatMap((id) => next.has(id) ? [next.get(id)!] : []) };
+  }
+  return data;
+}
+
+export function sharedFeedUpdates(mode: () => RoutingMode) {
+  const sent = new WeakMap<object, Map<string, unknown>>();
+  return (viewer: object, event: string, data: unknown, opening: boolean): unknown => {
+    if (event === "membership-read-failed") sent.get(viewer)?.delete("membership");
+    if (event !== "roster" && event !== "membership" && event !== "presence-view") return data;
+    let updates = sent.get(viewer);
+    if (!updates) sent.set(viewer, updates = new Map());
+    const previous = updates.get(event);
+    const compare = !opening && mode() !== "legacy" && previous !== undefined;
+    const next = compare ? stabilizeFeed(event, data, previous) : data;
+    if (compare && isDeepStrictEqual(previous, next)) return undefined;
+    updates.set(event, next);
+    return next;
+  };
 }
 
 export function sharedChannels(mode: () => RoutingMode) {

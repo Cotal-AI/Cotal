@@ -39,7 +39,7 @@ import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { assertValidChannel, channelRoute, chatSubject, parseSubject, PLUGIN_CHANNEL_ROOT, spacePrefix, type Presence } from "@cotal-ai/core";
 import type { FeedMessage } from "../client/src/api/types.js";
-import { sharedChannels } from "../src/shared-channels.js";
+import { sharedChannels, sharedFeedUpdates } from "../src/shared-channels.js";
 import { activityBackfill } from "../src/web-read.js";
 import { classifyTap } from "../src/web-request.js";
 import { channelSubjectInSpace, endpointChannelRoute } from "../../../packages/core/src/endpoint-channel-route.js";
@@ -639,6 +639,26 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
   check("shared activity emits only visible channel rows", !backfill.partial && backfill.entries.length === 1 && backfill.entries[0].mode === "chat" && backfill.entries[0].channel === ordinary);
   mode = undefined;
   check("unadmitted mode keeps reserved names dark without claiming plugin channels are on", !shared.visible(plugin) && shared.visible(ordinary) && shared.page(html) === html);
+
+  const update = sharedFeedUpdates(() => mode);
+  const viewer = {};
+  const other = {};
+  const send = (event: string, payload: unknown, opening = false) => update(viewer, event, payload, opening);
+  const first = { id: "local.first", observedAt: 10, live: [ordinary], durable: [] };
+  const second = { ...first, id: "local.second" };
+  const visibleMembers = { asOf: 10, members: [first, second] };
+  check("each viewer gets its own opening snapshot", send("membership", visibleMembers, true) === visibleMembers && update(other, "membership", visibleMembers, true) === visibleMembers);
+  const hiddenWrite = { ...visibleMembers, members: [second, { ...first, observedAt: 20, live: [ordinary, plugin] }] };
+  check("a member-only write does not emit when only hidden bindings, order and per-row time changed", send("membership", shared.membership(hiddenWrite)) === undefined);
+  const heartbeat = send("membership", shared.membership({ ...hiddenWrite, asOf: 20 })) as typeof visibleMembers;
+  check("a real heartbeat reaches the feed without refreshing a hidden member write", heartbeat.asOf === 20 && heartbeat.members[0] === first && heartbeat.members[1] === second);
+  const current = { state: "current", fresh: true };
+  const stale = { state: "stale", fresh: false, staleSince: 30 };
+  check("presence-view emits health transitions, not repeated current state", send("presence-view", current, true) === current && send("presence-view", { ...current }) === undefined && send("presence-view", stale) === stale && send("presence-view", current) === current);
+  const refusal = { reason: "membership read failed" };
+  check("membership refusal remains visible and permits a recovery frame with the same snapshot", send("membership-read-failed", refusal) === refusal && send("membership", heartbeat) === heartbeat);
+  mode = "legacy";
+  check("legacy feed passes unchanged snapshots through", send("membership", heartbeat) === heartbeat && send("membership", heartbeat) === heartbeat);
 }
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);
