@@ -208,6 +208,7 @@ async function status(args: ParsedArgs): Promise<void> {
     throw asFailure(e, home);
   }
   if (!reply.ok) {
+    recordOperationContext({ target: null });
     const { code, file, message, remedy } = reply.error;
     if (code === "DEPENDENCY_UNAVAILABLE" && typeof file === "string" && file.length > 0) {
       throw new CommandFailure("refused", code, message, { target: { file }, remedy, native: { code: "UNAVAILABLE" } });
