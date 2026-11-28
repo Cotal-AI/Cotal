@@ -182,7 +182,7 @@ try {
   // against it. See the comment on that cell for why nothing weaker works.
   const RETAINED_UID = mintLifecycleUid();
   const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
-    store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
+    store: workspaceSecretStore(root), dir: stateDir, space: SPACE, broker: { server: SERVER }, owner: OWNER, actor: "worker",
     scope: [], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: "worker", parent: `${OWNER}.cli`,
     lifecycleUid: RETAINED_UID,
   });
