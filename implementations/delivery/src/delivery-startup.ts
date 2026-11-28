@@ -3,7 +3,7 @@
  *  reader of this shard's own lease row. runStartedDelivery calls them in its original order. */
 import { isCasLoss, isPermissionDenied, isReachable, deliveryBucket, leaseKey, type CotalEndpoint, type SecretStore } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import type { MeshTarget } from "@cotal-ai/workspace";
+import { workspaceErrorParts, type MeshTarget } from "@cotal-ai/workspace";
 import type { Values } from "./delivery-creds.js";
 import type { DeliveryLog } from "./delivery.js";
 import type { LeaseReading } from "./watchdog.js";
@@ -48,13 +48,10 @@ export async function requireReachableBroker(deps: DeliveryReachDeps): Promise<b
     // record is a broker elsewhere that only its own operator can start, so `Run: cotal up` here
     // would prescribe starting a DIFFERENT, local mesh under that name.
     if (registered !== undefined) {
-      log.err(
-        registered.origin === "manual" || registered.origin === "catalog"
-          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; ${registered.origin === "catalog"
-            ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
-            : `start it where it runs, or \`cotal space forget ${space}\` to unregister it`}`
-          : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
-      );
+      if (registered.origin === "manual" || registered.origin === "catalog") {
+        const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target: registered, pruned: false });
+        log.err(`✗ delivery: ${message}${remedy ? `; ${remedy}` : ""}`);
+      } else log.err(`✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`);
       if (held) throw new Error(`delivery: no broker answered at ${server}`);
       process.exit(1);
     }

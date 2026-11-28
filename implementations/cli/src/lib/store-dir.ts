@@ -130,10 +130,10 @@ export function oldStoreForeignEntries(path: string | undefined): string[] {
  *  `outcome` what did not happen, and `retry` is what to run once they are moved out, a command in
  *  backticks or a step such as "the restore". */
 export function foreignEntriesRefusal(path: string, entries: readonly string[], held: string, outcome: string, retry: string, target: Readonly<Record<string, unknown>> = {}): CommandFailure {
-  return new CommandFailure("refused", "CONFLICT", `${held} ${path} also holds ${listEntries(entries)}, which no Cotal store writes; ${outcome}`, {
+  return localDiagnostic(new CommandFailure("refused", "CONFLICT", `${held} ${path} also holds ${listEntries(entries)}, which no Cotal store writes; ${outcome}`, {
     target: { ...target, storeDir: path, entries: [...entries] },
     remedy: `move ${entries.length === 1 ? "it" : "them"} out of ${path}, then run ${retry} again`,
-  });
+  }));
 }
 
 /** Up to five entry names, then how many more there are. */
@@ -232,9 +232,9 @@ function blockedStoreAncestor(path: string): { path: string; chmod?: string } | 
 
 export function missingRestoreStoreParent(storeDir: string): CommandFailure {
   const path = dirname(storeDir);
-  return new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${path} does not resolve to an existing directory; no restore was started`, {
+  return localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${path} does not resolve to an existing directory; no restore was started`, {
     target: { storeDir, path }, remedy: "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it", selfContained: true,
-  });
+  }));
 }
 
 const NEW_RESTORE_STORE = "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it";
@@ -277,7 +277,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
     const remedy = purpose === "restore"
       ? "make the parent directory writable by this account or choose a path under a writable parent. Leave the store directory absent so the restore can create it."
       : "name a store directory this account can create, or create it with the right owner first";
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy });
+    throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy }));
   }
 }
 

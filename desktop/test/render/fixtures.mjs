@@ -85,6 +85,14 @@ export function nativeStub(scenario) {
         }
         return ok(installing ? { app, ...(state.appService ? { serviceRefresh: state.appService } : {}), ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
       }
+      if (request.op === "repair-plan") return ok(state.repairPlan ?? { digest: "0".repeat(64), steps: [{ step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." }] });
+      if (request.op === "start") {
+        (state.startRequests ??= []).push(request);
+        if (state.startFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_UNKNOWN", message: "Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof", native: { code: "OPERATION_UNKNOWN" } } };
+        if (state.startHold) await new Promise(resolve => { window.__releaseStart = resolve; });
+        state.serviceStopped = false;
+        return ok({ started: true });
+      }
       if (request.op === "install") {
         state.installRequests = (state.installRequests ?? 0) + 1;
         for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
@@ -94,17 +102,12 @@ export function nativeStub(scenario) {
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Repair.", native: { code: "NOT_ANSWERING" } } };
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
-      if (request.op === "start") {
-        (state.startRequests ??= []).push(request);
-        state.serviceStopped = false;
-        return ok({ state: "start-requested" });
-      }
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
-      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(state.explicitStop ? { stopped: "by-you" } : {}) } } };
+      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(state.stoppedByYou || state.explicitStop ? { stopped: "by-you" } : {}) } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...state.statusFields, ...(state.serviceOwner && state.appManagement === "other-copy" ? { recovery: { reason: "another-installation", owner: { kind: state.serviceOwner.kind } } } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account && !state.signedOut ? { account: state.account } : {}), ...(state.signedOut ? { account: { mode: "signed-out", hostSupport: "unknown", spaces: [] } } : {}), ...(state.diskFull ? { diskFull: true } : {}), ...(state.generation ? { generation: state.generation } : {}), ...(state.recovery ? { recovery: state.recovery } : {}), ...state.statusFields, ...(!state.recovery && state.serviceOwner && state.appManagement === "other-copy" ? { recovery: { reason: "another-installation", owner: { kind: state.serviceOwner.kind } } } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
+      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; if (state.missingAfterSignIn && state.signedIn && state.statusRequests > 1) state.installed = false; return ok(statusPayload()); }
       if (request.op === "status-watch") {
         state.statusWatchRequests = (state.statusWatchRequests ?? 0) + 1;
         if (state.version && state.version !== "0.156.0") {
@@ -696,10 +699,13 @@ export const scenarios = [
     expect: async page => {
       assert.deepEqual(await page.evaluate(() => window.__terminalRequest), { op: 'agent-terminal', space: 'acme-team', lifecycleUid: 'test-0' });
       assert.equal(await page.getByRole('button', { name: 'Opening terminal… writer-1' }).isDisabled(), true);
+      const chip = page.locator('.agent-row .application-chip').first();
+      assert.equal(await chip.getAttribute('title'), await chip.textContent(), 'pending terminal chip exposes its full text');
       assert.equal(await page.getByRole('button', { name: 'Open in Terminal writer-2' }).isEnabled(), true);
       assert.equal(await page.locator('#view-settings').isEnabled(), true);
       await page.evaluate(() => window.__finishTerminal());
       await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).waitFor();
+      assert.equal(await chip.getAttribute('title'), await chip.textContent(), 'completed terminal chip exposes its full text');
       if (outcome === 'refused') {
         assert.match(await page.locator('#refusal-detail').textContent(), /The selected local agent is no longer running/);
         assert.equal(await page.locator('#details').evaluate(el => el.open), true);
@@ -987,6 +993,63 @@ export const scenarios = [
     assert.equal(await page.locator("#loading-icon .icon-spinner").count(), 1);
     assert.ok(await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().height) < 100);
   } },
+  ...[
+    ["disk-full", { diskFull: true }, "Disk full", "Your disk is full", "Free up space on this computer. Cotal continues by itself once there is room."],
+    ["updating", { generation: { installed: "0.157.0", running: "0.156.0", waiting: "preparing" } }, "Updating", "Cotal is updating", "It finishes by itself. Agents keep running."],
+    ["repair", { recovery: { code: "DAEMON_LOST" } }, "Repair needed", "This computer needs a repair", "Repair it to use it from your spaces again."],
+  ].map(([name, extra, word, title, description]) => ({
+    name: `surface-${name}`,
+    state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] }, ...extra },
+    expect: async page => {
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), word);
+      assert.equal(await page.locator("#connection-title").textContent(), title);
+      assert.equal(await page.locator("#connection-description").textContent(), description);
+      if (name === "disk-full") {
+        assert.equal(await page.locator("#recover").textContent(), "Check again");
+        const before = await page.evaluate(() => window.__renderState.statusRequests ?? 0);
+        await page.locator("#recover").click();
+        await page.waitForFunction(seen => (window.__renderState.statusRequests ?? 0) > seen, before);
+      }
+      // The word comes from the field. Dropping it returns the computer to Connected.
+      await page.evaluate(key => { delete window.__renderState[key]; window.__pushStatus(); }, Object.keys(extra)[0]);
+      await page.waitForFunction(expected => document.querySelector("#sidebar-status-word").textContent === expected, "Connected");
+    },
+  })),
+  { name: "surface-service-stopped", state: { installed: true, signedIn: true, serviceStopped: true, stoppedByYou: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Service stopped");
+    assert.equal(await page.locator("#connection-description").textContent(), "You stopped the background service. Start it to run agents on this computer again.");
+  } },
+  // A daemon that answers is not an account. A Manager that is still starting stays Starting.
+  { name: "surface-starting-manager", state: { installed: true, managers: [{ space: "acme-team", state: "starting", reason: "Synthetic Manager is still starting." }] }, expect: async page => {
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Starting");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is starting");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "waiting");
+    assert.notEqual(await page.evaluate(() => window.__renderState.nativeConnection?.label), "Connected");
+  } },
+  // An intentional stop publishes its word and dot before any account frame exists.
+  { name: "surface-stopped-no-account", state: { installed: true, serviceStopped: true, stoppedByYou: true }, expect: async page => {
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Service stopped");
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service is stopped");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
+    assert.equal(await page.evaluate(() => window.__renderState.nativeConnection?.label), "Service stopped");
+  } },
+  // A sign-out frame follows an account. The window must not keep saying Connected from memory.
+  { name: "surface-signed-out-after-account", state: { installed: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => {
+    await page.waitForFunction(() => document.querySelector("#sidebar-status-word")?.textContent === "Connected");
+    await page.evaluate(() => { window.__renderState.signedOut = true; window.__pushStatus(); });
+  }, expect: async page => {
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Not set up");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is not set up");
+  } },
+  { name: "surface-not-set-up", state: { signedIn: true, installed: true, missingAfterSignIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Not set up");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is not set up");
+  } },
+  { name: "surface-both-refused", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected", lastRefusal: "This space is set up under another sign-in on this computer." })) } }, expect: async page => {
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Can't connect");
+    assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
+  } },
   { name: "welcome", state: {} },
   { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#connection-view #journey li').count(), 4) },
   { name: "link", state: { link } },
@@ -1021,12 +1084,11 @@ export const scenarios = [
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true);
   } },
   // Start service shows the service's latest phase while it runs, and leaves no step spinning once it answers.
-  { name: "start-service-progress-clears", state: { serviceStopped: true, installHold: true, installProgress: ["verifying the recorded installation and owned task before startup", "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)"] },
+  { name: "start-service-progress-clears", state: { installed: true, serviceStopped: true, stoppedByYou: true, startHold: true },
     act: page => page.click("#recover"),
     expect: async page => {
-      await page.waitForFunction(() => typeof window.__releaseInstall === "function");
-      assert.equal(await page.locator('[data-testid="progress-0"] .progress-detail').textContent(), "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)", "the step shows the latest phase");
-      await page.evaluate(() => window.__releaseInstall());
+      await page.waitForFunction(() => typeof window.__releaseStart === "function");
+      await page.evaluate(() => window.__releaseStart());
       await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
       assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
       assert.equal(await page.locator("#setup-progress").isHidden(), true, "no step keeps spinning after the service started");
@@ -1036,8 +1098,9 @@ export const scenarios = [
     assert.equal(await page.locator("#setup-progress").isHidden(), true, "no service step keeps spinning while sign-in waits");
   } },
   // A failed Start service keeps its reason after a background status check, until the person acts on it.
-  { name: "start-service-failure-stays", state: { serviceStopped: true, installFails: true }, act: page => page.click("#recover"), expect: async page => {
+  { name: "start-service-failure-stays", state: { installed: true, serviceStopped: true, stoppedByYou: true, startFails: true }, act: page => page.click("#recover"), expect: async page => {
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Something on this computer needs fixing");
+    assert.equal(await page.locator("#recover").textContent(), "Repair", "an unknown Start outcome offers Repair");
     const reason = "OPERATION_UNKNOWN (OPERATION_UNKNOWN)\nWindows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof";
     assert.equal(await page.locator("#refusal-detail").textContent(), reason);
     const checks = await page.evaluate(() => window.__renderState.stoppedStatusChecks ?? 0);
@@ -1046,9 +1109,12 @@ export const scenarios = [
     await page.waitForTimeout(500);
     assert.equal(await page.locator("#connection-title").textContent(), "Something on this computer needs fixing", "a background status check does not replace the failure");
     assert.equal(await page.locator("#refusal-detail").textContent(), reason, "the reason stays");
+    // Acting on it opens Repair, which reads a plan; closing it reads the service again.
     await page.locator("#recover").click();
-    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "The background service is not running");
-    assert.equal(await page.locator("#recover").textContent(), "Start service", "acting on it shows the current state again");
+    await page.locator("#repair-panel").waitFor();
+    await page.locator("#repair-cancel").click();
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "The background service is stopped");
+    assert.equal(await page.locator("#recover").textContent(), "Start", "acting on it shows the stopped service again");
   } },
   { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");

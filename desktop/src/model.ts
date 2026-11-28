@@ -79,23 +79,56 @@ export function computerSummary(rows: readonly ComputerSpace[], anyConnected: bo
   return desired.every(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed)) ? "attention" : "starting";
 }
 
-/** One word and dot for the window, sidebar, tray menu and tooltip. */
+/** The ten words the window, pill, dot, tray menu and tooltip share. A problem names itself; there is no
+ *  generic "needs attention". The dot follows the word, so the two cannot disagree. */
 export type SurfaceWord = "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed";
+/** The one Start the stopped card and the tray send. It asks the service to start; it does not install it. */
+export const SERVICE_START: { op: "start" } = { op: "start" };
 export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "problem"; title: string; description: string }
-export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; signInRequired?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean; starting?: boolean }): SurfaceState {
-  const summary = computerSummary(input.rows, input.anyConnected);
-  const lost = networkState(summary);
-  if (lost) return { word: CONNECTION_COPY[lost].pill, dot: "problem", title: CONNECTION_COPY[lost].title, description: CONNECTION_COPY[lost].description };
+/** The fields the window reads off one status frame. `diskFull` is the frame's own flag. `generation`
+ *  present means an update is in progress. `recovery` is the repair #10913 reports; nothing else is. */
+export interface SurfaceFrame { diskFull?: unknown; generation?: unknown; recovery?: unknown; account?: { mode?: unknown; reason?: unknown; spaces?: readonly ComputerSpace[] } }
+export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean, accountKnown = false, managerStarting = false, verified = false): { rows: ComputerSpace[]; anyConnected: boolean; verified: boolean; accountKnown: boolean; managerStarting: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
+  const account = frame?.account;
+  return {
+    rows: rows.map(row => ({ ...row })),
+    // A row that remembers a refusal is not connected, even when its Manager answers.
+    anyConnected: anyConnected && rows.some(row => !row.lastRefusal && row.observed === "connected"),
+    // A Manager can be launch-ready with no account rows. Only that verified one is Connected.
+    verified,
+    // An account on this computer means it was set up. A daemon that merely answers does not.
+    accountKnown,
+    // A Manager that has begun but is not launch-ready yet.
+    managerStarting,
+    signInRequired: account?.mode === "sign-in-required",
+    computerRemoved: account?.mode === "sign-in-required" && account?.reason === "computer-removed",
+    updating: frame?.generation !== undefined && frame?.generation !== null,
+    diskFull: frame?.diskFull === true,
+    repairNeeded: frame?.recovery !== undefined && frame?.recovery !== null,
+  };
+}
+export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; verified?: boolean; accountKnown?: boolean; managerStarting?: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
+  // A lost connection names itself before other problems, on any row, even one the sidebar summary ignores.
+  const lost = input.anyConnected ? undefined : input.rows.some(row => networkState(row.observed) === "offline") ? "offline" as const : input.rows.some(row => networkState(row.observed) === "unreachable") ? "unreachable" as const : undefined;
+  if (lost === "offline") return { word: "Offline", dot: "problem", title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description };
+  if (lost === "unreachable") return { word: "Can't connect", dot: "problem", title: CONNECTION_COPY.unreachable.title, description: CONNECTION_COPY.unreachable.description };
   if (input.diskFull) return { word: "Disk full", dot: "problem", title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room." };
-  if (input.signInRequired) return { word: "Sign in required", dot: "problem", title: "Sign in to keep this computer connected", description: "Approve this computer in your browser to keep managing its spaces." };
+  if (input.signInRequired) return { word: "Sign in required", dot: "problem", title: "Sign in to keep this computer connected", description: input.computerRemoved ? "This computer was removed from your account. Sign in to add it back." : "Approve this computer in your browser to keep managing its spaces." };
   if (input.service === "stopped") return { word: "Service stopped", dot: "problem", title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again." };
   if (input.service === "not-set-up") return { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };
-  if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
   if (input.updating) return { word: "Updating", dot: "waiting", title: "Cotal is updating", description: "It finishes by itself. Agents keep running." };
-  if (summary === "connected") return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
-  if (summary === "attention") return { word: "Can't connect", dot: "problem", title: "Can't connect to your spaces", description: "Check the spaces below for what to do next." };
-  if (summary === "starting" || input.starting) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
-  return { word: "Connected", dot: "ok", title: input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: "Turn on the spaces that can use it in the dashboard." };
+  const desired = input.rows.filter(row => row.desired);
+  const refused = (row: ComputerSpace) => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed);
+  // A refusal is checked before any connection, so one refused row cannot make the computer Connected.
+  if (desired.length && desired.every(refused)) return { word: "Can't connect", dot: "problem", title: "Can't connect to your spaces", description: "Cotal reconnects by itself when the space answers again." };
+  if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
+  if (input.anyConnected) return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
+  if (desired.some(row => row.observed !== "removed on this computer")) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
+  // No account and no verified Manager. A Manager that is starting stays Starting. Anything else was never set up.
+  if (!input.verified && !input.accountKnown && !input.rows.length) return input.managerStarting
+    ? { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." }
+    : { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };
+  return { word: "Connected", dot: "ok", title: input.verified ? "This computer is connected" : input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: input.verified ? "Your spaces can use the agent applications on this computer." : "Turn on the spaces that can use it in the dashboard." };
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
@@ -182,7 +215,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "repair" | "installer" | "none"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "start" | "disk" | "repair" | "installer" | "none"; label: string }
 /** Rule 0: every screen offers one button that fixes the cause here. A cause no button can fix
  *  directly gets Repair, which checks the background service and fixes what it finds. */
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
@@ -196,6 +229,8 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "AUTH_REQUIRED": case "NOT_SIGNED_IN": return { title: "Sign in to continue", description: "This computer is not signed in. Approve it in your browser to continue.", action: "login", label: "Sign in" };
     case "SETUP_INTERRUPTED": return { title: "Setup was interrupted", description: "This copy of Cotal did not finish installing. Download the installer and run it again.", action: "installer", label: "Download installer" };
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
+    case "SERVICE_STOPPED": return { title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again.", action: "start", label: "Start" };
+    case "DISK_FULL": return { title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room.", action: "disk", label: "Check again" };
     case "DAEMON_LOST": return repair("The background service stopped", "The background service stopped before Cotal could confirm the result. Repair checks what changed and starts the service again if needed.");
     case "NOT_ANSWERING": return repair("The background service has not started", "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.");
     case "ANOTHER_INSTALLATION": return repair("Another copy of Cotal runs the background service", "Repair can move it to this app. Your spaces and sign-in stay as they are.");

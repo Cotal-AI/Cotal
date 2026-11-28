@@ -1,5 +1,6 @@
 import { drainAndClose, dialerFor, DEFAULT_SERVER, mintCreds, mintLifecycleUid, DEV_OWNER, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
+import { localDiagnostic } from "../telemetry.js";
 import { createConnection } from "node:net";
 import { hostname } from "node:os";
 import { readFileSync, existsSync, lstatSync } from "node:fs";
@@ -138,10 +139,10 @@ export async function unrecordedStackServer(root: string, space: string, host: s
 /** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its
  *  way out also retires the restore with `retire`. */
 export function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string, retire?: string): CommandFailure {
-  return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
+  return localDiagnostic(new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
     target: { root, attempt, pid },
     remedy: manifest !== undefined ? `stop the restored stack with \`cotal down\`, retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again` : "stop the restored stack with `cotal down`, then run `cotal up` again",
-  });
+  }));
 }
 
 /** The cleanup that retires an active restore. If its previous store holds data the restore left

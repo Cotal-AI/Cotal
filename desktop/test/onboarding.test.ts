@@ -71,6 +71,13 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
         if (options.loading) await new Promise(() => {});
         return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
+      if (r.op === "start") {
+        if (options.installNotAnswering) {
+          const reason = typeof options.installNotAnswering === "string" ? ` It refused to start: ${options.installNotAnswering}` : "";
+          return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${reason}`, remedy: "choose Repair.", native: { code: "NOT_ANSWERING" } } } satisfies Frame;
+        }
+        stopped = false; return ok({ started: true });
+      }
       if (r.op === "install") {
         installed = true;
         if (options.installNotAnswering) {
@@ -102,7 +109,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
         ] });
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
-      if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
+      if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, stopped: "by-you" } } } satisfies Frame;
       const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
@@ -381,8 +388,8 @@ test("a later status check clears a daemon-not-running error", async () => {
     const before = a.node("connection-title").textContent;
     await a.stop();
     await a.tick();
-    assert.equal(a.node("connection-title").textContent, "The background service is not running");
-    assert.equal(a.node("details").hidden, false);
+    assert.equal(a.node("connection-title").textContent, "The background service is stopped");
+    assert.equal(a.node("details").hidden, true);
     a.arm();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, before);
@@ -395,11 +402,11 @@ test("a later status check keeps an error the status check did not raise", async
   const a = await app({ installed: true });
   try {
     await a.click("login"); await a.login();
+    await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     await a.stop();
     await a.tick();
     a.arm();
-    await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
-    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "That didn't finish");
@@ -414,13 +421,13 @@ test("Start service starts a stopped background service and leaves no notice", a
     const before = a.node("connection-title").textContent;
     await a.stop();
     await a.tick();
-    assert.equal(a.node("recover").textContent, "Start service");
-    assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
-    assert.equal(a.node("refusal-detail").textContent, "NOT_RUNNING\nThe background service is installed but stopped. Choose Start service to start it.");
+    assert.equal(a.node("recover").textContent, "Start");
+    assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it to run agents on this computer again.");
+    assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
     const from = a.calls.length;
     await a.click("recover");
-    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "install"), ["install"]);
+    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "start"), ["start"]);
     assert.equal(a.node("connection-title").textContent, before);
     assert.equal(a.node("notice").textContent, "");
     assert.equal(a.node("notice").hidden, true);
@@ -490,6 +497,8 @@ test("a refused hosted Manager shows its reason without the command it names, an
   const a = await app({ installed: true, managerRefused: true });
   try {
     await a.click("login"); await a.login();
+    // A status read during sign-in never replaces the selected space; the next one shows the refused agent host.
+    await a.tick();
     assert.equal(a.node("recover").textContent, "Repair");
     assert.equal(a.node("connection-title").textContent, "The agent host for this space stopped", "finding 10: the card names the agent host, not a generic problem");
     const detail = a.node("refusal-detail").textContent ?? "";
@@ -641,8 +650,8 @@ test("a service start that does not answer within 15 seconds offers Repair, whic
     const before = a.node("connection-title").textContent;
     await a.stop();
     await a.tick();
-    assert.equal(a.node("connection-title").textContent, "The background service is not running");
-    assert.equal(a.node("recover").textContent, "Start service");
+    assert.equal(a.node("connection-title").textContent, "The background service is stopped");
+    assert.equal(a.node("recover").textContent, "Start");
     a.options.installNotAnswering = reason;
     await a.click("recover");
     assert.equal(a.node("connection-title").textContent, "The background service has not started");
@@ -955,8 +964,8 @@ test("Ready removes a space and adds another only after confirmation", async () 
     (a.doc.querySelector('#connected-spaces button') as HTMLButtonElement).click(); await settle();
     assert.equal(JSON.stringify(a.calls.filter(r => r.op === "service-disconnect")), JSON.stringify([{ op: "service-disconnect", space: "team" }]));
     assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 0);
-    assert.equal(a.node("sidebar-status-word").textContent, "Connected");
-    assert.equal(a.node("sidebar-status-dot").dataset.tone, "ok");
+    assert.equal(a.node("sidebar-status-word").textContent, "Not set up");
+    assert.equal(a.node("sidebar-status-dot").dataset.tone, "waiting");
     await a.click("another-space");
     a.node<HTMLSelectElement>("space").value = "other";
     a.node("space").dispatchEvent(new a.dom.window.Event("change")); await settle();

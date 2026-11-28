@@ -151,8 +151,8 @@ function readMembers(journal: StackJournal): Member[] {
  *  stack's broker is gone that read cannot succeed, so the refusal names the command that brings
  *  the broker back while keeping the live manager. A broker whose process runs but sends no
  *  greeting is named with its pid; the broker stops last, so no stop signal is sent here. */
-async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
-  try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
+async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, values: ParsedArgs["values"]): Promise<ServiceAdapterStopPlan | undefined> {
+  try { return await prepareNativeServiceStop(manager.definition, manager.instance, values["with-agents"] === true); }
   catch (caught) {
     if (storeRefusedWrite(caught)) {
       let store: { path: string; cap?: number } | undefined;
@@ -177,16 +177,16 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker runs as pid ${pid} but does not answer at ${journal.server}, so the live manager's agent impact cannot be read; no member was stopped`, { target: { root: journal.root, space: journal.space, broker: broker!.instance.name, pid, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `if pid ${pid} is suspended, resume it with kill -CONT ${pid} and run \`cotal down\` again; if it stays unresponsive, end it with kill -KILL ${pid}, then run \`cotal up --space ${journal.space}\` to restart the broker while the manager keeps running, then run \`cotal down\`` });
     }
     if (broker || !isCommandFailure(error)) throw caught;
-    throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `run \`cotal up --space ${journal.space}\` to restart the broker from its recorded inputs while the manager keeps running, then run \`cotal down\`` });
+    throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `from this stack's project folder, run ${scopedStackCommand(`${displayCmd()} up`, journal.space, values)} to restart the broker from its recorded inputs while the manager keeps running, then run ${scopedStackCommand(sameDown(values), journal.space, values)}` });
   }
 }
 
 /** A stop queued during startup waits for native launch work and cleanup, not other stop blockers. */
-async function waitForLaunchImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
+async function waitForLaunchImpact(journal: StackJournal, members: readonly Member[], manager: Member, values: ParsedArgs["values"]): Promise<ServiceAdapterStopPlan | undefined> {
   const deadline = performance.now() + 40_000;
   let waiting = false;
   for (;;) {
-    try { return await managerImpact(journal, members, manager, withAgents); }
+    try { return await managerImpact(journal, members, manager, values); }
     catch (error) {
       if (!isCommandFailure(error) || error.outcome !== "refused" || error.code !== "LIFECYCLE_BLOCKED") throw error;
       const detail = error.native?.detail as { phase?: string; blockers?: unknown } | undefined;
@@ -222,14 +222,17 @@ function disabledJetStreamStop(journal: StackJournal, manager: Member, write: No
     { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
 }
 
+function scopedStackCommand(command: string, space: string, values: ParsedArgs["values"]): string {
+  const mode = presentationOf(values);
+  return codeSpan(command + targetWords({ space }) + (mode === "rich" ? "" : ` --${mode}`));
+}
+
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
  *  Returns a settled active restore of this stack that was admitted, for the result to name. */
 function scopeRefusals(journal: StackJournal, values: ParsedArgs["values"]): string | undefined {
   const maintenance = stackMaintenanceFence(journal.root, journal);
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance attempt; the controller stack was not stopped under it", { target: { root: journal.root } });
-  const mode = presentationOf(values);
-  const retry = sameDown(values) + targetWords({ space: journal.space }) + (mode === "rich" ? "" : ` --${mode}`);
-  stackScopeRefusals(journal, `${codeSpan(retry)} from this stack's project folder`);
+  stackScopeRefusals(journal, `${scopedStackCommand(sameDown(values), journal.space, values)} from this stack's project folder`);
   return maintenance.admittedRestore;
 }
 
@@ -630,7 +633,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the suspended broker could not be resumed; no member was stopped", { target: instanceProjection(broker.instance) }); }
     }
     if (manager) {
-      manager.native = await (waitForLaunch ? waitForLaunchImpact : managerImpact)(journal0, members, manager, withAgents);
+      manager.native = await (waitForLaunch ? waitForLaunchImpact : managerImpact)(journal0, members, manager, values);
       if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
     }
     if (!values.yes) {
