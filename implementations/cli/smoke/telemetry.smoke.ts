@@ -19,6 +19,7 @@ import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 import { openTelemetryIntake } from "./_telemetry-intake.js";
 
@@ -242,6 +243,14 @@ for (const level of ["regular", "minimal"]) {
   check(`a refused component target reports refused at ${level}`, r.status === 3 && /target\s+refused/.test(r.stdout) && events.length === 1 && event?.outcome === "refused" && event.exitCode === 3);
   check(`component facts stay local at ${level}`, !JSON.stringify(events).includes("missing-fixture-space") && (level === "regular"
     ? sameKeys(event, REGULAR) && event?.errorCode === null && event.errorMessage === null && event.errorStack === null : sameKeys(event, MINIMAL)));
+}
+
+{
+  const space = "private-project";
+  const failure = membershipConversionRefusal(space);
+  const text = telemetryErrorText("up", failure);
+  check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",
+    JSON.stringify(failure.target) === JSON.stringify({ space }) && text.message?.includes("legacy File-backed membership store") === true && !JSON.stringify(text).includes(space));
 }
 
 // Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.
