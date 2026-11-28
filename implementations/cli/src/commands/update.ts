@@ -53,6 +53,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
+import { everSeededUnion } from "../seed/authority.js";
 import { operatorInstallDiffers, operatorUpdateSpec, recordedPackageDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
@@ -619,7 +620,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     const latest = latestVersion(rt);
     if (!latest.ok) {
       const code = await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(preflightChanged), promotionRecovered, permissionsRestored);
-      if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection)
+      if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1" && !unreadableSelection && seededBefore())
         await rt.reconcile(latest.offline === true);
       return code;
     }
@@ -668,7 +669,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       }
       reportVersion(current, latest.version, rt, reconciled);
       return reconciled ? 0 : 1;
-    }, true);
+    }, true, false);
   }
 
   return reconcileCurrent(current, rt, target, (reconciled) => {
@@ -678,15 +679,21 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   });
 }
 
+/** A prefix that has never been seeded has nothing for an offline repair to restore. */
+function seededBefore(): boolean {
+  try { return (everSeededUnion()?.size ?? 0) > 0; }
+  catch { return false; }
+}
+
 async function reconcileCurrent(
   current: string, rt: UpdateRuntime, target: Record<string, unknown>,
-  finish: (reconciled: boolean, deferred?: boolean) => number, selfUpdate = false,
+  finish: (reconciled: boolean, deferred?: boolean) => number, selfUpdate = false, offline = false,
 ): Promise<number> {
   if (!await admitReconciliation(current, rt, target)) return finish(false, true);
 
   rt.out(c.bold("Built-in connectors"));
   try {
-    await rt.reconcile(selfUpdate);
+    await rt.reconcile(offline);
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
     return finish(false);
@@ -711,7 +718,7 @@ async function reconcileCurrent(
 
   let code: number;
   try {
-    const ok = await updateOperatorExtensions(rt, current, selfUpdate);
+    const ok = await updateOperatorExtensions(rt, current, offline);
     if (ok && rt.env.COTAL_AUTO_UPDATE !== "1") {
       rt.out("Cotal updates the managed pi connector, not your standalone pi extension. If you copied it, wait for the update to succeed, then reinstall `@cotal-ai/pi` at the version shown by `cotal --version` and repeat the copy. See https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host");
     }

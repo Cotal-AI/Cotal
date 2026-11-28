@@ -156,7 +156,8 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
 export async function runSeed(flags: SeedFlags): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
-  const result = await reconcile(mode, false, false, flags.offline === true);
+  const selfUpdate = flags.offline === true;
+  const result = await reconcile(mode, false, false, selfUpdate);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
     return;
@@ -612,6 +613,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     await installExtensionSet([...staged, ...(selfUpdate ? [] : operators)], console.error, selfUpdate ? { offline: true, keep: kept } : undefined);
     for (const entry of staged) verifyInstalled(entry.name, generation);
     for (const entry of operators) reportOperator(entry.pkg, generation, selfUpdate);
+    if (selfUpdate) reportUnshippedDamage(builtIns);
   } else if (operators.length) {
     clearCursor();
     const { installExtensionSet } = await import("../commands/ext.js");
@@ -950,11 +952,19 @@ function intactRecordedPackages(builtIns: ReadonlySet<string>): string[] {
   return loadExtensionsManifest().extensions.flatMap((entry) =>
     builtIns.has(entry.pkg) || recordedPackageDiffers(entry) !== undefined ? [] : [entry.pkg]);
 }
-/** An offline self-update cannot fetch a package that this CLI does not ship, so it names it and leaves it. */
+/** An offline self-update cannot fetch a package that this CLI does not ship, so it names a damaged one and leaves it. */
+function reportUnshippedDamage(builtIns: ReadonlySet<string>): void {
+  for (const entry of loadExtensionsManifest().extensions) {
+    if (builtIns.has(entry.pkg) || entry.pkg.startsWith("@cotal-ai/")) continue;
+    const differs = recordedPackageDiffers(entry);
+    if (differs) console.error(c.yellow(`Offline update left ${entry.pkg} as it was: ${differs}`));
+  }
+}
+
 function reportOperator(pkg: string, generation: string, offline: boolean): void {
   if (!offline) return verifyOperatorInstalled(pkg, generation);
   const recorded = loadExtensionsManifest().extensions.find(item => item.pkg === pkg);
-  const differs = recorded ? operatorPackageDiffers(recorded, generation) : `${pkg} is not recorded`;
+  const differs = recorded ? recordedPackageDiffers(recorded) : `${pkg} is not recorded`;
   if (differs) console.error(c.yellow(`Offline update left ${pkg} as it was: ${differs}`));
 }
 

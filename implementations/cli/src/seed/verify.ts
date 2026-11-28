@@ -173,7 +173,7 @@ function publishedFiles(root: string, files: readonly string[]): string[] {
     return [...files];
   }
   if (!Array.isArray(listed)) return [...files];
-  const patterns = [...listed.filter((item): item is string => typeof item === "string"), "package.json", "README*", "LICENSE*", "LICENCE*", "CHANGES*", "CHANGELOG*"];
+  const patterns = [...listed.filter((item): item is string => typeof item === "string"), "package.json", "README*", "LICENSE*", "LICENCE*"];
   return files.filter((file) => patterns.some((pattern) => publishedMatch(file, pattern.replaceAll("\\", "/"))));
 }
 
