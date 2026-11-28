@@ -838,6 +838,15 @@ setCurrent("keep");
           denied.env.error.remedy.includes("restore access to the project folder") && findPreparedSpace("prepdone")?.root === prepRoot, shown(denied));
       } finally { chmodSync(prepRoot, mode); }
     }
+    const control = join(prepRoot, ".cotal"), parked = join(prepRoot, "saved-control");
+    renameSync(control, parked);
+    try {
+      symlinkSync(".cotal", control);
+      try {
+        const loop = await json(["space", "forget", "prepdone"]);
+        check("a project record link loop blocks forget before any change", refused(loop, 2, "LIFECYCLE_BLOCKED") && loop.env?.error?.message.includes("nothing was forgotten") && findPreparedSpace("prepdone")?.root === prepRoot && lstatSync(control).isSymbolicLink(), shown(loop));
+      } finally { unlinkSync(control); }
+    } finally { renameSync(parked, control); }
     const prepared = await json(["space", "forget", "prepdone"]), other = await json(["space", "forget", "prepother"]);
     check("forgetting a prepared space removes the stack definitions saved for its root",
       prepared.status === 0 && JSON.stringify(prepared.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("prepdone").read("stack-broker") === undefined, shown(prepared));
@@ -1441,8 +1450,12 @@ if (process.platform === "linux") {
     check("a bare up in the moved folder refuses TARGET_UNAVAILABLE, exit 2, naming the gone folder and the step",
       refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && (moved.env?.error?.remedy ?? "").includes("cotal space forget moving") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
     const again = await json(["space", "create", "moving"], after);
-    check("create there names the gone folder and says to forget it first",
-      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "forget it with `cotal space forget moving`, then run this create again", shown(again));
+    check("create there offers restoring the original folder before forgetting its space",
+      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "restore the original project folder at its recorded path, or forget it with `cotal space forget moving`, then run this create again", shown(again));
+    renameSync(after, before);
+    const restored = await json(["space", "show", "moving"], before);
+    check("restoring the original folder makes the same preparation usable without forgetting it", restored.status === 0 && restored.env?.result?.root === before && restored.env.result.rootMissing === false && getCurrent() === "moving", shown(restored));
+    renameSync(before, after);
     check("control: forget clears the way", (await json(["space", "forget", "moving"])).status === 0);
     if (previous === undefined) clearCurrent(); else setCurrent(previous);
     rmSync(after, { recursive: true, force: true });

@@ -259,6 +259,10 @@ for (const level of ["regular", "minimal"]) {
   check("a project path with a control character is named only locally", refused.status === 1 && refused.stdout.includes(marker) && refused.stdout.includes("a tab") && !existsSync(odd)
     && reported.length === 1 && reported[0]?.errorCode === "USAGE_INVALID" && reported[0].errorMessage === null && reported[0].errorStack === null && !JSON.stringify(refused.sent).includes(marker), shown(refused));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  const absent = "private-absent-fixture", unknown = await s.run(["use", absent, "--plain"]);
+  const event = unknown.sent.find(body => body.event === "command");
+  check("a refused selection lists known spaces only on this machine", unknown.status === 2 && unknown.stderr.includes(space) && unknown.stderr.includes(absent)
+    && event?.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null && event.errorStack === null && ![space, absent].some(name => JSON.stringify(unknown.sent).includes(name)), shown(unknown));
   for (const mode of ["status", "logs"]) {
     const r = await s.run(["manager", mode, "--space", space, "--json"], { COTAL_TELEMETRY: "regular" });
     const commands = r.sent.filter(body => body.event === "command"), event = commands[0];
