@@ -1,6 +1,6 @@
 import { c, paintFor } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, operationSpaceNote, operationWarnings, recordOperationContext, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
 import { codeSpan, displayWidth, terminalWidth, wrapWords } from "./text-wrap.js";
 
 // Defined in a leaf module so that output.ts can wrap its warnings without importing this one.
@@ -341,6 +341,7 @@ export function writeResult<R>(
       if (error.remedy) say({ text: `  ↳ ${error.remedy}`, tone: "hint" }, 2, out.failure?.remedyIsCommand);
     }
   }
+  if (out.failure) recordOperationContext({ reportedFailure: { outcome: out.failure.outcome, code: out.failure.code } });
   process.exitCode = exitCode(outcome, code);
 }
 

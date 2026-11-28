@@ -26,9 +26,10 @@ const {
   workspaceErrorParts,
   wrapWords,
   writeResult,
+  runOperation,
   stderrLines,
 } = await import("@cotal-ai/workspace");
-import type { Report } from "@cotal-ai/workspace";
+import type { OperationScope, Report } from "@cotal-ai/workspace";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -346,6 +347,13 @@ function capture(fn: () => void): { out: string; err: string } {
 const result = { seats: ["a"] };
 const view = (r: typeof result): Report => ({ sections: [{ blocks: [{ kind: "lines", lines: r.seats }] }] });
 const warnings = [{ code: "SCOPE_DENIED", target: { space: "beta" }, message: "beta could not be read" }];
+for (const format of ["json", "plain", "rich"] as const) {
+  const scope: OperationScope = {};
+  const failure = new CommandFailure("failed", "OPERATION_FAILED", "private fixture finding", { target: { space: "alpha" } });
+  const local = capture(() => runOperation(scope, () => writeResult(format, { command: "ps", target: failure.target, result, failure }, view)));
+  check(`${format} keeps the finding local and records only its failure classification`, (local.out + local.err).includes(failure.message) &&
+    scope.reportedFailure?.outcome === failure.outcome && scope.reportedFailure.code === failure.code && Object.keys(scope.reportedFailure).length === 2);
+}
 const asJson = capture(() => writeResult("json", { command: "ps", target: { space: "alpha" }, result, completeness: "partial", warnings }, view));
 const env = JSON.parse(asJson.out);
 check("json writes one envelope with the result", asJson.out.split("\n").filter(Boolean).length === 1 && JSON.stringify(env.result) === JSON.stringify(result) && env.completeness === "partial" && env.warnings[0].code === "SCOPE_DENIED", asJson.out);

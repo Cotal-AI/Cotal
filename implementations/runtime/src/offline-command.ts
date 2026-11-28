@@ -319,7 +319,6 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
     const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
     const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
-    recordOperationContext({ reportedFailure: { outcome: failure.outcome, code: failure.code } });
     const result = { kind: "workflow-validation", valid: false, problems };
     const view = (): Report => ({ sections: [
       { title: "Workflow not valid", blocks: [
@@ -329,6 +328,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
       ] },
     ] });
     if (presentation === "json") {
+      recordOperationContext({ reportedFailure: { outcome: failure.outcome, code: failure.code } });
       process.exitCode = exitCode(failure.outcome, failure.code);
       process.stdout.write(envelopeLine({ ...failureEnvelope("run", failure), completeness: "complete", result }), (error) => {
         if (!error || (error as NodeJS.ErrnoException).code === "EPIPE") return;
