@@ -2736,7 +2736,6 @@ process.stdin.once('data', () => {
             const instanceIdBefore = managerBefore?.instanceId as string;
             const managerPidBefore = managerBefore?.pid as number;
             const managerHostPath = join(daemonDir, spaceSegment(ON), "manager-host.json");
-            const managerCleanupPath = join(daemonDir, spaceSegment(ON), "manager-cleanup.json");
             const serviceStorePath = join(daemonDir, spaceSegment(ON), "service-store");
             const signedOutAccountPath = join(daemonDir, "signed-out-account.json");
             const accountSpacesPath = join(daemonDir, "account-spaces.json");
