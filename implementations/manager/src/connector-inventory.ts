@@ -17,8 +17,9 @@ export interface ConnectorInventorySettings {
 /** The connector inventory taken at boot: which harnesses resolve on this host and the notes for those that do not.
  *  It owns the rows; other parts hold this object and read them at use. */
 export class ConnectorInventory {
-  /** Connector harness inventory. Available paths stay pinned; unavailable rows are retried when
-   * launch, model lookup or status asks, without stopping unrelated Manager work. */
+  /** Connector harness inventory. Available paths stay pinned while they still exist and resolve on
+   *  PATH. Missing or removed rows are rechecked when launch, model lookup or status asks, without
+   *  stopping unrelated Manager work. */
   connectorStatuses: ManagerConnectorStatus[] = [];
   private connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
   private claudeWakeRecheck?: Promise<void>;
@@ -95,14 +96,25 @@ export class ConnectorInventory {
     }
   }
 
-  /** Retry unavailable applications without changing resolved available rows. Claude launches
-   *  join the status or launch that started wake setup, before any name or capacity is reserved. */
-  refreshUnavailableConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
+  /** Recheck available applications and retry unavailable ones. Claude launches join the status or
+   *  launch that started wake setup, before any name or capacity is reserved. */
+  refreshConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
     const wasEnabled = this.parts.seatLaunch.classSpawnEnabled();
     let pending: Promise<void> | undefined;
     for (const row of this.connectorStatuses) {
-      if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
+      if (name !== undefined && row.agent !== name) continue;
       const requirements = this.connectorRequirements.get(row.agent);
+      if (row.state === "available") {
+        const requires = requirements?.requires ?? Object.keys(row.binaries);
+        const { binaries, reason } = resolveHarness(row.agent, requires, row.binaries);
+        row.binaries = binaries;
+        if (reason) {
+          row.state = "unavailable";
+          row.reason = reason;
+          this.parts.harnessResolution.forgetCatalog(row.agent);
+        }
+        continue;
+      }
       if (!requirements) continue;
       if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
         pending = this.claudeWakeRecheck;
@@ -116,12 +128,13 @@ export class ConnectorInventory {
         const release = setupClaude ? this.beginLifecycle(true) : undefined;
         if (!release) continue;
         pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
-          row.binaries = binaries;
-          if (failure) { row.reason = failure; return; }
+          const rechecked = resolveHarness(row.agent, requirements.requires, binaries);
+          row.binaries = rechecked.binaries;
+          if (failure || rechecked.reason) { row.reason = failure ?? rechecked.reason; return; }
           const alreadyEnabled = this.parts.seatLaunch.classSpawnEnabled();
           row.state = "available";
           delete row.reason;
-          if (!alreadyEnabled) this.parts.servePlane.enableClassSpawn();
+          if (!alreadyEnabled) this.parts.servePlane.syncClassSpawn();
         }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
         void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
       } else {
@@ -130,7 +143,7 @@ export class ConnectorInventory {
         delete row.reason;
       }
     }
-    if (!wasEnabled && this.parts.seatLaunch.classSpawnEnabled()) this.parts.servePlane.enableClassSpawn();
+    if (wasEnabled !== this.parts.seatLaunch.classSpawnEnabled()) this.parts.servePlane.syncClassSpawn();
     return pending;
   }
 }

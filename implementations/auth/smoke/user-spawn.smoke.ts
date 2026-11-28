@@ -600,6 +600,18 @@ try {
   await observer.start();
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
+  const foregroundExpiryCheck = "expired foreground root refuses the same name and the named replacement joins";
+  try {
+    const { foregroundRootExpiry } = await import("./_foreground-root-expiry.js");
+    grantActor(dir, { ...cliRow0, allowPublish: [...cliRow0.allowPublish, eventChannel({ owner: OWNER, actor: "cli" })] });
+    try {
+      await foregroundRootExpiry({ root, dir, space: SPACE, server: SERVER, owner: OWNER, auth,
+        env: { ...cliEnv, NODE_EXTRA_CA_CERTS: cert, DO_NOT_TRACK: "1" }, observer, childProgram: CHILD });
+    } finally { grantActor(dir, cliRow0); }
+    check(foregroundExpiryCheck, true);
+  } catch (error) {
+    check(foregroundExpiryCheck, false, error);
+  }
 
   // ---- B1b. THE SECOND SPAWN OF THE SAME NAME (the arm nothing covered) ----------------------
   // Every other spawn in this suite uses a DISTINCT name — alpha, iota, kappa. That is exactly why
@@ -2083,7 +2095,7 @@ try {
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 75 : 164;
+  const EXPECTED = endpointCliFocus ? 76 : 165;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

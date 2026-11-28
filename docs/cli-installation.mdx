@@ -55,9 +55,7 @@ and waits for your approval, as `cotal login` does. With several spaces it asks 
 that no project uses yet asks for the project folder your agents work in. A space already set up in
 a project keeps that project.
 
-Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
-is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. For local setup, use the example for
+Without a terminal, or with `--yes`, `--no-input`, `--plain` or `--json`, every input is a flag. A missing input refuses with `USAGE_INVALID` before anything is written. Add the missing flags to your original command so its project, destination and other options stay the same. For local setup, use the example for
 your shell. Each creates the project folder first. The example uses Claude Code, which must be installed
 for its setup to complete.
 
@@ -872,7 +870,7 @@ Use `npm pack --dry-run ./example-extension` to check the source package content
 For local use, set the `file:` dependency to the absolute path of an existing archive and run `cotal ext add ./example-extension` again.
 For distribution, use a dependency npm can install from a registry.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
-For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
+Keep the full scope and package spelling, including a leading dot in a scope (`@.acme/tool`) or a leading underscore in the package (`@acme/_helper`).
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 On Linux and macOS, when Cotal runs a recognized npm script directly with its own Node because
