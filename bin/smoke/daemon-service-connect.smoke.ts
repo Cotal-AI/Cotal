@@ -2023,7 +2023,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       let claudeUpdateEntry: string | undefined;
       if (claudeWakeOnly) {
         if (claudeCurrentUpdate) {
-          const installed = join(root, "Cotal CLI", "lib/node_modules/cotal-ai");
+          const globalPrefix = join(root, "Cotal CLI");
+          const installed = join(globalPrefix, "lib/node_modules/cotal-ai");
           const pack = spawnSync(process.execPath, [join(repo, "bin/scripts/copy-seeded-connectors.mjs")], { cwd: repo, env, encoding: "utf8", timeout: 120_000 });
           assert.equal(pack.status, 0, pack.stdout + pack.stderr);
           for (const item of ["dist", "package.json", "seeded-connectors"]) cpSync(join(repo, "bin", item), join(installed, item), { recursive: true });
@@ -2036,6 +2037,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           for (const item of ["dist", "package.json"]) cpSync(join(repo, "implementations/cli", item), join(scope, "cli", item), { recursive: true });
           symlinkSync(join(repo, "implementations/cli/node_modules"), join(scope, "cli/node_modules"));
           claudeUpdateEntry = join(installed, "dist/cotal.js");
+          mkdirSync(join(globalPrefix, "bin"));
+          symlinkSync(claudeUpdateEntry, join(globalPrefix, "bin", "cotal"));
+          env.PATH = `${join(globalPrefix, "bin")}:${env.PATH}`;
           seedUnitReceipt(claudeUpdateEntry, true);
           delete env.COTAL_ALLOW_CHECKOUT_SEED;
         }
@@ -2052,7 +2056,14 @@ if (family === '--version') { console.log('2.1.327 (Claude Code)'); return; }
 if (family === 'plugin') {
   const enabled = existsSync(join(home, 'claude-installed'));
   if (group === 'marketplace' && action === 'list') console.log('[]');
-  else if (group === 'install') writeFileSync(join(home, 'claude-installed'), '');
+  else if (group === 'install') {
+    writeFileSync(join(home, 'claude-installed'), '');
+    if (${claudeCurrentUpdate}) {
+      const cache = join(home, '.claude', 'plugins');
+      mkdirSync(cache, { recursive: true });
+      writeFileSync(join(cache, 'installed_plugins.json'), JSON.stringify({ plugins: { 'cotal@cotal-mesh': [{}] } }));
+    }
+  }
   else if (group === 'list') console.log(JSON.stringify(enabled ? [{ id: 'cotal@cotal-mesh', scope: 'user', enabled, readFromFolder: plugin }] : []));
   else if (group !== 'marketplace' && group !== 'update') process.exit(99);
   return;
@@ -3240,7 +3251,9 @@ process.stdin.once('data', () => {
                 await sameSeat();
                 assert.ok(existsSync(join(types, "claude-code", "index.d.ts")));
                 if (file) assert.equal(readFileSync(file, "utf8"), "{}\n");
-                assert.ok(!existsSync(join(home, "claude-plugin", "cotal", ".claude-plugin", "types")), "refresh does not copy Claude's generated editor metadata");
+                const refreshed = join(home, "claude-plugin", "cotal", ".claude-plugin");
+                assert.ok(existsSync(join(refreshed, "plugin.json")));
+                assert.ok(!existsSync(join(refreshed, "types")), "refresh does not copy Claude's generated editor metadata");
               }
               const shipped = join(pluginRoot, "hooks", "hooks.json");
               const original = readFileSync(shipped);
