@@ -119,6 +119,8 @@ if (process.platform === "linux") {
     && plainOps.indexOf("disable") >= 0 && plainOps.indexOf("disable") < plainOps.lastIndexOf("stop") && existsSync(unitPath), plainStop.frame);
   const afterStop = desktop({ op: "status" });
   check("status after an intentional stop says stopped by you", afterStop.frame?.ok === false && afterStop.frame?.error?.code === "NOT_RUNNING" && afterStop.frame.error.detail?.installed === true && afterStop.frame.error.detail.stopped === "by-you", afterStop.frame);
+  const marker = join(resolvedHome, "service-stopped-by-you");
+  check("an intentional stop writes the person-stop marker", existsSync(marker));
   const watched = desktop({ op: "status-watch" });
   check("status-watch after an intentional stop says stopped by you", watched.frame?.ok === false && watched.frame?.error?.code === "NOT_RUNNING" && watched.frame.error.detail?.installed === true && watched.frame.error.detail.stopped === "by-you", watched.frame);
   const appStart = desktop({ op: "start" });
@@ -130,6 +132,23 @@ if (process.platform === "linux") {
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
   const unexpected = desktop({ op: "status" });
   check("status of an unexpected stop has no by-you marker", unexpected.frame?.ok === false && unexpected.frame?.error?.code === "NOT_RUNNING" && unexpected.frame.error.detail?.installed === true && unexpected.frame.error.detail.stopped === undefined, unexpected.frame);
+  check("an unexpected stop leaves no person-stop marker", !existsSync(marker));
+  const askedAgain = operations().length;
+  const confirmAlone = desktop({ op: "stop", confirm: true });
+  check("confirm without the agent list does not stop", confirmAlone.frame?.result?.state === "needs-confirm" && !operations().slice(askedAgain).some((op) => op === "disable" || op === "stop"), confirmAlone.frame);
+  const changed = desktop({ op: "stop", confirm: true, agents: ["someone-else"] });
+  check("a different agent list does not stop", changed.frame?.result?.state === "needs-confirm" && !operations().slice(askedAgain).includes("stop"), changed.frame);
+  const noTerminal = run("stop");
+  check("no terminal and no --yes stops nothing", noTerminal.status !== 0 && (noTerminal.doc?.error?.message ?? "").includes("There is no terminal") && !operations().slice(askedAgain).includes("disable"), noTerminal.doc?.error);
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled", failStop: true })}\n`);
+  const half = run("stop", ["--yes"]);
+  check("a stop that fails after automatic start is off says so and names cotal daemon start", half.status !== 0 && (half.doc?.error?.message ?? "").includes("automatic start is already off") && (half.doc?.error?.message ?? "").includes("cotal daemon start"), half.doc?.error);
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), failStop: false })}\n`);
+  const units = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { unit?: string }).unit).filter((unit): unit is string => !!unit) : [];
+  check("the fixture recorded one service", context.units.length === 1 && context.units[0] === unitName && units.every((unit) => unit === unitName), context.units);
+  const darwin = readFileSync(new URL("../daemon/install-darwin.ts", import.meta.url), "utf8");
+  const windows = readFileSync(new URL("../daemon/install-win32.ts", import.meta.url), "utf8");
+  check("the macOS and Windows stop paths name the same half-way fix", darwin.includes("automatic start is already off") && darwin.includes("cotal daemon start") && windows.includes("automatic start is already off") && windows.includes("cotal daemon start"));
 } else {
   console.log(`  ○ Linux stop/start fixture not run on ${process.platform}`);
 }

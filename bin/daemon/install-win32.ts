@@ -177,7 +177,7 @@ async function disableAndEnd(receipt: UnitReceipt, owned: (receipt: UnitReceipt,
     if (ended.instances === 0) { markPending(false); return; }
     if (attempt < 2) await delay(250);
   }
-  throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm no running instances after End; it stays disabled");
+  throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start is already off, and the task still has a running instance. Start it again with `cotal daemon start` to turn automatic start back on.");
 }
 
 export function scheduledTaskService(run: NativeRun): WindowsTaskService {
@@ -298,11 +298,12 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
     start(receipt, resume = false) {
       const task = owned(receipt, true);
       if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");
-      if (!task.enabled) {
-        if (!resume) throw new CommandFailure("refused", "CONFLICT", "the owned task is disabled; it was not enabled or started");
-        if (task.instances !== 0) throw new CommandFailure("refused", "CONFLICT", "the disabled owned task still has native instances; startup was refused");
-        enable(receipt);
-      }
+      // resume re-enables a task the person stopped. A disabled task with no running instance takes
+      // the same path, because a restart that paused the task itself must be able to start it again.
+      // A disabled task that still has instances is refused: ending one is not what a start does.
+      const turnBackOn = resume || task.instances === 0;
+      if (!task.enabled && turnBackOn) enable(receipt);
+      else if (!task.enabled) throw new CommandFailure("refused", "CONFLICT", "the disabled owned task still has native instances; startup was refused");
       if (task.instances === 0) step(["/Run", "/TN", receipt.unit]);
     },
     async stop(receipt) {

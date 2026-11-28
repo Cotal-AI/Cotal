@@ -245,7 +245,8 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
       owned(receipt);
       step(["disable", `gui/${id}/${receipt.unit}`]);
       if (!this.isEnabled(receipt)) {
-        if (owned(receipt)) step(["bootout", `gui/${id}/${receipt.unit}`]);
+        try { if (owned(receipt)) step(["bootout", `gui/${id}/${receipt.unit}`]); }
+        catch (error) { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `automatic start is already off for ${receipt.unit}, and the job did not unload. Start it again with \`cotal daemon start\` to turn automatic start back on.`, { cause: error }); }
         return;
       }
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `launchd did not confirm ${receipt.unit} disabled; the job was not unloaded`);

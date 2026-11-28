@@ -8,12 +8,8 @@ import type { Readable, Writable } from "node:stream";
 import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, daemonUserServiceEnv } from "./endpoint.js";
-import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled, stopInstalled } from "./install.js";
-import { nativeRun } from "./install-native-run.js";
-import { launchAgentService } from "./install-darwin.js";
-import { scheduledTaskService } from "./install-win32.js";
-import { readReceipt } from "./install-receipt.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
+import { applyInstall, applyUninstall, installedDaemonIdentity, personStopped, planUninstall, preflightInstalledDaemon, startInstalled, stopInstalled } from "./install.js";
 import { nativeDaemonLog, previousNativeDaemonLog } from "./native-log.js";
 import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
@@ -132,20 +128,9 @@ function serviceInstalled(target: ReturnType<DesktopBridgeOptions["resolveTarget
   catch { return false; }
 }
 
-/** True when automatic start is off, which is what `cotal daemon stop` leaves behind. An unreadable state is not treated as intentional. */
+/** True only when the person stopped the service. A disabled unit on its own is not enough. */
 function intentionalStop(target: ReturnType<DesktopBridgeOptions["resolveTarget"]>): boolean {
-  const receipt = readReceipt(target.paths);
-  if (!receipt) return false;
-  try {
-    if (process.platform === "linux") {
-      if ((receipt.mechanism ?? "systemd-user") !== "systemd-user" || !/^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(receipt.unit)) return false;
-      const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", receipt.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
-      return read.status === 0 && (read.stdout.trim() === "disabled" || read.stdout.trim() === "static");
-    }
-    if (process.platform === "darwin") return receipt.mechanism === "launchd-agent" && !launchAgentService(nativeRun).isEnabled(receipt);
-    if (process.platform === "win32") return receipt.mechanism === "scheduled-task" && !scheduledTaskService(nativeRun).isEnabled(receipt);
-  } catch { return false; }
-  return false;
+  return personStopped(target.paths);
 }
 
 /** Read only a startup refusal line written during this install attempt, never an earlier launch's log. */
@@ -255,13 +240,22 @@ async function servicePower(req: Extract<DesktopRequest, { op: "stop" | "start" 
   }
   const agents = await runningAgentNames(paths, opts);
   if (agents === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read, so the background service was not stopped");
-  if (agents.length) {
+  if (agents.length || req.confirm === true) {
     const named = req.agents;
     const same = named !== undefined && named.length === agents.length && named.every((name, index) => name === agents[index]);
     if (req.confirm !== true || !same) return { state: "needs-confirm", agents };
   }
-  const stopped = await stopInstalled(paths, home);
-  return { state: "stopped", unit: stopped.unit, agents };
+  const fresh = await runningAgentNames(paths, opts);
+  if (fresh === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped");
+  const unchanged = fresh.length === agents.length && fresh.every((name, index) => name === agents[index]);
+  if (!unchanged) return { state: "needs-confirm", agents: fresh };
+  try {
+    const stopped = await stopInstalled(paths, home, fresh, () => runningAgentNames(paths, opts));
+    return { state: "stopped", unit: stopped.unit, agents: stopped.agents };
+  } catch (error) {
+    if (error instanceof CommandFailure && error.code === "CONFLICT" && error.changed) return { state: "needs-confirm", agents: error.changed.map(String) };
+    throw error;
+  }
 }
 
 /** Run one app operation through the stock local client. Closing the UI never stops the service. */
@@ -344,7 +338,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         return;
       }
       startedAt = Date.now();
-      if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }));
+      if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }), true);
       else applyInstall(paths, home, omittedRelativePathEntries);
       const deadline = Date.now() + 15_000;
       for (;;) {

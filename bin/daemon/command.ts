@@ -29,12 +29,11 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, daemonUserServiceEnv, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled, stopInstalled } from "./install.js";
-import { nativeRun } from "./install-native-run.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, personStopped, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled, stopInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
@@ -186,11 +185,16 @@ async function runningAgentNames(paths: DaemonPaths): Promise<string[] | undefin
   }
   if (!reply.ok) return undefined;
   const names: string[] = [];
+  for (const manager of reply.result.managers ?? []) if (manager.state === "starting") names.push(manager.space);
   for (const inventory of reply.result.agents ?? []) {
     if (inventory.state !== "read") return undefined;
     for (const agent of inventory.agents) if (agent.state === "running") names.push(agent.name);
   }
   return names;
+}
+
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((name, index) => name === right[index]);
 }
 
 /** Turn off automatic start and stop the recorded service. Files, sign-in and spaces stay. */
@@ -208,31 +212,34 @@ async function stop(args: ParsedArgs): Promise<void> {
     ] }));
     return;
   }
-  const agents = await runningAgentNames(paths);
-  if (agents === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry, or confirm with --yes when no agent is running` });
-  if (agents.length && values.yes !== true) {
-    const listed = agents.join(", ");
-    if (!process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", `stopping the background service also stops these agents: ${listed}. Confirm with --yes; nothing was stopped`);
+  const shown = await runningAgentNames(paths);
+  if (shown === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry once it can be read` });
+  if (values.yes !== true && (!process.stdout.isTTY || !process.stdin.isTTY)) {
+    const listed = shown.length ? ` Stopping the background service also stops these agents: ${shown.join(", ")}.` : "";
+    throw new CommandFailure("refused", "USAGE_INVALID", `There is no terminal to ask.${listed} Confirm with --yes; nothing was stopped`);
+  }
+  if (shown.length && values.yes !== true) {
     const { createInterface } = await import("node:readline/promises");
     const io = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = (await io.question(`Stopping the background service also stops these agents: ${listed}. Stop it? [y/N] `)).trim().toLowerCase();
+    const answer = (await io.question(`Stopping the background service also stops these agents: ${shown.join(", ")}. Stop it? [y/N] `)).trim().toLowerCase();
     io.close();
-    if (answer !== "y" && answer !== "yes") return;
+    if (answer !== "y" && answer !== "yes") {
+      writeResult(presentation, { command: "daemon stop", target: { unit: plan.unit }, result: { state: "not-stopped", agents: shown } }, () => ({ sections: [
+        { title: "Not stopped", blocks: [{ kind: "lines", lines: [{ text: "Nothing was stopped.", tone: "hint" }] }] },
+      ] }));
+      return;
+    }
   }
-  const result = await stopInstalled(paths, home);
-  writeResult(presentation, { command: "daemon stop", target: { unit: result.unit }, result: { ...result, state: "stopped", agents: agents.length } }, () => ({ sections: [
+  const fresh = await runningAgentNames(paths);
+  if (fresh === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry once it can be read` });
+  if (!sameNames(shown, fresh)) throw new CommandFailure("refused", "CONFLICT", `the running agents changed to: ${fresh.length ? fresh.join(", ") : "none"}. Nothing was stopped`, { remedy: "run the stop again so it names the current agents" });
+  const result = await stopInstalled(paths, home, fresh, () => runningAgentNames(paths));
+  writeResult(presentation, { command: "daemon stop", target: { unit: result.unit }, result: { ...result, state: "stopped", agents: fresh } }, () => ({ sections: [
     { title: "Stopped", blocks: [
       { kind: "fields", rows: [["Service", result.unit]] },
-      { kind: "lines", lines: [{ text: `The background service is stopped. It stays stopped through sign-out and a restart. Start it again with ${codeSpan(daemonCommandCopy("start", home))}. Nothing was removed.`, tone: "hint" }] },
+      { kind: "lines", lines: [{ text: `The background service is stopped. Start it again with ${codeSpan(daemonCommandCopy("start", home))}. Nothing was removed.`, tone: "hint" }] },
     ] },
   ] }));
-}
-
-function unitFileState(unit: string): string | undefined {
-  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
-  if (read.status !== 0) return undefined;
-  const state = read.stdout.trim();
-  return state || undefined;
 }
 
 async function status(args: ParsedArgs): Promise<void> {
@@ -249,9 +256,8 @@ async function status(args: ParsedArgs): Promise<void> {
     if (refusal !== e) throw asFailure(refusal, home);
     const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
     if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
-      const file = unitFileState(installed.unit);
-      const stoppedByYou = file === "disabled" || file === "static";
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", stoppedByYou ? "You stopped the background service. It stays installed, and it stays stopped through sign-out and a restart." : e.message, {
+      const stoppedByYou = personStopped(paths);
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", stoppedByYou ? "You stopped the background service. It stays installed." : e.message, {
         remedy: stoppedByYou
           ? `start it again with ${codeSpan(daemonCommandCopy("start", home))}`
           : linuxAutostartWarning(paths, home) ?? `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
@@ -261,10 +267,20 @@ async function status(args: ParsedArgs): Promise<void> {
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
       const receipt = readReceipt(paths);
       const recorded = receipt?.mechanism === "scheduled-task" && receipt.daemonHome === home;
+      if (recorded && personStopped(paths)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "You stopped the background service. It stays installed.", {
+        remedy: `start it again with ${codeSpan(daemonCommandCopy("start", home))}`,
+        native: { code: e.code },
+      });
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
         remedy: recorded
           ? `if the recorded task is still registered, start it with ${windowsDaemonRemedy("start", home)}. Read ${nativeDaemonLog(paths.state)} for its last launch output. If no log was created, inspect the task's state and last result in Task Scheduler`
           : `no scheduled task installation is recorded for this daemon. To start it, ${windowsDaemonFirstStart(home)}`,
+        native: { code: e.code },
+      });
+    }
+    if (process.platform === "darwin" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" && personStopped(paths)) {
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "You stopped the background service. It stays installed.", {
+        remedy: `start it again with ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },
       });
     }

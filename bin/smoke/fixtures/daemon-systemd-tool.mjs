@@ -72,6 +72,10 @@ if (basename(process.argv[1]) === "loginctl") {
     process.exit(1);
   }
   if (operation === "enable" || operation === "disable") rememberFileState(operation === "enable" ? "enabled" : "disabled");
+  if (operation === "stop" && context.failStop) {
+    appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
+    process.exit(1);
+  }
   if (operation === "stop" && context.changeSourceDuringStop) appendFileSync(context.changeSourceDuringStop, "\n# changed during stop\n");
   if (operation === "start" && context.nativeEntry) {
     spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {
