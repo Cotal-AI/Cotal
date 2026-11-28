@@ -19,6 +19,7 @@ import { acquireLock } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { acquireMaintenanceLock, CommandFailure, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { liveServicesRefusal } from "../src/commands/down-services.js";
 import { recordedProcessRefusal } from "../src/commands/service-registry.js";
 import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
@@ -457,6 +458,9 @@ for (const level of ["regular", "minimal"]) {
   const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
+  const service = liveServicesRefusal(space, [{ definition: "fixture-worker", instanceId: "fixture-instance", host: "fixture-host", process: "running", recordedState: "running", action: "stop-first", reason: null, remedy: null }], "down --preserve-state");
+  const blocked = telemetryErrorText("down", service);
+  check("a service blocking shutdown is identified locally but not in telemetry", service?.code === "LIFECYCLE_BLOCKED" && service.message.includes("fixture-worker instance fixture-instance") && blocked.message === null && blocked.stack === null);
   const failure = membershipConversionRefusal(space);
   const text = telemetryErrorText("up", failure);
   check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",

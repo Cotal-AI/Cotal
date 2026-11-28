@@ -232,7 +232,7 @@ function scopedStackCommand(command: string, space: string, values: ParsedArgs["
 function scopeRefusals(journal: StackJournal, values: ParsedArgs["values"]): string | undefined {
   const maintenance = stackMaintenanceFence(journal.root, journal);
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance attempt; the controller stack was not stopped under it", { target: { root: journal.root } });
-  stackScopeRefusals(journal, `${scopedStackCommand(sameDown(values), journal.space, values)} from this stack's project folder`);
+  stackScopeRefusals(journal, `${scopedStackCommand(sameDown(values), journal.space, values)} from this stack's project folder`, { presentation: presentationOf(values) });
   return maintenance.admittedRestore;
 }
 

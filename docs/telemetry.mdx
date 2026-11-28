@@ -73,7 +73,7 @@ reports the mismatch without the subscription or the allowed channels.
 When a service preset has never started, its refusal names the space locally. Telemetry records the
 code without the message or stack, including when `manager logs` names a missing log file.
 The space and PID also stay local when a service command cannot control a process started by `up` or `supervise`.
-When a separately started service blocks `up`, its name, PID and instance ID stay in the local refusal.
+When a separately started service blocks `up`, its name, PID and instance ID stay in the local refusal. When a saved service blocks shutdown of a legacy stack, its name, instance ID and process details also stay local. The command event keeps the refusal code.
 When another operation holds the stack's maintenance lock, the CLI shows its PID locally. The command event omits the diagnostic message and stack when the holder is known.
 If `--on` names an unregistered Manager instance, the local refusal identifies the requested instance and any running Managers. The command event keeps the error code but omits the message and stack.
 If cleanup would delete the only retained history, its refusal shows the previous store path locally. If a restored broker is still running, the startup refusal shows the restore attempt and PID locally. Both command events keep the error code and omit the message and stack. Restore also keeps the requested store path local if the directory already exists or its parent is missing. When a file that Cotal did not write blocks restore or cleanup, its name stays in the local refusal.
