@@ -20,7 +20,7 @@
  * ledgered infra-mint family (#30) lands — migrate there, do not invent it here.
  */
 import { EVICT_PRINCIPALS_MAX, type EvictionResult, type KickTarget } from "@cotal-ai/core";
-import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
+import { DELIVERY_ADMIN_REQUEST_TIMEOUT_MS, withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import type { ServiceKeys } from "./store.js";
 
 /** Accept one daemon eviction result only when it verifiably describes `principal`; anything else
@@ -92,7 +92,7 @@ export function makeDeliveryAdminEvictor(opts: {
   return async (principal: string, connections?: KickTarget[]): Promise<EvictionResult> => {
     try {
       return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
-        const r = await ep.requestDeliveryAdmin(connections !== undefined ? "evictSessionConnections" : "evictPrincipal", { principal, ...(connections !== undefined ? { connections } : {}) }, 15_000);
+        const r = await ep.requestDeliveryAdmin(connections !== undefined ? "evictSessionConnections" : "evictPrincipal", { principal, ...(connections !== undefined ? { connections } : {}) }, DELIVERY_ADMIN_REQUEST_TIMEOUT_MS);
         if (!r.ok) return failClosed(principal, `the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
         if (connections !== undefined && !confirmsConnections(r.data, connections))
           return failClosed(principal, "the delivery daemon did not confirm the exact connection filter");
@@ -118,7 +118,7 @@ export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliv
       await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
         for (let i = 0; i < principals.length; i += EVICT_PRINCIPALS_MAX) {
           const chunk = principals.slice(i, i + EVICT_PRINCIPALS_MAX);
-          const r = await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, 15_000);
+          const r = await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, DELIVERY_ADMIN_REQUEST_TIMEOUT_MS);
           const results = r.ok && Array.isArray(r.data) && r.data.length === chunk.length ? (r.data as unknown[]) : undefined;
           const why = !r.ok
             ? `the delivery daemon refused the family eviction: ${r.error ?? "(no error copy)"}`

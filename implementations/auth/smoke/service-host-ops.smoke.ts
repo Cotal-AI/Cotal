@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   VOID_SCHEMA_DIGEST, canonicalJson, contractDigest, contractRefToHex, contractStoreContext, endpointToken, epAuthBucket, epgateKey, fetchContractArtifact,
-  lifecycleHeadKey, recordsBucket, serviceEndpointActor, serviceWitnessDigest, singleDocumentClosure, uidReservationKey,
+  lifecycleHeadKey, principalKey, recordsBucket, serviceEndpointActor, serviceWitnessDigest, singleDocumentClosure, uidReservationKey,
   type ServiceRegistrationWitness, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
 import { grantActor, revokeActor } from "../src/ledger.js";
@@ -464,24 +464,44 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
       c.check("G7 (S-8) an operator revoke still reaches deny-new", rv.state === "pending" && rv.denyNew === "landed", rv);
       grantActor(dir, { owner: f.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
     }
-    // V5-evict: unverified connection eviction holds at V5-evict with denyNew landed; replay after verifiedGone reaches cancelled-nonterminal.
+    // V5-evict: exact principal, unverified/throw/mismatch hold at V5-evict without advancing svcop, and replay after verifiedGone reaches cancelled-nonterminal.
     {
-      let verified = false;
+      let mode: "unverified" | "throw" | "mismatch" | "verified" = "unverified";
+      const seenPrincipals: string[] = [];
       const ev = await engine(f, dir, {
-        evictPrincipal: async (principal) => ({ principal, kicked: verified ? 1 : 0, remaining: verified ? 0 : 1, verifiedGone: verified, scanComplete: true }),
+        evictPrincipal: async (principal) => {
+          seenPrincipals.push(principal);
+          if (mode === "throw") throw new Error("delivery-admin unreachable");
+          if (mode === "mismatch") return { principal: `${f.owner}.other`, kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true };
+          const ok = mode === "verified";
+          return { principal, kicked: ok ? 1 : 0, remaining: ok ? 0 : 1, verifiedGone: ok, scanComplete: true };
+        },
       });
       const p = await registered(f, ev);
+      const expectedPrincipal = principalKey(f.owner, serviceEndpointActor({ accountPublicKey: f.accountPublicKey, space: f.space, owner: f.owner, endpoint: f.endpoint, instanceId: p.instanceId })).key;
       const ap = await ev.handle(decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f)));
       const d = ap.state === "approved" ? ap.approval.assignment.assignmentDigest : "";
       const rq = revoke(f.endpoint, p.instanceId, d, "owner-request", ownerOf(f));
       const r1 = await ev.handle(rq);
-      parsesClosed("G8 V5-evict held", r1);
-      verified = true;
+      const opHeld = await f.value(f.auth, `svcop.${serviceHostOperationId(f.space, rq.requestId)}`);
+      mode = "throw";
+      const rThrow = await ev.handle(rq);
+      mode = "mismatch";
+      const rMismatch = await ev.handle(rq);
+      mode = "verified";
       const r2 = await ev.handle(rq);
+      const opDone = await f.value(f.auth, `svcop.${serviceHostOperationId(f.space, rq.requestId)}`);
+      parsesClosed("G8 V5-evict held", r1);
+      parsesClosed("G8 V5-evict throw", rThrow);
+      parsesClosed("G8 V5-evict mismatch", rMismatch);
       parsesClosed("G8 V5-evict resumed", r2);
-      c.check("G8 (V5-evict) unverified eviction holds at V5-evict with denyNew landed, then replay reaches cancelled-nonterminal once verifiedGone",
-        r1.state === "held" && r1.reason === "eviction-unverified" && r1.phase === "V5-evict" && r1.denyNew === "landed"
-          && r2.state === "pending" && r2.phase === "cancelled-nonterminal" && r2.denyNew === "landed", { r1, r2 });
+      c.check("G8 (V5-evict) unverified, thrown or mismatched eviction holds the answer at V5-evict with denyNew landed and svcop admitted, then replay reaches cancelled-nonterminal once the exact principal is verifiedGone",
+        seenPrincipals.length === 4 && seenPrincipals.every((x) => x === expectedPrincipal)
+          && [r1, rThrow, rMismatch].every((x) => x.state === "held" && x.reason === "eviction-unverified" && x.phase === "V5-evict" && x.denyNew === "landed")
+          && JSON.stringify(opHeld?.progress) === JSON.stringify({ state: "admitted" })
+          && r2.state === "pending" && r2.phase === "cancelled-nonterminal" && r2.denyNew === "landed"
+          && JSON.stringify(opDone?.progress) === JSON.stringify({ state: "custody", step: "cancelled-nonterminal" }),
+        { seenPrincipals, expectedPrincipal, r1, rThrow, rMismatch, opHeld: opHeld?.progress, r2, opDone: opDone?.progress });
     }
     // S-27 / T5: a late A1 after the approver's expired-admitted settlement; refuse closes the stale approving{X}.
     {

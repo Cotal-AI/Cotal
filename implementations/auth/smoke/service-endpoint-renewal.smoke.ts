@@ -43,7 +43,6 @@ import {
   CotalEndpoint, VOID_SCHEMA_DIGEST, endpointToken, epAuthBucket, mintCreds, newIdentity, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
   type ServiceAuthorityRequest, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
-import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { grantActor } from "../src/ledger.js";
@@ -114,8 +113,6 @@ const prevHome = process.env.COTAL_HOME;
 const closers: Array<() => Promise<unknown>> = [];
 try {
   await setupSpaceStreams({ servers: fx.servers, space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
-  const delivery = await bootDeliveryDaemon({ space, servers: fx.servers, auth: a.auth, reloadStoreIdentity: a.store.identity });
-  closers.push(() => delivery.stop());
   const stateDir = join(fx.dir, "svrenew-state"), clientDir = join(fx.dir, "svrenew-client"), home = join(fx.dir, "svrenew-home");
   for (const d of [stateDir, clientDir, home]) mkdirSync(d, { recursive: true });
   ensurePinnedIdp(stateDir, idpUrl); ensurePinnedIdp(clientDir, idpUrl);

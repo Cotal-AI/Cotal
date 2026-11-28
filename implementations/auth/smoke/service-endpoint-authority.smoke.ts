@@ -12,9 +12,10 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { createAccount } from "@nats-io/nkeys";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
+  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, VOID_SCHEMA_DIGEST, contractDigest, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
   serveAuthenticityOf, singleDocumentClosure, type ParsedArgs, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
 import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
@@ -30,6 +31,7 @@ import { serviceEndpointHostCall } from "../src/service-host-client.js";
 import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
 import { serviceHostOperationId } from "../src/service-host-kernel.js";
+import { serviceMarkerCeilSeconds } from "../src/service-host-ops.js";
 import { authServiceConfiguration } from "../src/service.js";
 import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks } from "./_service-custody-fixture.js";
@@ -82,7 +84,6 @@ let harness: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: fx.servers, space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: fx.servers, auth: a.auth, reloadStoreIdentity: a.store.identity });
   const stateDir = join(fx.dir, "svauth-state"), clientDir = join(fx.dir, "svauth-client"), home = join(fx.dir, "svauth-home");
   for (const d of [stateDir, clientDir, home]) mkdirSync(d, { recursive: true });
   ensurePinnedIdp(stateDir, idpUrl); ensurePinnedIdp(clientDir, idpUrl);
@@ -341,10 +342,17 @@ try {
   c.check("H6 a refused proposal reads refused and its register replay is denied", refused?.state === "refused" && s6.state === "status" && s6.status.state === "refused"
     && denied(again4, "proposal-refused"), { refused, s6, again4 });
 
-  // ---- I: revocation ----
-  const revoked = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner: ownerA },
-    input: { endpoint, instanceId: i1, expectedAssignmentDigest: approval?.assignment.assignmentDigest ?? "", cause: "owner-request" } });
-  c.check("I1 the host revoke lands deny-new and stays nonterminal", revoked.state === "pending" && revoked.denyNew === "landed", revoked);
+  // ---- I: revocation (no delivery daemon running yet) ----
+  const i1RevokeReq = { v: 1 as const, kind: "service-endpoint-host" as const, requestId: rid(), operation: "revoke" as const, granter: { kind: "owner" as const, owner: ownerA },
+    input: { endpoint, instanceId: i1, expectedAssignmentDigest: approval?.assignment.assignmentDigest ?? "", cause: "owner-request" as const } };
+  const revoked = await call(host, i1RevokeReq);
+  const revokedBeforeBound = await call(host, i1RevokeReq);
+  const i1HeldOp = revoked.state === "held" ? await opRead(revoked.operationId) : undefined;
+  c.check("I1 without a delivery daemon, revoke lands deny-new and holds at V5-evict on both initial call and replay before the bound",
+    revoked.state === "held" && revoked.reason === "eviction-unverified" && revoked.phase === "V5-evict" && revoked.denyNew === "landed"
+      && revokedBeforeBound.state === "held" && revokedBeforeBound.reason === "eviction-unverified" && revokedBeforeBound.phase === "V5-evict" && revokedBeforeBound.denyNew === "landed"
+      && i1HeldOp?.state === "present" && JSON.stringify((i1HeldOp.record.value as { progress?: unknown }).progress) === JSON.stringify({ state: "pending", phase: "admitted" }),
+    { revoked, revokedBeforeBound, i1HeldOp });
   const s7 = await viaProvider("a", status(i1, r1.requestId)), after = await viaProvider("a", r1);
   c.check("I2 status reports revoking once deny-new landed", s7.state === "status" && s7.status.state === "revoking" && s7.status.phase === "deny-new-landed", s7);
   c.check("I3 a register replay after revocation is denied approval-revoked", denied(after, "approval-revoked"), after);
@@ -508,6 +516,29 @@ try {
     mReg2.state === "approval-required" && /fetch failed/.test(mLost) && mLostId !== undefined
     && mUnseen?.state === "present" && (mUnseen.record.value as { state: string }).state === "proposed"
     && m4?.answer.state === "approved" && m4.answer.outcome === "applied" && m4.requestId === mLostId, { mLost, mUnseen, m4 });
+  const jsm = await jetstreamManager(harness.nc), authBucket = epAuthBucket(space);
+  const i1GateMsg = await jsm.streams.getMessage(`KV_${authBucket}`, { last_by_subj: `$KV.${authBucket}.${epgateKey(endpoint, i1)}` });
+  const i1DeniedAt = serviceMarkerCeilSeconds(i1GateMsg?.timestamp);
+  if (i1DeniedAt !== undefined) {
+    const waitMs = (i1DeniedAt + 71) * 1000 - Date.now() + 250;
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+  }
+  const revokedAfterBound = await call(host, i1RevokeReq);
+  const i1DoneOp = revokedAfterBound.state === "pending" ? await opRead(revokedAfterBound.operationId) : undefined;
+  c.check("I1b without a delivery daemon, replay after the 71 s credential-lifetime bound from the revoked gate's broker timestamp reaches cancelled-nonterminal",
+    i1DeniedAt !== undefined && revokedAfterBound.state === "pending" && revokedAfterBound.phase === "cancelled-nonterminal" && revokedAfterBound.denyNew === "landed"
+      && i1DoneOp?.state === "present" && JSON.stringify((i1DoneOp.record.value as { progress?: unknown }).progress) === JSON.stringify({ state: "pending", phase: "cancelled-nonterminal" }),
+    { i1DeniedAt, revokedAfterBound, i1DoneOp });
+  const m4Asg = m4?.answer.state === "approved" ? m4.answer.approval.assignment : undefined;
+  const m4RevokeReq = { v: 1 as const, kind: "service-endpoint-host" as const, requestId: rid(), operation: "revoke" as const, granter: { kind: "owner" as const, owner: ownerA },
+    input: { endpoint: m4Asg?.endpoint ?? endpoint, instanceId: m4Asg?.instanceId ?? "", expectedAssignmentDigest: m4Asg?.assignmentDigest ?? "", cause: "owner-request" as const } };
+  const m4Held = await call(host, m4RevokeReq);
+  delivery = await bootDeliveryDaemon({ space, servers: fx.servers, auth: a.auth, reloadStoreIdentity: a.store.identity });
+  const m4Resumed = await call(host, m4RevokeReq);
+  c.check("I1c once the delivery daemon answers, a held revoke replayed before the 71 s bound immediately reaches cancelled-nonterminal",
+    m4Held.state === "held" && m4Held.reason === "eviction-unverified" && m4Held.phase === "V5-evict" && m4Held.denyNew === "landed"
+      && m4Resumed.state === "pending" && m4Resumed.phase === "cancelled-nonterminal" && m4Resumed.denyNew === "landed",
+    { m4Held, m4Resumed });
   const parsed = (values: Record<string, string | boolean | undefined>) => authServiceConfiguration({ values: { space, server: "nats://127.0.0.1:1", ...values }, positionals: [], raw: [], positionalIndices: [] } as unknown as ParsedArgs);
   c.check("L10 --service-endpoints turns the engine on; its absence leaves it off", parsed({ "service-endpoints": true }).serviceEndpoints === true && parsed({}).serviceEndpoints === false);
   const refusedTimeout = (raw: string) => { try { parsed({ "auth-timeout": raw }); return false; } catch (e) { return /--auth-timeout must be a positive whole number of seconds/.test((e as Error).message); } };

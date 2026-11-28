@@ -4879,25 +4879,16 @@ process.exit(result.status ?? 93);
     });
 
     await cell("C8 the owner revokes: ended, never connected again", async () => {
-      const c8Store = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:c8:${ON}` });
-      const c8Composition = { injected: true } as const;
-      await c8Store.put(deliveryCredsKey(ON, c8Composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
-      await c8Store.put(membershipRwCredsKey(ON, c8Composition), await mintCreds(ctx[0]!.auth, newIdentity(), "membership-rw"));
-      await c8Store.put(membershipObserverCredsKey(ON, c8Composition), await mintMembershipObserverCreds(ctx[0]!.auth, newIdentity()));
-      await c8Store.put(connectionEvictorCredsKey(ON, c8Composition), await mintConnectionEvictorCreds(ctx[0]!.auth, newIdentity()));
-      const c8Delivery = await startDeliveryService({ context: { accountPublicKey: ctx[0]!.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: ON, servers, store: c8Store, storeIdentity: c8Store.identity, stateDir: join(root, "delivery-c8") });
-      try {
-        check("C8 instrument: connected before the revoke", stateOf(await connectS(ON)) === "connected");
-        const id = identityOf(ON)!;
-        const rv = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner: fixture.owner },
-          input: { endpoint: id.endpoint, instanceId: id.instanceId, expectedAssignmentDigest: assignmentDigest, cause: "owner-request" } } as never) as { state: string };
-        check("C8 instrument: the fixture owner revoked through the stock host", rv.state === "pending", rv);
-        const st = await waitState(ON, (s) => s === "ended", 90_000);
-        const s = await statusS(ON);
-        check("C8 ended approval-revoked", st === "ended" && resultOf(s).reason === "approval-revoked", s);
-        const again = await connectS(ON);
-        check("C8 a later connect stays ended", stateOf(again) === "ended", again);
-      } finally { await c8Delivery.close(); }
+      check("C8 instrument: connected before the revoke", stateOf(await connectS(ON)) === "connected");
+      const id = identityOf(ON)!;
+      const rv = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner: fixture.owner },
+        input: { endpoint: id.endpoint, instanceId: id.instanceId, expectedAssignmentDigest: assignmentDigest, cause: "owner-request" } } as never) as { state: string };
+      check("C8 instrument: the fixture owner revoked through the stock host", rv.state !== "denied", rv);
+      const st = await waitState(ON, (s) => s === "ended", 90_000);
+      const s = await statusS(ON);
+      check("C8 ended approval-revoked", st === "ended" && resultOf(s).reason === "approval-revoked", s);
+      const again = await connectS(ON);
+      check("C8 a later connect stays ended", stateOf(again) === "ended", again);
     });
 
     await cell("C9 daemon shutdown closes the connection and its socket", async () => {

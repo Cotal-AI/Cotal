@@ -12,7 +12,6 @@ import {
   setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
 } from "@cotal-ai/core";
 import { startHostedAuthFixture, MemoryStore } from "../../auth/smoke/_hosted-auth-fixture.js";
-import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
 import { deriveOwnerForIdpSubject } from "../../auth/src/derive.js";
 import { grantActor } from "../../auth/src/ledger.js";
 import { saveIdpSession } from "../../auth/src/login.js";
@@ -62,7 +61,6 @@ const stranger = grantActor(stateDir, { owner, actor: "stranger", scope: [], all
 const clientStore = new MemoryStore({ kind: "injected", coordinate: "linear-client" });
 await clientStore.put(authClientSentinelKey(a.space), a.sentinelCreds);
 let service: AuthServiceHandle | undefined;
-let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 const conns: NatsConnection[] = [];
 const endpoints: CotalEndpoint[] = [];
 let running: Promise<void> | undefined;
@@ -118,7 +116,6 @@ const start = (onInitialized?: () => void) => serveLinearUserAuth({ account: "fi
   servers: fx.servers, tls: false, provider, store: clientStore, dir, upstream: upstream(), signal: ctl.signal, onInitialized });
 try {
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space: a.space, servers: fx.servers, auth: a.auth, reloadStoreIdentity: a.store.identity });
   service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "linear-fixture" }, space: a.space,
     servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }) } } });
@@ -357,14 +354,21 @@ try {
     assert.equal(refreshedReply.reply.ok, true, "the same native instance serves after expiry reconnect");
     assert.equal(toolCalls, recoveryCalls + 3);
     if (approved.state !== "approved") throw new Error("approval missing");
-    const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner }, input: {
-      endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" } });
-    assert.equal(revoked.state, "pending", "the host confirms deny-new and verified live eviction while keeping the assignment nonterminal");
+    const revokeAtMs = Date.now();
+    const revokeReq = { v: 1 as const, kind: "service-endpoint-host" as const, requestId: rid(), operation: "revoke" as const, granter: { kind: "owner" as const, owner }, input: {
+      endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" as const } };
+    const revoked = await host(revokeReq);
+    assert.equal(revoked.state, "held", "without a delivery daemon, the host lands deny-new and holds live eviction");
+    assert.equal(revoked.denyNew, "landed");
     const shutdownDeadline = setTimeout(() => ctl.abort(), 55_000);
     try { await assert.rejects(running, /stopped after its remote authority/); }
     finally { clearTimeout(shutdownDeadline); }
     running = undefined;
     assert.equal(closedUpstreams, 3, "a terminal renewal denial closes the serving upstream");
+    const remainingBoundMs = revokeAtMs + 72_000 - Date.now();
+    if (remainingBoundMs > 0) await new Promise((r) => setTimeout(r, remainingBoundMs));
+    const replayedRevoke = await host(revokeReq);
+    assert.equal(replayedRevoke.state, "pending", "after the serving credential bound, replay confirms nonterminal cancellation without a delivery daemon");
     await assert.rejects(start(), /did not authorize|renewal ended/);
     assert.equal(closedUpstreams, 4, "a revoked restart closes its upstream without a replacement registration");
     assert.equal(contractDigest(seen.filter(r => r.operation === "register").at(-1)!), contractDigest(request));
@@ -381,7 +385,6 @@ try {
   ctl.abort(); await running?.catch(() => {});
   for (const nc of conns) await nc.close();
   await service?.close();
-  await delivery?.stop().catch(() => {});
   await new Promise<void>(resolve => idp.close(() => resolve()));
   if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
   await fx.close();

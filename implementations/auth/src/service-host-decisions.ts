@@ -1,12 +1,13 @@
 /** The service host's decisions: the shared proposal closes, decide (approve and refuse, A1-A5) and
  *  revoke (V0-V5). openServiceHostOperations builds them once over its closure. */
 import { EpEnvelopeError, mintLifecycleUid, parseEndpointCapabilities, principalKey, serviceEndpointActor, type EvictionResult, type ServiceUidCustodyV1 } from "@cotal-ai/core";
+import { DELIVERY_ADMIN_REQUEST_TIMEOUT_MS } from "./delivery-admin.js";
 import { approvedServiceGateRow, assertApprovableServiceGate } from "./native-service-gate.js";
 import { cancelServiceCustody, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceAssignmentGate, type ServiceCancelResult } from "./service-custody.js";
 import type { ServiceApprovalResult, ServiceDenyNew, ServiceHostDebt, ServiceHostOutcome, ServiceHostRequest, ServiceOperationRefusal, ServiceProposalCloseReason, ServiceProposalTombstoneView } from "./service-host-contract.js";
 import { readRegistryServiceRoot } from "./service-root-reader.js";
 import { Held, bounded, endpoint, held, message, readyAfter, readyBefore, write, type Ctx, type EndpointClass } from "./service-write.js";
-import { ceilingEntryAdmitted, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceAssignmentRecord, enc, requestDigestOf, type ApprovePlan, type RefusePlan, type RefuseResult, type Final, type OpLive, type Op, type ProposalLive, type ProposalTerminal, type Proposal, type Cancel, type Assignment } from "./service-host-records.js";
+import { SERVICE_CUTOFF_MARGIN_S, ceilingEntryAdmitted, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceAssignmentRecord, enc, requestDigestOf, serviceMarkerCeilSeconds, type ApprovePlan, type RefusePlan, type RefuseResult, type Final, type OpLive, type Op, type ProposalLive, type ProposalTerminal, type Proposal, type Cancel, type Assignment } from "./service-host-records.js";
 import { S2A_OPERATION_TTL_MS, S2A_MAX_REDECIDE, opKey, proposalKey, assignmentKey, seconds, serviceHostOperationId, expiryOperationId, expiryRequestDigest, approvalDigestOf, type Read, readOp, readProposal, readCapacity, readAssignment, readAdmission, put, isEntry, eligible, nameOf, release, isFinal, sameDebt, updateOp, settle, outcomeOf, debtOf, retryDebt, type Arms, type Inv, denied, finalArm, type Live } from "./service-host-kernel.js";
 import type { ServiceHostScopeTarget } from "./service-host-ops.js";
 
@@ -23,26 +24,35 @@ export interface ServiceHostDecisionsDeps {
   discoveryHeld: (operationId: string, requestDigest: string, found: Read<Op> | undefined, e: Held, assignmentDigest?: string) => Arms;
   authorityCtx: (inv: Inv, notAfterMs: number, step: string) => Ctx;
   coverCustody: (inv: Inv, ctx: Ctx, reservation: ServiceUidCustodyV1, run: "bootstrap" | "cancel") => void;
+  /** Verified-gone connection eviction for a revoked assignment's serving principal; when omitted,
+   *  V5 eviction is skipped and `cancelled-nonterminal` is confirmed from deny-new alone. */
   evictPrincipal?: (principal: string) => Promise<EvictionResult>;
 }
 
 /** V5: once deny-new has landed, evict any open serving connection for the assignment's
- *  principal until it is verified gone before cancellation reports nonterminal completion. */
+ *  principal until it is verified gone before cancellation reports nonterminal completion. A
+ *  serving connection cannot outlive its 60 s credential and none is minted after deny-new lands,
+ *  so once `SERVICE_CUTOFF_MARGIN_S` past the revoked endpoint gate's stored broker timestamp has
+ *  elapsed, a replay completes without an eviction answer. */
 async function verifyAssignmentEvicted(
   ctx: Ctx, inv: Inv, operationId: string, assignmentDigest: string, owed: ServiceHostDebt[],
-  asg: Extract<Assignment, { state: "bound" }>, evictPrincipal: ServiceHostDecisionsDeps["evictPrincipal"],
+  asg: Extract<Assignment, { state: "bound" }>, gate: EndpointClass | undefined,
+  evictPrincipal: ServiceHostDecisionsDeps["evictPrincipal"],
 ): Promise<Arms | undefined> {
   if (evictPrincipal === undefined) return undefined;
+  const deniedAt = gate?.kind === "revoked" ? serviceMarkerCeilSeconds(gate.timestamp) : undefined;
+  const cutoffElapsed = () => deniedAt !== undefined && seconds(Date.now()) >= deniedAt + SERVICE_CUTOFF_MARGIN_S;
+  if (cutoffElapsed()) return undefined;
   try {
     ctx.step = "V5-evict";
     await readyBefore(ctx);
     const principal = principalKey(asg.owner, serviceEndpointActor({ accountPublicKey: ctx.h.accountPublicKey, space: ctx.h.space, owner: asg.owner, endpoint: asg.endpoint, instanceId: asg.instanceId })).key;
-    const r = await bounded(ctx, () => evictPrincipal(principal));
+    const r = await bounded(ctx, () => evictPrincipal(principal), DELIVERY_ADMIN_REQUEST_TIMEOUT_MS);
     await readyAfter(ctx);
+    if (r.ok && r.value.principal === principal && r.value.verifiedGone && r.value.scanComplete && r.value.remaining === 0) return undefined;
+    if (cutoffElapsed()) return undefined;
     if (!r.ok) held("eviction-unverified", ctx.step, "timedOut" in r ? "endpoint connection eviction timed out" : message(r.error));
-    if (r.value.principal !== principal || !r.value.verifiedGone || !r.value.scanComplete || r.value.remaining !== 0)
-      held("eviction-unverified", ctx.step, r.value.note ?? "endpoint connection eviction could not be verified");
-    return undefined;
+    held("eviction-unverified", ctx.step, r.value.note ?? "endpoint connection eviction could not be verified");
   } catch (err) {
     if (!(err instanceof Held)) throw err;
     const reason = err.reason === "deadline" && Date.now() >= inv.endMs ? "reconcile-pending" : err.reason;
@@ -553,7 +563,7 @@ export function serviceHostDecisions(deps: ServiceHostDecisionsDeps) {
         if (run.denyNew === "landed") await keepDebt(await v4(ctx, row, run.gate));
         const s1 = run.s1;
         if (s1.kind === "pending" && run.denyNew === "landed") {
-          const evictHeld = await verifyAssignmentEvicted(ctx, inv, operationId, a, owed, row, evictPrincipal);
+          const evictHeld = await verifyAssignmentEvicted(ctx, inv, operationId, a, owed, row, run.gate, evictPrincipal);
           if (evictHeld !== undefined) return evictHeld;
           await progress("cancelled-nonterminal");
           return { state: "pending", operationId, phase: "cancelled-nonterminal", assignmentDigest: a, denyNew: "landed", root: s1.root, ...owing() };

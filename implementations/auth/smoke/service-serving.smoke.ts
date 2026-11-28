@@ -527,15 +527,20 @@ try {
   const target9 = await resolveService(callerNc9, space, ordersEp, callerId9, { instanceId: s9.instanceId, deadlineMs: 3000 });
   const preRevokeCall = await invokeCommand(callerNc9, space, target9, "lookup", undefined, { deadlineMs: 3000 });
   const rv9 = await revoke(s9);
-  let postRevokeCall = "answered";
-  try { await invokeCommand(callerNc9, space, target9, "lookup", undefined, { deadlineMs: 1500 }); } catch (e) { postRevokeCall = (e as Error).message; }
+  const closedAtRevoke9 = live9?.isClosed() === true;
+  let postRevokeErr: unknown;
+  try { await invokeCommand(callerNc9, space, target9, "lookup", undefined, { deadlineMs: 1500 }); } catch (e) { postRevokeErr = e; }
+  const callerOpenAfter9 = callerNc9.isClosed() === false;
+  const missingReply9 = postRevokeErr instanceof EpEnvelopeError
+    && ((postRevokeErr.code === "unavailable" && /^no responder for /.test(postRevokeErr.message))
+      || (postRevokeErr.code === "deadline-exceeded" && /^no reply to /.test(postRevokeErr.message)));
   let dialed = "connected";
   try { await dial(c9a.state === "credential" ? c9a.accessBearer : ""); } catch (e) { dialed = (e as Error).message; }
   c.check("F8 the same live bearer connects and serves before its assignment is revoked and is refused by the callout after",
     callerGrant9.state === "granted" && preRevokeCall.reply.ok && calls9 === 1 && live9 !== undefined && /authorization violation/i.test(dialed), { callerGrant9: callerGrant9.state, preRevokeCall: preRevokeCall.reply.ok, calls9, dialed });
-  c.check("F8b host revoke evicts the already-open serving connection until verified gone so a post-revoke call receives no answer",
-    rv9.state === "pending" && rv9.phase === "cancelled-nonterminal" && rv9.denyNew === "landed" && live9?.isClosed() === true && postRevokeCall !== "answered" && calls9 === 1,
-    { rv9, closed: live9?.isClosed(), postRevokeCall, calls9 });
+  c.check("F8b host revoke evicts the already-open serving connection before returning so a post-revoke call gets a missing-reply error while the caller stays open",
+    rv9.state === "pending" && rv9.phase === "cancelled-nonterminal" && rv9.denyNew === "landed" && closedAtRevoke9 && callerOpenAfter9 && missingReply9 && calls9 === 1,
+    { rv9, closedAtRevoke9, callerOpenAfter9, postRevokeErr: postRevokeErr instanceof Error ? { code: (postRevokeErr as EpEnvelopeError).code, message: postRevokeErr.message } : postRevokeErr, calls9 });
 
   // ---- G: an owner without an interactive row, a sibling's status, and requests held inside an effect ----
   const writesTo = async (kv: KV, k: string) => {
