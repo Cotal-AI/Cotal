@@ -40,9 +40,11 @@ then restart with the original start command. Stopping ends the listed seats.
 
 For empty Managers hosted by the machine daemon, `cotal update --self` acquires a caller-owned
 admission fence for the restart. If a seat starts after the custody report, the staged updater can
-publish the new software but defers daemon activation and leaves the seat running. An in-place
-replacement still requires an empty Manager. After a successful rollback, the updater releases its
-fence and the unchanged Manager can accept work again.
+publish the new software but defers daemon activation and leaves the seat running. Run
+`cotal update` after the seats exit to activate the installed release. An in-place replacement still
+requires an empty Manager. If verification fails after deferred activation, the
+updater restores the previous release without restarting the daemon. Existing seats keep running,
+and the same Manager can accept new work after reconciliation.
 
 ## Updating the installation
 

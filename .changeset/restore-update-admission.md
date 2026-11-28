@@ -3,4 +3,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Restore and reconcile the previous installation after a failed self-update so the running Manager can accept new agents again.
+A failed self-update restores the previous release without stopping running agents or blocking new ones.

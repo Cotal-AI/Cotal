@@ -149,6 +149,14 @@ function preflightExecutionWithCleanup(): boolean {
   return repaired;
 }
 
+function journaledAdmission(recovery: ReturnType<typeof readUpdateRecovery>, version: string): UpdateAdmission | undefined {
+  if (!recovery?.admission) return;
+  if (recovery.phase !== "restoring") return recovery.target === version ? recovery.admission : undefined;
+  // A deferred staged publication did not authorize activation. Only the restored version may
+  // use that decision in place of a fresh empty restart fence.
+  if (recovery.execution && !recovery.preparedRestart && recovery.previous === version && recovery.admission.disposition === "deferred") return recovery.admission;
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
@@ -170,10 +178,10 @@ const composed: Command = { ...command, async run(args) {
   let admission: UpdateAdmission | undefined;
   const staged = Boolean(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const standaloneReconcile = args.values.self !== true && !process.env.COTAL_UPDATE_PARENT;
-  const recoveryAdmission = readUpdateRecovery();
-  if (recoveryAdmission?.admission && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && recoveryAdmission.owner?.pid === process.ppid && recoveryAdmission.phase !== "restoring" && recoveryAdmission.target === updateRuntime.version()) {
+  const recoveryAdmission = readUpdateRecovery(), inheritedAdmission = journaledAdmission(recoveryAdmission, updateRuntime.version());
+  if (inheritedAdmission && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && recoveryAdmission?.owner?.pid === process.ppid) {
     const release = claimUpdateClosureAccess(); release();
-    admission = recoveryAdmission.admission;
+    admission = inheritedAdmission;
   }
   const systemdActivationDeferred = () => process.platform === "linux" && admission?.disposition === "deferred" &&
     admission.reason.startsWith("the systemd user manager did not answer `systemctl --user show-environment`");
@@ -191,7 +199,7 @@ const composed: Command = { ...command, async run(args) {
       try { consent = /^(y|yes)$/i.test((await input.question("Stop these agents and continue the update? [y/N] ")).trim()); }
       finally { input.close(); }
     }
-    if (!consent) { deferActivation("running agents were not stopped; save their work and run `cotal update --self --stop-agents` to activate", plan.occupied); return; }
+    if (!consent) { deferActivation("running agents were left running; run `cotal update` once they have exited", plan.occupied); return; }
     for (const manager of plan.inventory) await withIdpSessionDir(homeCotalDir(), async () => {
       const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
       const client = { versionSkew: (text: string) => text, roster: async () => [] };
@@ -396,7 +404,7 @@ const composed: Command = { ...command, async run(args) {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    if (readUpdateRecovery()?.phase === "restoring") { preparedRestart = false; admission = undefined; }
+    if (readUpdateRecovery()?.phase === "restoring") { preparedRestart = false; if (admission?.disposition !== "deferred") admission = undefined; }
     let paths: DaemonPaths | undefined;
     try { if (process.platform !== "win32" || daemonObserved) paths = daemonPaths(); }
     catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
