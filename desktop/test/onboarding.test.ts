@@ -400,7 +400,7 @@ test("Start restores an intentionally stopped service and leaves no notice", asy
     const before = a.node("connection-title").textContent;
     await a.stop();
     await a.tick();
-    assert.equal(a.node("recover").textContent, "Start");
+    assert.equal(a.node("recover").textContent, "Start service");
     assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it to run agents on this computer again.");
     assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);

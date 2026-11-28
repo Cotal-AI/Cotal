@@ -571,7 +571,7 @@ function showStage(next: Stage, focus = false): void {
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
   if (stopped || recovery && !lost) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
-    text("recover", stopped ? "Start" : recovery!.label); el("recover").dataset.action = stopped ? "start-service" : recovery!.action;
+    text("recover", stopped ? "Start service" : recovery!.label); el("recover").dataset.action = stopped ? "start-service" : recovery!.action;
     el("recover").hidden = !stopped && recovery?.action === "none";
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");

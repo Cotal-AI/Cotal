@@ -838,6 +838,15 @@ setCurrent("keep");
           denied.env.error.remedy.includes("restore access to the project folder") && findPreparedSpace("prepdone")?.root === prepRoot, shown(denied));
       } finally { chmodSync(prepRoot, mode); }
     }
+    const control = join(prepRoot, ".cotal"), parked = join(prepRoot, "saved-control");
+    renameSync(control, parked);
+    try {
+      symlinkSync(".cotal", control);
+      try {
+        const loop = await json(["space", "forget", "prepdone"]);
+        check("a project record link loop blocks forget before any change", refused(loop, 2, "LIFECYCLE_BLOCKED") && loop.env?.error?.message.includes("nothing was forgotten") && findPreparedSpace("prepdone")?.root === prepRoot && lstatSync(control).isSymbolicLink(), shown(loop));
+      } finally { unlinkSync(control); }
+    } finally { renameSync(parked, control); }
     const prepared = await json(["space", "forget", "prepdone"]), other = await json(["space", "forget", "prepother"]);
     check("forgetting a prepared space removes the stack definitions saved for its root",
       prepared.status === 0 && JSON.stringify(prepared.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("prepdone").read("stack-broker") === undefined, shown(prepared));
@@ -1318,6 +1327,16 @@ if (process.platform === "linux") {
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+    if (process.platform !== "win32") {
+      const child = join(readOnly, "project");
+      mkdirSync(child);
+      chmodSync(readOnly, 0o600);
+      try {
+        const inaccessible = await json(["space", "create", "other", "--root", child]);
+        check("create distinguishes an inaccessible root from a non-directory", refused(inaccessible, 2, "PERMISSION_DENIED") && inaccessible.env?.target?.root === child && inaccessible.env.error.remedy.includes("parent directories"), shown(inaccessible));
+      } finally { chmodSync(readOnly, 0o700); }
+      check("create wrote nothing below the inaccessible parent", !existsSync(join(child, ".cotal")) && findPreparedSpace("other") === undefined);
+    }
     // A Cotal home this account cannot write is refused too, and the empty .cotal the attempt made is removed.
     const lockedHome = join(home, "locked-home");
     const homeless = join(home, "homeless");
@@ -1431,8 +1450,12 @@ if (process.platform === "linux") {
     check("a bare up in the moved folder refuses TARGET_UNAVAILABLE, exit 2, naming the gone folder and the step",
       refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && (moved.env?.error?.remedy ?? "").includes("cotal space forget moving") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
     const again = await json(["space", "create", "moving"], after);
-    check("create there names the gone folder and says to forget it first",
-      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "forget it with `cotal space forget moving`, then run this create again", shown(again));
+    check("create there offers restoring the original folder before forgetting its space",
+      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "restore the original project folder at its recorded path, or forget it with `cotal space forget moving`, then run this create again", shown(again));
+    renameSync(after, before);
+    const restored = await json(["space", "show", "moving"], before);
+    check("restoring the original folder makes the same preparation usable without forgetting it", restored.status === 0 && restored.env?.result?.root === before && restored.env.result.rootMissing === false && getCurrent() === "moving", shown(restored));
+    renameSync(before, after);
     check("control: forget clears the way", (await json(["space", "forget", "moving"])).status === 0);
     if (previous === undefined) clearCurrent(); else setCurrent(previous);
     rmSync(after, { recursive: true, force: true });

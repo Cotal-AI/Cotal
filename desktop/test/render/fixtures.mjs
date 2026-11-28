@@ -846,7 +846,7 @@ export const scenarios = [
       window.__emitTauri("desktop-shown", null);
     });
     await page.waitForFunction(() => document.querySelector("#tray-label")?.textContent === "Connected");
-    assert.equal(await page.getByRole("button", { name: "Start", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Start service", exact: true }).count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests ?? []), []);
   } },
   { name: "surface-not-set-up", state: { signedIn: true, installed: true, missingAfterSignIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
@@ -921,7 +921,7 @@ export const scenarios = [
   { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");
     assert.equal(await page.locator("#recover").textContent(), "Start service");
-    assert.equal(await page.getByRole("button", { name: "Start", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Start service", exact: true }).count(), 1);
     await page.locator("#recover").click();
     await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
@@ -992,7 +992,7 @@ export const scenarios = [
     assert.equal(await page.locator("#service-confirmation").isVisible(), false);
   } },
   { name: "service-start-from-stopped", state: { installed: true, stoppedByYou: true, signedIn: true, connected: true, startStatusHold: true }, expect: async page => {
-    const start = page.getByRole("button", { name: "Start", exact: true });
+    const start = page.getByRole("button", { name: "Start service", exact: true });
     await start.waitFor();
     assert.equal(await start.count(), 1);
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is stopped");
@@ -1013,16 +1013,16 @@ export const scenarios = [
     assert.equal(await page.locator("#service-start-result").isVisible(), false);
   } },
   { name: "service-start-unconfirmed", state: { installed: true, stoppedByYou: true, startFails: true }, act: async page => {
-    await page.getByRole("button", { name: "Start", exact: true }).click();
+    await page.getByRole("button", { name: "Start service", exact: true }).click();
     await page.locator("#service-start-result").waitFor();
   }, expect: async page => {
     assert.equal(await page.locator("#service-start-result p").textContent(), "Cotal couldn't confirm that the background service started.");
-    assert.equal(await page.getByRole("button", { name: "Start", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Start service", exact: true }).count(), 0);
     const before = await page.evaluate(() => window.__renderState.stoppedStatusChecks);
     const checkAgain = page.getByRole("button", { name: "Check again", exact: true });
     assert.equal(await checkAgain.count(), 1);
     await checkAgain.click();
-    await page.getByRole("button", { name: "Start", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Start service", exact: true }).waitFor();
     assert.equal(await page.evaluate(() => window.__renderState.stoppedStatusChecks), before + 1);
     assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "start" }]);
   } },

@@ -1,5 +1,6 @@
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, preparedRootRemedy, presentationOf, projectRootDisplaced, projectRootProblem, projectRootProblemText, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, stoppedStack, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type ProjectRootProblem, type Report } from "@cotal-ai/workspace";
+import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, preparedRootRemedy, presentationOf, projectRootDisplaced, projectRootProblem, projectRootProblemText, readCurrent, setCurrent, SHOWN_VALUE_MAX, stackElsewhereRemedy, stoppedStack, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type ProjectRootProblem, type Report } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { journalRecordedElsewhere } from "../lib/stack-journal.js";
@@ -58,9 +59,9 @@ export async function use(args: ParsedArgs): Promise<void> {
     // No target, so the refusal is not headed with a space that does not exist. Clearing is a step only
     // while something is selected.
     const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${boundedValue(name, SHOWN_VALUE_MAX)}" is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+    throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${boundedValue(name, SHOWN_VALUE_MAX)}" is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
       remedy: `see the registered and prepared spaces with \`cotal space\`${previous === null ? "" : ", or clear the selection with `cotal use --clear`"}`,
-    });
+    }));
   }
   const changed = name !== undefined && (previous !== name || readCurrentSelection()?.source !== "explicit");
   const cwd = process.cwd(), project = canonicalRoot(findCotalRoot(cwd));
@@ -129,7 +130,7 @@ function selectionView(s: Selection, project: string, moved: ReturnType<typeof j
     lines.push(
       { text: `  this folder holds the stack journal of "${s.current}" and was moved from ${moved.recordedRoot}`, tone: "waiting" },
       { text: `  ${displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation))}`, tone: "hint" });
-  } else if (s.preparedRoot) lines.push(problem !== undefined ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which ${projectRootProblemText(problem)} - ${problem === "missing" ? `forget it with ${codeSpan(`cotal space forget ${shellPath(s.current)}`)}` : displayRemedy(preparedRootRemedy(s.current, problem))}`, tone: "waiting" }
+  } else if (s.preparedRoot) lines.push(problem !== undefined ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which ${projectRootProblemText(problem)} - ${displayRemedy(preparedRootRemedy(s.current, problem))}`, tone: "waiting" }
     : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with ${codeSpan(stoppedStack(s.preparedRoot, s.current)?.noManager ? "cotal up --no-manager" : "cotal up")} in ${s.preparedRoot}`, tone: "hint" }
     : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
     : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });

@@ -42,8 +42,9 @@ result when available; a harness fault does not hold a release.
 
 `workflow_dispatch` takes `phase`, `source_sha`, `target_version` and `profile`. Use an immutable
 40-character SHA whose package version matches the target. `bounded` is the supported profile.
-`extended` refuses explicitly instead of silently running a smaller set. There is no ref-wide
-cancellation, so one new head or publication cannot evict an older qualification.
+`extended` refuses explicitly instead of silently running a smaller set. A new push to a pull
+request cancels the matrix of the head it replaces. A publication and a manual run are never
+cancelled by a later run.
 
 ## Required release set
 
