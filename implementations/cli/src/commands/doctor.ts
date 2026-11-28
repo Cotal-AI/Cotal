@@ -677,10 +677,22 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   // is also what keeps the report SPACE-scoped now that the dir holds every tenant's segment — a
   // diagnosis must not name a co-resident tenant's material.
   const agentDir = agentCredsDir(root, space, { readOnly, onMigrated });
-  if (existsSync(agentDir)) {
-    for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
-      reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space, revocations));
+  let files: string[] = [];
+  try { files = readdirSync(agentDir); } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") {
+      let remedy = `check this account's access to ${agentDir} and its parent folders, then retry`;
+      try {
+        const stat = lstatSync(agentDir);
+        if (process.getuid && stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o500) !== 0o500)
+          remedy = `restore owner access with ${codeSpan(`chmod u+rx ${shellWord(agentDir)}`)}, then retry`;
+      } catch { /* A parent may prevent even inspecting the directory. */ }
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "this account cannot list the selected space's agent credential directory", { target: { root, space, path: agentDir }, remedy });
     }
+    if (code !== "ENOENT") throw error;
+  }
+  for (const f of files.filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
+    reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space, revocations));
   }
   // SECOND PASS over the agent files (#1576). Supersession is a property of an alias's FAMILY, not of
   // a file, so it cannot be decided while the files are still being read one at a time — which is

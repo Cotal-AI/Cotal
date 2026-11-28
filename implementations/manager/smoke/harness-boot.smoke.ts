@@ -4,10 +4,12 @@
  * Proves timing, not only wording: the missing harness is named by Manager.start() before any
  * startAgent call. Boot stays live for unrelated work and publishes the same unavailable status row.
  * A present harness stays pinned, while applications installed later are discovered by launch,
- * model lookup and status. The first available application also enables class spawn subscriptions.
+ * model lookup and status, and applications removed later become unavailable on status and launch
+ * before reserving names or capacity, updating class spawn routing and recovering when restored.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
@@ -15,6 +17,7 @@ import { connect } from "@nats-io/transport-node";
 import { MANAGER_CONTRACTS, type ManagerStatus } from "../src/manager-service-contract.js";
 import { connectorMetadataStale, extensionsDir, saveExtensionsManifest, trustProject } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { armManagerServiceObserver } from "../src/service-child.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -231,6 +234,341 @@ try {
       await late.stop({ withAgents: true });
     }
   }
+
+  rmSync(installed, { force: true });
+  const uninstallBin = join(root, "uninstall-bin");
+  const siblingBin = join(root, "sibling-bin");
+  const emptyBin = join(root, "empty-bin");
+  const siblingWorkspaceRoot = join(root, "ws-sibling");
+  mkdirSync(uninstallBin);
+  mkdirSync(siblingBin);
+  mkdirSync(emptyBin);
+  mkdirSync(join(siblingWorkspaceRoot, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(siblingWorkspaceRoot, ".cotal", "agents", "pin-probe.md"), "---\nname: pin-probe\nagent: boot-present\n---\n");
+  const uninstallPresent = join(uninstallBin, executable("present-harness"));
+  const siblingPresent = join(siblingBin, executable("present-harness"));
+  const missingReason = "boot-present harness needs present-harness on PATH - not found";
+  writeFileSync(uninstallPresent, script, { mode: 0o700 });
+  writeFileSync(siblingPresent, script, { mode: 0o700 });
+
+  type TrackedManager = {
+    runtime: unknown;
+    agents: Map<string, unknown>;
+    managerStatusData(): ManagerStatus;
+    connectorInventory: { connectorStatuses: ManagerStatus["connectors"] };
+    goalWriterComponent: { goalAcceptances: Map<string, unknown> };
+    servePlane: { serviceServe?: { grant: { epoch: number } } };
+    namesCapacity: {
+      reserve: (name: string, owner: string) => void;
+      uniqueName: (base: string, unavailable?: ReadonlySet<string>) => string;
+      reservedCount: number;
+      occupancy(): { used: number; reserved: number; managed: number };
+    };
+  };
+  const instrumentManager = (target: Manager, expectedCommand: string) => {
+    const view = target as unknown as TrackedManager;
+    const stats = { spawnCalls: 0, reserveCalls: 0, uniqueNameCalls: 0, lastCommand: "", lastError: "" };
+    const origReserve = view.namesCapacity.reserve.bind(view.namesCapacity);
+    const origUniqueName = view.namesCapacity.uniqueName.bind(view.namesCapacity);
+    view.namesCapacity.reserve = (name: string, owner: string) => { stats.reserveCalls++; origReserve(name, owner); };
+    view.namesCapacity.uniqueName = (base: string, unavailable?: ReadonlySet<string>) => { stats.uniqueNameCalls++; return origUniqueName(base, unavailable); };
+    view.runtime = {
+      kind: "fake", streamsTerminal: false,
+      spawn: (name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) => {
+        stats.spawnCalls++;
+        stats.lastCommand = spec.command;
+        const exec = spawnSync(spec.command, spec.args, { cwd, env: spec.env, encoding: "utf8" });
+        stats.lastError = exec.error?.message ?? "";
+        let state = spec.command === expectedCommand && exec.status === 0 ? "exited" : "running";
+        return { name, kind: "fake", status: () => state, stop: () => { state = "exited"; }, waitForExit: async () => state === "exited", interrupt: () => {}, attach: () => fakeSession };
+      },
+    };
+    return { view, stats };
+  };
+  const countStates = (rows: readonly { state: string }[]) => ({
+    available: rows.filter((r) => r.state === "available").length,
+    unavailable: rows.filter((r) => r.state === "unavailable").length,
+  });
+
+  {
+    const space = "uninstall-recheck";
+    process.env.PATH = uninstallBin;
+    const uninstalled = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+    const U = instrumentManager(uninstalled, uninstallPresent);
+    await uninstalled.start();
+    process.env.PATH = siblingBin;
+    const sibling = new Manager({ space, servers, runtime: "pty", workspaceRoot: siblingWorkspaceRoot, installedExtensions: true });
+    const S = instrumentManager(sibling, siblingPresent);
+    await sibling.start();
+    process.env.PATH = uninstallBin;
+    const nc = await connect({ servers });
+    const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+    const uninstalledId = U.view.managerStatusData().instanceId;
+    const siblingId = S.view.managerStatusData().instanceId;
+    const callInst = (instanceId: string, command: "status" | "models" | "spawn", args?: Record<string, unknown>) =>
+      epCall(nc, space, { mode: "inst", instanceId, epoch: (instanceId === siblingId ? S : U).view.servePlane.serviceServe?.grant.epoch ?? 0 },
+        { endpoint: "manager", command, contract: MANAGER_CONTRACTS[command], caller, ...(args ? { args } : {}) },
+        { deadlineMs: 5000 });
+    const callClassSpawn = () =>
+      epCall(nc, space, { mode: "one" },
+        { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
+        { deadlineMs: 5000, currentEpoch: async () => 0 });
+    try {
+      const bootCounts = countStates(U.view.connectorInventory.connectorStatuses);
+      check("uninstall fixture boots with 1 available and 1 unavailable connector and classSpawn enabled",
+        bootCounts.available === 1 && bootCounts.unavailable === 1 && U.view.managerStatusData().classSpawn === true, bootCounts);
+
+      rmSync(uninstallPresent);
+      const statusReply = await callInst(uninstalledId, "status");
+      const statusData = statusReply.reply.ok ? statusReply.reply.data as ManagerStatus : undefined;
+      const statusCounts = countStates(statusData?.connectors ?? []);
+      const presentRow = statusData?.connectors.find((r) => r.agent === "boot-present");
+      const pinnedSpawn = await callInst(uninstalledId, "spawn", { name: "pin-probe", agent: "boot-present", events: false });
+      const reproSummary = {
+        statusCounts,
+        presentRow,
+        classSpawn: statusData?.classSpawn,
+        pinnedSpawn: pinnedSpawn.reply,
+        stats: { ...U.stats },
+        agents: U.view.agents.size,
+        reserved: U.view.namesCapacity.reservedCount,
+        occupancy: U.view.namesCapacity.occupancy(),
+        goals: U.view.goalWriterComponent.goalAcceptances.size,
+      };
+      console.log("after uninstall (status + launch):", JSON.stringify(reproSummary));
+      check(
+        "status marks a deleted application unavailable with 0 available rows and disables classSpawn",
+        statusReply.reply.ok === true && statusCounts.available === 0 && statusCounts.unavailable === 2 &&
+          presentRow?.state === "unavailable" && presentRow.reason === missingReason &&
+          Object.keys(presentRow.binaries).length === 0 && statusData?.classSpawn === false,
+        reproSummary,
+      );
+      check(
+        "pinned launch of a deleted application refuses with not-executed before reserving name or capacity",
+        pinnedSpawn.reply.ok === false && pinnedSpawn.reply.error.code === "failed-precondition" &&
+          pinnedSpawn.reply.error.outcome === "not-executed" && pinnedSpawn.reply.error.message === missingReason &&
+          U.stats.spawnCalls === 0 && U.stats.reserveCalls === 0 && U.stats.uniqueNameCalls === 0 &&
+          U.view.agents.size === 0 && U.view.namesCapacity.reservedCount === 0 &&
+          U.view.namesCapacity.occupancy().used === 0 && U.view.goalWriterComponent.goalAcceptances.size === 0,
+        reproSummary,
+      );
+
+      process.env.PATH = siblingBin;
+      let siblingHandled = 0;
+      let uninstalledHandled = 0;
+      for (let i = 0; i < 8; i++) {
+        const routed = await callClassSpawn();
+        if (routed.reply.ok && routed.responder.instanceId === siblingId) siblingHandled++;
+        if (routed.responder.instanceId === uninstalledId) uninstalledHandled++;
+      }
+      check(
+        "class-spawn routing skips the manager with 0 available applications and routes all 8 spawns to the capable sibling",
+        siblingHandled === 8 && uninstalledHandled === 0 && S.stats.spawnCalls === 8 && U.stats.spawnCalls === 0,
+        { siblingHandled, uninstalledHandled, siblingSpawns: S.stats.spawnCalls, uninstalledSpawns: U.stats.spawnCalls },
+      );
+
+      process.env.PATH = uninstallBin;
+      writeFileSync(uninstallPresent, script, { mode: 0o700 });
+      const recoveredStatus = await callInst(uninstalledId, "status");
+      const recoveredData = recoveredStatus.reply.ok ? recoveredStatus.reply.data as ManagerStatus : undefined;
+      const recoveredCounts = countStates(recoveredData?.connectors ?? []);
+      const recoveredRow = recoveredData?.connectors.find((r) => r.agent === "boot-present");
+      const recoveredSpawn = await callInst(uninstalledId, "spawn", { name: "pin-probe", agent: "boot-present", events: false });
+      check(
+        "reinstalling the application restores 1 available row, classSpawn and launch without restarting",
+        recoveredCounts.available === 1 && recoveredCounts.unavailable === 1 &&
+          recoveredRow?.state === "available" && recoveredRow.reason === undefined &&
+          recoveredRow.binaries["present-harness"] === uninstallPresent && recoveredData?.classSpawn === true &&
+          recoveredSpawn.reply.ok === true && U.stats.spawnCalls === 1,
+        { recoveredCounts, recoveredRow, classSpawn: recoveredData?.classSpawn, recoveredSpawn: recoveredSpawn.reply, stats: U.stats },
+      );
+    } finally {
+      await nc.close();
+      await sibling.stop({ withAgents: true });
+      await uninstalled.stop({ withAgents: true });
+    }
+  }
+
+  {
+    const space = "uninstall-launch-first";
+    writeFileSync(uninstallPresent, script, { mode: 0o700 });
+    process.env.PATH = uninstallBin;
+    const launchFirst = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+    const LF = instrumentManager(launchFirst, uninstallPresent);
+    await launchFirst.start();
+    try {
+      rmSync(uninstallPresent);
+      const directLaunch = await launchFirst.startAgent({ name: "pin-probe", agent: "boot-present", events: false });
+      const afterLaunchCounts = countStates(LF.view.connectorInventory.connectorStatuses);
+      const afterLaunchRow = LF.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
+      check(
+        "launch before any status read detects a deleted executable and refuses before reserving name or capacity",
+        directLaunch.ok === false && directLaunch.error === missingReason &&
+          LF.stats.spawnCalls === 0 && LF.stats.reserveCalls === 0 && LF.stats.uniqueNameCalls === 0 &&
+          LF.view.namesCapacity.occupancy().used === 0 && afterLaunchCounts.available === 0 &&
+          afterLaunchCounts.unavailable === 2 && afterLaunchRow?.state === "unavailable" &&
+          afterLaunchRow.reason === missingReason && LF.view.managerStatusData().classSpawn === false,
+        { directLaunch, afterLaunchCounts, afterLaunchRow, stats: LF.stats },
+      );
+
+      writeFileSync(uninstallPresent, script, { mode: 0o700 });
+      check(
+        "status restores the application before testing PATH removal",
+        LF.view.managerStatusData().classSpawn === true &&
+          countStates(LF.view.connectorInventory.connectorStatuses).available === 1,
+      );
+      process.env.PATH = emptyBin;
+      const fileStillExists = existsSync(uninstallPresent);
+      const offPathLaunch = await launchFirst.startAgent({ name: "pin-probe", agent: "boot-present", events: false });
+      const offPathStatus = LF.view.managerStatusData();
+      const offPathCounts = countStates(offPathStatus.connectors);
+      const offPathRow = offPathStatus.connectors.find((r) => r.agent === "boot-present");
+      check(
+        "an executable that still exists on disk becomes unavailable when it does not resolve on PATH",
+        fileStillExists && offPathLaunch.ok === false && offPathLaunch.error === missingReason &&
+          LF.stats.spawnCalls === 0 && LF.stats.reserveCalls === 0 && LF.stats.uniqueNameCalls === 0 &&
+          offPathCounts.available === 0 && offPathCounts.unavailable === 2 &&
+          offPathRow?.state === "unavailable" && offPathRow.reason === missingReason &&
+          Object.keys(offPathRow.binaries).length === 0 && offPathStatus.classSpawn === false,
+        { fileStillExists, offPathLaunch, offPathCounts, offPathRow, stats: LF.stats },
+      );
+    } finally {
+      await launchFirst.stop({ withAgents: true });
+    }
+  }
+
+  {
+    const space = "recheck-load";
+    const loadBin = join(root, "load-bin");
+    const stateDirectory = join(root, "obs-state");
+    mkdirSync(loadBin, { mode: 0o700 });
+    mkdirSync(stateDirectory, { mode: 0o700 });
+    const loadPresent = join(loadBin, executable("present-harness"));
+    const loadSecond = join(loadBin, executable("second-harness"));
+    writeFileSync(loadPresent, script, { mode: 0o700 });
+    writeFileSync(loadSecond, script, { mode: 0o700 });
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "second-probe.md"), "---\nname: second-probe\nagent: boot-second\n---\n");
+    saveExtensionsManifest({
+      extensions: [
+        {
+          pkg: "@fixture/boot-connectors",
+          version: "1.0.0",
+          spec: ".",
+          provides: [
+            { kind: "connector", name: "boot-missing" },
+            { kind: "connector", name: "boot-present" },
+            { kind: "connector", name: "boot-second" },
+          ],
+          commands: [],
+          connectors: [
+            { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
+            { name: "boot-present", requires: ["present-harness"], eventPlane: true },
+            { name: "boot-second", requires: ["second-harness"], eventPlane: true },
+          ],
+        },
+      ],
+    });
+    const secondConnector: Connector = {
+      kind: "connector",
+      name: "boot-second",
+      requires: ["second-harness"],
+      buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["second-harness"] ?? "second-harness", args: [] }),
+    };
+    registry.register(secondConnector);
+    process.env.PATH = loadBin;
+    const observed = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+    const O = instrumentManager(observed, loadPresent);
+    await observed.start();
+    const nc = await connect({ servers });
+    const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+    const observedId = O.view.managerStatusData().instanceId;
+    let rechecks = 0;
+    let byAgent: Record<string, number> = {};
+    for (const row of O.view.connectorInventory.connectorStatuses) {
+      let current = row.binaries;
+      Object.defineProperty(row, "binaries", {
+        enumerable: true,
+        configurable: true,
+        get: () => current,
+        set: (next: Record<string, string>) => {
+          rechecks++;
+          byAgent[row.agent] = (byAgent[row.agent] ?? 0) + 1;
+          current = next;
+        },
+      });
+    }
+    let accessCalls = 0;
+    const origAccessSync = fs.accessSync;
+    fs.accessSync = ((path: fs.PathLike, mode?: number) => {
+      const text = String(path);
+      if (text.startsWith(loadBin) || text.includes("harness-that-does-not-exist-965")) accessCalls++;
+      return origAccessSync(path, mode);
+    }) as typeof fs.accessSync;
+    syncBuiltinESMExports();
+    let observerTicks = 0;
+    let observerSawImpact = false;
+    const origLocalObservation = observed.localServiceObservation.bind(observed);
+    observed.localServiceObservation = () => {
+      observerTicks++;
+      const obs = origLocalObservation();
+      if (obs?.stopImpact) observerSawImpact = true;
+      return obs;
+    };
+    let disposeObserver: (() => void) | undefined;
+    try {
+      rechecks = 0;
+      byAgent = {};
+      accessCalls = 0;
+      disposeObserver = armManagerServiceObserver(observed, {
+        root: workspaceRoot,
+        context: { space, instanceId: "obs_inst", launchRequestId: "obs_req", stateDirectory },
+      });
+      await wait(2200);
+      disposeObserver();
+      disposeObserver = undefined;
+      const observerSnapshot = {
+        ticks: observerTicks,
+        observed: observerSawImpact,
+        rechecks,
+        byAgent: { ...byAgent },
+        accessCalls,
+      };
+
+      rechecks = 0;
+      byAgent = {};
+      accessCalls = 0;
+      const launchReply = await epCall(nc, space, { mode: "inst", instanceId: observedId, epoch: O.view.servePlane.serviceServe?.grant.epoch ?? 0 },
+        { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
+        { deadlineMs: 5000 });
+      const launchSnapshot = {
+        ok: launchReply.reply.ok,
+        spawnCalls: O.stats.spawnCalls,
+        rechecks,
+        byAgent: { ...byAgent },
+        accessCalls,
+      };
+      console.log("recheck load:", JSON.stringify({ observer: observerSnapshot, launch: launchSnapshot }));
+      check(
+        "hosted service observer triggers zero connector rechecks over multiple seconds",
+        observerSnapshot.ticks >= 8 && observerSnapshot.observed &&
+          observerSnapshot.rechecks === 0 && observerSnapshot.accessCalls === 0,
+        observerSnapshot,
+      );
+      check(
+        "launch rechecks only the requested connector once",
+        launchReply.reply.ok === true && O.stats.spawnCalls === 1 &&
+          launchSnapshot.rechecks === 1 && launchSnapshot.byAgent["boot-present"] === 1 &&
+          (launchSnapshot.byAgent["boot-second"] ?? 0) === 0 && (launchSnapshot.byAgent["boot-missing"] ?? 0) === 0,
+        launchSnapshot,
+      );
+    } finally {
+      disposeObserver?.();
+      fs.accessSync = origAccessSync;
+      syncBuiltinESMExports();
+      await nc.close();
+      await observed.stop({ withAgents: true });
+    }
+  }
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
@@ -242,4 +580,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+if (pass !== 43) throw new Error(`expected 43 checks, ran ${pass}`);
 console.log(`\n${pass} checks passed`);
