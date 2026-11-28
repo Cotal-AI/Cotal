@@ -137,7 +137,6 @@ export class EndpointConsumers {
         if (this.pluginReplayFence(ch)()) armed.set(ch, await this.parts.history.pluginJoinFrontier(ch));
       }
       await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
-      for (const [channel, frontier] of armed) this.rememberPluginHistory(channel, frontier);
       if (!this.firstConnect) await this.recoverPluginChannels();
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
@@ -185,7 +184,7 @@ export class EndpointConsumers {
 
   /** Pin the recent live receipts during replay, so replay itself cannot evict a live overlap. */
   pluginReceiptSnapshot(channel: string): ReadonlySet<string> {
-    return new Set(this.pluginReceipts.get(channel));
+    return new Set(this.pluginReceiptEpoch === this.conn.pluginChannelEpoch ? this.pluginReceipts.get(channel) : undefined);
   }
 
   recoverPluginChannels(stillCurrent: () => boolean = () => true): Promise<void> {
@@ -208,7 +207,7 @@ export class EndpointConsumers {
       if (!sub || from.epoch !== this.conn.pluginChannelEpoch || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
       const replayFence = this.pluginReplayFence(channel);
       const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
-      const through = await this.parts.history.channelFrontier(channel);
+      const through = await this.parts.history.pluginJoinFrontier(channel);
       if (!stillJoined() || through <= from.seq) continue;
       const complete = await this.parts.history.recoverPluginHistory(channel, from.seq, through, stillJoined);
       if (complete && stillJoined()) this.pluginHistoryFrontiers.set(channel, { ...from, seq: through });
@@ -431,6 +430,7 @@ export class EndpointConsumers {
           this.delivery.chatSubDenied.add(channel);
           this.delivery.chatSubs.delete(channel);
           this.pluginHistoryFrontiers.delete(channel);
+          this.pluginReceipts.delete(channel);
           const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
             this.identity.channels.splice(i, 1);
@@ -475,6 +475,7 @@ export class EndpointConsumers {
   /** Close a channel's core subscription (manager-free leave). */
   unsubscribeChat(channel: string): void {
     this.pluginHistoryFrontiers.delete(channel);
+    this.pluginReceipts.delete(channel);
     const sub = this.delivery.chatSubs.get(channel);
     if (sub) {
       try {

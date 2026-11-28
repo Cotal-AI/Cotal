@@ -1227,14 +1227,16 @@ export class EndpointHistory {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
       const policy = await this.joinPolicyFresh(ch);
-      if (!policy.replay) continue;
       if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch)) {
         const stillJoined = this.parts.consumers.pluginReplayFence(ch);
         if (!stillJoined()) continue;
         const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
-        total += (await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier,
-          stillJoined, true)) ?? 0;
-      } else {
+        const replayed = policy.replay
+          ? await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier, stillJoined, true)
+          : 0;
+        if (replayed !== undefined && stillJoined()) this.parts.consumers.rememberPluginHistory(ch, frontier);
+        total += replayed ?? 0;
+      } else if (policy.replay) {
         total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
       }
     }

@@ -131,6 +131,8 @@ export class EndpointSubscriptions {
     if (pluginHistoryOnly) {
       try { armed.set(channel, await this.parts.history.pluginJoinFrontier(channel)); }
       catch (error) { this.parts.consumers.unsubscribeChat(channel); throw error; }
+      if (!this.parts.consumers.pluginReplayFence(channel)())
+        throw new Error(`cannot join "${channel}": live subscription could not be confirmed`);
     }
     this.identity.channels.push(channel);
     // Durable backstop. The live core-sub above already delivers (manager-free). For a `durable`-class
@@ -162,9 +164,16 @@ export class EndpointSubscriptions {
         reason = `durable backstop unavailable (${(e as Error).message})`;
       }
     }
-    const backfilled = await this.parts.history.backfillArmed(armed);
-    const frontier = armed.get(channel);
-    if (frontier !== undefined) this.parts.consumers.rememberPluginHistory(channel, frontier);
+    let backfilled: number;
+    try { backfilled = await this.parts.history.backfillArmed(armed); }
+    catch (error) {
+      if (pluginHistoryOnly) {
+        const i = this.identity.channels.indexOf(channel);
+        if (i >= 0) this.identity.channels.splice(i, 1);
+        this.parts.consumers.unsubscribeChat(channel);
+      }
+      throw error;
+    }
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 

@@ -28,7 +28,7 @@ import { fanoutDurableConfig, inboxReaderConfig, pluginFanoutDurableConfig } fro
 import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject, unicastSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "./types.js";
-import { JetStreamApiCodes, jetstreamManager, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
+import { DeliverPolicy, JetStreamApiCodes, jetstreamManager, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
 import { headers, type NatsConnection } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
@@ -192,7 +192,7 @@ export class EndpointDeliveryPlane {
   private readonly notLiveMsg: EndpointDeliveryPlaneDeps["notLiveMsg"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "consumers" | "controlPlane" | "credentials" | "deliveryLease" | "durableBackstop" | "history">) {
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "consumers" | "controlPlane" | "credentials" | "deliveryLease" | "durableBackstop" | "history" | "presence">) {
     this.notLiveMsg = deps.notLiveMsg;
     this.emit = deps.emit;
   }
@@ -243,7 +243,8 @@ export class EndpointDeliveryPlane {
       .then((snapshot) => ({ snapshot }), (error: unknown) => ({ error }));
     if (this.daemonRouteWire !== wire || wire.validating !== validation || !this.onDaemonRouteWire(nc, binding)) return false;
     // Older spaces need not have a records stream. Only a broker-confirmed absence means off.
-    const state = result.snapshot?.state ?? (isStreamNotFound(result.error)
+    const cause = "error" in result ? result.error : undefined;
+    const state = "snapshot" in result ? result.snapshot.state : (isStreamNotFound(cause)
       ? { version: 1, enabled: false, epoch: 0 } as const : undefined);
     const bound = wire.boundRoute;
     if (state && wire.admitted !== undefined && (bound
@@ -258,7 +259,6 @@ export class EndpointDeliveryPlane {
     wire.admitted = binding;
     wire.validating = undefined;
     if (report) {
-      const cause = result.error;
       this.emit("warning", new Error(`plugin channel authority unavailable; continuing CHAT delivery: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }));
     }
     return true;
@@ -928,7 +928,11 @@ export class EndpointDeliveryPlane {
     const space = this.identity.space;
     await this.bindChannelFanout(chatStream(space), FANOUT_DURABLE, "chat", fanoutDurableConfig(space, { ackWaitMs: this.identity.ackWaitMs }));
     if (this.conn.pluginChannelsEnabled) {
-      await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, pluginFanoutDurableConfig(space));
+      // The first writer may bind after the first accepted post. Use the same start-sequence
+      // shape as a restored consumer so it starts at the first retained post, not at bind time.
+      await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, {
+        ...pluginFanoutDurableConfig(space), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: 1,
+      });
     }
   }
 
@@ -975,6 +979,11 @@ export class EndpointDeliveryPlane {
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
     if (!isFromSubjectSender(msg, parsed)) { m.ack(); return; } // authenticity (SPEC §5)
+    if (kind !== "chat" && msg.mentions?.length && this.parts.presence.presenceView().state === "unpopulated") {
+      // A first bind can begin pulling before its roster's initial snapshot has arrived.
+      m.nak(500);
+      return;
+    }
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
     // SECOND FENCE, AT THE COMMIT POINT. The entry check above cannot cover this unit's own awaits:
