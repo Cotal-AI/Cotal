@@ -658,10 +658,13 @@ Changing a same-directory link to the next supported Node version does
 not require reinstalling the service. An older unit can still pin a removed versioned Node file.
 In that case, `daemon install` refuses without rewriting it and names the selected daemon's
 uninstall and install commands to replace it explicitly. On Linux, when no daemon answers,
-`cotal daemon status` points to `cotal daemon start` for a recorded systemd service or to
-`cotal daemon setup` on a systemd host if no service is recorded. If the recorded service does
-not start, inspect it with the `systemctl --user status` command shown in Next. A recorded
-service does not prove that its unit file exists or that the user manager can answer.
+`cotal daemon status` checks whether the systemd user manager answers. It points to
+`cotal daemon start` for a service recorded for this daemon, or `cotal daemon setup` if no service
+is recorded. A receipt for another home or service mechanism points to the receipt for inspection.
+If the user manager does not answer, retry from a logged-in session of that user. Without systemd
+or `systemctl` on PATH, `status` names `cotal daemon serve` as a foreground option. If a recorded
+service does not start, inspect it with the `systemctl --user status` command shown in Next.
+A service receipt does not prove its unit file exists.
 
 On Linux, `daemon install` and `daemon uninstall` can recover after the daemon's local home was deleted when the surviving service source matches this installation. They verify the protected unit file and the user manager's loaded fragment, and refuse modified sources or drop-ins. A missing explicit `--daemon-home` leaf can also recover when its parent resolves and the surviving service verifies that same home; other daemon commands still require the directory. Installation restarts that verified service to rebuild its local state.
 For a first install with `--daemon-home`, create the directory with mode 0700 first. If the directory is absent and no unit survives for it, `daemon install` points to the missing directory.
@@ -1265,8 +1268,8 @@ Cotal home does not shorten the socket path. On both platforms, the daemon refus
 `PERMISSION_DENIED` for a daemon socket directory that is a symlink, not a directory, not owned by
 you, or not mode `0700`. `status` also refuses
 `PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`. For
-a socket of another mode (`SOCKET_WRONG_MODE`), Next says to find the process listening there with
-`ss -xlp` and stop it, then start the daemon with `cotal daemon serve`.
+a socket of another mode (`SOCKET_WRONG_MODE`), Next says to inspect its owner and protections
+with your operating system. The daemon does not repair the socket's permissions.
 On Windows the endpoint is the named pipe `\\.\pipe\cotal-daemon-<SID>`, where `<SID>` is your
 account's security identifier. Every instance of it grants access to your account only and refuses
 network clients. `serve` creates the first instance only when no process serves that name yet, and
@@ -1334,8 +1337,8 @@ A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
-On Linux, when no daemon answers, `daemon status` names setup or start for the selected home.
-`daemon service-connect` names `cotal daemon serve`. Both include `--daemon-home` if supplied.
+On Linux, when no daemon answers, any daemon command in the `daemon status` or `daemon service-connect`
+remedy includes `--daemon-home` if supplied.
 If the daemon is running but its socket is in a different runtime directory, `status` and a second
 `serve` tell you to use the running daemon's `XDG_RUNTIME_DIR` before checking status again.
 

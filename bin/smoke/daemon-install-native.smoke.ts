@@ -684,12 +684,27 @@ try {
       check(`Node ${spelling} absent endpoint recommends starting the recorded service for the selected home`, status.status === 2 && status.doc.error?.code === "TARGET_UNAVAILABLE" && status.doc.error.remedy?.startsWith(`Start the recorded service with \`${daemonCommandCopy("start", home)}\`.`) === true && status.doc.error.remedy.includes(`systemctl --user status ${unit}`), status);
       check(`Node ${spelling} start still reaches the native adapter`, call("start").status === 0);
       if (spelling === "absolute") {
+        for (const [field, value] of [["daemonHome", join(dir, "other-daemon")], ["mechanism", "launchd-agent"]] as const) {
+          const foreign = JSON.stringify({ ...JSON.parse(receipt), [field]: value });
+          writeFileSync(receiptFile, foreign, { mode: 0o600 });
+          const callsBefore = readFileSync(context.calls, "utf8");
+          const stopped = call("status");
+          check(`Status names the mismatched ${field} receipt without issuing a native request`, stopped.status === 2 && stopped.doc.error?.code === "TARGET_UNAVAILABLE"
+            && stopped.doc.error.remedy?.includes("The service receipt does not match") === true && stopped.doc.error.remedy.includes(receiptFile)
+            && !/daemon (setup|start)/.test(stopped.doc.error.remedy) && readFileSync(context.calls, "utf8") === callsBefore
+            && readFileSync(receiptFile, "utf8") === foreign, stopped);
+        }
+        writeFileSync(receiptFile, receipt, { mode: 0o600 });
         for (const missing of ["unit", "manager"] as const) {
           if (missing === "unit") rmSync(unitPath);
           else writeFileSync(join(dir, "native", "systemctl"), `#!${process.execPath}\nprocess.exit(1);`, { mode: 0o700 });
           const callsBefore = readFileSync(context.calls, "utf8");
           const refused = call("status");
-          check(`Absent ${missing} preserves the endpoint refusal without native lookup`, refused.status === 2 && refused.doc.error?.code === "TARGET_UNAVAILABLE" && refused.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && readFileSync(context.calls, "utf8") === callsBefore, refused);
+          const expected = missing === "unit" ? `systemctl --user status ${unit}` : "The systemd user manager is not reachable: run from a logged-in session";
+          const callsAfter = readFileSync(context.calls, "utf8");
+          check(`Absent ${missing} preserves the endpoint refusal and limits native lookup to a read`, refused.status === 2 && refused.doc.error?.code === "TARGET_UNAVAILABLE"
+            && refused.doc.error.remedy?.includes(expected) === true && (missing === "unit" || !/daemon (setup|start|serve)/.test(refused.doc.error.remedy))
+            && callsAfter === callsBefore + (missing === "unit" ? '{"operation":"directory-read"}\n' : ""), refused);
           const plain = spawnSync(stable, [cli, "daemon", "status", "--daemon-home", home, "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
           check(`Absent ${missing} plain status still names the missing endpoint`, plain.status === 2 && plain.stderr.includes("no daemon endpoint") && plain.stderr.includes("NOT_RUNNING") && !plain.stderr.includes("nothing was removed"), { stdout: plain.stdout, stderr: plain.stderr });
           if (missing === "unit") writeFileSync(unitPath, source, { mode: 0o600 });
