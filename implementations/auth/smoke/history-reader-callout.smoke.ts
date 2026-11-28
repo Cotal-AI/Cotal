@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { createServer as createTcpServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
@@ -36,13 +37,13 @@ import {
 import { PLUGIN_CHANNEL_ROOT, pluginChannelStream, pluginChannelFilter, pluginChannelSubject } from "../../../packages/core/src/plugin-channel-route.js";
 import { pluginChannelSpaceStateSubject } from "../../../packages/core/src/plugin-channel-space-state.js";
 import { authDir, meshFile, recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
-import { authServiceKeysKey, createCalloutAuth, calloutPermissions, cotalAuthProvider, deriveOwnerToken, ensureCalloutAuth, saveServiceKeys, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
-import { findManagedActor, grantActor, ledgerAclResolver, ledgerAuthorizeConnect, newActorToken } from "../src/ledger.js";
-import { pluginChannelStateResolver } from "../src/callout-authority.js";
-import { managedAgentAuthority } from "../src/service-managed-agents.js";
-import { handleExchange, LOOPBACK_POLICY } from "../src/service-exchange-routes.js";
-import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
-import type { HandlerCtx } from "../src/service.js";
+import { authServiceKeysKey, createCalloutAuth, calloutPermissions, cotalAuthProvider, deriveOwnerToken, ensureCalloutAuth, saveServiceKeys, startAuthCallout, USER_TOKEN_VER } from "../dist/index.js";
+import { findManagedActor, grantActor, ledgerAclResolver, ledgerAuthorizeConnect, newActorToken } from "../dist/ledger.js";
+import { pluginChannelStateResolver } from "../dist/callout-authority.js";
+import { managedAgentAuthority } from "../dist/service-managed-agents.js";
+import { handleExchange, LOOPBACK_POLICY } from "../dist/service-exchange-routes.js";
+import { remoteManagerCurrentRegistrationProof } from "../dist/retained-manager-validation.js";
+import type { HandlerCtx } from "../dist/service.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { matchesMainPermissions } from "../../../packages/core/smoke/_off-channel-main.js";
@@ -267,6 +268,35 @@ const localRecord = { space, server: SERVERS, root, mode: "user" as const,
   ts: new Date().toISOString(), userAuth: { provider: "cotal", idp: { url: ISS, issuer: ISS, audience: space } } };
 const offlineGrants: { condition: string; actor: string; actorToken: string }[] = [];
 
+async function checkSilentRegisteredBroker(grant: (actor: string) => Promise<unknown>): Promise<void> {
+  const sockets = new Set<Socket>();
+  let accepted = 0;
+  const silent = createTcpServer(socket => {
+    accepted++;
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    socket.resume();
+  });
+  await new Promise<void>((resolve, reject) => {
+    silent.once("error", reject);
+    silent.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const { port } = silent.address() as { port: number };
+    recordMesh({ ...localRecord, server: `nats://127.0.0.1:${port}` });
+    const started = performance.now();
+    await grant("silent_broker_child");
+    const elapsed = Math.round(performance.now() - started);
+    for (let i = 0; i < 50 && sockets.size; i++) await wait(20);
+    check("local spawn: a silent broker writes within 5 seconds and closes its probe socket",
+      accepted > 0 && elapsed >= 2_500 && elapsed < 5_000 && sockets.size === 0, { accepted, elapsed, sockets: sockets.size });
+    console.log(`  silent registered broker grant: ${elapsed} ms`);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(resolve => silent.close(() => resolve()));
+  }
+}
+
 async function localSpawnFixture() {
   const values = new Map<string, string>();
   let serviceKeyReads = 0;
@@ -332,6 +362,13 @@ async function checkOfflineLocalSpawns(): Promise<void> {
     const explicit = { ...args("explicit_unreachable_child"), broker: { server: SERVERS } };
     await assert.rejects(cotalAuthProvider.grantAgent(explicit), /connection refused/);
     check("local spawn: an explicit broker still reports dial failure", findManagedActor(dir, OWNER, explicit.actor) === undefined);
+
+    recordMesh({ ...localRecord, server: "nats://plugin-routing-test.invalid:4222" });
+    const beforeDns = reads();
+    offlineGrants.push({ condition: "unresolved-broker", ...await grant("unresolved_child") });
+    check("local spawn: a registered .invalid hostname preserves the grant without a transport error", reads() === beforeDns + 1);
+    await checkSilentRegisteredBroker(grant);
+    recordMesh(localRecord);
   });
 }
 

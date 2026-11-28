@@ -16,11 +16,8 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, recordsBucket, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { ClosedConnectionError, ConnectionError, NoRespondersError, RequestError, TimeoutError } from "@nats-io/transport-node";
-import { openAuthorityClient } from "./authority-client.js";
-import { pluginChannelStateResolver } from "./callout-authority.js";
+import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { readLocalSpawnRouting, readRegisteredSpawnRouting, type SpawnBroker } from "./spawn-routing-observation.js";
 import { loginRecoveryCommand, assertUserAuthInfo, canonicalRoot, credentialFailure, findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, loadMeshes, probeLiveness, readMesh, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -56,8 +53,6 @@ import {
   type AuthServiceRefusal,
 } from "./store.js";
 
-type SpawnBroker = { server: string; tlsRequired?: boolean };
-
 function registeredSpawnBroker(dir: string, space: string): SpawnBroker | undefined {
   let entry;
   try { entry = readMesh(space); }
@@ -77,14 +72,6 @@ function registeredSpawnBroker(dir: string, space: string): SpawnBroker | undefi
   return { server: entry.server, ...(entry.tlsRequired === true ? { tlsRequired: true } : {}) };
 }
 
-function spawnBrokerDidNotAnswer(error: unknown): boolean {
-  if (error instanceof TimeoutError || error instanceof ClosedConnectionError || error instanceof NoRespondersError) return true;
-  if (error instanceof RequestError) return error.isNoResponders() || error.cause instanceof TimeoutError || error.cause instanceof ClosedConnectionError;
-  const transport = error instanceof ConnectionError ? error.cause : error;
-  const code = (transport as NodeJS.ErrnoException | undefined)?.code;
-  return code === "ECONNREFUSED" || code === "ECONNRESET" || code === "ETIMEDOUT" || code === "ENETUNREACH" || code === "EHOSTUNREACH";
-}
-
 async function localSpawnRouting(store: SecretStore, dir: string, space: string, explicit: SpawnBroker | undefined): Promise<boolean> {
   // A stopped/damaged registration, legacy layout or non-answering registered broker keeps the
   // local write on legacy rules. The issuance checks are in service-exchange-routes.ts:265 and ledger.ts:753.
@@ -92,26 +79,8 @@ async function localSpawnRouting(store: SecretStore, dir: string, space: string,
   if (!broker) return false;
   const keys = await loadServiceKeys(store, space);
   if (!keys) throw new Error("delegated grant requires local auth service signing material to read channel routing state");
-  const client = await openAuthorityClient({
-    ...broker, space, dataAccount: keys.dataAccount, label: "cotal:spawn-routing", noReconnect: true, log: () => {},
-    grants: connId => ({ publish: [`$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`], subscribe: [`_INBOX_${connId}.>`] }),
-  }).catch((error: unknown) => {
-    if (explicit === undefined && spawnBrokerDidNotAnswer(error)) return undefined;
-    throw error;
-  });
-  if (!client) return false;
-  try {
-    const read = pluginChannelStateResolver(await jetstreamManager(client.nc, { checkAPI: false }), space);
-    try { return (await read(space)).enabled; }
-    catch (error) {
-      // A validated enabled record is usable for a local bound, but not for issuing credentials.
-      if (error instanceof Error && error.message === "this release does not support enabled plugin channels") return true;
-      if (explicit === undefined && spawnBrokerDidNotAnswer(error)) return false;
-      throw error;
-    }
-  } finally {
-    await client.close();
-  }
+  const observation = { ...broker, space, dataAccount: keys.dataAccount };
+  return explicit ? readLocalSpawnRouting(observation) : readRegisteredSpawnRouting(observation);
 }
 
 /** The pre-effect half of {@link cotalAuthProvider.prepareServer}: the space segment, the IdP pin
