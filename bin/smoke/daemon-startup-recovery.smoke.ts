@@ -175,14 +175,21 @@ try {
     check("derived total recovery budget is 125_000 ms", DAEMON_SYSTEMD_RECOVERY_BUDGET_MS === 125_000);
     const savedArgv1 = process.argv[1];
     const savedExecArgv = process.execArgv;
+    const savedPath = process.env.PATH;
     let rendered: ReturnType<typeof renderDaemonUnit>;
     try {
       process.argv[1] = cli;
       process.execArgv = [];
+      process.env.PATH = (savedPath ?? "/usr/local/bin:/usr/bin:/bin")
+        .split(":")
+        .filter((entry) => isAbsolute(entry))
+        .join(":");
       rendered = renderDaemonUnit(join(root, "unit-check"), undefined);
     } finally {
       process.argv[1] = savedArgv1;
       process.execArgv = savedExecArgv;
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
     }
     check(
       "renderDaemonUnit writes TimeoutStartSec=60 from shared constant",
@@ -1696,7 +1703,7 @@ console.log(JSON.stringify({ result, lines }));
       await runSetupRecoveryScenario({ name: "cell10a-path-refresh-32s", mode: "path-refresh-32s" });
       await runSetupRecoveryScenario({ name: "cell10b-version-mismatch", mode: "version-mismatch" });
       await runSetupRecoveryScenario({
-        name: "cell10d-version-mismatch-then-path-refresh",
+        name: "c10d-vm-path",
         mode: "version-mismatch-then-path-refresh",
       });
       await runSetupRecoveryScenario({ name: "cell10c-desktop-app-refresh", mode: "desktop-app-refresh" });
