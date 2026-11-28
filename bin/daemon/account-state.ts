@@ -12,9 +12,9 @@ export interface AccountComputerStatus {
   desiredRevision?: number;
   message?: string;
   /** Set only when this computer was removed from the account. */
-  reason?: "computer-removed";
+  reason?: string;
   /** Present while a Cloud read is being retried. `notice` is the one sentence every view shows. */
-  cloud?: { state: "retrying"; since?: string; reason?: "refused" | "unreachable" | "rate-limited"; notice?: string };
+  cloud?: { state: "retrying"; since?: string; reason?: string; notice?: string };
   /** `observed` is launch readiness. `machineService` is set while that separate registration is not connected. */
   spaces: { space: string; desired: boolean; observed: string; machineService?: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }[];
 }
@@ -30,7 +30,7 @@ export function validAccountComputerStatus(raw: unknown): raw is AccountComputer
     && (r.lastRegistration === undefined || (typeof r.lastRegistration === "string" && Number.isFinite(Date.parse(r.lastRegistration))))
     && (r.desiredRevision === undefined || (Number.isSafeInteger(r.desiredRevision) && Number(r.desiredRevision) >= 0))
     && (r.message === undefined || typeof r.message === "string")
-    && (r.reason === undefined || r.reason === "computer-removed")
+    && (r.reason === undefined || typeof r.reason === "string")
     && validAccountCloud(r.cloud)
     && Array.isArray(r.spaces) && r.spaces.every((row: unknown) => {
       if (!row || typeof row !== "object") return false;
@@ -47,6 +47,6 @@ function validAccountCloud(raw: unknown): boolean {
   const cloud = raw as Record<string, unknown>;
   return (cloud.state === "retrying")
     && (cloud.since === undefined || (typeof cloud.since === "string" && Number.isFinite(Date.parse(cloud.since))))
-    && (cloud.reason === undefined || cloud.reason === "refused" || cloud.reason === "unreachable" || cloud.reason === "rate-limited")
+    && (cloud.reason === undefined || typeof cloud.reason === "string")
     && (cloud.notice === undefined || typeof cloud.notice === "string");
 }

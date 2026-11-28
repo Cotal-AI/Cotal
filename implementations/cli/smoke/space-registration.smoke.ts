@@ -280,7 +280,7 @@ setCurrent("keep");
   const beforeSend = registryFiles();
   const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
   check("send to an unreachable registration refuses with space forget in its JSON remedy",
-    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "check the address and connection to the host; start the broker there if it is stopped. To unregister this space, run `cotal space forget open1`", shown(offline));
   const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
   check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
     offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
@@ -1516,7 +1516,10 @@ if (process.platform === "linux") {
   removePreparedSpace("y".repeat(100));
   rmSync(earlier, { recursive: true, force: true });
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
-  check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
+  const addPlain = await run(["space", "add", "demo", "--server", LIVE, "--root", root, "--plain"]);
+  for (const [format, advice] of [["--json", add.env?.error?.remedy ?? ""], ["--plain", addPlain.stderr]] as const) {
+    check(`adding a prepared name preserves ${format} on both recovery commands`, refused(add, 2, "CONFLICT") && addPlain.status === 2 && advice.includes(`--space demo ${format}\``) && advice.includes(`space forget demo ${format}\``) && findMesh("demo") === undefined, advice);
+  }
 
   const list = await json(["space"]);
   check("space lists it apart from the registrations", list.env?.result.prepared.some((p: { space: string; root: string }) => p.space === "demo" && p.root === fresh) && !list.env.result.items.some((s: { space: string }) => s.space === "demo"), list.env?.result);

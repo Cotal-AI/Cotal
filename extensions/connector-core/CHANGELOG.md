@@ -1,5 +1,15 @@
 # @cotal-ai/connector-core
 
+## 0.184.1
+
+No changes in this release.
+
+## 0.184.0
+
+### Patch Changes
+
+- fcf78b1: Cotal updates finish when the local Claude or Codex plugin marketplace directory is read-only or a broken symbolic link, deferring that plugin refresh and naming the repair command.
+
 ## 0.183.1
 
 No changes in this release.

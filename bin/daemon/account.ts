@@ -106,7 +106,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
       if (!force && context.retryAt > Date.now()) return;
       const hooks = { beginRetry, finishRetry, requireSignIn };
-      context.work = pollAccountComputer(home, account, machineId, name, version, vitals, vitalsError, reconciler, context, abort.signal, hooks).then(() => { reconciler.accountHealth(account.ownerKey, context.state.mode !== "sign-in-required"); }).catch((error: unknown) => {
+      context.work = pollAccountComputer(home, account, machineId, name, version, vitals, vitalsError, reconciler, context, abort.signal, hooks).then((polled) => { reconciler.accountHealth(account.ownerKey, !polled.transient && context.state.mode !== "sign-in-required"); }).catch((error: unknown) => {
         if (context.abort.signal.aborted || abort.signal.aborted) return;
         if (error instanceof IdpSessionRejectedError) { requireSignIn(context); reconciler.accountHealth(account.ownerKey, false); return; }
         reconciler.accountHealth(account.ownerKey, false);

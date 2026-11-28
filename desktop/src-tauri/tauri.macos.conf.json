@@ -1,1 +1,9 @@
-{ "bundle": { "targets": ["app", "dmg"] } }
+{
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": {
+      "runtime/": "runtime/",
+      "installers/command-line/cotal-macos": "bin/cotal"
+    }
+  }
+}

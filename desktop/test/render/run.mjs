@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import axe from "axe-core";
 import { nativeStub, scenarios } from "./fixtures.mjs";
 import { sidebarScenarios } from "./sidebar.mjs";
+import { normalRun, recordMotion, reducedRun, reducedViolations } from "./motion.mjs";
 
 const root = resolve(process.env.RENDER_DIST ?? fileURLToPath(new URL("../../dist/", import.meta.url)));
 const output = resolve(process.env.SHOTS ?? "test/render/artifacts");
@@ -27,6 +28,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ["--no-sandbox"] });
 let count = 0;
+const motion = { normal: 0, normalElements: 0, reduced: 0, reducedStill: 0 };
 const failed = [];
 const matrix = process.env.SIDEBAR_ONLY ? sidebarScenarios(scenarios) : [...scenarios, ...(scenarios.some(({ name }) => name === "welcome") ? sidebarScenarios(scenarios) : [])];
 const cases = matrix.filter(scenario => !process.env.CASES || process.env.CASES.split(",").includes(scenario.name));
@@ -102,6 +104,7 @@ try {
       page.on("request", request => requests.push(request.url()));
       page.on("pageerror", error => errors.push(error.message));
       page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+      await page.addInitScript(recordMotion);
       await page.addInitScript(nativeStub, scenario.state);
       await page.goto(address);
       await page.evaluate(() => document.fonts.ready);
@@ -282,6 +285,7 @@ try {
         visited.push(await page.evaluate(() => document.activeElement.id || document.activeElement.tagName));
       }
       assert.deepEqual(visited, expected, `${name}: keyboard order`);
+      // Reduce Motion turned on while the app is open: whatever was running must settle, and nothing may run forever.
       await page.emulateMedia({ reducedMotion: "reduce" });
       if (scenario.name === 'audit-account-refusal-agents') {
         await page.waitForTimeout(350);
@@ -291,9 +295,31 @@ try {
         const sizingAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'running' && a.effect?.target?.id === 'agent-list').map(a => a.transitionProperty || a.animationName));
         assert.deepEqual(sizingAnimations, [], `${name}: delayed resize has no agent sizing motion under reduce`);
       }
-      await page.waitForTimeout(300);
-      const runningAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").map(a => ({ target: a.effect?.target?.id, name: a.animationName || a.transitionProperty })));
-      assert.deepEqual(runningAnimations, [], `${name}: reduced motion`);
+      // Turning reduced motion on restarts the short enter fade. One sample at 300ms races that restart.
+      const reduced = await page.waitForFunction(() => {
+        const running = document.getAnimations().filter(animation => animation.playState === "running").map(animation => {
+          const timing = animation.effect?.getTiming?.() ?? {};
+          return { target: animation.effect?.target?.id, name: animation.animationName || animation.transitionProperty, iterations: timing.iterations, duration: timing.duration };
+        });
+        const endless = running.filter(animation => animation.iterations === Infinity || animation.duration === Infinity);
+        if (endless.length) return { endless, running };
+        return running.length === 0 ? { endless, running } : false;
+      }, null, { timeout: 2000, polling: 50 });
+      const settled = await reduced.jsonValue();
+      assert.deepEqual(settled.endless, [], `${name}: reduced motion`);
+      assert.deepEqual(settled.running, [], `${name}: reduced motion`);
+      // Reduce Motion already on when the app opens, as a person's setting usually is: every animation that starts only fades.
+      // Both motion checks load a fresh window, because the MOTION capture above pauses and cancels this page's animations.
+      if (reducedMotion === "no-preference") {
+        const control = await normalRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
+        assert.equal(control.moving, control.shown, `${name}: spinner and progress bar animate in normal motion`);
+        motion.normal += control.entries.length;
+        motion.normalElements += control.shown;
+        const fromLoad = await reducedRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
+        assert.deepEqual(reducedViolations(fromLoad.entries), [], `${name}: reduced motion only fades and never repeats`);
+        motion.reduced += fromLoad.entries.length;
+        motion.reducedStill += fromLoad.still;
+      }
       count++;
       console.log(`PASS ${name}`);
     } catch (error) {
@@ -303,5 +329,7 @@ try {
     }
   }
   console.log(`${count} screen renders passed. Screenshots: ${output}`);
+  console.log(`Motion: normal ${motion.normal} animations (${motion.normalElements} spinner or progress bar shown); reduced ${motion.reduced} animations, ${motion.reducedStill} spinner or progress bar held still.`);
   assert.deepEqual(failed, [], "failed screen renders");
+  if (motion.normalElements) assert.ok(motion.reducedStill > 0, "reduced motion: the spinner and progress bar shown in normal motion are present and still under reduce");
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

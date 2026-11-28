@@ -79,7 +79,7 @@ export function clearAccountRetry(cloud: AccountCloud | undefined): { failures: 
 export function accountSignInRequired(reason?: "computer-removed"): { mode: "sign-in-required"; message: string; reason?: "computer-removed"; logged: string } {
   return reason === "computer-removed"
     ? { mode: "sign-in-required", message: "This computer was removed from your account. Sign in to add it back.", reason, logged: "was removed from the account" }
-    : { mode: "sign-in-required", message: "Sign in again.", logged: "needs a sign-in" };
+    : { mode: "sign-in-required", message: "sign in again", logged: "needs a sign-in" };
 }
 
 export interface AccountPollContext {
@@ -118,7 +118,7 @@ export async function accountSessionRejected(home: string, idpUrl: string, signa
 }
 
 /** One registration and one desired-spaces read. A refusal retries or asks for a sign-in, and never empties the desired set. */
-export async function pollAccountComputer(home: string, account: AuthSpaceCatalogAccount, machineId: string, name: string, version: string, vitals: { sampledAt: string } | undefined, vitalsError: string | undefined, reconciler: ReturnType<typeof createAccountReconciler>, context: AccountPollContext, signal: AbortSignal, hooks: AccountPollHooks): Promise<number> {
+export async function pollAccountComputer(home: string, account: AuthSpaceCatalogAccount, machineId: string, name: string, version: string, vitals: { sampledAt: string } | undefined, vitalsError: string | undefined, reconciler: ReturnType<typeof createAccountReconciler>, context: AccountPollContext, signal: AbortSignal, hooks: AccountPollHooks): Promise<{ transient: boolean }> {
   const state = context.state;
   // The host can name a Manager after this computer only when the computer says which ones it hosts.
   const hosted = reconciler.hostedManagers(context.snapshot?.spaces ?? []);
@@ -144,8 +144,8 @@ export async function pollAccountComputer(home: string, account: AuthSpaceCatalo
     const sentName = name;
     const result = await call("PUT");
     const outcome = await settle(result);
-    if (outcome.kind !== "answered") return context.lastHeartbeat;
-    if (result.status === 404) { state.mode = "per-space"; state.hostSupport = "unsupported"; state.message = "account computers unsupported; existing per-space connections remain local"; hooks.finishRetry(context); return context.lastHeartbeat; }
+    if (outcome.kind !== "answered") return { transient: outcome.kind === "transient" };
+    if (result.status === 404) { state.mode = "per-space"; state.hostSupport = "unsupported"; state.message = "account computers unsupported; existing per-space connections remain local"; hooks.finishRetry(context); return { transient: false }; }
     if (result.status !== 200 && result.status !== 201) throw new Error("computer registration unavailable");
     const body = result.body as { v?: unknown; machine?: { id?: unknown; lastSeenAt?: unknown } } | undefined;
     if (body?.v !== 1 || body.machine?.id !== machineId || typeof body.machine.lastSeenAt !== "string" || !Number.isFinite(Date.parse(body.machine.lastSeenAt))) throw new Error("invalid computer registration response");
@@ -161,10 +161,10 @@ export async function pollAccountComputer(home: string, account: AuthSpaceCatalo
     context.bareRefusals = 0;
     hooks.finishRetry(context);
     delete state.message;
-    return context.lastHeartbeat;
+    return { transient: false };
   }
   const outcome = await settle(result);
-  if (outcome.kind !== "answered") return context.lastHeartbeat;
+  if (outcome.kind !== "answered") return { transient: outcome.kind === "transient" };
   if (result.status !== 200) throw new Error("computer desired spaces unavailable");
   const snapshot = bodyOf(result.body);
   validateCatalogSnapshot(snapshot, account);
@@ -176,7 +176,7 @@ export async function pollAccountComputer(home: string, account: AuthSpaceCatalo
   context.revision = Number(snapshot.revision);
   await withSession(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, true, context.abort.signal));
   context.etag = result.etag;
-  return context.lastHeartbeat;
+  return { transient: false };
 }
 
 function bodyOf(body: unknown): Record<string, unknown> | undefined {

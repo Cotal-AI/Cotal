@@ -392,10 +392,14 @@ try {
       check(`a running manager preview diagnoses invalid ${flag} without advising a stop`,
         invalid.status === 2 && JSON.parse(invalid.stdout).error?.code === code && !out(invalid).includes("manager stop"), out(invalid));
     }
-    const other = cotal(["manager", "start", "--max-sessions", "5", "--dry-run"]);
-    check("a valid replacement for a running manager refuses and names the stop",
-      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --max-sessions") && out(other).includes(`cotal manager stop --space ${SPACE}`)
-      && inventory().running.filter((name) => name === "manager").length === 1, out(other));
+    for (const preview of [true, false]) {
+      const other = cotal(["manager", "start", "--max-sessions", "5", ...(preview ? ["--dry-run"] : []), "--json"]);
+      const { error } = JSON.parse(other.stdout);
+      check(`a running manager refuses changed settings and suggests a scoped ${preview ? "stop preview" : "stop"} in JSON`,
+        other.status === 2 && error?.code === "LIFECYCLE_BLOCKED" && error.message.includes("manager is running with another --max-sessions")
+        && error.remedy.includes(`\`cotal manager stop --space ${SPACE}${preview ? " --dry-run" : ""} --json\``)
+        && inventory().running.filter((name) => name === "manager").length === 1, out(other));
+    }
 
     // ---- A program of your own: add with --exec, start, status, logs, stop -----------------------
     const script = join(root, "hello.sh");
@@ -570,9 +574,9 @@ try {
     const stackManager = envelope(upCotal(["service", "logs", "stack-manager", "--json", "--tail", "5"]));
     check("  and cotal service logs stack-manager reads the same file", stackManager.outcome === "ok" && stackManager.result?.path === json.result?.path && stackManager.result?.lines?.length === 5, stackManager);
     if (isManagerLog(json.result?.path)) checkRecordedManagerTail(json.result.path);
-    const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
+    const refusedStop = envelope(upCotal(["manager", "stop", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
-      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through `cotal down`, or where `cotal supervise` runs it; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents", refusedStop);
+      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy?.includes(`run \`cotal down --dry-run --space=${UP_SPACE} --json\` in ${realpathSync(upProject)}`) === true && !refusedStop.error.remedy.includes("`cotal down`"), refusedStop);
     const refusedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("  and so does cotal manager install --dry-run while it runs, with the same advice",
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);

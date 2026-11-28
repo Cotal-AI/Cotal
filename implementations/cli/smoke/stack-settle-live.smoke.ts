@@ -808,7 +808,10 @@ try {
       check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
       const retry = cli(second, "up", "--no-manager", "--json");
       check("an occupied broker-only background restart keeps --no-manager in its retry",
-        retry.status === 2 && retry.env?.error?.remedy === remedy.replace(` in ${realpathSync(second)};`, ` from ${realpathSync(second)};`), shown(retry));
+        retry.status === 2 && retry.env?.error?.remedy === remedy.replace(`\` in ${realpathSync(second)};`, ` --json\` from ${realpathSync(second)};`), shown(retry));
+      const policy = cli(second, "up", "--no-manager", "--max-payload", "2097152", "--json");
+      check("a blocked payload change calls for the original startup command", policy.status === 2 && policy.env?.error?.code === "CONFLICT" &&
+        policy.env.error.remedy?.includes("repeat your original startup command from the same folder with the same options") === true, shown(policy));
       const journalBefore = readStackJournal(second)?.sha256;
       const foreground = cli(second, "up", "--foreground", "--no-manager");
       const output = foreground.stdout + foreground.stderr;
@@ -1490,8 +1493,9 @@ try {
     check("up starts the stack again for the dead-broker refusal", resumedStart.status === 0 && broker !== null && manager !== null, shown(resumedStart));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);
-    const blocked = cli(root, "down", "--yes", "--json");
-    check("down with a live manager and a dead broker refuses before any stop and names up", blocked.status === 2 && Boolean(blocked.env?.error?.remedy?.includes(`cotal up --space ${space}`)) && manager !== null && alive(manager), shown(blocked));
+    const blocked = cli(root, "down", "--yes", "--with-agents", "--json");
+    const recovery = blocked.env?.error?.remedy ?? "";
+    check("down with a dead broker keeps the space, agent policy, confirmation and format in its recovery", blocked.status === 2 && recovery.includes(`cotal up --space ${space} --json\``) && recovery.includes(`cotal down --with-agents --yes --space ${space} --json\``) && manager !== null && alive(manager), shown(blocked));
     const seatBlocked = cliAs(seat, root, "down", "--yes", "--json");
     check("a managed seat's down with a dead broker refuses the same way, not as a raw dial error", seatBlocked.status === 2 && Boolean(seatBlocked.env?.error?.remedy?.includes(`cotal up --space ${space}`)) && manager !== null && alive(manager), shown(seatBlocked));
     rmSync(seatCreds, { force: true });

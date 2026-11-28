@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -239,11 +239,20 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
   try {
     const path = join(home, "node-only");
     mkdirSync(path);
-    if (process.platform === "win32") copyFileSync(process.execPath, join(path, "node.exe"));
-    else symlinkSync(process.execPath, join(path, "node"));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|path$)/i.test(key)));
+    let bareNode = process.execPath;
+    if (process.platform !== "win32") {
+      const bare = join(home, "bare-node");
+      const installed = spawnSync(process.execPath, [join(dirname(dirname(realpathSync(process.execPath))), "lib", "node_modules", "npm", "bin", "npm-cli.js"), "install", "--prefix", bare, "--no-audit", "--no-fund", `node@${process.versions.node}`], {
+        cwd: home, encoding: "utf8", timeout: 120_000, env: { ...env, PATH: process.env.PATH, HOME: home, npm_config_cache: join(home, "npm-cache") },
+      });
+      assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+      bareNode = join(bare, "node_modules", "node", "bin", "node");
+    }
+    if (process.platform === "win32") copyFileSync(process.execPath, join(path, "node.exe"));
+    else symlinkSync(bareNode, join(path, "node"));
     for (const flags of [["--self"], ["--check"], ["--check", "--plain"], ["--check", "--json"]]) {
-      const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", ...flags], {
+      const result = spawnSync(bareNode, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", ...flags], {
         cwd: home, encoding: "utf8", timeout: 30_000,
         env: { ...env, HOME: home, USERPROFILE: home, APPDATA: join(home, "config"), LOCALAPPDATA: join(home, "config"),
           COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: home, PATH: path,
@@ -253,12 +262,123 @@ assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not prov
       assert.equal(result.status, flags[0] === "--self" ? 1 : 4, output);
       assert.match(output, /npm is not on PATH/);
       assert.match(output, /Install npm or add it to this command's PATH/);
-      assert.doesNotMatch(output, /registry cannot be reached|Check registry access/);
+      assert.doesNotMatch(output, /registry cannot be reached|Check registry access|Using the npm shipped with/);
       if (flags.includes("--json")) {
         const report = JSON.parse(result.stdout);
         assert.equal(report.warnings[0].code, "NPM_UNAVAILABLE");
         assert.equal(report.result.installationChanged, false);
       }
+    }
+    const sibling = join(home, "node-and-npm");
+    mkdirSync(sibling);
+    const nodeName = process.platform === "win32" ? "node.exe" : "node";
+    const npmName = process.platform === "win32" ? "npm.cmd" : "npm";
+    copyFileSync(process.execPath, join(sibling, nodeName));
+    const privateEnv = {
+      ...env, HOME: home, USERPROFILE: home, APPDATA: join(home, "config"), LOCALAPPDATA: join(home, "config"),
+      COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: home, PATH: path,
+      COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
+    };
+    const runNode = (node: string, args: string[], timeout = 30_000) => spawnSync(node, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], {
+      cwd: home, encoding: "utf8", timeout, env: privateEnv,
+    });
+    if (process.platform === "win32") {
+      writeFileSync(join(sibling, npmName), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
+      const windowsSibling = runNode(join(sibling, nodeName), ["update", "--check"]);
+      const windowsOut = windowsSibling.stdout + windowsSibling.stderr;
+      assert.equal(windowsSibling.status, 4, windowsOut);
+      assert.match(windowsOut, /npm is not on PATH/);
+      assert.match(windowsOut, /Install npm or add it to this command's PATH/);
+    } else {
+      const impostor = join(sibling, "impostor");
+      writeFileSync(impostor, "#!/bin/sh\nprintf '%s\\n' IMPOSTOR-NOT-NPM\n", { mode: 0o755 });
+      symlinkSync(impostor, join(sibling, npmName));
+      const refused = runNode(join(sibling, nodeName), ["update", "--check"]);
+      const refusedOut = refused.stdout + refused.stderr;
+      assert.equal(refused.status, 4, refusedOut);
+      assert.match(refusedOut, /npm is not on PATH/);
+      assert.match(refusedOut, /Install npm or add it to this command's PATH/);
+      assert.doesNotMatch(refusedOut, /IMPOSTOR-NOT-NPM/);
+      rmSync(join(sibling, npmName));
+      const runtime = join(home, "runtime");
+      const runtimeBin = join(runtime, "bin");
+      const runtimeNode = join(runtimeBin, "node");
+      const bundledCli = join(runtime, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+      mkdirSync(runtimeBin, { recursive: true });
+      mkdirSync(dirname(bundledCli), { recursive: true });
+      copyFileSync(process.execPath, runtimeNode);
+      const seen = join(home, "bundled-npm-seen");
+      writeFileSync(join(runtime, "lib", "node_modules", "npm", "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
+      writeFileSync(bundledCli, [
+        "#!/usr/bin/env node",
+        `require("node:fs").writeFileSync(${JSON.stringify(seen)}, "bundled" + String.fromCharCode(10) + process.argv[1]);`,
+        "console.log(JSON.stringify(\"9.9.9\"));",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      const runtimeLink = join(home, "runtime-link");
+      symlinkSync(runtime, runtimeLink);
+      const viaBundled = runNode(join(runtimeLink, "bin", "node"), ["update", "--check"], 60_000);
+      const bundledOut = viaBundled.stdout + viaBundled.stderr;
+      assert.equal(viaBundled.status, 0, bundledOut);
+      assert.match(bundledOut, /Registry latest:\s+9\.9\.9/);
+      assert.match(bundledOut, /Using the npm shipped with/);
+      assert.doesNotMatch(bundledOut, /Install npm or add it to this command's PATH/);
+      assert.equal(readFileSync(seen, "utf8").trim(), `bundled\n${bundledCli}`, "the npm shipped with the running Node is the one that answers");
+      rmSync(seen);
+      const pathSeen = join(home, "path-npm-seen");
+      const pathNpm = join(home, "path-npm");
+      mkdirSync(pathNpm);
+      writeFileSync(join(pathNpm, "npm"), `#!/bin/sh
+printf '%s\n' PATH-NPM > ${JSON.stringify(pathSeen)}
+printf '%s\n' '"8.8.8"'
+`, { mode: 0o755 });
+      const pathRun = spawnSync(join(runtimeLink, "bin", "node"), [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--check"], {
+        cwd: home, encoding: "utf8", timeout: 60_000, env: { ...privateEnv, PATH: `${pathNpm}${delimiter}${path}` },
+      });
+      const pathOut = pathRun.stdout + pathRun.stderr;
+      assert.equal(pathRun.status, 0, pathOut);
+      assert.match(pathOut, /Registry latest:\s+8\.8\.8/, "an unrecognised npm on PATH is the one that answers");
+      assert.equal(readFileSync(pathSeen, "utf8").trim(), "PATH-NPM");
+      assert.doesNotMatch(pathOut, /Using the npm shipped with/);
+      assert.equal(existsSync(seen), false, "the bundled package does not answer for an unrecognised PATH npm");
+      const unsupported = join(home, "unsupported-npm");
+      const unsupportedRoot = join(unsupported, "node_modules", "corepack");
+      const unsupportedCli = join(unsupportedRoot, "dist", "npm.js");
+      mkdirSync(dirname(unsupportedCli), { recursive: true });
+      writeFileSync(join(unsupportedRoot, "package.json"), JSON.stringify({ name: "corepack", engines: { node: process.version } }));
+      writeFileSync(unsupportedCli, `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  console.error("npm warn cli npm v12.2.3 does not support Node.js " + process.version + ". This version of npm supports the following node versions: \`>=99\`");
+  console.log("12.2.3");
+  process.exit(0);
+}
+require("node:fs").writeFileSync(${JSON.stringify(seen)}, "unsupported" + String.fromCharCode(10) + process.argv[1]);
+process.exit(1);
+`, { mode: 0o755 });
+      symlinkSync(unsupportedCli, join(unsupported, "npm"));
+      const unsupportedRun = spawnSync(join(runtimeLink, "bin", "node"), [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--check"], {
+        cwd: home, encoding: "utf8", timeout: 60_000, env: { ...privateEnv, PATH: `${unsupported}${delimiter}${path}` },
+      });
+      const unsupportedOut = unsupportedRun.stdout + unsupportedRun.stderr;
+      assert.equal(unsupportedRun.status, 0, unsupportedOut);
+      assert.match(unsupportedOut, /Registry latest:\s+9\.9\.9/);
+      assert.match(unsupportedOut, /Using the npm shipped with/);
+      assert.equal(readFileSync(seen, "utf8").trim(), `bundled\n${bundledCli}`, "an npm that reports this Node unsupported does not answer");
+      assert.equal(unsupportedOut.split("Using the npm shipped with").length - 1, 1, "the notice is printed once");
+      symlinkSync(bundledCli, join(runtimeBin, "npm"));
+      const direct = spawnSync(runtimeNode, [bundledCli, "view", "cotal-ai@latest", "version", "--json"], {
+        cwd: home, encoding: "utf8", timeout: 60_000, env: { ...privateEnv, PATH: `${runtimeBin}${delimiter}${path}` },
+      });
+      const selected = spawnSync(join(runtimeLink, "bin", "node"), [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--check"], {
+        cwd: home, encoding: "utf8", timeout: 60_000, env: { ...privateEnv, PATH: `${runtimeBin}${delimiter}${path}` },
+      });
+      assert.equal(direct.status, 0, direct.stdout + direct.stderr);
+      assert.match(direct.stdout, /9\.9\.9/);
+      assert.equal(selected.status, 0, selected.stdout + selected.stderr);
+      assert.match(selected.stdout, /Registry latest:\s+9\.9\.9/, "a usable npm on PATH keeps the registry answer");
+      assert.doesNotMatch(selected.stdout + selected.stderr, /Using the npm shipped with/);
+      const recorded = readFileSync(seen, "utf8").trim().split("\n").at(-1);
+      assert.equal(recorded === undefined ? "" : realpathSync(recorded), realpathSync(bundledCli), "the PATH npm, not another package, answers");
     }
   } finally { rmSync(home, { recursive: true, force: true }); }
 }

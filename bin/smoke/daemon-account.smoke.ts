@@ -160,7 +160,7 @@ try {
   assert.equal(daemon.status().account!.cloud?.reason, "refused");
   const second = gets;
   await until(() => gets > second && daemon.status().account?.mode === "sign-in-required", "a second bare 401 asks for a sign-in", 15_000);
-  assert.equal(daemon.status().account!.message, "Sign in again.");
+  assert.equal(daemon.status().account!.message, "sign in again");
   const stoppedBare = gets; await sleep(5_500); assert.equal(gets, stoppedBare, "a bare refusal stops after two");
   await daemon.close(); mode = 200; refusal = undefined; const fresh = gets;
   daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
@@ -168,7 +168,7 @@ try {
   mode = 403; const forbidden = gets;
   await until(() => gets > forbidden && daemon.status().account?.mode === "account" && daemon.status().account?.cloud?.state === "retrying", "one 403 keeps the account");
   tokenBody = {}; mode = 403; const rejected = gets;
-  await until(() => gets > rejected && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.message === "Sign in again.", "a rejected session asks for a sign-in and stops");
+  await until(() => gets > rejected && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.message === "sign in again", "a rejected session asks for a sign-in and stops");
   const stoppedRejected = gets; await sleep(5_500); assert.equal(gets, stoppedRejected);
   await daemon.close(); mode = 200; tokenBody = { token: "fixture-jwt" }; const returned = gets;
   daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
