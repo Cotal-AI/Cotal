@@ -64,6 +64,7 @@ import {
   agentIdFromPath,
   classifyTap,
 } from "./web-request.js";
+import { sharedChannels, sharedFeedUpdates } from "./shared-channels.js";
 export {
   BadRequest,
   BrokerRefused,
@@ -470,6 +471,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
       : { creds: conn.creds, card: { name: "web", kind: "endpoint" as const } }),
     channels: [],
+    readChannelRoutingProjection: true,
     consume: false, // observer: reads via tap + history + presence-watch, binds no durables
     registerPresence: false,
     watchPresence: true,
@@ -478,17 +480,22 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   ep.on("error", reportEndpoint);
   ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? `! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message)));
   await ep.start();
+  const shared = sharedChannels(() => ep.channelRoutingMode());
+  const feedUpdate = sharedFeedUpdates(() => ep.channelRoutingMode());
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
   // the client can say so honestly without deriving progress from the heartbeat.
   const rosterSnapshot = () => ep.getRoster().map((presence) => ({
-    ...presence,
+    ...shared.presence(presence),
     progress: presence.status === "working" ? { kind: "unknown" as const } : undefined,
   }));
 
   const clients = new Set<ServerResponse>();
-  const send = (res: ServerResponse, event: string, data: unknown, kind?: FeedWrite) =>
-    writeFeed(res, event, data, kind);
+  const send = (res: ServerResponse, event: string, data: unknown, kind?: FeedWrite) => {
+    if (res.writableEnded) return;
+    const update = feedUpdate(res, event, data, kind === "snapshot");
+    if (update !== undefined) writeFeed(res, event, update, kind);
+  };
   const broadcast = (event: string, data: unknown) => {
     for (const res of clients) if (!res.writableEnded) send(res, event, data);
   };
@@ -507,36 +514,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     broadcast("presence-view", view),
   );
 
-  // Broker-sourced channel membership (the authoritative graph spokes): push a `membership` SSE event
-  // on every feed change (debounced; the client re-reads the snapshot). Best-effort — a space without the
-  // feed (no delivery daemon, or provisioned before this feature) simply never emits, and the graph
-  // degrades to traffic-only. The admin cred carries the read grant; agents never do.
-  let membershipWatch: { stop(): Promise<void> } | undefined;
-  let lastMembership: MembershipSnapshot | undefined;
-  const pushMembership = debounce(() => {
-    // A rejected membership read clears `lastMembership` and broadcasts `MEMBERSHIP_READ_FAILED`;
-    // swallowing it would leave the graph showing its last good snapshot as current.
-    void ep.readMembership()
-      .then((m) => { lastMembership = m; broadcast("membership", m); })
-      .catch((e) => { lastMembership = undefined; broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
-  }, 150);
-  // The daemon rewrites the heartbeat key every poll with nothing else changed; re-reading the whole
-  // bucket for it was a full ordered-consumer rescan per heartbeat per dashboard (#4904). The watch
-  // delivers the heartbeat's `asOf`, so only a member change (or a failed last read) costs a read.
-  const onMembership = (change: MembershipChange) => {
-    if (change.type === "replayed") return;
-    if (change.type === "heartbeat" && change.update && lastMembership) {
-      lastMembership = { ...lastMembership, asOf: change.asOf };
-      broadcast("membership", lastMembership);
-      return;
-    }
-    pushMembership();
-  };
-  try {
-    membershipWatch = await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
-  } catch (e) {
-    console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
-  }
+  const membershipWatch = await watchWebMembership(ep, shared, broadcast);
   // Tap each authorized messaging plane separately. A space-wide tap would also subscribe to
   // endpoint request rails.
   //
@@ -550,9 +528,11 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       return;
     }
     const { mode, senderId, channel, msg } = verdict.data;
+    if (mode === "chat" && (channel === undefined || !shared.visible(channel))) return;
     broadcast("message", { mode, senderId, channel, msg });
   };
   const subscriptions = conn.creds ? credsClaims(conn.creds).nats?.sub : undefined;
+  // This shared observer opens no plugin taps, even if its credential could read them.
   for (const plane of ["chat", "inst", "svc"]) {
     const subject = `${spacePrefix(space)}.${plane}.>`;
     if (subscriptions?.allow?.length && !patternInAllow(subscriptions.allow, subject)) continue;
@@ -637,7 +617,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
         feed,
         roster: rosterSnapshot(),
         presenceView: ep.presenceView(),
-        membership: () => ep.readMembership(),
+        membership: async () => shared.membership(await ep.readMembership()),
       });
       // Both ends, because either can end a feed: the browser going away closes the request, and
       // an overflow ends the response while the socket may stay open. Forgetting twice is harmless.
@@ -666,7 +646,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       //
       // The refusal names its own condition and carries a non-200, so a caller that checks neither
       // still cannot mistake it for data.
-      try { return json(res, await ep.readMembership()); }
+      try { return json(res, shared.membership(await ep.readMembership())); }
       catch (e) {
         return json(res, { error: MEMBERSHIP_READ_FAILED, reason: (e as Error).message }, 503);
       }
@@ -674,7 +654,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     if (path === "/api/channels") {
       // Resolve defaults at the endpoint so every web client renders the same channel policy the
       // core applies; the registry's `config` holds only per-channel overrides.
-      const channels = chatOnly(await ep.listChannels());
+      const channels = chatOnly(await ep.listChannels()).filter(({ channel }) => shared.visible(channel));
       return json(res, channels.map(({ channel, messages, config }) => ({
         channel,
         messages,
@@ -700,7 +680,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       // is a payload claim and the sequence is the broker's own record, so selecting on arrival is
       // the narrower of the two.
       const limit = historyLimit(query, 200);
-      const page = await activityBackfill(ep, limit);
+      const page = await activityBackfill(ep, limit, undefined, undefined, shared.visible);
       // A partial page is worth SAYING on the server too: the operator watching this log is the one
       // who can tell a slow link from a half of the feed that refused, and the browser's marker
       // never reaches them. What `missing` names is a source, `chat` or `direct messages`, so this
@@ -738,6 +718,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     if (path.startsWith("/api/channels/") && path.endsWith("/history")) {
       const name = channelNameFromPath(path.slice("/api/channels/".length, -"/history".length));
       const limit = historyLimit(query, 200);
+      if (!shared.visible(name)) return json(res, []);
       // BOUNDED LIKE ITS SIBLINGS, and deliberately the SAME bound rather than a new one. This is
       // one read of one channel, so like `/api/dms` it has no subset to serve when it runs long: a
       // named 503 lets the open channel keep the messages it already has and say they are stale,
@@ -753,11 +734,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
           }),
           clock.until,
         );
+        if (!shared.visible(name)) return json(res, []);
         if (page === LATE)
           return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
         return json(res, page);
       } catch (e) {
-        return json(res, { error: e instanceof Error ? e.message : String(e) }, 503);
+        return shared.visible(name) ? json(res, { error: e instanceof Error ? e.message : String(e) }, 503) : json(res, []);
       } finally {
         clock.done();
       }
@@ -855,7 +837,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
         "content-type": file.type,
         "cache-control": file.immutable ? "public, max-age=31536000, immutable" : "no-cache",
       });
-      res.end(body);
+      res.end(file.type === "text/html; charset=utf-8" ? shared.page(body) : body);
       return;
     }
     if (answer.status === 503) return json(res, answer.body, 503);
@@ -1280,6 +1262,51 @@ function debounce(fn: () => void, ms: number): () => void {
     if (t) clearTimeout(t);
     t = setTimeout(fn, ms);
   };
+}
+
+/** Watch broker membership for the shared graph. Without a readable feed it shows traffic only. */
+async function watchWebMembership(
+  ep: CotalEndpoint,
+  shared: ReturnType<typeof sharedChannels>,
+  broadcast: (event: string, data: unknown) => void,
+): Promise<Awaited<ReturnType<CotalEndpoint["watchMembership"]>> | undefined> {
+  let lastMembership: MembershipSnapshot | undefined;
+  let membershipRevision = 0;
+  let membershipReadRevision = 0;
+  const pushMembership = debounce(() => {
+    const revision = membershipRevision;
+    void ep.readMembership()
+      .then((m) => {
+        if (revision < membershipReadRevision) return;
+        membershipReadRevision = revision;
+        lastMembership = m;
+        broadcast("membership", shared.membership(m));
+      })
+      .catch((e) => {
+        if (revision < membershipReadRevision) return;
+        membershipReadRevision = revision;
+        lastMembership = undefined;
+        broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message });
+      });
+  }, 150);
+  const onMembership = (change: MembershipChange) => {
+    if (change.type === "replayed") return;
+    // A heartbeat alone can use the cached graph. In a filtered view, let an outstanding member
+    // refresh carry the latest heartbeat instead of sending a second snapshot with older rows.
+    const legacy = ep.channelRoutingMode() === "legacy";
+    if (change.type === "heartbeat" && change.update && lastMembership && (legacy || membershipRevision === membershipReadRevision)) {
+      lastMembership = { ...lastMembership, asOf: change.asOf };
+      broadcast("membership", shared.membership(lastMembership));
+      return;
+    }
+    membershipRevision++;
+    pushMembership();
+  };
+  try {
+    return await ep.watchMembership(onMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
+  } catch (e) {
+    console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
+  }
 }
 
 /** Race the whole delete upload, not the gaps between chunks. On expiry the request frame sends

@@ -1,6 +1,6 @@
 import {
   SERVICE_ACCESS_TTL_SECONDS, authorizeServeGrant, contractDigest, mintServiceCalloutJwt, parseServiceConnectionBinding,
-  parseServiceRegistrationWitness, principalKey, serveIssuanceGateKv, type ServiceConnectionBinding, type ServiceRegistrationWitness,
+  parseServiceRegistrationWitness, principalKey, readPluginChannelSpaceState, serveIssuanceGateKv, type ServiceConnectionBinding, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import type { ConnectReader } from "./connect-reader.js";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -50,8 +50,9 @@ export function createNativeServiceCalloutAuthority(opts: {
         if (!gate) throw new Error("service callout has no native gate");
         return gate.row.processEpoch;
       } });
+    const { state } = await readPluginChannelSpaceState(stores.jsm, space);
     assertOpen();
-    const minted = await mintServiceCalloutJwt({ space, account: dataAccount }, { serve,
+    const minted = await mintServiceCalloutJwt({ space, account: dataAccount }, { serve, pluginChannelsEnabled: state.enabled,
       gate: serveIssuanceGateKv(stores.authKv, space, { endpoint: witness.endpoint, instanceId: witness.instanceId }),
       principal: witness.principal, connection, inboxNonce, admittedAt, accessExpiresAt: token.exp, expiresAt });
     const record = makeNativeIssuanceRecorder(registry, async (currentToken) => {

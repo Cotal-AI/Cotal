@@ -133,7 +133,7 @@ function centreView(
  *  The composers the views draw reach the controller's `send` and `draft` through `Compose`, and
  *  every avatar of a roster row finds its initial badge through `BadgeOf`. The dashboard's one
  *  TooltipProvider sits here too, so every shadcn Tooltip in it shares one delay. */
-export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, panelSheet = phone }: {
+export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, panelSheet = phone, sharedPluginNotice }: {
   store: Store<DashboardState>;
   controller: Controller | null;
   route: Route;
@@ -142,6 +142,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   clock?: () => number;
   phone?: boolean;
   panelSheet?: boolean;
+  sharedPluginNotice?: string;
 }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -181,7 +182,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
         working={busy}
         stale={lastSeen}
         onPanelClose={panel.close}
-        sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}
+        sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} sharedPluginNotice={sharedPluginNotice} />}
       >
         <title>{documentTitle(space)}</title>
         <StatusLines store={store} />

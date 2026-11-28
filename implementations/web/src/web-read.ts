@@ -474,6 +474,7 @@ export async function activityBackfill(
   limit: number,
   deadlineMs: number = AGGREGATION_DEADLINE_MS,
   concurrency: number = AGGREGATION_CONCURRENCY,
+  visible: (channel: string) => boolean = () => true,
 ): Promise<ActivityPage> {
   const clock = deadline(deadlineMs);
   try {
@@ -497,7 +498,7 @@ export async function activityBackfill(
     );
     if (listed === LATE)
       throw new Error(`the channel list did not arrive within ${deadlineMs}ms`);
-    const chans = chatOnly(listed);
+    const chans = chatOnly(listed).filter(({ channel }) => visible(channel));
 
     // TWO SOURCES, NOT ONE PER CHANNEL. The chat half is ONE read of the CHAT stream filtered to
     // every chat channel at once (see `multiChannelHistory`), so the number of channels multiplies
@@ -515,6 +516,7 @@ export async function activityBackfill(
         name: "chat",
         read: async (signal: AbortSignal) =>
           (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))
+            .filter(({ channel }) => visible(channel))
             .map(({ channel, msg }) => ({ mode: "chat" as const, channel, msg })),
       },
       {

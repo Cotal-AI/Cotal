@@ -3,6 +3,7 @@
 import type { JsMsg } from "@nats-io/jetstream";
 import type { MsgHdrs, NatsConnection } from "@nats-io/transport-node";
 import { isPrincipalOwnerToken, parseSubject, type ParsedSubject } from "./subjects.js";
+import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import type { CotalMessage, Delivery, HistoryMessage, MessageMeta } from "./types.js";
 import { authenticatedChannelMessage, isRecord } from "./endpoint-inbound.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
@@ -21,6 +22,7 @@ export function isUsableMessageId(id: unknown): id is string {
 export function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   switch (kind) {
     case "chat":
+    case PLUGIN_CHANNEL_ROOT:
       return "channel";
     case "inst":
       return "dm";
@@ -47,7 +49,8 @@ export function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolea
  *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
  *  row type already verified stays verified (#1413). */
 export function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
-  if (parsed.kind === "chat" || parsed.kind === "evp") return authenticatedChannelMessage(msg, parsed.rest);
+  if (parsed.kind === "chat" || parsed.kind === "evp" || parsed.kind === PLUGIN_CHANNEL_ROOT)
+    return authenticatedChannelMessage(msg, parsed.rest);
   if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
   if (parsed.kind === "svc") return authenticatedAnycastMessage(msg, parsed.rest);
   return msg;

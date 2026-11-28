@@ -8,7 +8,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import {
   downloadStreamSnapshot,
   oneLine,
-  spaceBackupInventory,
+  readPluginMaintenanceState,
   validateCanonicalBackupStreamConfig,
   validateBackupStreamState,
   validatePersistentConsumerInventory,
@@ -188,11 +188,19 @@ function requireReady(root: string, storeDir: string, named: boolean): Maintenan
   return record;
 }
 
-async function inspectionConnection(broker: IsolatedBroker): Promise<NatsConnection> {
-  return connectIsolatedBroker(broker, broker.initialLogin);
+async function inspectionConnection(broker: IsolatedBroker, space: string, selected: SpaceBackupSelection, open: boolean): Promise<{ nc: NatsConnection; pluginChannels: boolean }> {
+  if (open) return { nc: await connectIsolatedBroker(broker, broker.initialLogin), pluginChannels: false };
+  const stateReader = await connectIsolatedBroker(broker, broker.initialLogin);
+  let pluginChannels: boolean;
+  try {
+    pluginChannels = (await readPluginMaintenanceState(stateReader, space)).state.enabled;
+  } finally { await drainAndClose(stateReader).catch(() => {}); }
+  const login = await broker.addLogin({ profile: "backup", scope: { operation: "inspect", selection: selected, pluginChannels } });
+  return { nc: await connectIsolatedBroker(broker, login), pluginChannels };
 }
 
-async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, held: readonly string[], openBackup: boolean): Promise<{
+async function collectInventory(nc: NatsConnection, space: string, selected: SpaceBackupSelection, mode: MaintenanceReadyRecord["mode"], pluginChannels: boolean): Promise<{
+  held: readonly string[];
   checkpoints: PersistentConsumerCheckpoint[];
 }> {
   const requestPage = async <T>(subject: string, offset: number): Promise<T & { total: number; offset: number; limit: number }> => {
@@ -218,12 +226,11 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
     offset = next;
   }
   // The clone is a stopped store on a fresh broker, so the memory-backed presence bucket is gone.
-  validateSpaceBackupInventory(space, streamNames, { atRest: true });
-  const inventory = spaceBackupInventory(space);
-  const expected = held;
+  const inventory = validateSpaceBackupInventory(space, streamNames, { atRest: true, pluginChannels });
+  const held = artifactStreams({ format: BACKUP_MANIFEST_FORMAT, space, selection: selected, mode }, inventory);
   const consumersByStream: Record<string, ConsumerInfo[]> = {};
   const statesByStream: Record<string, BackupStreamState> = {};
-  for (const stream of expected) {
+  for (const stream of held) {
     const infoMessage = await nc.request(`$JS.API.STREAM.INFO.${stream}`, "{}", { timeout: 10_000 });
     const streamInfo = JSON.parse(infoMessage.string()) as {
       state?: Readonly<Record<string, unknown>>;
@@ -252,7 +259,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
     const consumers = consumersByStream[registry] ?? [];
     if (consumers.some((consumer) => !isStoppedKvWatcher(registry, consumer)))
       throw new Error(`${registry} has an unsupported consumer`);
-    return { checkpoints: [] };
+    return { held, checkpoints: [] };
   }
   const backedConsumers = Object.fromEntries(held.map((stream) => {
     const consumers = consumersByStream[stream] ?? [];
@@ -261,7 +268,7 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
         throw new Error(`${stream}/${consumer.name} has an unsupported stopped KV watcher config: ${JSON.stringify(consumer.config)}`);
     return [stream, consumers.filter((consumer) => !isStoppedKvWatcher(stream, consumer))];
   }));
-  return { checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held, openBackup) };
+  return { held, checkpoints: validatePersistentConsumerInventory(space, backedConsumers, statesByStream, held, mode === "open") };
 }
 
 export function isStoppedKvWatcher(stream: string, consumer: ConsumerInfo): boolean {
@@ -766,7 +773,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       auth,
       deadline,
       label: "backup",
-      initialScope: { profile: "backup", scope: { operation: "inspect", selection: selected } },
+      initialScope: { profile: "backup", scope: ready.mode === "open" ? { operation: "inspect", selection: selected } : { operation: "plugin-state" } },
       attemptId,
     });
     recordMaintenanceClaimResources(lock, {
@@ -781,14 +788,8 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     releaseMaintenanceLock(lock);
     lock = undefined as never;
 
-    const held = artifactStreams({ format: BACKUP_MANIFEST_FORMAT, space: ready.space, selection: selected, mode: ready.mode });
-    const inspect = await inspectionConnection(broker);
-    let checkpoints;
-    try {
-      ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held, ready.mode === "open"));
-    } finally {
-      await drainAndClose(inspect).catch(() => {});
-    }
+    const { nc: inspect, pluginChannels } = await inspectionConnection(broker, ready.space, selected, ready.mode === "open");
+    const { held, checkpoints } = await collectInventory(inspect, ready.space, selected, ready.mode, pluginChannels).finally(() => drainAndClose(inspect).catch(() => {}));
     if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "initiation")
       throw new Error("smoke-injected failure at snapshot initiation");
     const files: BackupFileRecord[] = [];

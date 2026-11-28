@@ -75,6 +75,7 @@ import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 // `writeFeed` is what the lifted `send` calls, so it goes into the context as the module exports it.
 import { MEMBERSHIP_READ_FAILED, writeFeed, writeOpening } from "../src/web.js";
+import { sharedChannels, sharedFeedUpdates } from "../src/shared-channels.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -119,6 +120,7 @@ const liftStmt = (src: string, anchor: string, terminator: string, nth = 0): str
 };
 
 const webTs = read("../src/web.ts");
+const shared = sharedChannels(() => "legacy");
 
 const routeBlock = lift(webTs, 'if (path === "/api/membership")');
 const jsonHelper = lift(webTs, "function json(res: ServerResponse");
@@ -151,6 +153,7 @@ const serve = async (readMembership: () => Promise<unknown>): Promise<Recorded> 
     path: "/api/membership",
     res,
     ep: { readMembership },
+    shared,
     MEMBERSHIP_READ_FAILED,
     globalThis: undefined,
     console,
@@ -295,8 +298,8 @@ check("M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only' (no an
     store.get().membership);
 }
 
-const ssePush = liftStmt(webTs, "void ep.readMembership()", ";", 0);
-check("the SSE push statement was lifted out of web.ts", Boolean(ssePush), { len: ssePush?.length });
+const sseWatch = lift(webTs, "async function watchWebMembership(");
+check("the SSE membership watch was lifted out of web.ts", Boolean(sseWatch), { len: sseWatch?.length });
 check("CONTROL: liftStmt on an absent anchor returns null (its miss is reachable)",
   liftStmt(webTs, 'fetch("/api/not-a-route")', ",") === null);
 
@@ -315,30 +318,43 @@ check("the SSE broadcaster was lifted out of web.ts", Boolean(sseBroadcast), { l
 const REASON = "membership stream not found";
 const sseWire = async (stmt: string, ctxOverrides: Record<string, unknown> = {}): Promise<string> => {
   let bytes = "";
+  let runRefresh: (() => void) | undefined;
   const client = { writableEnded: false, writableLength: 0, write: (chunk: string) => { bytes += chunk; }, end: () => {} };
   const source = ts.transpileModule(
-    `${sseSend};\n${sseBroadcast}\nlet membershipWatch;\nglobalThis.__run = async () => { ${stmt}; };`,
+    `${sseSend};\n${sseBroadcast}\n${sseWatch}\nglobalThis.__run = async () => { ${stmt}; };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
   const ctx: Record<string, unknown> = {
-    ep: { readMembership: async () => { throw new Error(REASON); } },
+    ep: {
+      channelRoutingMode: () => "isolated",
+      readMembership: async () => { throw new Error(REASON); },
+      watchMembership: async (onChange: (change: object) => void) => {
+        onChange({ type: "member", update: true });
+        return { stop: async () => {} };
+      },
+    },
+    shared,
     clients: new Set([client]),
     res: client,
     MEMBERSHIP_READ_FAILED,
     writeFeed,
+    feedUpdate: sharedFeedUpdates(() => "isolated"),
+    debounce: (fn: () => void) => () => { runRefresh = fn; },
     globalThis: undefined,
     console,
     ...ctxOverrides,
   };
   ctx.globalThis = ctx;
   runInContext(source, createContext(ctx), { filename: "web.ts (sse wire)" });
-  // Awaited INSIDE, so no caller can read the buffer before the rejection has settled. Reading it
-  // synchronously would return "" for the fixed code as well — a cell that passes for M5 too.
   await (ctx.__run as () => Promise<void>)();
+  runRefresh?.();
+  // The read's promise chain must settle before observing the bytes.
+  await new Promise<void>((resolve) => setImmediate(resolve));
   return bytes;
 };
 
-const pushBytes = await sseWire(ssePush!);
+const startWatch = "await watchWebMembership(ep, shared, broadcast)";
+const pushBytes = await sseWire(startWatch);
 // The seed is written by `writeOpening`, which the `/feed` route calls, through the same encoder.
 // Its last frame is the seed; the frames before it are the hello, the roster and the presence view.
 const seedBytes = await (async () => {
@@ -366,22 +382,7 @@ check("M5: the frame carries the thrown reason, so the operator sees WHY rather 
 // POSITIVE CONTROL, now on the wire too: the same harness, with a read that SUCCEEDS, must produce
 // the ordinary membership frame. Without it, a harness that wrote nothing at all would fail the two
 // cells above for a reason that has nothing to do with the code under test.
-const okBytes = await (async () => {
-  let bytes = "";
-  const client = { writableEnded: false, writableLength: 0, write: (chunk: string) => { bytes += chunk; }, end: () => {} };
-  const src = ts.transpileModule(
-    `${sseSend};\n${sseBroadcast}\nglobalThis.__run = async () => { ${ssePush}; };`,
-    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const c: Record<string, unknown> = {
-    ep: { readMembership: async () => ({ members: [] }) },
-    clients: new Set([client]), res: client,
-    MEMBERSHIP_READ_FAILED, writeFeed, globalThis: undefined, console,
-  };
-  c.globalThis = c;
-  runInContext(src, createContext(c), { filename: "web.ts (sse control)" });
-  await (c.__run as () => Promise<void>)();
-  return bytes;
-})();
+const okBytes = await sseWire("ep.readMembership = async () => ({ members: [] }); " + startWatch);
 check("CONTROL: a SUCCESSFUL read writes exactly the ordinary membership frame through the same encoder",
   okBytes === `event: membership\ndata: {"members":[]}\n\n`, { okBytes });
 check("CONTROL: and that frame is NOT the refusal frame (the two are distinguishable on the wire)",
@@ -390,17 +391,16 @@ check("CONTROL: and that frame is NOT the refusal frame (the two are distinguish
 // ── A watch that closes AFTER setup must reach the browser too, not just a read that rejects ─────
 // The seam added for #485: `ep.watchMembership`'s second argument is invoked when the live iterator
 // closes under a live connection, and the caller broadcasts the existing refusal frame with it.
-const membershipWatchStmt = liftStmt(webTs, "membershipWatch = await ep.watchMembership(", ";");
-check("the membershipWatch statement was lifted out of web.ts", Boolean(membershipWatchStmt), { len: membershipWatchStmt?.length });
+check("the actual membership watch is wired to report closed-watch failures", sseWatch?.includes("ep.watchMembership(onMembership,") === true);
 
-const closedWireBytes = await sseWire(membershipWatchStmt!, {
+const closedWireBytes = await sseWire(startWatch, {
   onMembership: () => {},
   ep: { watchMembership: async (_onChange: () => void, onClosed: (e: Error) => void) => { onClosed(new Error(REASON)); return { stop: async () => {} }; } },
 });
 check("a closed watch reaches the browser as the membership-read-failed frame, byte for byte",
   closedWireBytes === REFUSAL_FRAME, { closedWireBytes });
 
-const noCloseWireBytes = await sseWire(membershipWatchStmt!, {
+const noCloseWireBytes = await sseWire(startWatch, {
   onMembership: () => {},
   ep: { watchMembership: async (_onChange: () => void, _onClosed: (e: Error) => void) => ({ stop: async () => {} }) },
 });

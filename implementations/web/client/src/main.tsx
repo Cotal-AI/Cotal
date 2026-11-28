@@ -8,4 +8,4 @@ import { App } from "./App.js";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root element");
-createRoot(root).render(<StrictMode><App /></StrictMode>);
+createRoot(root).render(<StrictMode><App sharedPluginNotice={root.dataset.sharedPluginNotice} /></StrictMode>);

@@ -33,6 +33,7 @@ import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem, utf8Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { classifyChannel } from "./plugin-channel-route.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
@@ -157,14 +158,16 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
   );
 }
 
+type AgentFileOptions = { deferRoleValidation?: boolean; pluginChannelsEnabled?: boolean };
+
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
-export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
+export function loadAgentFile(path: string, options?: AgentFileOptions): AgentDef {
   return parseAgentFileBytes(readFileSync(path), path, options);
 }
 
 /** Parse the bytes read from a file descriptor after the caller checks its source. */
-export function parseAgentFileBytes(bytes: Buffer, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
+export function parseAgentFileBytes(bytes: Buffer, path: string, options?: AgentFileOptions): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
@@ -174,7 +177,7 @@ export function parseAgentFileBytes(bytes: Buffer, path: string, options?: { def
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
  *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. A
  *  file saved as UTF-16 is refused by its encoding (see {@link utf16Problem}). */
-export function parseAgentFileSource(src: string, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
+export function parseAgentFileSource(src: string, path: string, options?: AgentFileOptions): AgentDef {
   const encoding = utf16Problem(src);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
   const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
@@ -233,7 +236,8 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   // A policy channel must match its wire token so the ACL cannot grant access to a different channel.
   const checkChannel = (field: string, ch: string): void => {
     try {
-      assertValidChannel(ch);
+      if (options?.pluginChannelsEnabled) classifyChannel(ch);
+      else assertValidChannel(ch);
     } catch (e) {
       throw new Error(`agent file ${path}: "${field}": ${(e as Error).message}`);
     }
@@ -248,7 +252,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   // minted the matching channel read row into its credential — a channel nobody chose.
   let effAllow: string[];
   try {
-    effAllow = resolveReadAcl(subscribe ?? [], allowSubscribe);
+    effAllow = resolveReadAcl(subscribe ?? [], allowSubscribe, options?.pluginChannelsEnabled);
   } catch (e) {
     throw new Error(`agent file ${path}: ${(e as Error).message}`);
   }
@@ -264,7 +268,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
       checkChannel(field, ch);
       if (!isConcreteChannel(ch))
         throw new Error(`agent file ${path}: ${field} channel "${ch}" must be a concrete channel (no wildcard)`);
-      if (!channelInAllow(effAllow, ch))
+      if (!channelInAllow(effAllow, ch, options?.pluginChannelsEnabled))
         throw new Error(`agent file ${path}: ${field} channel "${ch}" is not within your read ACL / allowSubscribe [${effAllow.join(", ")}]`);
     }
 

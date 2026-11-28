@@ -57,9 +57,9 @@ export class EndpointBootMemberships {
    *  is handed to {@link reconcileBootJoin} for capped-backoff retry — so the backstop is RESTORED once
    *  the daemon recovers, not left silently live-only. Until a membership exists the channel renders
    *  degraded in `cotal_channels` ({@link hasDurableMembership}). */
-  async armBootDurableMemberships(): Promise<void> {
+  async armBootDurableMemberships(historyOnly?: (channel: string) => boolean): Promise<void> {
     for (const channel of this.identity.channels) {
-      if (this.delivery.plane3Channels.has(channel)) continue;
+      if (this.delivery.plane3Channels.has(channel) || historyOnly?.(channel)) continue;
       // A family (`review.>`) asks for its row whatever the default class: each channel under it decides
       // its own at fan-out (#5404). Any other pattern has no durable membership.
       if (!isChannelFamily(channel)) {
@@ -72,10 +72,10 @@ export class EndpointBootMemberships {
       try {
         const r = await this.parts.durable.durableJoinChannel(channel);
         if (r.durable) this.delivery.plane3Channels.set(channel, r.generation ?? 0);
-        else void this.reconcileBootJoin(channel); // present but not yet durable — reconcile to recovery
+        else void this.reconcileBootJoin(channel, historyOnly); // present but not yet durable — reconcile to recovery
       } catch (e) {
         if (!this.parts.anycastRail.isNoResponders(e)) this.emitRecoverable(e as Error); // no daemon ⇒ retry until it recovers
-        void this.reconcileBootJoin(channel);
+        void this.reconcileBootJoin(channel, historyOnly);
       }
     }
   }
@@ -86,12 +86,12 @@ export class EndpointBootMemberships {
    *  forever after the daemon recovers (and the lease-based health could then read "active" with no owner
    *  membership). This loop is the reconcile that closes that gap. Idempotent — a channel already pending
    *  is not double-driven; survives reconnect (it re-issues `durableJoinChannel` on the current connection). */
-  private async reconcileBootJoin(channel: string): Promise<void> {
+  private async reconcileBootJoin(channel: string, historyOnly?: (channel: string) => boolean): Promise<void> {
     if (this.pendingBootJoins.has(channel)) return; // already reconciling
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
       await this.parts.reconnection.membershipPause(attempt);
-      if (this.lifecycle.stopped || !this.identity.channels.includes(channel) || this.delivery.plane3Channels.has(channel)) {
+      if (this.lifecycle.stopped || !this.identity.channels.includes(channel) || this.delivery.plane3Channels.has(channel) || historyOnly?.(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
       }

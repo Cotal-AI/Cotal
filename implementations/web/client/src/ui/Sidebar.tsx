@@ -123,7 +123,7 @@ function ConnectionPill({ connection }: { connection: Connection }) {
  *
  *  A "to you" mark on a direct message, which the mock draws, is left out. The space name has no menu
  *  until the server can list the other spaces. */
-export function Sidebar({ store, route, msgPerSecond }: { store: Store<DashboardState>; route: Route; msgPerSecond: () => number }) {
+export function Sidebar({ store, route, msgPerSecond, sharedPluginNotice }: { store: Store<DashboardState>; route: Route; msgPerSecond: () => number; sharedPluginNotice?: string }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
   const unread = useStore(store, (s) => s.unread);
@@ -194,6 +194,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
           </SidebarGroup>
           <SidebarGroup>
             <SidebarGroupLabel>Channels</SidebarGroupLabel>
+            {sharedPluginNotice && <p className="px-2 pb-2 text-xs text-muted-foreground">{sharedPluginNotice}</p>}
             {channels.length === 0 && (
               <Empty className="p-4">
                 <EmptyHeader>

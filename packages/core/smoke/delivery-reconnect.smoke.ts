@@ -15,10 +15,21 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { jetstream } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, type MembershipChange } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { openChannelRegistry, readChannelRegistry } from "../src/channels.js";
+import type { ConnectionState } from "../src/endpoint-connection-state.js";
+import { recordsBucket } from "../src/endpoint-records.js";
+import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
+import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
+import { chatStream, dlvStream, inboxStream, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "../src/index.js";
+import { pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
+import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
+import { isStreamNotFound } from "../src/jetstream-missing.js";
+import { startEnabledPluginSpace } from "./fixtures/enabled-plugin-space.js";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -32,6 +43,326 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+async function checkEnabledPluginRecovery() {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, endpoint, mintAgent, space } = fixture;
+  try {
+    const sender = await mintAgent({ post: [channel] });
+    const recipient = await mintAgent({ read: [channel] });
+    let writerWire: NatsConnection | undefined;
+    const writer = endpoint({ creds: sender.creds, lifecycleUid: sender.lifecycleUid, consume: false,
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-writer" },
+      onConnection: (nc) => { writerWire = nc; } });
+    let readWire: NatsConnection | undefined;
+    let hold: Promise<void> | undefined;
+    let atBind = false;
+    const reader = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [channel],
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-reader" },
+      onConnection: (nc) => { readWire = nc; }, beforeBind: async () => { atBind = true; await hold; } });
+    const capture = (ep: typeof reader) => {
+      const deliveries: Array<{ id: string; historical: boolean; durable: boolean }> = [];
+      ep.on("message", (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => {
+        if (meta.kind === "channel" && msg.channel === channel) deliveries.push({ id: msg.id, historical: meta.historical, durable: delivery.durable });
+        delivery.ack();
+      });
+      return deliveries;
+    };
+    const received = capture(reader);
+    const waitFor = async (condition: () => boolean) => {
+      for (let i = 0; i < 120 && !condition(); i++) await wait(50);
+      return condition();
+    };
+    await Promise.all([reader.start(), writer.start()]);
+    const live = await writer.multicast("received before rebinding", { channel });
+    check("recovery control receives initial live post before disconnect", await waitFor(() => received.some(({ id }) => id === live.id)));
+    const old = readWire;
+    let releaseBind!: () => void;
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
+    atBind = false;
+    const rebinding = reader.reconnect();
+    let recent: CotalMessage;
+    const aged = { ...live, id: randomUUID(), ts: Date.now() - 6 * 60_000, parts: [{ kind: "text", text: "aged during rebind" }] };
+    try {
+      if (!(await waitFor(() => atBind)) || !old?.isClosed() || readWire === old) throw new Error("recovery reader did not reach a new transport before consumers bound");
+      recent = await writer.multicast("fresh during rebind", { channel });
+      await jetstream(writerWire!).publish(pluginChannelSubject(space, sender.owner, sender.actor, channel), JSON.stringify(aged),
+        { msgID: aged.id, expect: { streamName: pluginChannelStream(space) } });
+      check("neither retained post leaks onto the reader while its new bind is held",
+        received.every(({ id }) => id !== recent.id && id !== aged.id));
+    } finally {
+      hold = undefined;
+      releaseBind();
+      await rebinding;
+    }
+    const of = (id: string) => received.filter((row) => row.id === id);
+    check("same-process rebind emits fresh missed post as live and aged missed post as historical, with no copy ACK",
+      of(recent.id).length === 1 && !of(recent.id)[0].historical && !of(recent.id)[0].durable &&
+      of(aged.id).length === 1 && of(aged.id)[0].historical && !of(aged.id)[0].durable, received);
+    check("same-process recovery does not re-emit a post already received on the previous live tail", of(live.id).length === 1, received);
+    await reader.reconnect();
+    check("another rebind without new rows does not replay the same missed window", of(recent.id).length === 1 && of(aged.id).length === 1, received);
+
+    const left = await reader.leaveChannel(channel);
+    const afterLeave = await writer.multicast("retained after leave", { channel });
+    await reader.reconnect();
+    check("leave removes the recovery subscription despite retained history still being readable", left.left &&
+      !reader.joinedChannels().includes(channel) && of(afterLeave.id).length === 0 &&
+      (await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === afterLeave.id));
+    await reader.stop();
+
+    const replacement = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [channel],
+      backfillFloor: 10_000, registerPresence: false, watchPresence: false, card: { kind: "agent", name: "recovery-reader" },
+      beforeBind: async () => { atBind = true; await hold; } });
+    const replayed = capture(replacement);
+    await replacement.start();
+    check("a replacement uses ordinary join replay on the plugin rail, not the prior frontier or the CHAT floor",
+      [live.id, recent.id, aged.id, afterLeave.id].every((id) => replayed.filter((row) => row.id === id && row.historical && !row.durable).length === 1), replayed);
+    const liveAgain = await writer.multicast("live after replacement replay", { channel });
+    check("the replacement receives new posts through its live tail after replay", await waitFor(() =>
+      replayed.some(({ id, historical, durable }) => id === liveAgain.id && !historical && !durable)));
+
+    const oldFrontier = await replacement.channelFrontier(channel);
+    await fixture.recreatePluginHistoryAtNextEpoch();
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
+    atBind = false;
+    const epochRebind = replacement.reconnect();
+    let onNewRail: CotalMessage;
+    try {
+      if (!(await waitFor(() => atBind))) throw new Error("epoch turnover did not reach the new bind");
+      onNewRail = await writer.multicast("first in the recreated stream", { channel });
+    } finally {
+      hold = undefined;
+      releaseBind();
+      await epochRebind;
+    }
+    const nextFrontier = await replacement.channelFrontier(channel);
+    check("an epoch change replays the new stream without comparing its sequence to the previous frontier",
+      nextFrontier === 1 && oldFrontier > nextFrontier && replayed.filter(({ id, historical }) => id === onNewRail.id && historical).length === 1,
+      { oldFrontier, nextFrontier, replayed });
+    hold = new Promise<void>((resolve) => { releaseBind = resolve; });
+    atBind = false;
+    const sameEpochRebind = replacement.reconnect();
+    let missedInNewEpoch: CotalMessage;
+    try {
+      if (!(await waitFor(() => atBind))) throw new Error("second epoch bind did not reach the subscription gate");
+      missedInNewEpoch = await writer.multicast("missed after the epoch reset", { channel });
+    } finally {
+      hold = undefined;
+      releaseBind();
+      await sameEpochRebind;
+    }
+    check("same-epoch recovery resumes from the reset frontier without re-emitting join replay",
+      replayed.filter(({ id }) => id === onNewRail.id).length === 1 &&
+      replayed.filter(({ id, historical, durable }) => id === missedInNewEpoch.id && !historical && !durable).length === 1,
+      replayed);
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function checkEnabledPluginDelivery() {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, hiddenChannel, chatChannel, space, endpoint, mintAgent, jsm } = fixture;
+  try {
+    const daemon = await fixture.startDelivery();
+    const reader = await mintAgent({ read: [channel] });
+    const writer = await mintAgent({ post: [channel] });
+    const read = endpoint({ creds: reader.creds, lifecycleUid: reader.lifecycleUid, channels: [channel],
+      allowSubscribe: [channel, hiddenChannel], card: { kind: "agent", name: "scoped-reader" } });
+    const write = endpoint({ creds: writer.creds, lifecycleUid: writer.lifecycleUid, channels: [],
+      consume: false, registerPresence: false, watchPresence: false, card: { kind: "agent", name: "scoped-writer" } });
+    const observer = endpoint({ creds: await fixture.mintObserver(), channels: [], consume: false,
+      readChannelRoutingProjection: true, registerPresence: false, watchPresence: false,
+      allowSubscribe: [channel, hiddenChannel], card: { kind: "endpoint", name: "chat-observer" } });
+    const live: CotalMessage[] = [], tapped: CotalMessage[] = [], notices: CotalMessage[] = [];
+    read.on("message", (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => {
+      if (meta.kind === "channel" && !meta.historical && !delivery.durable) live.push(msg);
+      if (msg.parts.some((p) => p.kind === "data" && typeof p.data === "object" && p.data !== null &&
+        Object.hasOwn(p.data, PLUGIN_MENTION_POINTER_KEY))) notices.push(msg);
+      delivery.ack();
+    });
+    read.tap((_subject, msg) => { if (msg) tapped.push(msg); }, { subject: pluginChannelSubject(space, "*", "*", channel) });
+    await Promise.all([read.start(), write.start(), observer.start()]);
+    const waitFor = async (condition: () => boolean) => {
+      for (let i = 0; i < 120 && !condition(); i++) await wait(50);
+      return condition();
+    };
+    check("the signed writer, reader and CHAT observer admit the isolated routing projection",
+      [read, write, observer].every((ep) => ep.channelRoutingMode() === "isolated"));
+    const names = (rows: Awaited<ReturnType<typeof read.listChannels>>) => rows.map((row) => row.channel);
+    const readable = names(await read.listChannels());
+    const chatOnly = names(await observer.listChannels());
+    const replay = await observer.channelReplayPolicy(chatChannel);
+    check("the fixture's ordinary CHAT channel has explicit replay enabled", replay.registered && replay.replay && replay.window === "1h", replay);
+    check("isolated discovery lists admitted grants and suppresses stale configured names",
+      readable.includes(channel) && !readable.includes(hiddenChannel) && !chatOnly.includes(channel) && !chatOnly.includes(hiddenChannel),
+      { readable, chatOnly });
+    await fixture.seedMembership(reader.principal, { live: [chatChannel, channel], durable: [chatChannel] });
+    const snapshot = await observer.readMembership();
+    const member = snapshot.members.find(({ id }) => id === reader.principal);
+    check("the fixture seeds both rails in the broker-backed raw membership snapshot",
+      member?.live.join() === [chatChannel, channel].join() && member.durable.join() === chatChannel &&
+      snapshot.asOf === member.observedAt, snapshot);
+    const post = await write.multicast("retained plugin body", { channel });
+    check("the real broker delivers the post to an exact scoped live subscriber and native tap",
+      await waitFor(() => live.some(({ id }) => id === post.id) && tapped.some(({ id }) => id === post.id)));
+    check("the scoped reader reads the retained post from its named filtered consumer",
+      (await read.channelHistory(channel, { limit: 10 })).some(({ id }) => id === post.id));
+    const frontier = await read.channelFrontier(channel);
+    const state = async (name: string) => (await jsm.streams.info(name)).state;
+    check("the plugin post advances only its own stream and yields no ordinary channel copies",
+      frontier > 0 && (await state(pluginChannelStream(space))).last_seq === frontier &&
+      (await state(chatStream(space))).messages === 0 && (await state(inboxStream(space))).messages === 0 &&
+      (await state(dlvStream(space))).messages === 0);
+
+    check("daemon sees the uniquely resolved recipient before the mention", await waitFor(() =>
+      daemon.getRoster().some(({ card }) => card.name === "scoped-reader")));
+    const mention = await write.multicast("not inside the directed pointer", { channel, mentions: ["scoped-reader"] });
+    const pointerArrived = await waitFor(() => notices.length > 0);
+    const notice = notices[0];
+    const part = notice?.parts[0];
+    const pointer = (part?.kind === "data" ? (part.data as Record<string, unknown>)[PLUGIN_MENTION_POINTER_KEY] : undefined) as PluginMentionPointer | undefined;
+    check("the directed notice has only the daemon pointer and no body", pointerArrived && notice.parts.length === 1 &&
+      pointer?.channel === channel && pointer.message === mention.id && pointer.seq > frontier &&
+      !JSON.stringify(notice).includes("not inside the directed pointer"), notice);
+    if (pointer) {
+      check("daemon mediation fetches only the exact channel, message and sequence",
+        (await read.readPluginMentionHistory(pointer))?.id === mention.id &&
+        await read.readPluginMentionHistory({ ...pointer, message: post.id }) === undefined);
+      await fixture.provisioner.commitAcl(reader.principal, reader.lifecycleUid, []);
+      check("narrowing the live ACL refuses a later fetch of that same pointer",
+        await read.readPluginMentionHistory(pointer).then(() => false, () => true));
+    }
+    check("mention processing still leaves ordinary INBOX and DLV without plugin copies",
+      (await state(inboxStream(space))).messages === 0 && (await state(dlvStream(space))).messages === 0);
+    await daemon.stop();
+    await fixture.removePluginHistory();
+    check("a removed plugin stream is broker-confirmed absence, not an empty page or a CHAT fallback",
+      read.channelRoutingMode() === "isolated" &&
+      await read.channelHistory(channel, { limit: 10 }).then(() => false, isStreamNotFound) &&
+      (await state(chatStream(space))).messages === 0);
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function checkPluginProjection(space: string, provisioner: string, creds: string, lifecycleUid: string, viewerCreds: string, probeCreds: string): Promise<void> {
+  const writer = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: provisioner, tls: false }) });
+  const key = PLUGIN_CHANNEL_PROJECTION_KEY;
+  const kv = await openChannelRegistry(writer, space);
+  const legacyChannel = `${PLUGIN_CHANNEL_ROOT}.sample.replay`;
+  await kv.put(legacyChannel, JSON.stringify({ replay: false, replayWindow: "1h" }));
+  const probe = new CotalEndpoint({ space, servers: SERVERS, creds: probeCreds, card: { name: "projection-ungranted", kind: "endpoint" },
+    readChannelRoutingProjection: true, consume: false, watchPresence: false, registerPresence: false });
+  try {
+    await probe.start();
+    check("endpoint without a projection grant binds without claiming legacy or isolated mode", probe.channelRoutingMode() === undefined);
+  } finally { await probe.stop(); }
+  const opened: NatsConnection[] = [];
+  const ready: { wire: NatsConnection | undefined; epoch: number | undefined; enabled: boolean }[] = [];
+  const warnings: string[] = [];
+  const ep = new CotalEndpoint({
+    space, servers: SERVERS, creds, lifecycleUid, card: { name: "projection-agent", kind: "agent" },
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    onConnection: (nc) => { opened.push(nc); },
+  });
+  const state = (ep as unknown as { conn: ConnectionState }).conn;
+  let viewerWire: NatsConnection | undefined;
+  const viewer = new CotalEndpoint({ space, servers: SERVERS, creds: viewerCreds, card: { name: "projection-viewer", kind: "endpoint" },
+    readChannelRoutingProjection: true, consume: false, watchPresence: true, registerPresence: false,
+    onConnection: (nc) => { viewerWire = nc; } });
+  viewer.on("error", (error) => { if (error instanceof Error) warnings.push(error.message); });
+  ep.on("transport", (event) => {
+    if (event.connected) ready.push({ wire: state.nc, epoch: state.pluginChannelEpoch, enabled: state.pluginChannelsEnabled });
+  });
+  ep.on("warning", (error) => { if (error instanceof Error) warnings.push(error.message); });
+  ep.on("error", (error) => { if (error instanceof Error) warnings.push(error.message); });
+  const until = async (condition: () => boolean) => {
+    for (let i = 0; i < 200 && !condition(); i++) await wait(50);
+    return condition();
+  };
+  const put = (enabled: boolean, epoch: number) => kv.put(key, JSON.stringify({ enabled, epoch }));
+  try {
+    check("public routing mode is undefined before the initial bind", ep.channelRoutingMode() === undefined);
+    await ep.start();
+    await viewer.start();
+    check("scoped endpoint-kind observer reads legacy mode without plugin access", viewer.channelRoutingMode() === "legacy");
+    check("off mode preserves the cached replay override on the legacy channel", await until(() => !viewer.channelReplay(legacyChannel)) &&
+      viewer.channelReplayWindow(legacyChannel) === "1h");
+    check("credentialed non-consuming agent binds absent projection as CHAT before ready", ready.length === 1 &&
+      ready[0].epoch === 0 && !ready[0].enabled && ep.channelRoutingMode() === "legacy");
+    const first = opened[0];
+    await first.reconnect();
+    check("same projection preserves the native connection and re-announces readiness", await until(() => ready.length === 2) &&
+      ready[1].wire === first && ready[1].epoch === 0);
+
+    await put(true, 1);
+    const viewerBefore = viewerWire!;
+    await viewerBefore.reconnect();
+    check("endpoint-kind observer admits isolated mode only on its replacement wire", await until(() => viewer.channelRoutingMode() === "isolated") &&
+      viewerWire !== viewerBefore && viewerBefore.isClosed());
+    const isolatedReplay = await viewer.channelReplayPolicy(legacyChannel);
+    check("isolated cached replay matches fresh policy without the shared override", !isolatedReplay.registered &&
+      viewer.getChannelConfig(legacyChannel) === undefined && viewer.channelReplay(legacyChannel) === isolatedReplay.replay &&
+      viewer.channelReplayWindow(legacyChannel) === (isolatedReplay.window ?? undefined));
+    await first.reconnect();
+    check("native reconnect with new epoch never announces ready on reused subscriptions", await until(() => ready.length >= 3) &&
+      ready.length === 3 && ready[2].wire !== first && first.isClosed() && ready[2].epoch === 1 && ready[2].enabled && ep.channelRoutingMode() === "isolated");
+    const old = ready[2]?.wire;
+    if (!old) throw new Error("fixture did not establish a rebuilt transport");
+    await kv.put(key, "{");
+    await old.reconnect();
+    check("corrupt reconnect refuses readiness and reports the validation error", await until(() => old.isClosed()) &&
+      ready.length === 3 && warnings.some((message) => message.includes("malformed plugin channel route projection")));
+    await put(true, 2);
+    check("full bind can recover after a corrupt reconnect without reviving the old wire", await until(() => ready.length >= 4) &&
+      ready.length === 4 && ready[3].epoch === 2 && ready[3].wire !== old);
+
+    const view = await readChannelRegistry({ servers: SERVERS, space, creds, directGet: true });
+    check("the public registry view does not expose routing metadata as a channel or warning",
+      !Object.hasOwn(view.channels ?? {}, key) && !view.undecodable?.some((entry) => entry.key === key));
+    const watchedView = await readChannelRegistry({ servers: SERVERS, space, creds: viewerCreds });
+    check("the scanned registry also excludes routing metadata and warnings",
+      !Object.hasOwn(watchedView.channels ?? {}, key) && !watchedView.undecodable?.some((entry) => entry.key === key));
+    const stale = state.nc!;
+    const request = stale.request.bind(stale);
+    let readHeld = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    stale.request = async (...args: Parameters<NatsConnection["request"]>) => {
+      const reply = await request(...args);
+      if (args[0].startsWith("$JS.API.STREAM.MSG.GET.") && !readHeld) {
+        readHeld = true;
+        await held;
+      }
+      return reply;
+    };
+    try {
+      await stale.reconnect();
+      if (!(await until(() => readHeld))) throw new Error("fixture did not hold the native projection reply");
+      check("public routing mode is undefined while native projection admission is pending", ep.channelRoutingMode() === undefined);
+      await put(false, 3);
+      await ep.reconnect();
+    } finally { release(); }
+    await wait(50);
+    check("a delayed projection reply cannot overwrite or announce readiness for a replacement transport", ready.length === 5 &&
+      ready[4].wire !== stale && ready[4].epoch === 3 && !ready[4].enabled && state.pluginChannelEpoch === 3 && ep.channelRoutingMode() === "legacy");
+    await kv.delete(key);
+    let bootReady = false;
+    const refused = new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid, card: { name: "projection-refused", kind: "agent" },
+      consume: false, watchPresence: false, registerPresence: false, watchChannels: false });
+    refused.on("transport", (event) => { if (event.connected) bootReady = true; });
+    let failure: unknown;
+    try { await refused.start(); } catch (error) { failure = error; } finally { await refused.stop(); }
+    check("boot rejects deleted projection without publishing readiness", !bootReady &&
+      failure instanceof Error && failure.message.includes("invalid plugin channel route projection record"));
+  } finally {
+    await viewer.stop();
+    await ep.stop();
+    await writer.close();
+  }
+}
 
 async function checkStopWhileRedialing(dir: string, space: string): Promise<void> {
   const port = await pickFreePort();
@@ -90,7 +421,34 @@ try {
 
   daemon = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false, watchPresence: true, registerPresence: false, card: { name: "delivery", role: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {}); await daemon.start();
-  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid));
+  await daemon.startPlane3((owner, lifecycleUid) => daemon!.aclForOwner(owner, lifecycleUid), { readPluginChannelAuthority: true });
+  const daemonState = (daemon as unknown as { conn: ConnectionState }).conn;
+  const initialDaemonWire = daemonState.nc!;
+  check("scoped delivery credential reads absent authority before Plane-3 starts",
+    daemonState.pluginChannelEpoch === 0 && !daemonState.pluginChannelsEnabled);
+  let nativeReady = 0;
+  daemon.on("transport", (event) => { if (event.connected && daemonState.nc === initialDaemonWire) nativeReady++; });
+  const request = initialDaemonWire.request;
+  const authorityApi = `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`;
+  let leaderReplyHeld = false;
+  let releaseLeaderReply!: () => void;
+  const leaderReply = new Promise<void>((resolve) => { releaseLeaderReply = resolve; });
+  initialDaemonWire.request = async (...args: Parameters<NatsConnection["request"]>) => {
+    if (args[0] !== authorityApi) return request.apply(initialDaemonWire, args);
+    try { return await request.apply(initialDaemonWire, args); }
+    finally { leaderReplyHeld = true; await leaderReply; }
+  };
+  try {
+    await initialDaemonWire.reconnect();
+    for (let i = 0; i < 100 && !leaderReplyHeld && !initialDaemonWire.isClosed(); i++) await wait(50);
+    check("native delivery readiness waits for the current wire's records leader reply", leaderReplyHeld && nativeReady === 0);
+  } finally {
+    initialDaemonWire.request = request;
+    releaseLeaderReply();
+  }
+  for (let i = 0; i < 100 && nativeReady === 0 && !initialDaemonWire.isClosed(); i++) await wait(50);
+  check("same authority admits the same native delivery connection after reconnect",
+    nativeReady === 1 && daemonState.nc === initialDaemonWire && daemonState.pluginChannelEpoch === 0);
 
   // The dashboard/observer is the membership-feed reader in production. Use its real admin grant:
   // the delivery cred writes the feed but deliberately cannot create the ordered consumer a KV watch needs.
@@ -379,6 +737,10 @@ try {
   await daemon.releaseDeliveryLease(0, notReadyRev);
 
   await checkStopWhileRedialing(dir, space);
+  await checkPluginProjection(space, mgrCreds, aCreds, uidA,
+    await mintCreds(auth, newIdentity(), "observer"), await mintCreds(auth, newIdentity(), "probe"));
+  await checkEnabledPluginDelivery();
+  await checkEnabledPluginRecovery();
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

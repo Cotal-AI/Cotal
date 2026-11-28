@@ -155,6 +155,8 @@ export interface EndpointOptions {
   registerPresence?: boolean;
   /** Mark native subscriptions as observer taps, not live membership. Does not change access. */
   omitFromLiveMembership?: boolean;
+  /** Bind the read-only channel projection on a credentialed viewer without granting plugin access. */
+  readChannelRoutingProjection?: boolean;
   /** Track the roster of peers with a live watch (default true). Every watcher receives every
    *  member's heartbeat, so a space of K watching members moves K² deliveries per heartbeat. An
    *  endpoint that only needs the roster when it acts sets this false and calls
@@ -211,6 +213,7 @@ export function resolveEndpointPrincipal(opts: EndpointOptions, identity: Endpoi
   let selfMintedConnId = false;
   identity.space = opts.space;
   identity.omitFromLiveMembership = opts.omitFromLiveMembership === true;
+  identity.readChannelRoutingProjection = opts.readChannelRoutingProjection === true;
   // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
   // (the future owner/name separator) and surrounding whitespace at the one identity choke
   // point every join/spawn path flows through. A role is an address too, refused here before

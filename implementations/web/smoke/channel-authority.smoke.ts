@@ -37,8 +37,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { assertValidChannel, chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
+import { assertValidChannel, channelRoute, chatSubject, parseSubject, PLUGIN_CHANNEL_ROOT, spacePrefix, type Presence } from "@cotal-ai/core";
 import type { FeedMessage } from "../client/src/api/types.js";
+import { sharedChannels, sharedFeedUpdates } from "../src/shared-channels.js";
+import { activityBackfill } from "../src/web-read.js";
+import { classifyTap } from "../src/web-request.js";
+import { channelSubjectInSpace, endpointChannelRoute } from "../../../packages/core/src/endpoint-channel-route.js";
 import { bootReads, harness, page, type Harness } from "./controller-harness.js";
 
 let pass = 0;
@@ -238,11 +242,14 @@ check("and it is the statement multiChannelHistory returns: a map over the rows 
   readReturn?.mapsOwnRows === true, { readMapper });
 {
   const expr = readMapper!.replace(/^return /, "").replace(/;$/, "");
-  const ctx: { rows: unknown[]; parseSubject: typeof parseSubject; out?: { channel: string; msg: { channel?: string } }[] } =
-    { rows: [], parseSubject };
-  const run = (rows: unknown[]) => {
-    ctx.rows = rows;
-    runInContext(`out = ${expr};`, createContext(ctx), { filename: "endpoint.ts (read derivation)" });
+  const ctx = {
+    rows: [] as unknown[], parseSubject, channelSubjectInSpace, endpointChannelRoute,
+    reader: { identity: { space: SPACE }, conn: { pluginChannelsEnabled: false } },
+    out: undefined as { channel: string; msg: { channel?: string } }[] | undefined,
+  };
+  const run = (rows: { subject: string; seq?: number; msg: unknown }[]) => {
+    ctx.rows = rows.map((row) => ({ ...row, parsed: parseSubject(row.subject) }));
+    runInContext(`out = (function () { return ${expr}; }).call(reader);`, createContext(ctx), { filename: "endpoint-history.ts (read derivation)" });
   };
   run([{ seq: 1, subject: chatSubject(SPACE, OWNER, ACTOR, "policed-channel"), msg: { channel: "attacker-claimed", id: "m1" } }]);
   check("the read tags a message with the channel in the SUBJECT the broker delivered it on",
@@ -263,11 +270,11 @@ check("and it is the statement multiChannelHistory returns: a map over the rows 
   try { run([{ subject: `${spacePrefix(SPACE)}.inst.${OWNER}.${ACTOR}.${OWNER}.${ACTOR}`, msg: {} }]); }
   catch (e) { threw = e; }
   check("a non-chat subject RAISES rather than becoming a channel",
-    /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
+    /outside the requested channel rail/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
   threw = undefined;
   try { run([{ subject: "garbage", msg: {} }]); } catch (e) { threw = e; }
   check("and so does an unparseable one",
-    /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
+    /outside the requested channel rail/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
 }
 
 // The browser ingresses. The Monitor and the Graph both read the dashboard controller now, so there
@@ -564,13 +571,13 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
 // does not catch it, because none of these carry a wildcard. Found by an ordering-and-filtering
 // review against a live broker, which returned a message on `foo_bar` for a read of `foo/bar`.
 {
-  const build = /const subjects = \[\.\.\.new Set\(channels\.map\(\(channel\) => \{[\s\S]*?\}\)\)\];/.exec(endpointTs)?.[0];
+  const build = /const subjects = \[\.\.\.new Set\(channels\.flatMap\(\(channel\) => \{[\s\S]*?\}\)\)\];/.exec(endpointTs)?.[0];
   check("endpoint.ts declares the filter-subject construction in one extractable statement", Boolean(build), { build });
   // `indexOf` returns -1 for an ABSENT guard, and -1 is less than any real index, so an ordering
   // comparison alone passes on a build with no guard at all. Measured: removing the call left this
   // cell green. Presence is asserted first, and the ordering only after both are real indices.
   const guardAt = build ? build.indexOf("assertValidChannel(channel)") : -1;
-  const buildAt = build ? build.indexOf("return chatSubject(") : -1;
+  const buildAt = build ? build.indexOf("endpointChannelRoute(") : -1;
   check("multiChannelHistory calls assertValidChannel on each requested channel", guardAt >= 0, { build });
   check("and it does so BEFORE building that channel's filter subject",
     guardAt >= 0 && buildAt >= 0 && guardAt < buildAt, { guardAt, buildAt });
@@ -586,6 +593,82 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
     try { assertValidChannel(good); } catch { accepted = false; }
     check(`assertValidChannel still admits ${JSON.stringify(good)} (the refusal is not swallowing everything)`, accepted);
   }
+}
+
+{
+  let mode: "legacy" | "isolated" | undefined = "legacy";
+  const shared = sharedChannels(() => mode);
+  const plugin = `${PLUGIN_CHANNEL_ROOT}.linear.inbox`;
+  const family = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
+  const ordinary = `${PLUGIN_CHANNEL_ROOT}-support`;
+  const rows = [plugin, PLUGIN_CHANNEL_ROOT, ordinary].map((channel) => ({ channel }));
+  const visibleList = () => rows.filter(({ channel }) => shared.visible(channel));
+  const membership = { asOf: 10, members: [{ id: "local.fixture", observedAt: 10, live: [family, ordinary, ">"], durable: [plugin] }] };
+  const presence: Presence = { card: { id: "local.fixture", name: "fixture", kind: "agent" }, ts: 10, status: "idle", channelModes: { [plugin]: "quiet", [ordinary]: "muted" } };
+  const html = Buffer.from('<div id="root"></div>');
+  const post = { id: "fixture-post", ts: 10, space: SPACE, from: { id: `${OWNER}.${ACTOR}`, name: "fixture" }, parts: [], channel: plugin };
+  check("a plugin wire subject never classifies as a shared feed event", classifyTap(channelRoute(SPACE, OWNER, ACTOR, plugin, "isolated").subject, post) === null);
+  check("plugin-shaped ordinary CHAT still classifies as chat before mode-based filtering", classifyTap(chatSubject(SPACE, OWNER, ACTOR, plugin), post)?.event === "message");
+  check("legacy mode retains plugin-shaped ordinary channel names", shared.visible(plugin) && visibleList().length === rows.length);
+  check("legacy mode preserves ordinary membership and HTML", shared.membership(membership) === membership && shared.page(html) === html);
+  mode = "isolated";
+  check("isolated shared list and named reads omit only the reserved family", !shared.visible(plugin) && !shared.visible(PLUGIN_CHANNEL_ROOT) && visibleList().map(({ channel }) => channel).join() === ordinary);
+  const filtered = shared.membership(membership);
+  check("isolated membership omits plugin patterns and channels but keeps ordinary patterns and freshness", filtered.asOf === 10 && filtered.members[0].live.join() === `${ordinary},>` && filtered.members[0].durable.length === 0);
+  const emptyMember = { id: "local.empty", observedAt: 10, live: [], durable: [] };
+  const pluginOnlyMember = { id: "local.plugin", observedAt: 10, live: [family], durable: [plugin] };
+  const members = shared.membership({ ...membership, members: [emptyMember, pluginOnlyMember] }).members;
+  check("isolated membership drops a member emptied by filtering but preserves an already empty row", members.length === 1 && members[0] === emptyMember);
+  check("isolated roster omits plugin attention channel keys without hiding the peer or ordinary mode", shared.presence(presence).card === presence.card && shared.presence(presence).channelModes?.[ordinary] === "muted" && shared.presence(presence).channelModes?.[plugin] === undefined);
+  const pluginOnlyPresence = shared.presence({ ...presence, channelModes: { [plugin]: "quiet" } });
+  check("isolated roster serializes a plugin-only attention map as absent", pluginOnlyPresence.card === presence.card && !Object.hasOwn(JSON.parse(JSON.stringify(pluginOnlyPresence)), "channelModes"));
+  check("only confirmed isolated mode puts the agreed notice into the HTML shell", String(shared.page(html)).includes('data-shared-plugin-notice="Plugin channels are not shown in this shared view."'));
+  let requested: readonly string[] = [];
+  const backfill = await activityBackfill({
+    listChannels: async () => rows.map((row) => ({ ...row, messages: 1 })),
+    multiChannelHistory: async (channels) => {
+      requested = channels;
+      return [ordinary, plugin].map((channel, i) => ({
+        channel,
+        msg: { id: `backfill-${i}`, ts: i, space: SPACE, from: { id: "local.fixture", name: "fixture" }, parts: [], channel },
+      }));
+    },
+    dmHistory: async () => [],
+  }, 10, undefined, undefined, shared.visible);
+  check("shared activity never requests a plugin history filter", requested.join() === ordinary);
+  check("shared activity emits only visible channel rows", !backfill.partial && backfill.entries.length === 1 && backfill.entries[0].mode === "chat" && backfill.entries[0].channel === ordinary);
+  mode = undefined;
+  check("unadmitted mode keeps reserved names dark without claiming plugin channels are on", !shared.visible(plugin) && shared.visible(ordinary) && shared.page(html) === html);
+
+  const update = sharedFeedUpdates(() => mode);
+  const viewer = {};
+  const other = {};
+  const send = (event: string, payload: unknown, opening = false) => update(viewer, event, payload, opening);
+  const roster = [{ ...pluginOnlyPresence, status: "working" as const }];
+  const quietPeer = { ...roster[0], ts: 20, activeAt: 20, card: { ...roster[0].card, meta: { model: "reported-model", cwd: "/workspace" } } };
+  send("roster", roster, true);
+  check("filtered roster ignores activity and quiet card metadata from a working peer's heartbeat", send("roster", [quietPeer]) === undefined);
+  for (const [key, value] of Object.entries({ "ai.cotal.label": "label", "ai.cotal.naming": "manual", "ai.cotal.model-set": { model: "chosen-model" } })) {
+    send("roster", roster, true);
+    const changed = { ...quietPeer, card: { ...quietPeer.card, meta: { ...quietPeer.card.meta, [key]: value } } };
+    check(`filtered roster still emits a change to ${key}`, (send("roster", [changed]) as Presence[] | undefined)?.[0] === changed);
+  }
+  const first = { id: "local.first", observedAt: 10, live: [ordinary], durable: [] };
+  const second = { ...first, id: "local.second" };
+  const visibleMembers = { asOf: 10, members: [first, second] };
+  check("each viewer gets its own opening snapshot", send("membership", visibleMembers, true) === visibleMembers && update(other, "membership", visibleMembers, true) === visibleMembers);
+  const hiddenWrite = { ...visibleMembers, members: [second, { ...first, observedAt: 20, live: [ordinary, plugin] }] };
+  check("a member-only write does not emit when only hidden bindings, order and per-row time changed", send("membership", shared.membership(hiddenWrite)) === undefined);
+  const heartbeat = send("membership", shared.membership({ ...hiddenWrite, asOf: 20 })) as typeof visibleMembers;
+  check("a real heartbeat reaches the feed without refreshing a hidden member write", heartbeat.asOf === 20 && heartbeat.members[0] === first && heartbeat.members[1] === second);
+  const current = { state: "current", fresh: true };
+  const stale = { state: "stale", fresh: false, staleSince: 30 };
+  check("presence-view emits health transitions, not repeated current state", send("presence-view", current, true) === current && send("presence-view", { ...current }) === undefined && send("presence-view", stale) === stale && send("presence-view", current) === current);
+  const refusal = { reason: "membership read failed" };
+  check("membership refusal remains visible and permits a recovery frame with the same snapshot", send("membership-read-failed", refusal) === refusal && send("membership", heartbeat) === heartbeat);
+  mode = "legacy";
+  check("legacy feed passes unchanged snapshots through", send("membership", heartbeat) === heartbeat && send("membership", heartbeat) === heartbeat);
+  check("legacy roster bypasses the shared comparison", (send("roster", [quietPeer]) as Presence[])[0] === quietPeer);
 }
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);

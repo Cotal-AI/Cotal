@@ -21,17 +21,18 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
+import { AckPolicy, StorageType, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, userInboxConnId, type CotalMessage,
-  chatSubject, mintMembershipObserverCreds, provisionAgentDurables, startMembershipFeed,
+  chatSubject, chatHistDurable, mintMembershipObserverCreds, provisionAgentDurables, startMembershipFeed,
 } from "@cotal-ai/core";
+import { PLUGIN_CHANNEL_ROOT, pluginChannelStream, pluginChannelFilter, pluginChannelSubject } from "../../../packages/core/src/plugin-channel-route.js";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
-import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
+import { grantActor, grantManagedActor, ledgerAclResolver, ledgerAuthorizeConnect, newActorToken } from "../src/ledger.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -84,7 +85,55 @@ async function participantBearer(row: typeof participantRows[number]): Promise<s
 
 const endpoints: CotalEndpoint[] = [];
 const raws: NatsConnection[] = [];
+let routed = false;
+const calloutDenials: string[] = [];
 let feed: Awaited<ReturnType<typeof startMembershipFeed>> | undefined;
+
+async function checkRoutedCallout(control: NatsConnection): Promise<void> {
+  const stream = pluginChannelStream(space);
+  const channel = `${PLUGIN_CHANNEL_ROOT}.linear.inbox`;
+  const filter = pluginChannelSubject(space, "*", "*", channel);
+  const manager = await jetstreamManager(control);
+  await manager.streams.add({ name: stream, subjects: [pluginChannelFilter(space)], storage: StorageType.Memory });
+  routed = true;
+  const dial = async (row: ReturnType<typeof grantActor>) => {
+    const actor = row.actor;
+    const nonce = userInboxConnId(row.owner, row.actor);
+    const nc = await connect({ servers: SERVERS,
+      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(await participantBearer(row))],
+      name: nonce, inboxPrefix: `_INBOX_${nonce}`, reconnect: false,
+    });
+    raws.push(nc);
+    return { nc, actor, history: chatHistDurable(row.owner, actor, row.lifecycleUid!) };
+  };
+  const open = (actor: string, read: string[]) => dial(grantActor(dir, { owner: OWNER, actor, scope: [], allowSubscribe: read, allowPublish: read }));
+  const broad = await open("routed_broad", [">"]);
+  const scoped = await open("routed_plugin", [`${PLUGIN_CHANNEL_ROOT}.linear.>`]);
+  const posted = await jetstream(scoped.nc).publish(pluginChannelSubject(space, OWNER, scoped.actor, channel), enc("callout history probe"));
+  check("callout: an explicitly granted sender publishes to the plugin history stream", posted.stream === stream);
+  const create = (reader: typeof scoped) => reader.nc.request(`$JS.API.CONSUMER.CREATE.${stream}.${reader.history}.${filter}`, enc(JSON.stringify({
+    stream_name: stream, action: "create",
+    config: { name: reader.history, filter_subject: filter, ack_policy: "none", deliver_policy: "all", inactive_threshold: 5_000_000_000 },
+  })), { timeout: 1000 });
+  const allowed = (await create(scoped)).json<{ error?: unknown; num_pending?: number }>();
+  check("callout: an explicit plugin grant can open its own retained history", allowed.error === undefined && allowed.num_pending === 1, allowed);
+  const denied = await create(broad).then(() => false, (error: unknown) => /permission/i.test(String(error)));
+  check("callout: the broker refuses plugin history for a broad chat-only grant", denied);
+  const parent = grantActor(dir, { owner: OWNER, actor: "routed_parent", scope: ["spawn"], allowSubscribe: [">"], allowPublish: [">"] });
+  const child = grantManagedActor(dir, { owner: OWNER, actor: "routed_child", scope: [], allowSubscribe: [channel], allowPublish: [channel],
+    lifecycleUid: mintLifecycleUid(), tokenHash: newActorToken().tokenHash, parent: `${parent.owner}.${parent.actor}`, custody: { kind: "foreground" },
+  });
+  const deniedChild = await dial(child).then(() => false, () => true);
+  check("callout: a routed child cannot inherit plugin read or publish authority from a chat-only parent", deniedChild);
+  for (let i = 0; i < 20 && !calloutDenials.some(line => line.includes(channel)); i++) await wait(20);
+  check("callout: the rejected child was refused by the ledger bound",
+    calloutDenials.some(line => line.includes("exceeds its spawner's CURRENT grant") && line.includes(channel)));
+  grantActor(dir, { ...parent, allowSubscribe: [channel], allowPublish: [channel] });
+  const allowedChild = await dial(child);
+  const held = (await create(allowedChild)).json<{ error?: unknown; num_pending?: number }>();
+  check("callout: a routed child can read plugin history its parent explicitly holds", held.error === undefined && held.num_pending === 1, held);
+}
+
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -112,10 +161,13 @@ try {
     token: { key: publicKey as never, issuer: ISS },
     recordIssuance: async () => {},
     authorizeActor: (t) => { if (!t.act.view) ledgerAuthorizeConnect(dir)(t); },
-    permissionsFor: calloutPermissions((t) => t.act.view
+    permissionsFor: calloutPermissions((t, enabled) => t.act.view
       ? { allowSubscribe: ["general"], allowPublish: [], lifecycleUid: smokeUid, scope: ["admin"] }
-      : ledgerAclResolver(dir)(t)),
-    log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
+      : ledgerAclResolver(dir)(t, enabled), undefined, undefined, undefined, undefined, undefined, async () => ({ enabled: routed })),
+    log: (l) => {
+      if (routed && l.includes("outcome=denied")) calloutDenials.push(l);
+      if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l);
+    },
   });
   await calloutNc.flush();
 
@@ -299,6 +351,7 @@ try {
     await participant.stop();
   }
 
+  await checkRoutedCallout(control);
   console.log(`  counts ${JSON.stringify({ reads: READS, answered, base, afterReads, outcome, survives, again, afterReconnect })}`);
 } finally {
   await feed?.stop();

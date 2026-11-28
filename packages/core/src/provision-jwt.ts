@@ -15,6 +15,7 @@ import { credsClaims, isAccountNkey, isUserNkey, type Identity } from "./identit
 import { type BackupPermissionScope, type RestorePermissionScope } from "./backup.js";
 import type { Profile } from "./provision-permissions.js";
 import { INSTRUMENT_PROFILES, connectionEvictorPermissions, endpointServePermissions, membershipObserverPermissions, permissionsFor } from "./provision-permissions.js";
+import { withLegacyPluginChannelDeny } from "./provision-permission-builders.js";
 
 
 export type CredentialLifetimeClass =
@@ -421,6 +422,10 @@ export interface IssuedBinding {
 
 /** Options shaping a minted user's permissions. */
 export interface MintOpts {
+  /** Routing decision from trusted space state. Omission preserves legacy channel grants. */
+  pluginChannelsEnabled?: boolean;
+  /** One-shot provisioner mint for creating the disabled channel-routing record. */
+  initializePluginChannelState?: boolean;
   /** Trusted issuance restriction: exclude the tool-payload publish rail when false. */
   eventPayloads?: boolean;
   /** The owner+actor principal to mint for. Omitted ⇒ the no-login dev default (owner `"local"`, actor
@@ -609,8 +614,8 @@ export interface MintOpts {
   transferWriter?: { instanceId: string; hex: string };
   /** `transfer-reader` profile only: the manager instance whose own transfer bucket this reads. */
   transferReader?: { instanceId: string };
-  /** `teardown` profile only: the space's transfer streams, listed before the mint, that this
-   *  teardown may inspect and delete by name ({@link deleteSpace} lists and names them). */
+  /** `teardown` profile only: observed transfer streams and the exact plugin history stream of
+   *  this space. Teardown may inspect and delete only those requested by name. */
   transferStreams?: string[];
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;
@@ -731,7 +736,7 @@ export async function mintCreds(
   const validDates = userValidDates(profile, opts);
   const listing = await prepareStaticListing(auth.space, profile, pr, opts, validDates.exp);
   const perms = profile === "endpoint-serve"
-    ? endpointServePermissions(auth.space, pr, opts)
+    ? withLegacyPluginChannelDeny(auth.space, endpointServePermissions(auth.space, pr, opts), opts.pluginChannelsEnabled)
     : listing?.permissions ?? permissionsFor(profile, auth.space, pr, opts);
   const userJwt = await encodeUser(
     profile,
@@ -885,7 +890,7 @@ export async function mintPublicUserJwt(
     ...(opts.lifecycleUid ? { lifecycleUid: opts.lifecycleUid } : {}),
   };
   const perms = profile === "endpoint-serve"
-    ? endpointServePermissions(auth.space, pr, opts)
+    ? withLegacyPluginChannelDeny(auth.space, endpointServePermissions(auth.space, pr, opts), opts.pluginChannelsEnabled)
     : permissionsFor(profile, auth.space, pr, opts);
   const validDates = userValidDates(profile, opts);
   if (validDates.exp === undefined) throw new Error(`mintPublicUserJwt: profile "${profile}" must be bounded`);
@@ -929,6 +934,7 @@ export async function mintServiceCalloutJwt(
     serve: EpServeGrant; gate: EpIssuanceGate; principal: { owner: string; actor: string };
     connection: ServiceConnectionBinding; inboxNonce: string;
     admittedAt: number; accessExpiresAt: number; expiresAt: number;
+    pluginChannelsEnabled?: boolean;
   },
 ): Promise<{ jwt: string; credentialId: string; iat: number; exp: number }> {
   const connection = parseServiceConnectionBinding(args.connection), inboxNonce = assertInboxConnId(args.inboxNonce);
@@ -944,7 +950,7 @@ export async function mintServiceCalloutJwt(
   const permissions = endpointServePermissions(auth.space, { ...principal, connId: inboxNonce },
     { endpointServe: serve, serveIssuance: gate });
   const jwt = await encodeUser(identity.name, fromPublic(connection.userNkey), fromPublic(auth.account.pub),
-    { ...permissions, tags: principalTags(principal.owner, principal.actor) },
+    { ...withLegacyPluginChannelDeny(auth.space, permissions, args.pluginChannelsEnabled), tags: principalTags(principal.owner, principal.actor) },
     { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
   if (Buffer.byteLength(jwt, "utf8") > MAX_MINTED_JWT_BYTES)
     throw new Error("service callout mint exceeds the native JWT byte limit");
