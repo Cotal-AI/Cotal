@@ -1855,7 +1855,7 @@ try {
         const localState = join(home, "daemon", spaceSegment(localSpace));
         const refusal = join(localState, "manager-refusal.json");
         const localGuidance = (text: unknown) => /cotal up/.test(String(text)) && !/cotal daemon (setup|register)|cotal manager start/.test(String(text));
-        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", ts: new Date().toISOString() });
+        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", origin: "up", ts: new Date().toISOString() });
         try {
           const setup = await cli("setup", "--space", localSpace);
           check("H2 static setup refuses at the connection check without writing per-space state", setup.code === 2
@@ -1871,8 +1871,15 @@ try {
 
           await killAndAwaitExit(child, "SIGTERM");
           child = await start();
+          const restartedAll = await cli("status");
           const restarted = await cli("status", "--space", localSpace);
-          check("H2 restarting the daemon does not reveal a static setup refusal", restarted.code === 0 && !existsSync(localState), restarted.doc);
+          check("H2 restarting the daemon does not reveal a static setup refusal", restartedAll.code === 0
+            && restartedAll.doc.result?.managers?.length === 0 && restarted.code === 2
+            && restarted.doc.error?.code === "TARGET_NOT_FOUND" && restarted.doc.error?.cause?.code === "NOT_REQUESTED"
+            && String(restarted.doc.error?.message).includes("The background service does not run local spaces")
+            && String(restarted.doc.error?.message).includes(root)
+            && restarted.doc.error?.remedy === `Run \`cotal status --space ${localSpace}\` to inspect its local stack in ${root}.`
+            && !existsSync(localState), { all: restartedAll.doc, space: restarted.doc });
 
           // Earlier versions persisted this refusal. Disconnect still has to clear it.
           const seedRefusal = () => {
@@ -4963,6 +4970,98 @@ process.exit(result.status ?? 93);
       check("C11 `service-connect` with no register request refuses TARGET_NOT_FOUND (exit 2)", off.status === 2 && off.doc!.error?.code === "TARGET_NOT_FOUND" && off.doc!.error?.cause?.code === "NOT_REQUESTED", { status: off.status, out: off.out.slice(0, 400) });
       const dis = await cli(["service-disconnect", "--space", OFF]);
       check("C11 `cotal daemon service-disconnect` answers disconnected (exit 0)", dis.status === 0 && dis.doc!.result?.state === "disconnected", { status: dis.status, out: dis.out.slice(0, 400) });
+
+      const acctHome = join(root, "acct-desired-home");
+      mkdirSync(acctHome, { mode: 0o700 });
+      const acctPaths = daemonPathsFor(acctHome, { XDG_RUNTIME_DIR: rtDir });
+      let acctRevision = 1;
+      let enteredStartingNow = false;
+      let releaseStartingNow: (() => void) | undefined;
+      const reconcileGate = new Promise<void>(resolve => { releaseStartingNow = resolve; });
+      const failingSpace = "acct-failing";
+      const startingNowSpace = "acct-on-its-way";
+      const acctServer = createHttpServer(async (req, res) => {
+        for await (const _ of req) { /* drain */ }
+        res.setHeader("content-type", "application/json");
+        if (req.url === "/api/auth/token") {
+          enteredStartingNow = true;
+          await reconcileGate;
+          res.writeHead(401).end("{}");
+          return;
+        }
+        const machine = req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/);
+        if (machine && !machine[2] && req.method === "PUT") {
+          res.end(JSON.stringify({ v: 1, machine: { id: machine[1], lastSeenAt: new Date().toISOString(), revision: acctRevision } }));
+          return;
+        }
+        if (machine?.[2] && req.method === "GET") {
+          res.setHeader("etag", JSON.stringify(acctRevision));
+          const spaces = acctRevision === 1
+            ? [{ id: failingSpace, slug: failingSpace, name: failingSpace, kind: "team", role: "owner", unavailable: "fixture authority unavailable" }]
+            : [{ id: startingNowSpace, slug: startingNowSpace, name: startingNowSpace, kind: "team", role: "owner", registration: { space: startingNowSpace, server: "nats://127.0.0.1:1", tlsRequired: false, sentinelCreds: "fixture-sentinel", userAuth: { provider: "cotal", idp: { url: acctIdp, issuer: acctOrigin, audience: acctOrigin }, endpoints: { url: `${acctOrigin}/space/${startingNowSpace}` } } } }];
+          const bindingRevisions = acctRevision === 1 ? { [failingSpace]: 1 } : { [startingNowSpace]: 1 };
+          res.end(JSON.stringify({ v: 1, machineId: machine[1], revision: acctRevision, account: { idpUrl: acctIdp, issuer: acctOrigin, sub: "machine-owner" }, spaces, bindingRevisions }));
+          return;
+        }
+        res.writeHead(404).end("{}");
+      });
+      await new Promise<void>(resolve => acctServer.listen(0, "127.0.0.1", resolve));
+      const acctOrigin = `http://127.0.0.1:${(acctServer.address() as AddressInfo).port}`;
+      const acctIdp = `${acctOrigin}/api/auth`;
+      saveIdpSession(acctHome, acctIdp, { token: SESSION, sub: "machine-owner", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      let acctDaemon: Awaited<ReturnType<typeof serveDaemon>> | undefined;
+      try {
+        acctDaemon = await serveDaemon({ paths: acctPaths, version: fixtureVersion, peerUid, sessionDir: acctHome } as Parameters<typeof serveDaemon>[0]);
+        for (let i = 0; i < 200 && !acctDaemon.status().account?.spaces.some(row => row.space === failingSpace && row.lastRefusal); i++) await sleep(50);
+
+        // Cell 1 (failing): account.spaces marks failingSpace desired: true with lastRefusal and it is not in managers.
+        const failingJson = await cli(["status", "--space", failingSpace, "--daemon-home", acctHome]);
+        const failingPlain = await cli(["status", "--space", failingSpace, "--daemon-home", acctHome], "--plain");
+        check("C11 account-desired failing space refuses LIFECYCLE_BLOCKED / ACCOUNT_DESIRED naming lastRefusal instead of NOT_REQUESTED / setup",
+          failingJson.status === 2
+          && failingJson.doc!.outcome === "refused"
+          && failingJson.doc!.target?.space === failingSpace
+          && failingJson.doc!.error?.code === "LIFECYCLE_BLOCKED"
+          && failingJson.doc!.error?.cause?.code === "ACCOUNT_DESIRED"
+          && String(failingJson.doc!.error?.message).includes(`Space ${failingSpace} is turned on for this computer, but its Manager could not start. Reason: account space is currently unavailable.`)
+          && String(failingJson.doc!.error?.message).endsWith("The background service is not hosting any spaces.")
+          && String(failingJson.doc!.error?.remedy).includes("cotal daemon status --daemon-home")
+          && !String(failingJson.doc!.error?.remedy).includes("cotal daemon setup")
+          && failingPlain.status === 2
+          && failingPlain.err.includes("account space is currently unavailable")
+          && !failingPlain.err.includes("cotal daemon setup"),
+          { failingJson, failingPlain });
+
+        // Cell 2 (on its way): advance revision and hold reconciliation before Manager startup completes or refuses.
+        acctRevision = 2;
+        for (let i = 0; i < 300 && !enteredStartingNow; i++) await sleep(50);
+        try {
+          const onItsWayJson = await cli(["status", "--space", startingNowSpace, "--daemon-home", acctHome]);
+          const onItsWayPlain = await cli(["status", "--space", startingNowSpace, "--daemon-home", acctHome], "--plain");
+          check("C11 account-desired on-its-way space refuses LIFECYCLE_BLOCKED / ACCOUNT_DESIRED and says nothing needs to be run",
+            enteredStartingNow
+            && onItsWayJson.status === 2
+            && onItsWayJson.doc!.outcome === "refused"
+            && onItsWayJson.doc!.target?.space === startingNowSpace
+            && onItsWayJson.doc!.error?.code === "LIFECYCLE_BLOCKED"
+            && onItsWayJson.doc!.error?.cause?.code === "ACCOUNT_DESIRED"
+            && String(onItsWayJson.doc!.error?.message).includes(`Space ${startingNowSpace} is turned on for this computer, and the background service hasn't started its Manager yet.`)
+            && String(onItsWayJson.doc!.error?.message).endsWith("The background service is not hosting any spaces.")
+            && String(onItsWayJson.doc!.error?.remedy).startsWith("Nothing needs to be run. Check `cotal daemon status")
+            && !String(onItsWayJson.doc!.error?.remedy).includes("cotal daemon setup")
+            && onItsWayPlain.status === 2
+            && onItsWayPlain.err.includes("Nothing needs to be run.")
+            && !onItsWayPlain.err.includes("cotal daemon setup"),
+            { enteredStartingNow, onItsWayJson, onItsWayPlain });
+        } finally {
+          releaseStartingNow?.();
+        }
+      } finally {
+        releaseStartingNow?.();
+        await acctDaemon?.close();
+        await new Promise<void>(resolve => acctServer.close(() => resolve()));
+        for (const space of [failingSpace, startingNowSpace]) rmSync(meshFile(space), { force: true });
+      }
     });
 
     await cell("C10 nothing secret crosses the endpoint or the CLI", async () => {

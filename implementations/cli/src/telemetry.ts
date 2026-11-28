@@ -88,7 +88,7 @@ export function localDiagnostic<T extends Error>(error: T): T {
   return error;
 }
 
-export function telemetryErrorText(command: string, error: unknown, flags: readonly string[] = []): ErrorText {
+export function telemetryErrorText(command: string, error: unknown, flags: readonly string[] = [], subcommand: string | null = null): ErrorText {
   // A pinned input usage error can repeat the terminal text in the original command's retry.
   if (command === "input" && flags.includes("--on") && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
@@ -104,6 +104,8 @@ export function telemetryErrorText(command: string, error: unknown, flags: reado
   // A spawn diagnostic can include native terminal output or the original launch arguments.
   if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
       || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
+  // Unhosted or unreadable space status diagnostics name local spaces, hosted sets, and record paths.
+  if (command === "daemon" && subcommand === "status" && isCommandFailure(error) && ["NOT_REGISTERED", "NOT_REQUESTED", "ACCOUNT_DESIRED", "UNAVAILABLE"].includes(String(error.native?.code))) return { message: null, stack: null };
   // A missing Manager pin names the requested instance, its space and any running instances.
   if (isCommandFailure(error) && (error.code === "TARGET_NOT_FOUND" || error.code === "TARGET_UNAVAILABLE") &&
       error.target !== null && typeof error.target === "object" && "requestedManagerInstance" in error.target &&
@@ -197,7 +199,7 @@ export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode | null,
 /** Record the error a command threw, once: the first one recorded is the original, and a wrapper
  *  the kernel builds from it afterwards does not replace it. */
 export function recordTelemetryError(error: unknown): void {
-  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error, pending.flags);
+  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error, pending.flags, pending.subcommand);
 }
 
 /**

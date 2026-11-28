@@ -108,6 +108,12 @@ try {
     assert.equal(reply.doc.error?.code, "UNSUPPORTED", JSON.stringify(reply));
     assert.match(reply.doc.error?.message, /this space does not use user sign-in/);
     assert.equal(reply.doc.error?.remedy, "run `cotal up` in the folder that hosts the local space. Its stack runs the Manager");
+    const scoped = await run("status", "--space", openSpace);
+    assert.equal(scoped.code, 2, JSON.stringify(scoped));
+    assert.deepEqual(scoped.doc.target, { space: openSpace });
+    assert.equal(scoped.doc.error?.cause?.code, "NOT_REQUESTED");
+    assert.ok(scoped.doc.error?.message.includes(`The background service does not run local spaces, so it does not host a Manager for ${openSpace} (${openProject}).`));
+    assert.equal(scoped.doc.error?.remedy, `Run \`cotal status --space ${openSpace}\` to inspect its local stack in ${openProject}.`);
     console.log("PASS running open space directs service-connect to cotal up instead of registration");
   } finally {
     await killAndAwaitExit(openStack, "SIGTERM");

@@ -36,7 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
+import { daemonCommandCopy, daemonServiceRequirement, unhostedManagerStatusRefusal, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -207,7 +207,19 @@ async function status(args: ParsedArgs): Promise<void> {
     }
     throw asFailure(e, home);
   }
-  if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
+  if (!reply.ok) {
+    recordOperationContext({ target: null });
+    const { code, file, message, remedy } = reply.error;
+    if (code === "DEPENDENCY_UNAVAILABLE" && typeof file === "string" && file.length > 0) {
+      throw new CommandFailure("refused", code, message, { target: { file }, remedy, native: { code: "UNAVAILABLE" } });
+    }
+    throw new CommandFailure("failed", "OPERATION_FAILED", typeof message === "string" && message.trim()
+      ? `The background service could not complete the status request: ${message}`
+      : "The background service did not answer the status request.");
+  }
+  if (space !== undefined && !(reply.result.managers ?? []).some(manager => manager.space === space)) {
+    throw unhostedManagerStatusRefusal(space, (reply.result.managers ?? []).map(manager => manager.space), home, reply.result.account);
+  }
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
   const warning = linuxAutostartWarning(paths, home);
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result, ...(warning ? { warnings: [{ code: "TARGET_UNAVAILABLE", target: null, message: warning }] } : {}) }, statusView);
