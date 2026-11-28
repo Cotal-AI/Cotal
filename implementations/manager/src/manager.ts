@@ -1877,6 +1877,12 @@ export class Manager {
   /** {@link StatusAndModels.hostedSeatCount}. */
   hostedSeatCount(...args: Parameters<StatusAndModels["hostedSeatCount"]>): ReturnType<StatusAndModels["hostedSeatCount"]> { return this.statusAndModelsComponent.hostedSeatCount(...args); }
 
+  /** Private parent inspection; the public status keeps its existing reservation count. */
+  hostedLaunches(): { reserved: number; held: number; names: string[] } {
+    const names = this.seatLaunch.sharedLaunchHoldNames();
+    return { reserved: this.namesCapacity.reservedCount, held: names.length, names: names.slice(0, 50) };
+  }
+
   /** {@link StatusAndModels.hostedAgents}. */
   hostedAgents(...args: Parameters<StatusAndModels["hostedAgents"]>): ReturnType<StatusAndModels["hostedAgents"]> { return this.statusAndModelsComponent.hostedAgents(...args); }
 

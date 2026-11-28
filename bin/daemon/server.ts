@@ -22,7 +22,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedLaunchInspection, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
@@ -34,7 +34,7 @@ import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 
-type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
+type ManagerResult = DaemonStatus | HostedManager | HostedLaunchInspection | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
@@ -339,7 +339,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => {
-          if (req.op !== "status") notifyStatusWatchers();
+          if (req.op !== "status" && req.op !== "manager-launch-inspect") notifyStatusWatchers();
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
           counters.requestsRefused++;
@@ -348,6 +348,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
         managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
+        return;
+      }
+      if (req.op === "manager-launch-inspect") {
+        managerResult(() => managers.inspectLaunches(req.space));
         return;
       }
       if (req.op === "managers-stop") {

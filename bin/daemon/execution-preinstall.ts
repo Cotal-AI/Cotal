@@ -8,6 +8,8 @@ import { daemonPaths } from "./endpoint.js";
 import { installedDaemonIdentity, preflightInstalledDaemon } from "./install.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { processBirth } from "./lifetime.js";
+import { HostedLaunchSettlementTimeout, readSettledHostedStatus } from "./update-launch-settlement.js";
+import { PREINSTALL_PROGRESS } from "./execution-preinstall-client.js";
 
 export interface ExecutionPreinstallRequest {
   readonly v: 1;
@@ -15,13 +17,6 @@ export interface ExecutionPreinstallRequest {
   readonly installedEntry: string;
   readonly daemonArgv: readonly string[];
   readonly flags: Record<string, unknown>;
-}
-
-export function settledHostedStatus<T>(reply: Awaited<ReturnType<typeof askManager>>, fallback: string): T {
-  if (!reply.ok) throw new Error(reply.error ?? fallback);
-  if (((reply.data as { stopImpact?: { reservedLaunches?: number } } | undefined)?.stopImpact?.reservedLaunches ?? 0) > 0)
-    throw new Error("the hosted Manager has an unsettled launch");
-  return reply.data as T;
 }
 
 /** Read-only target policy. Unknown custody permits software publication, never a destructive restart. */
@@ -40,7 +35,8 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     } else if (!recorded || !installedDaemonIdentity(state, undefined, request.daemonArgv).same) {
       admission = deferred("the running daemon belongs to another installation or has no recorded service; it and its Managers were left running");
     } else {
-      const reply = await queryDaemon({ paths: daemonPaths() });
+      const paths = daemonPaths();
+      const reply = await queryDaemon({ paths });
       if (!reply.ok) throw new Error(`daemon custody is unavailable: ${reply.error.message}`);
       if (reply.result.pid !== daemon.pid) throw new Error("daemon status differs from its authenticated lifetime");
       if (!Array.isArray(reply.result.managers)) throw new Error("hosted Manager inventory is unknown");
@@ -52,15 +48,14 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
         const instanceId = manager.instanceId;
         const birth = processBirth(manager.pid!);
         if (!birth) throw new Error(`Manager ${manager.space} lifetime is unreadable`);
+        const { agentCount: count } = await readSettledHostedStatus(paths, manager.space, instanceId, "update --self", line => process.stdout.write(`${PREINSTALL_PROGRESS}${line}\n`));
+        if (processBirth(manager.pid!) !== birth) throw new Error(`Manager ${manager.space} identity changed`);
+        if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) throw new Error(`Manager ${manager.space} work count is unknown`);
+        occupied += count;
+        if (count === 0) continue;
         await withIdpSessionDir(homeCotalDir(), async () => {
           const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
           const client = { versionSkew: (text: string) => text, roster: async () => [] };
-          const status = await askManager(client, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId });
-          const { agentCount: count, instanceId: answered } = settledHostedStatus<{ agentCount?: unknown; instanceId?: unknown }>(status, `Manager ${manager.space} did not answer`);
-          if (answered !== instanceId || processBirth(manager.pid!) !== birth) throw new Error(`Manager ${manager.space} identity changed`);
-          if (!Number.isSafeInteger(count) || (count as number) < 0) throw new Error(`Manager ${manager.space} work count is unknown`);
-          occupied += count as number;
-          if (count === 0) return;
           const rows = await askManager(client, manager.space, target.server, "ps", undefined, target.auth, "owner", 3000, { instanceId });
           const agents = rows.data as { name: string; id: string; lifecycleUid: string }[];
           if (!rows.ok || !Array.isArray(agents) || agents.length !== count || agents.some(agent => !agent || [agent.name, agent.id, agent.lifecycleUid].some(value => typeof value !== "string" || !value))) throw new Error(`Manager ${manager.space} exact work inventory is unavailable`);
@@ -73,6 +68,7 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
           : { disposition: "restart-empty", occupied: 0, hostedSpaces };
     }
   } catch (error) {
+    if (error instanceof HostedLaunchSettlementTimeout) throw error;
     admission = deferred(`machine daemon custody could not be checked: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!sameUpdateDaemon(daemon, await observeUpdateDaemon())) throw new Error("machine daemon lifetime changed during target admission");

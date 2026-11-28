@@ -754,7 +754,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       pending = pending.then(async () => {
         try {
           if (frame.op === "inspect") {
-            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount() });
+            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount(), launches: mgr.hostedLaunches() });
             return;
           } else if (frame.op === "abort") {
             if (heldAttempt === attemptId) { mgr.abortPreservation(attemptId); heldAttempt = undefined; }

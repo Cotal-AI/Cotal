@@ -18,7 +18,7 @@ import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFail
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
-import type { HostedManager, HostedAgents } from "./protocol.js";
+import type { HostedManager, HostedAgents, HostedLaunchInspection, HostedLaunches } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
@@ -677,6 +677,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   return {
     start, status, refresh,
     ...hostedAgentActions(home, live),
+    async inspectLaunches(space: string): Promise<HostedLaunchInspection> {
+      const l = live.get(space), child = l?.child, instanceId = l?.view.instanceId;
+      if (!l || !child || !instanceId || l.stopping) throw new Error("hosted Manager is not available for launch inspection");
+      let launches: HostedLaunches | undefined;
+      const seats = await generationCall(child, randomUUID(), "inspect", value => { launches = value; });
+      if (seats === undefined || live.get(space) !== l || l.child !== child || l.view.instanceId !== instanceId || l.stopping)
+        throw new Error("hosted Manager changed during launch inspection");
+      return { instanceId, ...(launches === undefined ? {} : { launches }) };
+    },
     async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
         if (cachedOnly && l.agents && l.child && !l.stopping) return l.agents;

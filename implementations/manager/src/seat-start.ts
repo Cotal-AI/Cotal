@@ -70,6 +70,8 @@ export class SeatStart {
 
   get sharedLaunchHoldCount(): number { return this.sharedLaunchHolds.size; }
 
+  sharedLaunchHoldNames(): string[] { return [...this.sharedLaunchHolds.keys()]; }
+
   clearSharedLaunchHolds(): void {
     for (const [name, cleanup] of this.sharedLaunchHolds) {
       cleanup();
