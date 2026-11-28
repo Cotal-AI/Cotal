@@ -307,6 +307,8 @@ export async function clean(args: ParsedArgs): Promise<void> {
     if (lock) releaseMaintenanceLock(lock);
     stopReporting?.();
   }
+  if (dryRun && values.force)
+    stderrLine("! ", "Preview only: --force is ignored when --dry-run is set. Use --force without --dry-run to apply.", c.yellow);
   if (removed.length === 0) {
     console.log(c.dim("nothing to clean - no local state found"));
     return;
