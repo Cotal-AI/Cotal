@@ -2,13 +2,12 @@ import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate,
 import { listen } from "@tauri-apps/api/event";
 import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
 import { AgentApps } from "./agent-apps";
-import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
 import { icon, type Icon } from "./icons";
 import { consents, readPlan, reinstallNeeded, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
@@ -23,10 +22,7 @@ const el = <T extends HTMLElement>(id: string): T => {
 const text = (id: string, value: string) => {
   const node = el(id);
   if (node.textContent === value) return;
-  if (id === "connection-title" && value === "This computer is connected") {
-    const highlight = document.createElement("span"); highlight.className = "connected-highlight"; highlight.textContent = "connected";
-    node.replaceChildren(document.createTextNode("This computer is "), highlight);
-  } else node.textContent = value;
+  node.textContent = value;
 };
 function setIcon(node: Element, name: Icon): void {
   if (node.getAttribute("data-icon") === name) return;
@@ -36,26 +32,19 @@ setIcon(el("machine-icon"), "computer");
 setIcon(el("loading-icon"), "spinner");
 el("dashboard").append(icon("external"));
 type Stage = "welcome" | "sign-in" | "connect" | "finished";
-let nameEditing = false;
 let savedComputerName = "This computer";
-const computerNameFormHome = el("computer-name-form").parentElement!;
 function renderComputerName(value: string): void {
   savedComputerName = value; text("machine-name", value); el("machine-name").title = value;
+  text("settings-computer", value);
+  el("connection-status").title = `${el("sidebar-status-word").textContent} · ${value}`;
 }
 function closeNameEditor(): void {
-  nameEditing = false; el("computer-name-form").hidden = true; el("machine-name").hidden = false;
-  computerNameFormHome.append(el("computer-name-form"));
+  el("computer-name-form").hidden = true;
   el("settings-computer").hidden = false; el("settings-name").hidden = false;
-  el("edit-computer-name").hidden = !(stage === "connect" || stage === "finished");
-  (settingsOpen ? el("settings-name") : el("edit-computer-name")).focus();
+  el("settings-name").focus();
 }
-el("edit-computer-name").addEventListener("click", () => {
-  if (stage === "finished" && !settingsOpen) openSettings();
-  nameEditing = true; el("machine-name").hidden = !settingsOpen; el("edit-computer-name").hidden = true;
-  if (settingsOpen) {
-    el("settings-computer").parentElement!.append(el("computer-name-form"));
-    el("settings-computer").hidden = true; el("settings-name").hidden = true;
-  }
+el("settings-name").addEventListener("click", () => {
+  el("settings-computer").hidden = true; el("settings-name").hidden = true;
   el("computer-name-form").hidden = false; text("computer-name-error", "");
   el<HTMLInputElement>("computer-name-input").value = savedComputerName; el("computer-name-input").focus();
 });
@@ -80,14 +69,12 @@ let ready = false;
 let appVersion: string | undefined;
 let settingsOpen = false;
 let appsOpen = false;
-let appsOpener: HTMLElement | undefined;
 let appsLoadedAt = 0;
 let appsOwnerRetry: ReturnType<typeof setTimeout> | undefined;
 const agentApps = new AgentApps({
   platform: () => appPlatform,
   announce: message => announce(message),
   openUrl: url => void invoke("open_browser", { url }).catch(refusal),
-  openPanel: () => openApps(),
   changed: () => { appsLoadedAt = Date.now(); renderSettings(); },
 });
 let updateStatus: UpdateStatus | undefined;
@@ -99,6 +86,34 @@ let appApplyRunning = false;
 let nextAppApplyTick = 0;
 let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
+let serviceAvailability: "stopped" | "not-set-up" | undefined;
+let trayWord: SurfaceState["word"] | undefined;
+function renderSurface(surface: SurfaceState): void {
+  text("sidebar-status-word", surface.word);
+  el("sidebar-status-dot").dataset.tone = surface.dot;
+  el("connection-status").title = `${surface.word} · ${savedComputerName}`;
+  if (!isTauri() || trayWord === surface.word) return;
+  trayWord = surface.word;
+  void invoke("set_connection_state", { connected: surface.word === "Connected", label: surface.word }).catch(() => {
+    if (trayWord === surface.word) trayWord = undefined;
+  });
+}
+function renderConnectionTitle(title: string, surface: SurfaceState): void {
+  const node = el("connection-title");
+  const titlePhrase: Partial<Record<SurfaceState["word"], string>> = {
+    "Offline": "No internet connection", "Can't connect": "Can't reach", "Sign in required": "Sign in",
+    "Service stopped": "stopped", "Disk full": "disk is full", "Repair needed": "needs a repair",
+  };
+  const phrase = title === surface.title ? (titlePhrase[surface.word] ?? surface.word).toLowerCase() : "";
+  const rendered = `${title}:${phrase}`;
+  if (node.dataset.rendered === rendered) return;
+  node.dataset.rendered = rendered;
+  const start = phrase ? title.toLowerCase().indexOf(phrase) : -1;
+  if (start === -1) { node.textContent = title; return; }
+  const mark = document.createElement("span"); mark.className = "status-highlight";
+  mark.textContent = title.slice(start, start + phrase.length);
+  node.replaceChildren(title.slice(0, start), mark, title.slice(start + phrase.length));
+}
 async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
   if (tick && Date.now() < nextAppApplyTick) return;
   if (appApplyRunning || busy || loginActive || setupActive || !["darwin", "win32"].includes(appPlatform) || !autoUpdates || !appUpdate?.version) return;
@@ -164,19 +179,12 @@ async function openInstaller(): Promise<void> {
 }
 let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
 let trayUpdate: string | undefined;
-const preferencesHome = el("preferences").parentElement!;
-preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
 function renderSettings(): void {
-  requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
-  // Settings also opens before sign-in: the name, the service log and the version matter most when sign-in fails.
-  el("open-settings").hidden = setupActive || loginActive;
-  text("open-settings", settingsOpen || appsOpen ? "Back" : "Settings");
   el("settings-panel").hidden = !settingsOpen || appsOpen;
   el("apps-panel").hidden = !appsOpen;
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
   syncViewTabs();
-  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
   renderApps();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
@@ -192,10 +200,12 @@ function renderSettings(): void {
   el("restart-update").hidden = !canRestart;
   el<HTMLButtonElement>("restart-update").disabled = busy || loginActive || setupActive || appApplyRunning;
   if (appUpdaterConfigured()) renderAppUpdate(el("settings-update-summary"), appUpdate!, autoUpdates !== false);
-  else { text("settings-update-summary", updateSummary(updateStatus, appVersion ?? "")); delete el("settings-update-summary").dataset.updateState; }
+  else {
+    text("settings-update-summary", updateStatus ? updateSummary(updateStatus, appVersion ?? "") : appVersion ? `Version ${appVersion}` : "");
+    delete el("settings-update-summary").dataset.updateState;
+  }
   const checkedAt = appUpdaterConfigured() ? appUpdate?.checkedAt === undefined ? undefined : new Date(appUpdate.checkedAt).toISOString() : updateStatus?.lastCheck;
   text("settings-last-check", installerMessage ?? lastChecked(checkedAt));
-  text("settings-spaces", disconnectSpaces(accountProvider()).map(space => shownSpaceLabel(accountSpaces.get(space)?.label, space)).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform, appUpdaterConfigured());
   text("update-preference-label", policy.label);
   text("update-policy", appUpdate?.phase === "unconfigured" ? updateStatus?.channel === "npm" ? `${policy.description} This build updates through the installer.` : "Cotal tells you here when a new version is out. This build updates through the installer." : policy.description);
@@ -214,9 +224,6 @@ function renderSettings(): void {
   el("settings-panel").classList.toggle("account-outcome-view", accountOutcomeOpen);
   el("account-outcome-back").hidden = !accountOutcomeOpen;
   el("account-outcome").hidden = !accountOutcomeOpen;
-  el("preferences").hidden = !settingsOpen;
-  if (settingsOpen) { el("settings-startup").insertBefore(el("preferences"), document.getElementById("login-error") ?? document.getElementById("pin-offer") ?? document.getElementById("pin-availability")); el("preferences").hidden = false; }
-  else if (el("preferences").parentElement !== preferencesHome) preferencesHome.append(el("preferences"));
 }
 type AccountAction = { kind: "logout" | "disconnect"; provider: string; spaces: string[]; trigger: string };
 let pendingAccountAction: AccountAction | undefined;
@@ -248,10 +255,13 @@ function signedInAccountProvider(): string | undefined {
 }
 function renderAccountActions(): void {
   const blocked = busy || loginActive || !!pendingAccountAction;
-  el<HTMLButtonElement>("settings-signout").disabled = blocked || !signedInAccountProvider();
-  el<HTMLButtonElement>("settings-disconnect").disabled = blocked || !disconnectSpaces(accountProvider()).length;
-  el<HTMLButtonElement>("open-settings").disabled = busy;
-  el<HTMLButtonElement>("settings-back").disabled = busy;
+  const signedIn = !!signedInAccountProvider();
+  const spaceCount = disconnectSpaces(accountProvider()).length;
+  text("settings-spaces", signedIn ? (spaceCount ? `Signed in · ${spaceCount} ${spaceCount === 1 ? "space" : "spaces"}` : "Signed in") : "");
+  el("settings-spaces").hidden = !signedIn;
+  el<HTMLButtonElement>("settings-signout").disabled = blocked || !signedIn;
+  el<HTMLButtonElement>("settings-disconnect").disabled = blocked || !spaceCount;
+  el<HTMLButtonElement>("settings-repair").disabled = busy;
   for (const id of ["account-confirm", "account-cancel"]) el<HTMLButtonElement>(id).disabled = busy || loginActive;
   el("account-confirmation").hidden = !pendingAccountAction;
   el("account-confirmation").setAttribute("aria-busy", String(busy));
@@ -401,10 +411,10 @@ let lastView = "";
 function announce(message: string): void { text("announcer", message); }
 
 function notice(message: string, error = false): void {
-  if (message) text("notice", message);
+  text("notice", message);
   el("notice-wrap").classList.toggle("expanded", Boolean(message));
   el("notice").setAttribute("aria-hidden", String(!message));
-  if (message || !window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { el("notice").hidden = !message; if (!message) text("notice", ""); }
+  el("notice").hidden = !message;
   el("notice").classList.toggle("error", error);
   if (message) announce(message);
 }
@@ -478,37 +488,28 @@ function setupProgress(frame: Frame): void {
   progress[index] = failed ? "failed" : successes[p.step]?.includes(p.outcome) ? "done" : running || ["manager", "register", "connect"].includes(p.step) ? "running" : "waiting";
   renderProgress();
 }
-let resizeRule: CSSStyleRule | undefined;
-let resizeSheet: CSSStyleSheet | undefined;
-let resizeIndex = -1;
-function resizeCard(previous: number): void {
-  const card = document.querySelector<HTMLElement>(".connection-card")!;
-  card.classList.remove("height-changing");
-  if (resizeSheet && resizeIndex >= 0) { resizeSheet.deleteRule(resizeIndex); resizeIndex = -1; }
-  const target = card.getBoundingClientRect().height;
-  if (!initialized || Math.abs(previous - target) < 1 || !document.styleSheets.length || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-  // Insert into our same-origin stylesheet, never a CSP-blocked style attribute.
-  resizeSheet = document.styleSheets[0];
-  resizeIndex = resizeSheet.insertRule(`.connection-card.height-changing { height: ${previous}px; }`, resizeSheet.cssRules.length);
-  resizeRule = resizeSheet.cssRules[resizeIndex] as CSSStyleRule;
-  card.classList.add("height-changing"); void card.offsetHeight;
-  resizeRule.style.height = `${target}px`;
-}
 function showStage(next: Stage, focus = false): void {
-  requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
-  const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
   renderSettings();
-  el("edit-computer-name").hidden = nameEditing || !(next === "connect" || next === "finished");
   const finished = next === "finished";
-  const anyConnected = [...connections.values()].includes("launch-ready");
+  const anyConnected = [...connections].some(([space, value]) => value === "launch-ready" && !computerRows.get(space)?.lastRefusal);
+  const surface = surfaceState({
+    rows: computerAccount ? computerSpaces(computerAccount) : [],
+    anyConnected: !upgradeNeeded && anyConnected,
+    signInRequired: computerAccount?.mode === "sign-in-required",
+    service: !initialized || setupActive || loginActive ? undefined : serviceAvailability,
+    starting: !initialized || setupActive || loginActive || !serviceStatus && !serviceAvailability,
+    updating: !!serviceStatus?.generation,
+    diskFull: serviceStatus?.diskFull === true,
+    repairNeeded: !!serviceStatus?.recovery,
+  });
+  renderSurface(surface);
   const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
   const signIn = next === "welcome" || next === "sign-in";
   el("sign-in-panel").hidden = !signIn;
   el("space-panel").hidden = !((next === "connect" || finished && addingSpace) && choosingSpace) || setupActive;
   el("connect-panel").hidden = !(next === "connect" || finished && addingSpace) || setupActive;
   el("connected-panel").hidden = !finished;
-  el("preferences").hidden = !settingsOpen;
   el("setup-progress").hidden = (!setupActive && !progress.some(value => value !== "waiting")) || finished && !setupActive;
   document.querySelector(".app")!.classList.toggle("later-open", (finished || listOpened) && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
@@ -524,26 +525,27 @@ function showStage(next: Stage, focus = false): void {
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
-  else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
-  else if (finished && computerAccount?.hostSupport === "supported") {
-    const rows = computerSpaces(computerAccount);
-    const summary = computerSummary(rows, anyConnected);
-    title = summary === "connected" ? connectionView("launch-ready").title : summary === "offline" || summary === "unreachable" ? CONNECTION_COPY[summary].title : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
-    description = summary === "offline" || summary === "unreachable" ? CONNECTION_COPY[summary].description : rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
-  }
+  else if (finished && computerAccount?.hostSupport === "supported") { title = surface.title; description = surface.description; }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
-  else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
+  else if (finished) { title = surface.title; description = surface.description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
   const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
-  const recovery = issue ? refusalView(issue, applications) : undefined;
-  const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
-  if (recovery && !lost) { title = recovery.title; description = recovery.description; }
-  el("recovery-panel").hidden = !recovery || Boolean(lost) || repairPlan !== undefined;
+  const surfaceRecovery = surface.word === "Disk full" || surface.word === "Service stopped";
+  const networkLoss = surface.title === CONNECTION_COPY.offline.title || surface.title === CONNECTION_COPY.unreachable.title;
+  const recovery = surface.word === "Disk full" ? { title: surface.title, description: surface.description, action: "refresh", label: "Check again" }
+    : surface.word === "Service stopped" ? { title: surface.title, description: surface.description, action: "start", label: "Start" }
+    : issue && !networkLoss ? refusalView(issue, applications) : undefined;
+  if (recovery) {
+    title = recovery.title;
+    description = recovery.description;
+  }
+  el("recovery-panel").hidden = !recovery || repairPlan !== undefined;
+  // The recover button opens the installer, so its link stays hidden.
   el("setup-installer").hidden = true;
-  el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
-  if (recovery && !lost) {
+  el("recover-apps").hidden = surfaceRecovery || issue !== "NO_AVAILABLE_CONNECTOR";
+  if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el("recover").hidden = recovery.action === "none";
@@ -555,10 +557,8 @@ function showStage(next: Stage, focus = false): void {
     }
   }
   if (repairPlan) for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
-  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && !lost && issue !== "APPROVAL_PENDING");
-  el("connection-icon").dataset.tone = lost ? "error" : recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
-  text("connection-title", title); text("connection-description", description);
-  setIcon(el("connection-icon"), lost ? CONNECTION_COPY[lost].icon : recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : setupActive ? "spinner" : "connect");
+  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
+  renderConnectionTitle(title, surface);
   const target = accountSpaces.get(selectedSpace());
   if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
   text("connection-description", description);
@@ -572,10 +572,7 @@ function showStage(next: Stage, focus = false): void {
   }
   const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
   el("running-agents").hidden = !inventoryVisible;
-  el("apps-strip-wrap").hidden = !finished || addingSpace || computerAccount?.mode === "sign-in-required" || !(anyConnected || computerAccount?.hostSupport === "supported");
-  syncAppsChip();
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
-  if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
   text("another-space", connections.size ? "Add to another space" : "Add a space");
   el("sign-in-again").hidden = addingSpace || computerAccount?.mode !== "sign-in-required";
@@ -592,28 +589,16 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
-    const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
-    const lost = summary === "offline" || summary === "unreachable" ? summary : undefined;
-    text("tray-label", signInRequired ? "Sign in required" : lost ? CONNECTION_COPY[lost].pill : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
-    if (isTauri()) void invoke("set_connection_state", { connected: summary === "connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
-    el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
-    el("tray-indicator").classList.toggle("error", Boolean(signInRequired || lost || summary === "attention"));
-    if (!anyConnected) {
-      const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired || lost || summary === "attention" ? "error" : summary === "starting" ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : lost ? CONNECTION_COPY[lost].icon : summary === "attention" ? "warning" : summary === "starting" ? "clock" : empty ? "check" : "computer");
-    }
   } else el("spaces-heading").hidden = connections.size === 0;
   document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
-  el("connection-icon").hidden = addingSpace;
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
   renderConnections();
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
   el("other-host").hidden = customHost || linked;
   el("cloud-host").hidden = !customHost || linked || loginActive;
   el("change-space").hidden = !addingSpace;
-  text("footer-note", finished ? "Closing this window keeps your connection running." : "You choose when to connect this computer.");
+  el("journey").hidden = finished;
   const stages: Stage[] = ["welcome", "sign-in", "connect", "finished"];
   for (const item of document.querySelectorAll<HTMLElement>("#journey li")) {
     const index = stages.indexOf(item.dataset.stage as Stage), active = stages.indexOf(next);
@@ -628,124 +613,32 @@ function showStage(next: Stage, focus = false): void {
   if (view !== lastView) {
     const changed = lastView !== "";
     lastView = view;
-    const card = document.querySelector(".connection-card")!;
-    card.classList.remove("stage-enter");
-    if (changed && initialized) { void (card as HTMLElement).offsetWidth; card.classList.add("stage-enter"); }
     if (!appsOpen && !settingsOpen && (focus || changed && initialized)) el("connection-title").focus({ preventScroll: true });
     announce(title);
-    resizeCard(previousHeight);
   }
-  el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
-let clipSheet: CSSStyleSheet | undefined;
-function sizeClipEdges(): void {
-  if (!clipSheet) {
-    clipSheet = new CSSStyleSheet(); clipSheet.replaceSync('#settings-panel {} #connected-panel {}'); document.adoptedStyleSheets = [...document.adoptedStyleSheets, clipSheet];
-    const observer = new ResizeObserver(() => sizeSpaceList());
-    observer.observe(el("settings-panel")); observer.observe(el("connected-panel"));
-    for (const row of document.querySelectorAll('#settings-panel > *, #connected-panel > *')) observer.observe(row);
-  }
-  for (const [index, id] of ["settings-panel", "connected-panel"].entries()) {
-    const viewport = el(id);
-    const rule = clipSheet.cssRules[index] as CSSStyleRule;
-    rule.style.removeProperty("max-height");
-    if (id === "connected-panel") continue;
-    if (!viewport.getClientRects().length || viewport.scrollHeight <= viewport.clientHeight + 1) continue;
-    const box = viewport.getBoundingClientRect();
-    const style = getComputedStyle(viewport);
-    const edge = box.bottom - parseFloat(style.borderBottomWidth);
-    let bottom = edge;
-    const items = id === "settings-panel" ? viewport.querySelectorAll<HTMLElement>('.settings-row, #settings-startup .preferences, #settings-startup label, #settings-startup button') : viewport.querySelectorAll<HTMLElement>('button,.switch,.agent-row');
-    for (let pass = 0; pass < items.length; pass++) for (const item of items) {
-      if (!item.getClientRects().length || item.closest('[hidden]')) continue;
-      const bounds = item.getBoundingClientRect();
-      const top = bounds.top + viewport.scrollTop, end = bounds.bottom + viewport.scrollTop;
-      if (top < bottom && end > bottom) {
-        const row = id === "settings-panel" ? item.closest(".settings-row")?.getBoundingClientRect() : undefined;
-        bottom = Math.min(bottom, (row ? row.top + viewport.scrollTop : top));
-      }
-    }
-    if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top + parseFloat(style.borderBottomWidth)}px`, "important");
-  }
-}
-let listBudgetSheet: CSSStyleSheet | undefined;
-let spaceListSheet: CSSStyleSheet | undefined;
-function sizeSpaceList(): void {
-  const panel = el("connected-panel");
-  if (clipSheet) (clipSheet.cssRules[1] as CSSStyleRule).style.removeProperty("max-height");
-  const agentList = el("agent-list");
-  if (panel.getClientRects().length) {
-    if (!listBudgetSheet) {
-      listBudgetSheet = new CSSStyleSheet();
-      listBudgetSheet.replaceSync('.has-running-agents #agent-list {}');
-      document.adoptedStyleSheets = [...document.adoptedStyleSheets, listBudgetSheet];
-    }
-    const rule = (listBudgetSheet.cssRules[0] as CSSStyleRule).style;
-    rule.maxHeight = '108px';
-    const actions = el("another-space");
-    const overflow = actions.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
-    if (overflow > 0 && agentList.firstElementChild) {
-      const rowHeight = parseFloat(getComputedStyle(agentList.firstElementChild).height);
-      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / rowHeight));
-      rule.maxHeight = `${rows * rowHeight}px`;
-    }
-  }
-  const list = el("connected-spaces");
-  const rows = [...list.children] as HTMLElement[];
-  if (rows.length >= 4 && list.getClientRects().length) {
-  let height = 0;
-  const viewport = list.parentElement!;
-  const otherContent = panel.scrollHeight - viewport.getBoundingClientRect().height;
-  const card = panel.closest<HTMLElement>(".connection-card")!;
-  const cardStyle = getComputedStyle(card);
-  const extraCapacity = parseFloat(cardStyle.maxHeight) - card.getBoundingClientRect().height;
-  const budget = Math.min(220, panel.clientHeight + extraCapacity - otherContent);
-  for (const row of rows) {
-    const next = row.getBoundingClientRect().height;
-    if (height && height + next > budget) break;
-    height += next;
-  }
-  if (!spaceListSheet) {
-    spaceListSheet = new CSSStyleSheet();
-    spaceListSheet.replaceSync(".connected-spaces-scroll:has(li:nth-child(4)) { max-height: 160px; }");
-    document.adoptedStyleSheets = [...document.adoptedStyleSheets, spaceListSheet];
-  }
-  (spaceListSheet.cssRules[0] as CSSStyleRule).style.maxHeight = `${height}px`;
-  }
-  sizeClipEdges();
-  updateScrollThumb(panel, "connected-panel");
-  updateScrollThumb(el("settings-panel"), "settings-panel");
-  updateScrollThumb(agentList, "agent-list");
-  updateScrollThumb(list.parentElement!, "spaces");
-}
-window.addEventListener("resize", () => requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); }));
-window.addEventListener("load", sizeSpaceList);
-document.addEventListener("scroll", () => {
-  updateScrollThumb(el("connected-panel"), "connected-panel");
-  updateScrollThumb(el("settings-panel"), "settings-panel");
-  updateScrollThumb(el("agent-list"), "agent-list");
-  updateScrollThumb(el("connected-spaces").parentElement!, "spaces");
-}, true);
-document.addEventListener("transitionend", sizeSpaceList);
 function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
-  list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
   const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
-  requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   list.replaceChildren(...[...connections].map(([space, state]) => {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");
     const name = document.createElement("strong"); name.textContent = shownSpaceLabel(accountSpaces.get(space)?.label, space);
-    const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
+    const kind = document.createElement("span"); kind.className = "space-kind"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    // A lost connection's reason is plain words; a Manager refusal's reason is not shown on a row (rule 0).
-    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.observed === "offline" || accountRow.observed === "unreachable" ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
-    else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
+    const detail = document.createElement("small"); detail.className = "space-state";
+    const dot = document.createElement("span"); dot.setAttribute("aria-hidden", "true");
+    dot.className = `dot ${accountRow?.lastRefusal ? "error" : state === "launch-ready" ? "connected" : ""}`;
+    // A lost connection's reason is plain words; a Manager refusal's reason stays off the row (rule 0).
+    const reason = accountRow && (accountRow.observed === "offline" || accountRow.observed === "unreachable") ? managerReasons.get(space) : undefined;
+    const status = accountRow ? computerSpaceState(accountRow, state === "launch-ready") : state === "approval-pending" ? "Waiting for owner approval" : "Connected";
+    if (state === "approval-pending") detail.dataset.testid = "approval-pending";
+    detail.append(dot, `${status}${reason ? `: ${reason}` : ""}`);
     const restore = accountRow?.observed === "removed on this computer";
     const recovery = accountRow?.custodyRecovery;
     const label = recovery ? "Use signed-in account" : restore ? "Add" : "Remove";
@@ -758,7 +651,7 @@ function renderConnections(): void {
       row.setAttribute("aria-busy", "true");
       const waiting = document.createElement("small"); waiting.setAttribute("role", "status"); waiting.textContent = `${rowOperation.label}… Waiting for the background service.`; copy.append(waiting);
     }
-    row.append(copy, button); return row;
+    row.append(copy, detail, button); return row;
   }));
 }
 async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }): Promise<void> {
@@ -886,7 +779,11 @@ el("repair-apply").addEventListener("click", () => {
     if (signIn) { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
     else if (update) { openSettings(); void settingsAction({ op: "update-check" }); }
     else if (reinstall) void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal);
-    else void action(refresh);
+    else {
+      // A problem the last status read raised is read again from scratch, as the Try again button does.
+      if (statusProblem) clearDetails();
+      void action(refresh);
+    }
     return;
   }
   void action(async () => {
@@ -916,13 +813,9 @@ function state(value: string, space = selectedSpace()): void {
   if (value === "launch-ready" || value === "approval-pending") connections.set(space, value);
   else connections.delete(space);
   const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
-  const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], verified));
   // A connected space clears earlier errors, but not the offer to move the service to this app,
   // which only a status read that no longer reports another installation clears.
   if (connected() && problem !== "ANOTHER_INSTALLATION") problem = undefined;
-  text("tray-label", initialized ? verified ? "Connected" : lost ? CONNECTION_COPY[lost].pill : "Not connected" : "Checking connection");
-  el("tray-indicator").classList.toggle("connected", verified);
-  if (isTauri()) void invoke("set_connection_state", { connected: verified, label: el("tray-label").textContent ?? "", lost }).catch(() => undefined);
   if (connected() && !editing) { listOpened = true; showStage("finished"); }
   else if ((value === "approval-pending" || listOpened) && !editing) { listOpened = true; showStage("finished"); }
   else if (stage === "finished" && !listOpened) showStage(selectedSpace() ? "connect" : "welcome");
@@ -964,6 +857,7 @@ async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void
   }
 }
 async function applyStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
+  if (current()) serviceAvailability = undefined;
   await showStatus(status, current);
   if (current()) updateService();
 }
@@ -1013,7 +907,6 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     agentApps.observeRunningAgents(runningAgents());
     if (!agentApps.busy && Date.now() - appsLoadedAt > 30_000 && agentApps.apps === undefined) { appsLoadedAt = Date.now(); void agentApps.load(); }
   }
-  requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
@@ -1026,7 +919,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     computerRows.clear(); connections.clear();
     for (const row of computerSpaces(computerAccount)) {
       computerRows.set(row.space, row);
-      connections.set(row.space, row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
+      connections.set(row.space, !row.lastRefusal && row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
     }
     const manager = Array.isArray(status.managers) ? status.managers.find(item => item.space === space) : undefined;
     if (launchReady(manager)) { instances.set(space, manager.instanceId); }
@@ -1061,13 +954,17 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     if (!current()) return;
     state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
     // A Manager's reason and next step are written for a terminal: Details keeps the reason, the card says it plainly (rule 0).
-    if (manager?.reason) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped." : `The agent host for this space stopped. The background service said: ${manager.reason}`));
+    // It comes from this status read, so the next read that no longer reports it clears it.
+    if (manager?.reason) refusal(new DaemonRefusal("MANAGER_UNAVAILABLE", forTerminal(manager.reason) ? "The agent host for this space stopped." : `The agent host for this space stopped. The background service said: ${manager.reason}`), true);
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
 }
 /** Before the first sign-in no service is set up, which is not a problem; a stopped one is. */
 function notSetUpYet(error: unknown): boolean {
   return !listOpened && error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed !== true;
+}
+function observeMissingService(error: unknown): void {
+  serviceAvailability = notSetUpYet(error) ? "not-set-up" : error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed === true && error.detail?.stopped === "by-you" ? "stopped" : undefined;
 }
 function startStatusWatch(): void {
   if (!isTauri() || watchActive || watchStarting) return;
@@ -1122,6 +1019,7 @@ function startStatusWatch(): void {
       return;
     }
     if (!busy && !loginActive && !setupActive) {
+      observeMissingService(error);
       ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
       if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
@@ -1142,6 +1040,7 @@ async function refresh(): Promise<void> {
     if (initialized && ready && !upgradeNeeded && !watchActive && !watchStarting) startStatusWatch();
   } catch (error) {
     if (!current()) return;
+    observeMissingService(error);
     selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
     // An error from an action stays until the person acts on it; a background check never replaces it.
@@ -1235,6 +1134,11 @@ el("recover").addEventListener("click", () => {
   else if (recovery === "installer") void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal);
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "start") void action(async () => {
+    clearDetails();
+    await request({ op: "start" });
+    await refresh();
+  });
   else if (recovery === "install") void action(async () => {
     clearDetails();
     await startService();
@@ -1321,14 +1225,17 @@ el("space").addEventListener("change", () => {
   progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); buttons();
   void refresh();
 });
-function openDashboard(): void {
-  const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
+function openDashboard(fromTray = false): void {
+  const verified = (space: string) => !upgradeNeeded && connections.get(space) === "launch-ready" && !!instances.get(space) && !computerRows.get(space)?.lastRefusal;
+  const selected = selectedSpace();
+  const space = fromTray && !verified(selected) ? [...connections.keys()].find(name => verified(name) && providers.has(name) && catalogIds.has(name)) ?? selected : selected;
+  const provider = providers.get(space) ?? (space === selected ? computerAccount?.idpUrl ?? el<HTMLInputElement>("provider").value.trim() : undefined);
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);
   if (computerAccount?.hostSupport === "supported" && computerAccount.mode !== "sign-in-required" && provider) void invoke("open_browser", { url: new URL("/machines", approvalUrl(provider)).href }).catch(refusal);
-  else if (connected() && spaceId && instanceId && provider) void invoke("open_browser", { url: machinesUrl(provider, spaceId, instanceId) }).catch(refusal);
+  else if (verified(space) && spaceId && instanceId && provider) void invoke("open_browser", { url: machinesUrl(provider, spaceId, instanceId) }).catch(refusal);
   else { openSettings(); notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again."); }
 }
-el("dashboard").addEventListener("click", openDashboard);
+el("dashboard").addEventListener("click", () => openDashboard());
 async function readServiceLog(): Promise<void> {
   const button = el<HTMLButtonElement>("refresh-log");
   if (button.disabled) return;
@@ -1346,7 +1253,7 @@ async function readServiceLog(): Promise<void> {
 el("refresh-log").addEventListener("click", () => void readServiceLog());
 el("service-log").addEventListener("toggle", () => { if (el<HTMLDetailsElement>("service-log").open) void readServiceLog(); });
 el("connection-status").addEventListener("click", () => {
-  appsOpen = settingsOpen = false; renderSettings(); showStage(stage);
+  selectView("view-connection");
   if (!el("details").hidden) {
     el<HTMLDetailsElement>("details").open = true;
     el("details").querySelector<HTMLElement>("summary")!.focus();
@@ -1358,8 +1265,6 @@ el("connection-status").addEventListener("click", () => {
     (row ?? el("connection-title")).scrollIntoView({ block: "nearest" });
   }
 });
-/** The compact Agent apps button shows where the callout could, once an app is ready. */
-function syncAppsChip(): void { el("apps-chip").hidden = el("apps-strip-wrap").hidden || agentApps.readyCount === 0; }
 function renderApps(): void {
   agentApps.renderPanel(el("app-list"), el("apps-message"), el<HTMLButtonElement>("apps-refresh"));
   const management = agentApps.management;
@@ -1372,31 +1277,12 @@ function renderApps(): void {
   if (appsOpen && agentApps.retryOwnerCheck) {
     appsOwnerRetry ??= setTimeout(() => { appsOwnerRetry = undefined; if (appsOpen && agentApps.retryOwnerCheck) void agentApps.load(); }, 5000);
   } else if (appsOwnerRetry !== undefined) { clearTimeout(appsOwnerRetry); appsOwnerRetry = undefined; }
-  agentApps.renderStrip(el("apps-strip"), el<HTMLButtonElement>("apps-chip"));
-  syncAppsChip();
-  // With no app ready, installing one is the step that matters, so the dashboard button steps back.
-  el("dashboard").classList.toggle("primary", !agentApps.apps || agentApps.readyCount > 0);
 }
-/** Back returns to the Connection view and to the control that opened Agent apps. */
 function openApps(): void {
-  appsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-  settingsOpen = false; appsOpen = true; renderSettings(); el("apps-title").focus();
-  if (!agentApps.busy) void agentApps.load();
-}
-function closeApps(): void {
-  appsOpen = false; renderSettings();
-  (appsOpener?.isConnected && appsOpener.getClientRects().length ? appsOpener : el("apps-chip").hidden ? el("connection-title") : el("apps-chip")).focus();
+  selectView("view-apps"); el("apps-title").focus({ preventScroll: true });
 }
 function openSettings(): void {
-  if (busy || loginActive) return;
-  editing = false; addingSpace = false; choosingSpace = false;
-  const select = el<HTMLSelectElement>("space");
-  for (const option of select.options) { option.hidden = false; option.disabled = false; }
-  if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
-  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") { listOpened = true; showStage("finished"); }
-  appsOpen = false; settingsOpen = true; renderSettings(); el("settings-title").focus();
-  if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
-  void refresh();
+  selectView("view-settings"); el("settings-title").focus({ preventScroll: true });
 }
 const viewTabs = ["view-connection", "view-apps", "view-settings"] as const;
 function syncViewTabs(): void {
@@ -1408,16 +1294,18 @@ function syncViewTabs(): void {
   }
 }
 function selectView(id: typeof viewTabs[number]): void {
-  if (id === "view-apps") { openApps(); return; }
-  appsOpen = false;
+  const changed = appsOpen !== (id === "view-apps") || settingsOpen !== (id === "view-settings");
+  appsOpen = id === "view-apps";
   settingsOpen = id === "view-settings";
   renderSettings();
-  if (settingsOpen && appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(() => undefined);
+  if (changed) document.querySelector("main")!.scrollTop = 0;
+  if (appsOpen && !agentApps.busy) void agentApps.load();
+  if (settingsOpen && appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
 }
 for (const [index, id] of viewTabs.entries()) {
   el(id).addEventListener("click", () => { selectView(id); el(id).focus(); });
   el(id).addEventListener("keydown", event => {
-    const target = event.key === "Home" ? 0 : event.key === "End" ? 2 : event.key === "ArrowRight" ? (index + 1) % 3 : event.key === "ArrowLeft" ? (index + 2) % 3 : undefined;
+    const target = event.key === "Home" ? 0 : event.key === "End" ? 2 : ["ArrowDown", "ArrowRight"].includes(event.key) ? (index + 1) % 3 : ["ArrowUp", "ArrowLeft"].includes(event.key) ? (index + 2) % 3 : undefined;
     if (target === undefined) return;
     event.preventDefault();
     selectView(viewTabs[target]!);
@@ -1458,23 +1346,19 @@ el("update-preference").addEventListener("change", () => {
 el("update-download").addEventListener("click", () => void openInstaller());
 el("setup-installer").addEventListener("click", event => { event.preventDefault(); void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal); });
 el("settings-download").addEventListener("click", () => void openInstaller());
-el("apps-back").addEventListener("click", closeApps);
 el("apps-fix-connection").addEventListener("click", () => { selectView("view-connection"); el("connection-title").focus(); });
 el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
 el("recover-apps").addEventListener("click", () => openApps());
-el("apps-chip").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && !agentApps.busy && (appsOpen || agentApps.apps && Date.now() - appsLoadedAt > 30_000)) void agentApps.load(); });
-el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
-el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
+el("settings-repair").addEventListener("click", () => { if (!busy) { selectView("view-connection"); void action(openRepair); } });
 el("account-cancel").addEventListener("click", closeAccountConfirmation);
 el("account-confirm").addEventListener("click", () => void runAccountAction());
 el("settings-panel").addEventListener("keydown", event => {
   if (event.key === "Escape" && pendingAccountAction) { event.preventDefault(); event.stopPropagation(); closeAccountConfirmation(); }
 });
-el("settings-name").addEventListener("click", () => el("edit-computer-name").click());
 el("update-later").addEventListener("click", () => { dismissedUpdate = offeredVersion(); if (dismissedUpdate) localStorage.setItem("dismissed-update", dismissedUpdate); renderSettings(); });
 el("release-notes").addEventListener("click", () => { if (appVersion) void invoke("open_browser", { url: releaseUrl(appVersion) }).catch(refusal); });
 el("autostart").addEventListener("change", () => void action(async () => {
@@ -1520,7 +1404,7 @@ async function start(): Promise<void> {
     }
   };
   try {
-    await startPresence(notice, { settings: openSettings, dashboard: openDashboard, repair: () => { if (!busy) { settingsOpen = false; renderSettings(); void action(openRepair); } } });
+    await startPresence(notice, { settings: openSettings, dashboard: () => openDashboard(true), repair: () => { if (!busy) { selectView("view-connection"); void action(openRepair); } } });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     appPlatform = String(info.platform); appArch = String(info.arch);
@@ -1564,40 +1448,18 @@ async function start(): Promise<void> {
   initialized = true;
   lastTickAt = Date.now();
   document.querySelector(".app")!.classList.remove("loading");
-  if (computerAccount?.hostSupport !== "supported") {
-    const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], [...connections.values()].includes("launch-ready")));
-    text("tray-label", lost ? CONNECTION_COPY[lost].pill : [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
-  }
+  showStage(stage);
   if (ready) startStatusWatch();
   schedulePoll();
 }
-document.querySelector(".connection-card")!.addEventListener("transitionend", event => {
-  if ((event as TransitionEvent).propertyName !== "height") return;
-  document.querySelector(".connection-card")!.classList.remove("height-changing");
-  if (resizeSheet && resizeIndex >= 0) { resizeSheet.deleteRule(resizeIndex); resizeIndex = -1; }
-});
-el("notice-wrap").addEventListener("transitionend", () => { if (!el("notice-wrap").classList.contains("expanded")) el("notice").hidden = true; });
 const details = el<HTMLDetailsElement>("details");
-let closingDetails = false;
-function closeDetails(): void {
-  if (!details.open || closingDetails) return;
-  if (!window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { details.open = false; return; }
-  closingDetails = true; details.classList.add("closing");
-}
-details.querySelector("summary")!.addEventListener("click", event => {
-  event.preventDefault();
-  if (details.open) { closeDetails(); return; }
-  details.classList.add("opening"); details.open = true;
-  void details.querySelector<HTMLElement>(".details-content")!.offsetHeight;
-  details.classList.remove("opening");
-});
-details.querySelector(".details-content")!.addEventListener("transitionend", () => {
-  if (closingDetails) { details.open = false; closingDetails = false; details.classList.remove("closing"); }
-});
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape" && el<HTMLDetailsElement>("details").open) {
-    event.preventDefault(); closeDetails();
-    el("details").querySelector<HTMLElement>("summary")!.focus();
+  if (event.key === "," && !event.altKey && !event.shiftKey && (appPlatform === "darwin" ? event.metaKey : event.ctrlKey)) {
+    event.preventDefault(); openSettings(); return;
+  }
+  if (event.key === "Escape" && details.open && !settingsOpen && !appsOpen) {
+    event.preventDefault(); details.open = false;
+    details.querySelector<HTMLElement>("summary")!.focus();
   }
   if (event.key !== "Enter" || event.defaultPrevented || (event.target as Element).closest("button,input,select,summary")) return;
   const primary = [...document.querySelectorAll<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])")].find(button => !button.closest("[hidden]"));

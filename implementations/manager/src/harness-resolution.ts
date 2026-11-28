@@ -87,11 +87,10 @@ export class HarnessResolution {
   }
 
   /** The harness binaries a managed launch runs, or the refusal naming what is missing. Spawn, resume,
-   *  command listing and the model catalog all take it, and an available row is verified here too so
-   *  no caller can launch a missing file. A connector registered after boot has no inventory row and
-   *  is checked on PATH now. */
+   *  command listing and the model catalog refresh the named connector row first and read its outcome
+   *  here, so each path checks once. A connector registered after boot has no inventory row and is
+   *  checked on PATH now. */
   launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
-    this.parts.connectorInventory.recheckAvailableConnectors(connector.name);
     const row = this.parts.connectorInventory.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };
