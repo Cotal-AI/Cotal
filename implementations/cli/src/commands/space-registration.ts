@@ -432,9 +432,9 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
       const pathProblem = rootPathProblem(project) ?? rootPathProblem(canonicalRoot(project));
       if (pathProblem) throw localDiagnostic(refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, "rename the folder without those characters, or choose another --project <dir>"));
       const control = rootControlProblem(project);
-      if (control) throw refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(project), controlDirectory: control.controlDirectory }, control.project === undefined
+      if (control) throw localDiagnostic(refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(project), controlDirectory: control.controlDirectory }, control.project === undefined
         ? "choose a project folder outside this machine's Cotal home"
-        : `run cotal from the project folder ${shellWord(control.project)}, or choose a folder outside any .cotal`);
+        : `if you meant the enclosing project, repeat setup with ${codeSpan(`--project ${shellWord(control.project)}`)}, or choose a folder outside any .cotal`));
       protectedLocalDirectory(project, "the project folder");
       return { kind: "bind", entry, project: canonicalRoot(project) };
     }
@@ -535,9 +535,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
   if (pathProblem) throw localDiagnostic(refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, `rename the folder without those characters, or create the space in another folder with ${flag} <dir>`));
   const control = rootControlProblem(root);
-  if (control) throw refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(root), controlDirectory: control.controlDirectory }, control.project === undefined
+  if (control) throw localDiagnostic(refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(root), controlDirectory: control.controlDirectory }, control.project === undefined
     ? `create the space in a project folder with ${flag} <dir>`
-    : `run cotal from the project folder ${shellWord(control.project)}, or create the space in a folder outside any .cotal with ${flag} <dir>`);
+    : `if you meant the enclosing project, repeat your command with ${codeSpan(`${flag} ${shellWord(control.project)}`)}, or choose a folder outside any .cotal with ${flag} <dir>`));
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
   const registered = findMesh(name);
   if (registered) {

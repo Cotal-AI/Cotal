@@ -251,7 +251,7 @@ folder that is, or is in, a control directory, which is a project's `.cotal` or 
 judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. A
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
 itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
-next step names the project folder that `.cotal` belongs to. A project folder inside another project,
+refusal names the project folder that `.cotal` belongs to. If that was the intended project, repeat the original command with `--root` (or `--project` for setup) set to that folder and keep the other options. A project folder inside another project,
 outside its `.cotal`, is a project of its own. If another space uses the folder, prepare the new
 space in a different folder with `--root <dir>`. If the folder belongs to a prepared or registered
 space, the refusal suggests inspecting it with `cotal space show <name>`. It names each registration

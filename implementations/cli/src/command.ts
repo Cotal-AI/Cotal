@@ -1300,7 +1300,7 @@ function dispatchSeedRefusal(e: unknown, cmd: Command | undefined, parsed: Parse
   if (cmd && structured(cmd, sub)) {
     const message = e instanceof Error ? e.message : String(e);
     const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
-      e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
+      { cause: e, ...(e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {}) });
     const end = rest.indexOf("--");
     const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
     failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);
