@@ -1287,7 +1287,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const name = positionalName ?? values.name;
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
-  if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
+  if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text=<value> for a value beginning with a dash");
   if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values)), managerRosterHint(values));
   return { name, text };
 }

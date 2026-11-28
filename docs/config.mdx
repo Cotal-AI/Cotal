@@ -23,6 +23,8 @@ The config file has two layers. The space-local file takes precedence over the o
 | Base | `$XDG_CONFIG_HOME/cotal/config.json` (else `~/.config/cotal/config.json`; `%APPDATA%\Cotal\config.json` on Windows) | Operator-level, every space |
 | Override | `<project-root>/.cotal/config.json` | Space-local |
 
+If a file blocks the operator config directory, move that file to an unused name and repeat the command. Keep any earlier saved copy. Cotal creates the directory when it next saves there.
+
 The files merge per connector and server name. A space-local server replaces the whole operator-level
 entry with the same name. Connectors and servers present in only one file remain. A missing file
 means no settings. Invalid JSON, a non-object top level, or an invalid shared server causes an error.

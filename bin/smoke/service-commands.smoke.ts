@@ -263,7 +263,7 @@ try {
   for (const flags of [[], ["--dry-run"]]) {
     const install = cotal(["manager", "install", "--space", SPACE, ...flags]);
     const text = out(install);
-    const next = process.platform === "win32"
+    const next = flags.length ? text.includes(`\`cotal service --space ${SPACE}\``) && !/ExecStart=|KillMode=mixed/.test(text) : process.platform === "win32"
       ? ["cotal", "pnpm cotal"].some(cli => text.includes(`\`${cli} up --space ${SPACE}\``)) && !/ExecStart=|KillMode=mixed/.test(text)
       : text.includes(`manager start --foreground --space ${SPACE}`) && text.includes("KillMode=mixed");
     check(`cotal manager install ${flags.join(" ")} refuses before any effect and names a platform-appropriate next step`,
@@ -515,6 +515,11 @@ try {
   const next = (name: string) => `see what each option takes with \`cotal service add ${name} --preset broker --help\``;
   // The binary runs in `root`, so a relative --log-file is made absolute there, as `cotal up --log-file` makes it.
   const relativeLog = brokerAdd("b1", ["--log-file", "logs/broker.log"]);
+  const installPreview = cotal(["service", "install", "b1", "--space", PREPARED, "--dry-run", "--json"]);
+  const installError = JSON.parse(installPreview.stdout).error;
+  const read = /`cotal (service [^`]+)`/.exec(installError?.remedy ?? "")?.[1];
+  const inventory = read === `service --space ${PREPARED} --json` ? cotal(read.split(" ")) : undefined;
+  check("a broker install preview offers a read that lists the saved broker in its own space", installPreview.status === 2 && installError?.code === "UNSUPPORTED" && inventory?.status === 0 && JSON.parse(inventory.stdout).result.services.some((row: { name: string }) => row.name === "b1"), out(installPreview));
   const savedLog = (() => { const launch = serviceDefinitionStore(PREPARED).read("b1")?.record.value.launch; return launch?.type === "adapter" ? launch.options.logFile : undefined; })();
   const absolute = join(realpathSync(root), "logs", "broker.log");
   check("a relative --log-file is saved absolute against the folder add runs in, and its file need not exist yet",

@@ -88,7 +88,9 @@ export function localDiagnostic<T extends Error>(error: T): T {
   return error;
 }
 
-export function telemetryErrorText(command: string, error: unknown): ErrorText {
+export function telemetryErrorText(command: string, error: unknown, flags: readonly string[] = []): ErrorText {
+  // A pinned input usage error can repeat the terminal text in the original command's retry.
+  if (command === "input" && flags.includes("--on") && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
   // The connection error includes the stopped project's local restart instructions in its text.
   if (isConnectRefusal(error) && isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") return { message: null, stack: null };
@@ -192,7 +194,7 @@ export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode | null,
 /** Record the error a command threw, once: the first one recorded is the original, and a wrapper
  *  the kernel builds from it afterwards does not replace it. */
 export function recordTelemetryError(error: unknown): void {
-  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error);
+  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error, pending.flags);
 }
 
 /**
