@@ -1,0 +1,144 @@
+import { setTimeout as wait } from "node:timers/promises";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
+import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import {
+  channelBucket, chatStream, chatWildcard, credsFromJwt, newIdentity, unicastSubject, type CotalEndpoint, type CotalMessage,
+} from "../../src/index.js";
+import { PLUGIN_CHANNEL_ROOT, pluginChannelSubject } from "../../src/plugin-channel-route.js";
+import { startEnabledPluginSpace } from "./enabled-plugin-space.js";
+
+type Fixture = Awaited<ReturnType<typeof startEnabledPluginSpace>>;
+type Check = (name: string, condition: boolean, detail?: unknown) => void;
+
+async function until(condition: () => boolean): Promise<boolean> {
+  for (let i = 0; i < 200; i++) {
+    if (condition()) return true;
+    await wait(50);
+  }
+  return false;
+}
+
+async function viewerCreds(fixture: Fixture, subjects: string[]): Promise<string> {
+  const { space, auth } = fixture;
+  const id = newIdentity();
+  // The stock observer deliberately has neither DM nor EXT tap grants. Use a read-only fixture
+  // credential to exercise all three rails and leave reserved CHAT suppression to the endpoint.
+  const jwt = await encodeUser("cli-viewer-smoke", fromPublic(id.id), fromPublic(auth.account.pub), {
+    pub: { allow: ["$JS.API.INFO", `$JS.API.STREAM.INFO.${chatStream(space)}`, `$JS.API.STREAM.MSG.GET.KV_${channelBucket(space)}`] },
+    sub: { allow: [`_INBOX_${id.id}.>`, ...subjects] },
+  }, { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) });
+  return credsFromJwt(jwt, id);
+}
+
+function openViewer(fixture: Fixture, creds: string, name: string, subjects: { chat: string; dm: string; plugin: string }) {
+  const opened: NatsConnection[] = [];
+  const bound: NatsConnection[] = [];
+  const transportReady: NatsConnection[] = [];
+  const pluginTaps = new Map<NatsConnection, Subscription>();
+  const seen = new Set<string>();
+  const ep = fixture.endpoint({ creds, consume: false, channels: [], registerPresence: false, watchPresence: false,
+    watchChannels: false, readChannelRoutingProjection: true, card: { kind: "endpoint", name },
+    onConnection(wire) {
+      opened.push(wire);
+      // Observe the actual NATS subscription, so a silent handler alone cannot pass retirement.
+      const subscribe = wire.subscribe.bind(wire);
+      wire.subscribe = (...args) => {
+        const sub = subscribe(...args);
+        if (args[0] === subjects.plugin) pluginTaps.set(wire, sub);
+        return sub;
+      };
+    },
+  });
+  ep.on("connection", ({ connected }) => { if (connected) bound.push(opened.at(-1)!); });
+  ep.on("transport", ({ connected }) => { if (connected) transportReady.push(opened.at(-1)!); });
+  const receive = (_subject: string, msg: CotalMessage | undefined) => { if (msg) seen.add(msg.id); };
+  for (const subject of Object.values(subjects)) ep.tap(receive, { subject });
+  return { ep, opened, bound, transportReady, pluginTaps, seen };
+}
+
+async function checkStrictConsumer(check: Check, fixture: Fixture, identity: Awaited<ReturnType<Fixture["mintAgent"]>>) {
+  let wire: NatsConnection | undefined;
+  let ready = false;
+  const agent = fixture.endpoint({ creds: identity.creds, lifecycleUid: identity.lifecycleUid,
+    channels: [fixture.chatChannel], consume: true, readChannelRoutingProjection: true,
+    registerPresence: false, watchPresence: false, watchChannels: false, card: { kind: "agent", name: "strict-consumer" },
+    onConnection: (nc) => { wire = nc; } });
+  agent.on("connection", ({ connected }) => { if (connected) ready = true; });
+  const outcome = await agent.start().then(() => undefined, (error: unknown) => error);
+  check("consuming agent rejects the malformed projection after dial without binding",
+    outcome instanceof Error && outcome.message === "invalid plugin channel route projection fields" &&
+    !ready && wire?.isClosed() === true, outcome);
+}
+
+async function checkDegradedFeed(check: Check, fixture: Fixture, viewer: ReturnType<typeof openViewer>,
+  writer: CotalEndpoint, legacyWriter: CotalEndpoint, recipient: string, phase: string) {
+  const reserved = await legacyWriter.multicast(`reserved CHAT ${phase}`, { channel: fixture.hiddenChannel });
+  const extension = await writer.multicast(`EXT ${phase}`, { channel: fixture.channel });
+  const chat = await writer.multicast(`ordinary CHAT ${phase}`, { channel: fixture.chatChannel });
+  const dm = await writer.unicast(recipient, `DM ${phase}`);
+  check(`${phase}: viewer gets ordinary CHAT and DM over the broker`,
+    await until(() => viewer.seen.has(chat.id) && viewer.seen.has(dm.id)));
+  // The ordinary CHAT post follows reserved CHAT on the same wildcard subscription, so it
+  // witnesses that the broker has delivered through the point at which reserved CHAT was sent.
+  const rows = await viewer.ep.listChannels();
+  check(`${phase}: unknown routing suppresses reserved listings and taps, not ordinary CHAT`,
+    viewer.ep.channelRoutingMode() === undefined && !viewer.seen.has(reserved.id) && !viewer.seen.has(extension.id) &&
+    rows.some(({ channel, messages }) => channel === fixture.chatChannel && messages > 0) &&
+    rows.every(({ channel }) => channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)), rows);
+  const history = await viewer.ep.channelHistory(fixture.hiddenChannel, { limit: 1 }).then(() => undefined, (error: unknown) => error);
+  check(`${phase}: reserved channel history refuses on the unknown route`,
+    history instanceof Error && history.message === "plugin channel routing projection is unavailable", history);
+}
+
+export async function checkCliViewerSeam(check: Check): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { space, chatChannel, channel, hiddenChannel, endpoint, mintAgent } = fixture;
+  try {
+    const sender = await mintAgent({ post: [chatChannel, channel] });
+    const recipient = await mintAgent({ read: [chatChannel] });
+    const legacy = await mintAgent({ post: [hiddenChannel], legacy: true });
+    const publisher = (creds: string, name: string, kind: "agent" | "endpoint") => endpoint({ creds, channels: [],
+      consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { name, kind } });
+    const writer = publisher(sender.creds, "viewer-writer", "agent");
+    // Model a still-connected pre-activation publisher with a real legacy CHAT write grant.
+    const legacyWriter = publisher(legacy.creds, "legacy-viewer-writer", "endpoint");
+    const subjects = { chat: chatWildcard(space), dm: unicastSubject(space, recipient.owner, recipient.actor, "*", "*"),
+      plugin: pluginChannelSubject(space, "*", "*", channel) };
+    const creds = await viewerCreds(fixture, Object.values(subjects));
+    const viewer = openViewer(fixture, creds, "admitted-cli-viewer", subjects);
+    await Promise.all([writer.start(), legacyWriter.start(), viewer.ep.start()]);
+    const old = viewer.bound[0]!;
+    await old.flush();
+    const chat = await writer.multicast("ordinary CHAT before corruption", { channel: chatChannel });
+    const dm = await writer.unicast(recipient.principal, "DM before corruption");
+    const extension = await writer.multicast("EXT before corruption", { channel });
+    const admitted = await until(() => [chat, dm, extension].every(({ id }) => viewer.seen.has(id)));
+    check("admitted viewer lists its EXT grant and taps ordinary CHAT, DM and EXT before corruption",
+      admitted && viewer.ep.channelRoutingMode() === "isolated" &&
+      (await viewer.ep.listChannels()).some((row) => row.channel === channel));
+
+    await fixture.writeProjection({ enabled: true, epoch: "invalid" });
+    await old.reconnect();
+    const replaced = await until(() => viewer.bound.length === 2 && old.isClosed());
+    const replacement = viewer.bound[1];
+    check("admitted viewer's failed native projection read forces a full bind and retires its old EXT tap",
+      replaced && replacement !== old && viewer.opened.length === 2 && viewer.transportReady.filter((wire) => wire === old).length === 1 &&
+      viewer.pluginTaps.get(old)?.isClosed() === true && viewer.pluginTaps.size === 1 && viewer.ep.channelRoutingMode() === undefined);
+    if (replaced && replacement) {
+      await replacement.flush();
+      await checkDegradedFeed(check, fixture, viewer, writer, legacyWriter, recipient.principal, "replacement viewer");
+    }
+
+    await checkStrictConsumer(check, fixture, recipient);
+    const fresh = openViewer(fixture, creds, "fresh-cli-viewer", subjects);
+    await fresh.ep.start();
+    const freshWire = fresh.bound[0]!;
+    await freshWire.flush();
+    check("fresh viewer binds around the malformed projection without arming an EXT tap",
+      !freshWire.isClosed() && fresh.pluginTaps.size === 0 && fresh.ep.channelRoutingMode() === undefined);
+    await checkDegradedFeed(check, fixture, fresh, writer, legacyWriter, recipient.principal, "fresh viewer");
+  } finally {
+    await fixture.close();
+  }
+}
