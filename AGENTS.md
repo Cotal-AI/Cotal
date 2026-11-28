@@ -83,7 +83,7 @@ import**; a composition root just imports the surfaces it wants. An unknown agen
 with no silent fallback.
 
 - `**@cotal-ai/core**` (`packages/core`): endpoint, subjects, message types; the NATS client
-layer plus the extension contracts (`Connector`, `Command`, `Runtime`) and the `Registry`
+layer plus the extension contracts (`Connector`, `Command`, `Runtime`, `ArtifactStore`) and the `Registry`
 they self-register into. The wire standard — depends on nothing else in the repo.
 - `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator and client-surface
 layer over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path

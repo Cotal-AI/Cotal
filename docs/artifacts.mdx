@@ -71,6 +71,23 @@ that is a new upload: the earlier one gives no right to attach.
 The artifact store is left out of a [backup](backup-a-mesh.mdx). A restore brings the store back
 empty, so attachments from before the backup are gone after a restore.
 
+## Where the bytes are stored
+
+The bytes sit in an artifact store, a registered `artifact-store` extension. A space is bound to one
+store by name. With no binding, the store is `jetstream`, which keeps the bytes in the space's own
+object store on the broker. The binding is one key beside the space's artifacts endpoint material,
+`<space segment>/endpoints/artifacts/store-binding`, holding the bare store name.
+
+The delivery daemon reads the binding once, when it starts, and only when it serves `artifacts`. A
+binding that is not a store name, or names a store nobody registered, stops the whole delivery
+daemon for that space before it connects, Plane-3 delivery included, and nothing falls back to
+another store. A changed binding takes effect at the next start. A store that is registered but
+cannot be reached refuses when the daemon binds `artifacts`, and the daemon keeps serving
+everything else.
+
+The binding names where bytes sit. It is not a grant: every read still passes the channel read
+check.
+
 ## Limits in this release
 
 - A reference posted on a second channel for bytes already attached on another channel, and never
