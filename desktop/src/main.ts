@@ -105,7 +105,7 @@ function readSurface(anyConnected: boolean) {
   const account = computerAccount ?? frame?.account;
   const rows = account ? computerSpaces(account) : [];
   const refused = new Set(rows.filter(row => row.lastRefusal).map(row => row.space));
-  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space))), service: serviceNotice });
+  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space)), ready), service: serviceNotice });
 }
 async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
   if (tick && Date.now() < nextAppApplyTick) return;
@@ -541,14 +541,15 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = serviceNotice === "stopped" && !problem ? "NOT_RUNNING" : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const issue = readSurface(anyConnected).word === "Disk full" ? "DISK_FULL" : serviceNotice === "stopped" && !problem ? "SERVICE_STOPPED" : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
-  if (recovery && !lost && !(serviceNotice === "stopped" && !problem)) { title = recovery.title; description = recovery.description; }
-  el("recovery-panel").hidden = !recovery || Boolean(lost);
+  const diskFull = recovery?.action === "disk";
+  if (recovery && (!lost || diskFull) && !(serviceNotice === "stopped" && !problem)) { title = recovery.title; description = recovery.description; }
+  el("recovery-panel").hidden = !recovery || Boolean(lost) && !diskFull;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
-  if (recovery && !lost) {
+  if (recovery && (!lost || diskFull)) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el("recover").hidden = recovery.action === "none";
@@ -559,8 +560,8 @@ function showStage(next: Stage, focus = false): void {
       text("refusal-detail", `App version: ${appVersion}. Background service version differs. Update the connection when agent sessions have stopped.`); el("details").hidden = false;
     }
   }
-  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && !lost && issue !== "APPROVAL_PENDING");
-  el("connection-icon").dataset.tone = lost ? "error" : recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
+  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && (!lost || diskFull) && issue !== "APPROVAL_PENDING");
+  el("connection-icon").dataset.tone = lost && !diskFull ? "error" : recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
   text("connection-title", title); text("connection-description", description);
   setIcon(el("connection-icon"), lost ? CONNECTION_COPY[lost].icon : recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : setupActive ? "spinner" : "connect");
   const target = accountSpaces.get(selectedSpace());
@@ -1187,8 +1188,17 @@ el("recover").addEventListener("click", () => {
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
   else if (recovery === "install") void action(async () => {
     clearDetails();
-    await request(SERVICE_START);
+    await request({ op: "install" });
     await refresh();
+    if (!ready) throw new Error("The background service is not ready.");
+    notice("");
+  });
+  else if (recovery === "disk") void action(async () => { clearDetails(); await refresh(); });
+  else if (recovery === "start") void action(async () => {
+    clearDetails();
+    await request(SERVICE_START);
+    const status = await request({ op: "status" });
+    await showStatus(status, () => true);
     if (!ready) throw new Error("The background service is not ready.");
     notice("");
   });

@@ -72,7 +72,8 @@ export function nativeStub(scenario) {
       if (request.op === "start") {
         if (state.startFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_UNKNOWN", message: "Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof", native: { code: "OPERATION_UNKNOWN" } } };
         if (state.startHold) await new Promise(resolve => { window.__releaseStart = resolve; });
-        state.serviceStopped = false; return ok({ started: true });
+        state.serviceStopped = false;
+        return ok({ started: true });
       }
       if (request.op === "install") {
         for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
@@ -798,6 +799,12 @@ export const scenarios = [
       assert.equal(await page.locator("#tray-label").textContent(), word);
       assert.equal(await page.locator("#connection-title").textContent(), title);
       assert.equal(await page.locator("#connection-description").textContent(), description);
+      if (name === "disk-full") {
+        assert.equal(await page.locator("#recover").textContent(), "Check again");
+        const before = await page.evaluate(() => window.__renderState.statusRequests ?? 0);
+        await page.locator("#recover").click();
+        await page.waitForFunction(seen => (window.__renderState.statusRequests ?? 0) > seen, before);
+      }
       // The word comes from the field. Dropping it returns the computer to Connected.
       await page.evaluate(key => { delete window.__renderState[key]; window.__pushStatus(); }, Object.keys(extra)[0]);
       await page.waitForFunction(expected => document.querySelector("#tray-label").textContent === expected, "Connected");
@@ -847,7 +854,7 @@ export const scenarios = [
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true);
   } },
   // Start service shows the service's latest phase while it runs, and leaves no step spinning once it answers.
-  { name: "start-service-progress-clears", state: { serviceStopped: true, stoppedByYou: true, startHold: true },
+  { name: "start-service-progress-clears", state: { installed: true, serviceStopped: true, stoppedByYou: true, startHold: true },
     act: page => page.click("#recover"),
     expect: async page => {
       await page.waitForFunction(() => typeof window.__releaseStart === "function");
@@ -861,7 +868,7 @@ export const scenarios = [
     assert.equal(await page.locator("#setup-progress").isHidden(), true, "no service step keeps spinning while sign-in waits");
   } },
   // A failed Start service keeps its reason after a background status check, until the person acts on it.
-  { name: "start-service-failure-stays", state: { serviceStopped: true, stoppedByYou: true, startFails: true }, act: page => page.click("#recover"), expect: async page => {
+  { name: "start-service-failure-stays", state: { installed: true, serviceStopped: true, stoppedByYou: true, startFails: true }, act: page => page.click("#recover"), expect: async page => {
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "This operation could not finish");
     const reason = "OPERATION_UNKNOWN (OPERATION_UNKNOWN)\nWindows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement exited during proof";
     assert.equal(await page.locator("#refusal-detail").textContent(), reason);
@@ -872,8 +879,8 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish", "a background status check does not replace the failure");
     assert.equal(await page.locator("#refusal-detail").textContent(), reason, "the reason stays");
     await page.locator("#recover").click();
-    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "The background service is not running");
-    assert.equal(await page.locator("#recover").textContent(), "Start service", "acting on it shows the current state again");
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "The background service is stopped");
+    assert.equal(await page.locator("#recover").textContent(), "Start", "acting on it shows the stopped service again");
   } },
   { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");

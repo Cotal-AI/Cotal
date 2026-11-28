@@ -400,7 +400,7 @@ test("Start service starts a stopped background service and leaves no notice", a
     const before = a.node("connection-title").textContent;
     await a.stop();
     await a.tick();
-    assert.equal(a.node("recover").textContent, "Start service");
+    assert.equal(a.node("recover").textContent, "Start");
     assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it to run agents on this computer again.");
     assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
@@ -425,7 +425,7 @@ test("a service start that does not answer within 15 seconds keeps its refusal a
     await a.stop();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service is stopped");
-    assert.equal(a.node("recover").textContent, "Start service");
+    assert.equal(a.node("recover").textContent, "Start");
     a.options.installNotAnswering = reason;
     await a.click("recover");
     assert.equal(a.node("connection-title").textContent, "The background service has not started");
