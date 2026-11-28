@@ -908,6 +908,13 @@ available connector. Open dashboard is the primary action on that screen and on 
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
 reports, while original diagnostics and exact refusals remain under Details. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
+
+In the desktop app, **Connection**, **Agent apps**, and **Settings** are separate views. You can
+open **Agent apps** before connecting, including while Cotal sign-in is waiting. The app can list,
+install, and start sign-in for supported agent apps on this computer without setting up Cotal first.
+Once the background service runs, it uses the same installed apps and app-owned sign-ins. A service
+owned by another copy of Cotal allows viewing the apps but not changing them from this copy. While
+ownership is uncertain, the app checks again automatically. Checking apps does not restart the service.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` (`NOT_ANSWERING`), includes a
 startup refusal from that launch's `daemon.log` when one was written, and offers Check status in

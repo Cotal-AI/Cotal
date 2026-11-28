@@ -22,10 +22,12 @@ for (const [name, { pkg, srcDir }] of Object.entries(SEEDED_EXTENSIONS)) {
 
 const byName = new Map(registry.all("connector").map((connector) => [connector.name, connector]));
 const installers = {};
+const apps = [];
 for (const name of Object.keys(SEEDED_EXTENSIONS)) {
   const connector = byName.get(name);
   if (!connector?.install) continue;
   const checked = checkedHarnessInstall(connector.name, connector.requires ?? [], connector.install);
+  apps.push({ name, pkg: SEEDED_EXTENSIONS[name].pkg, requires: connector.requires, install: checked });
   const dirs = Object.fromEntries(
     ["darwin", "linux"].flatMap((os) => (checked.installers[os] ? [[os, checked.installers[os].binDir]] : [])),
   );
@@ -34,4 +36,4 @@ for (const name of Object.keys(SEEDED_EXTENSIONS)) {
 
 const outDir = join(binRoot, "dist", "daemon");
 mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, "seeded-installers.json"), `${JSON.stringify({ v: 1, installers }, null, 2)}\n`);
+writeFileSync(join(outDir, "seeded-installers.json"), `${JSON.stringify({ v: 1, installers, apps }, null, 2)}\n`);

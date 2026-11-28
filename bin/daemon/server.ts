@@ -33,6 +33,8 @@ import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/au
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
+import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
+import { withAppMutation } from "./agent-app-admission.js";
 
 type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
@@ -52,6 +54,26 @@ function managerUnavailable(op: string, cause: string) {
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 const MAX_REQUESTS_PER_CONNECTION = 64;
+
+async function answerAgentApp(req: AgentAppRequest & { id: string; appVersion: string }, opts: ServeOptions, write: (frame: DaemonResponse) => Promise<void>): Promise<void> {
+  const base = { v: DAEMON_PROTOCOL_VERSION, id: req.id } as const;
+  try {
+    if (req.appVersion !== opts.version) {
+      await write({ ...base, ok: false, error: { code: "CONFLICT", message: "This app and the background service have different versions." } });
+      return;
+    }
+    const owner = await opts.stopAllowed?.();
+    if (owner !== true && !(typeof owner === "object" && owner.state === "owned")) {
+      await write({ ...base, ok: false, error: { code: "LIFECYCLE_BLOCKED", message: "The background service could not be confirmed. Nothing was changed." } });
+      return;
+    }
+    const run = () => agentAppRequest(req, "service", line => { void write({ ...base, ok: true, event: "agent-app-progress", line }); });
+    const result = await (req.op === "agent-apps" ? run() : withAppMutation(opts.paths, run));
+    await write({ ...base, ok: true, result });
+  } catch {
+    await write({ ...base, ok: false, error: { code: "OPERATION_FAILED", message: "The agent app operation could not finish." } });
+  }
+}
 
 /** Counters a test or `status` can read. Every security decision increments exactly one. */
 interface ServerCounters {
@@ -316,6 +338,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      if ("appVersion" in req) { replyTask(answerAgentApp(req, opts, write)); return; }
       if (req.op === "daemon-stop") {
         // The reply acknowledges the request, not completed shutdown. The uninstaller
         // independently waits for this process and endpoint to disappear.

@@ -1,7 +1,7 @@
 /** Agent apps: the harnesses this computer's connectors run, where each stands, and the buttons that
  *  install one or sign it in. The service names an application; this file only shows it. */
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { requireResult, type Frame } from "./model";
+import { DaemonRefusal, requireResult, type Frame } from "./model";
 import { icon } from "./icons";
 import { installedMessage, isReady, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type Activity, type AgentApp, type RowView } from "./agent-apps-model";
 import claudeLogo from "../../assets/agents/claude-code.svg";
@@ -28,7 +28,7 @@ export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; management?: "service" | "local" | "other-copy" | "checking"; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
@@ -105,6 +105,8 @@ export interface AgentAppsHost {
 /** The Agent apps state and its two views: the full screen and the Ready screen's section. */
 export class AgentApps {
   apps: AgentApp[] | undefined;
+  management: AppResult["management"];
+  get readOnly(): boolean { return this.management === "other-copy" || this.management === "checking"; }
   private error: string | undefined;
   private loading: Promise<void> | undefined;
   private readonly activity = new Map<string, Activity>();
@@ -125,6 +127,7 @@ export class AgentApps {
       try {
         const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
+        this.management = result.management;
         // Only a refresh that ran clears the warning: "unchanged" also comes back when the service does not answer.
         if (result.service === "refreshed" && this.servicePending) { this.message = ""; this.servicePending = false; }
         if (result.service === "refreshed" || result.service === "unchanged") this.waitingForAgents = false;
@@ -147,8 +150,19 @@ export class AgentApps {
     };
   }
 
+  private recheckAfterRefusal(name: string, error: unknown): boolean {
+    if (!(error instanceof DaemonRefusal)) return false;
+    if (error.native === "APP_OTHER_COPY") this.management = "other-copy";
+    else if (error.native === "APP_OWNER_CHECKING" || error.code === "OPERATION_UNKNOWN") this.management = "checking";
+    else return false;
+    this.activity.delete(name);
+    this.message = error.code === "OPERATION_UNKNOWN" ? refusalMessage(error) : "";
+    void this.load();
+    return true;
+  }
+
   async install(name: string): Promise<void> {
-    if (this.busy) return;
+    if (this.busy || this.readOnly) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
     this.activity.set(name, { kind: "installing" }); this.message = ""; this.host.changed();
     this.host.announce(`Installing ${title}.`);
@@ -162,6 +176,7 @@ export class AgentApps {
       this.host.announce(this.message);
       if (result.app?.state === "signed-out") await this.signIn(name, result);
     } catch (error) {
+      if (this.recheckAfterRefusal(name, error)) return;
       this.activity.set(name, { kind: "failed", action: "install", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} could not be installed.`);
     } finally { this.host.changed(); }
@@ -169,7 +184,7 @@ export class AgentApps {
 
   /** `installed` is the install this sign-in follows, whose service state the message keeps. */
   async signIn(name: string, installed: AppResult = {}): Promise<void> {
-    if (this.busy) return;
+    if (this.busy || this.readOnly) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
     this.activity.set(name, { kind: "signing-in" }); this.host.changed();
     this.host.announce(`Sign in to ${title} in your browser.`);
@@ -180,6 +195,7 @@ export class AgentApps {
       if (result.app?.state === "signed-out") this.activity.set(name, { kind: "failed", action: "sign-in", message: "the sign-in finished, but the app still reports it is signed out" });
       else { this.message = installedMessage(title, installed, true); this.host.announce(this.message); }
     } catch (error) {
+      if (this.recheckAfterRefusal(name, error)) return;
       this.activity.set(name, { kind: "failed", action: "sign-in", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} sign-in did not finish.`);
     } finally { this.host.changed(); }
@@ -195,6 +211,7 @@ export class AgentApps {
     if (message.textContent !== text) message.textContent = text;
     message.classList.toggle("error", !!this.error);
     refresh.disabled = this.busy || !!this.loading;
+    refresh.hidden = this.readOnly;
     if (!this.apps) { if (!list.children.length) list.replaceChildren(); return; }
     const keys = new Set(this.apps.map(app => app.name));
     for (const node of Array.from(list.children)) if (!keys.has((node as HTMLElement).dataset.app ?? "")) node.remove();
@@ -202,7 +219,9 @@ export class AgentApps {
       let row = Array.from(list.children).find(node => (node as HTMLElement).dataset.app === app.name) as HTMLElement | undefined;
       if (!row) { row = document.createElement("li"); row.dataset.app = app.name; }
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
-      renderRow(row, app, rowView(app, this.activity.get(app.name), this.host.platform()), kind => this.act(app, kind));
+      const view = rowView(app, this.activity.get(app.name), this.host.platform());
+      if (this.readOnly && view.action?.kind !== "open-page") delete view.action;
+      renderRow(row, app, view, kind => this.act(app, kind));
       row.querySelectorAll<HTMLButtonElement>(".app-action button:not(.text-button)").forEach(button => { button.disabled = this.busy; });
     });
   }
@@ -216,7 +235,7 @@ export class AgentApps {
     if (!apps.length || apps.some(isReady)) { root.hidden = true; delete root.dataset.key; return; }
     root.hidden = false;
     const signedOut = apps.find(app => app.state === "signed-out");
-    const suggested = signedOut ?? suggestedApp(apps);
+    const suggested = this.readOnly ? undefined : signedOut ?? suggestedApp(apps);
     const key = JSON.stringify([apps.map(app => [app.name, app.state]), suggested?.name, this.busy]);
     if (root.dataset.key === key) return;
     root.dataset.key = key;

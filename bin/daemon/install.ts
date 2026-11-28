@@ -212,6 +212,7 @@ export interface NativeService {
   publish(plan: NativePlan): void;
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
+  stopped(receipt: UnitReceipt): boolean;
   isEnabled?(receipt: UnitReceipt): boolean;
   start(receipt: UnitReceipt): void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
@@ -559,6 +560,31 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
     recordedSourceIdentity(receipt, plan.mechanism, () => [...expectedArgv]);
   } else installedDaemonIdentity(paths, daemonHome);
   return true;
+}
+
+/** Read the native registration without creating a unit, including when its receipt was lost. */
+export function nativeDaemonIsAbsent(paths: DaemonPaths, daemonHome?: string): boolean {
+  if (process.platform !== "linux") {
+    const plan = planInstall(paths, daemonHome);
+    return !plan.alreadyInstalled && !plan.recovered;
+  }
+  assertNoServiceRepair(paths);
+  const name = daemonUnitName(daemonHome);
+  const path = join(systemdUserUnitDirectory(daemonUserServiceEnv()), name);
+  try { lstatSync(path); return false; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const observed = nativeRun("systemctl", ["--user", "show", "--no-pager", "--property=LoadState", "--value", name]);
+  return observed.status === 0 && observed.stdout.trim() === "not-found";
+}
+
+/** The caller still needs lifetime exclusion. In particular, an installed service whose
+ * supervisor reports activation or a restart must not be replaced by the Desktop sidecar. */
+export function installedDaemonIsStopped(paths: DaemonPaths, daemonHome?: string): boolean {
+  const recorded = recordedUnit(paths, daemonHome);
+  if (!recordedDaemonIdentity(recorded).same) return false;
+  if (recorded.service) return recorded.service.stopped(recorded.receipt);
+  const observed = nativeRun("systemctl", ["--user", "show", "--no-pager", "--property=ActiveState", "--value", recorded.receipt.unit]);
+  return observed.status === 0 && observed.stdout.trim() === "inactive";
 }
 
 /** Recreate a shell installation's missing runtime binding without adopting another CLI's service. */

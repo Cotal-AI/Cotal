@@ -25,6 +25,7 @@ import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
 import { applyInstall, installedDaemonIdentity, installedServicePath, planUninstall, planInstalledPathRefresh, preflightInstalledDaemon, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { withAppMutation } from "./agent-app-admission.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -114,7 +115,7 @@ function restartProgress(opts: InstallOptions): (detail: string) => void {
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
 async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
   const release = claimUpdateClosureAccess();
-  try { return await ensureInstalledUnderClosure(opts, steps); }
+  try { return await withAppMutation(opts.paths, () => ensureInstalledUnderClosure(opts, steps)); }
   finally { release(); }
 }
 

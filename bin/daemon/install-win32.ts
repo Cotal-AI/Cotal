@@ -205,6 +205,10 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
   };
   return {
     mechanism: "scheduled-task",
+    stopped(receipt) {
+      const task = owned(receipt, true);
+      return !task.present || (task.instances === 0 && (task.state === "Ready" || task.state === "Disabled"));
+    },
     get pendingEnd() { return pendingEnd; },
     inspect(receipt) {
       const task = owned(receipt, true);

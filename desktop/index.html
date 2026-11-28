@@ -8,6 +8,11 @@
       <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><button id="connection-status" class="status-pill" type="button"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></button><button id="open-settings" class="header-control" type="button" hidden>Settings</button></div>
     </aside>
     <main>
+      <div id="desktop-views" role="tablist" aria-label="Cotal views">
+        <button id="view-connection" type="button" role="tab" aria-selected="true" aria-controls="connection-view">Connection</button>
+        <button id="view-apps" type="button" role="tab" aria-selected="false" aria-controls="apps-panel" tabindex="-1">Agent apps</button>
+        <button id="view-settings" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1">Settings</button>
+      </div>
       <ol id="journey" aria-label="Connection steps">
         <li data-stage="welcome"><span class="step-marker">1</span><span>Welcome</span></li>
         <li data-stage="sign-in"><span class="step-marker">2</span><span>Sign in</span></li>
@@ -15,7 +20,7 @@
         <li data-stage="finished"><span class="step-marker">4</span><span>Ready</span></li>
       </ol>
       <section id="update-banner" class="update-banner" aria-label="Desktop update" hidden><span id="update-banner-copy"></span><button id="update-download" class="text-button" type="button">Open release page</button><button id="update-later" class="text-button" type="button">Later</button></section>
-      <section id="settings-panel" class="settings-card" aria-labelledby="settings-title" hidden>
+      <section id="settings-panel" class="settings-card" role="tabpanel" aria-labelledby="view-settings" hidden>
         <div class="settings-heading"><h1 id="settings-title" tabindex="-1">Settings</h1><button id="settings-back" class="text-button" type="button" hidden>Back</button></div>
         <section class="settings-row"><div><h2>This computer</h2><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="text-button" type="button">Edit name</button></section>
         <section class="settings-row"><div><h2>Updates</h2><p id="settings-update-summary" role="status">Update information is unavailable.</p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="text-button" type="button">Check now</button><button id="restart-update" class="text-button" type="button" hidden>Restart to update</button></section>
@@ -27,14 +32,17 @@
         <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
         <p id="settings-message" class="muted" role="status"></p>
       </section>
-      <section id="apps-panel" class="settings-card apps-card" aria-labelledby="apps-title" hidden>
+      <section id="apps-panel" class="settings-card apps-card" role="tabpanel" aria-labelledby="view-apps" hidden>
         <div class="settings-heading"><h1 id="apps-title" tabindex="-1">Agent apps</h1><button id="apps-back" class="text-button" type="button">Back</button></div>
-        <p class="apps-lead">Your spaces start agents on this computer in these apps. Install the ones you use; each one signs in with its own account.</p>
+        <p class="apps-lead">Install and manage the apps you use to run agents. Each app signs in with its own account.</p>
+        <p id="apps-local" class="muted" hidden>You can manage apps on this computer now. Connect it when you’re ready to use them from your spaces.</p>
+        <p id="apps-owner" class="apps-message" role="status" hidden></p>
+        <button id="apps-fix-connection" class="text-button" type="button" hidden>Fix in Connection</button>
         <p id="apps-message" class="apps-message" role="status"></p>
         <ul id="app-list" class="app-list" data-testid="app-list" aria-label="Agent apps"></ul>
         <div class="apps-footer"><p>Each app installs for your user only, from its maker’s own installer.</p><button id="apps-refresh" class="text-button" type="button">Check again</button></div>
       </section>
-      <section class="connection-card" aria-labelledby="connection-title">
+      <section id="connection-view" class="connection-card" role="tabpanel" aria-labelledby="view-connection">
         <h1 id="loading-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
         <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>
         <p id="step-caption" class="eyebrow">Let's get started</p>

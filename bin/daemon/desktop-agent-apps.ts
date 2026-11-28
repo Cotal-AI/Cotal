@@ -7,9 +7,8 @@ import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HarnessInstall, HarnessInstaller } from "@cotal-ai/core";
-import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, loadExtensionsManifest, OFFICIAL_CONNECTORS, resolveOnPath } from "@cotal-ai/workspace";
-import { discoverDesktopApplicationPath } from "./desktop-path.js";
-import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
+import { checkedHarnessInstall, cmdSpawnSpec, CommandFailure, extensionConnectors, extensionsManifestPath, loadExtensionsManifest, OFFICIAL_CONNECTORS, resolveOnPath } from "@cotal-ai/workspace";
+import { discoverDesktopApplicationPath, serviceApplicationPath } from "./desktop-path.js";
 
 export type AgentAppState = "signed-in" | "installed" | "signed-out" | "missing";
 
@@ -44,7 +43,8 @@ function systemRoot(): string | undefined {
 const system = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32" ? process.platform : undefined;
 
 /** Every installed connector that runs an external harness, with its checked install declaration. */
-function declaredApps(): Declared[] {
+function declaredApps(): readonly Declared[] {
+  if (!existsSync(extensionsManifestPath())) return shippedInstallers()?.apps ?? [];
   return loadExtensionsManifest().extensions.flatMap(ext => extensionConnectors(ext).map(connector => ({ connector, pkg: ext.pkg })))
     .filter(({ connector }) => connector.requires.length > 0)
     .map(({ connector, pkg }) => ({ name: connector.name, pkg, requires: connector.requires, ...(connector.install === undefined ? {} : { install: checkedHarnessInstall(connector.name, connector.requires, connector.install) }) }));
@@ -56,11 +56,10 @@ function declared(name: string): Declared {
   return app;
 }
 
-/** The account's application PATH, set on this process so the checks and the service refresh read it. */
+/** Use the same seeded installer directories as the background service. */
 async function accountPath(): Promise<string> {
   const { path } = await discoverDesktopApplicationPath();
-  process.env.PATH = path;
-  return path;
+  return process.platform === "win32" ? path : serviceApplicationPath(path);
 }
 
 /** One line of a child's output as the app may show it: no terminal codes, control characters or tokens. */
@@ -74,7 +73,7 @@ interface Ran { readonly code: number | null; readonly timedOut: boolean; readon
 
 /** Run a child with no terminal and report each output line. On POSIX it leads its own session, so
  *  a script that looks for /dev/tty finds none, and the whole group ends at the time limit. */
-function run(file: string, args: readonly string[], opts: { env: NodeJS.ProcessEnv; timeoutMs: number; emit?: Emit; input?: NodeJS.ReadableStream; verbatim?: boolean }): Promise<Ran> {
+function run(file: string, args: readonly string[], opts: { env: NodeJS.ProcessEnv; timeoutMs: number; emit?: Emit; approval?: (line: string) => string | undefined; input?: NodeJS.ReadableStream; verbatim?: boolean }): Promise<Ran> {
   return new Promise((resolve, reject) => {
     const posixGroup = process.platform !== "win32";
     const child = spawn(file, args, { env: opts.env, stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"], detached: posixGroup, windowsHide: true, windowsVerbatimArguments: opts.verbatim === true });
@@ -88,7 +87,10 @@ function run(file: string, args: readonly string[], opts: { env: NodeJS.ProcessE
         const line = shownLine(part);
         if (!line) continue;
         tail.push(line); if (tail.length > 40) tail.shift();
-        opts.emit?.(line);
+        if (opts.approval) {
+          const url = opts.approval(part);
+          if (url) opts.emit?.(url);
+        } else opts.emit?.(line);
       }
     };
     child.stdout!.on("data", take); child.stderr!.on("data", take);
@@ -112,10 +114,10 @@ function run(file: string, args: readonly string[], opts: { env: NodeJS.ProcessE
 }
 
 /** Run an executable found on `path`, through cmd.exe when Windows finds a batch shim. */
-function runFound(command: string, args: readonly string[], path: string, timeoutMs: number, emit?: Emit): Promise<Ran> {
+function runFound(command: string, args: readonly string[], path: string, timeoutMs: number, emit?: Emit, approval?: (line: string) => string | undefined): Promise<Ran> {
   const env = { ...process.env, PATH: path };
   const spec = cmdSpawnSpec(process.platform === "win32" ? command : resolveOnPath(command, env) ?? command, args, env);
-  return run(spec.file, spec.args, { env, timeoutMs, verbatim: spec.windowsVerbatimArguments, ...(emit ? { emit } : {}) });
+  return run(spec.file, spec.args, { env, timeoutMs, verbatim: spec.windowsVerbatimArguments, ...(emit ? { emit } : {}), ...(approval ? { approval } : {}) });
 }
 
 async function versionOf(command: string, path: string): Promise<string | undefined> {
@@ -132,7 +134,7 @@ async function signedIn(app: Declared, path: string): Promise<boolean | undefine
   if (!status) return undefined;
   try {
     const ran = await runFound(status[0]!, status.slice(1), path, 15_000);
-    return ran.timedOut || ran.code === null ? undefined : ran.code === 0;
+    return ran.timedOut ? undefined : ran.code === 0 ? true : ran.code === 1 ? false : undefined;
   } catch { return undefined; }
 }
 
@@ -171,15 +173,14 @@ function folder(binDir: string, home = userHome()): string {
   return win32.join(base, match![2]!);
 }
 
-function shippedConnectorBinDirs(os: "darwin" | "linux"): readonly string[] {
+function shippedInstallers(): { installers?: Record<string, Record<string, string>>; apps?: readonly Declared[] } | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
   const parent = dirname(here);
   const binRoot = basename(parent) === "dist" ? dirname(parent) : parent;
   const file = join(binRoot, "dist", "daemon", "seeded-installers.json");
-  if (!existsSync(file)) return [];
-  const data = JSON.parse(readFileSync(file, "utf8")) as { v?: unknown; installers?: Record<string, Record<string, string>> };
-  if (data?.v !== 1 || !data.installers) return [];
-  return Object.values(data.installers).flatMap(dirs => typeof dirs?.[os] === "string" ? [dirs[os]!] : []);
+  if (!existsSync(file)) return undefined;
+  const data = JSON.parse(readFileSync(file, "utf8")) as { v?: unknown; installers?: Record<string, Record<string, string>>; apps?: readonly Declared[] };
+  return data?.v === 1 ? data : undefined;
 }
 
 /** The absolute per-user installer folders declared by this OS's seeded and installed connectors. */
@@ -187,7 +188,8 @@ export function serviceAgentAppBinDirs(os: "darwin" | "linux", home = userHome()
   const valid = (binDir: string | undefined): binDir is string => typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
     && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
   const dirs: string[] = [];
-  for (const binDir of shippedConnectorBinDirs(os)) {
+  for (const installer of Object.values(shippedInstallers()?.installers ?? {})) {
+    const binDir = installer[os];
     if (valid(binDir)) dirs.push(folder(binDir, home));
   }
   try {
@@ -336,12 +338,13 @@ export async function installAgentApp(name: string, emit: Emit): Promise<AgentAp
 }
 
 /** Start the harness's own browser sign-in and wait for it to finish, then check it. */
-export async function signInAgentApp(name: string, emit: Emit): Promise<AgentApp> {
+export async function signInAgentApp(name: string, emit: Emit, service = false): Promise<AgentApp> {
   const app = declared(name);
   const login = app.install?.signIn?.login;
   if (!login) throw new CommandFailure("refused", "UNSUPPORTED", `${app.install?.title ?? name} has no sign-in the app can start`);
   const path = await accountPath();
-  const ran = await runFound(login[0]!, login.slice(1), path, 10 * 60_000, emit);
+  const ran = await runFound(login[0]!, login.slice(1), path, 10 * 60_000, emit,
+    service ? line => daemonAppApproval(name, line) : undefined);
   if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `sign-in did not finish within 10 minutes and was stopped`, { native: { code: "SIGN_IN_FAILED", detail: ran.tail.join("\n") } });
   if (ran.code !== 0) throw new CommandFailure("failed", "OPERATION_FAILED", `${app.install!.title} sign-in stopped with exit code ${ran.code}`, { native: { code: "SIGN_IN_FAILED", detail: ran.tail.join("\n") } });
   return await row(app, path);
@@ -351,42 +354,42 @@ export type AgentAppRequest =
   | { readonly op: "agent-apps"; readonly refresh?: boolean }
   | { readonly op: "agent-app-install"; readonly name: string }
   | { readonly op: "agent-app-sign-in"; readonly name: string };
-type ServiceOptions = Omit<InstallOptions, "report">;
+export type AppManagement = "service" | "local" | "other-copy" | "checking";
+export type AgentAppResult = { readonly apps: readonly AgentApp[]; readonly management: AppManagement }
+  | { readonly app: AgentApp; readonly pathAdded?: string };
 
-/** Let the installed service find what was installed. Running agents defer it: the app says so and
- *  checks again later. */
-async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
-  try { return await refreshServiceForApplication({ ...service, report: line => progress(line) }, dirs, before); }
-  catch (error) {
-    if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") return "waiting";
-    throw error;
-  }
+/** The new daemon hop must not relay arbitrary child output. Keep only the two existing local
+ * browser flows' known authorization addresses. Never accept a callback URL as an approval link. */
+export function daemonAppApproval(name: string, line: string): string | undefined {
+  const candidate = /https:\/\/[^\s"'<>]+/.exec(line)?.[0];
+  if (!candidate || candidate.length > 4096) return undefined;
+  try {
+    const url = new URL(candidate);
+    const claude = ["claude.ai", "platform.claude.com", "console.anthropic.com"];
+    if (url.username || url.password || url.hash || url.port || url.pathname !== "/oauth/authorize") return undefined;
+    if (!(name === "claude" && claude.includes(url.hostname)) && !(name === "codex" && url.hostname === "auth.openai.com")) return undefined;
+    const keys = [...url.searchParams.keys()];
+    if (keys.length !== new Set(keys).size || keys.some(key => ![
+      "client_id", "redirect_uri", "response_type", "scope", "code_challenge", "code_challenge_method",
+      "state", "code", "id_token_add_organizations", "codex_cli_simplified_flow", "originator",
+    ].includes(key)) || (url.searchParams.has("code") && !(name === "claude" && url.searchParams.get("code") === "true"))) return undefined;
+    if (url.searchParams.get("response_type") !== "code" || url.searchParams.get("code_challenge_method") !== "S256") return undefined;
+    if (!["client_id", "state", "code_challenge"].every(key => /^[A-Za-z0-9._~-]{1,256}$/.test(url.searchParams.get(key) ?? ""))) return undefined;
+    const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
+    if (redirect.username || redirect.password || redirect.search || redirect.hash) return undefined;
+    const loopback = redirect.protocol === "http:" && ["localhost", "127.0.0.1"].includes(redirect.hostname) && !!redirect.port;
+    const expectedRedirect = name === "claude"
+      ? (redirect.protocol === "https:" && !redirect.port && claude.includes(redirect.hostname) && redirect.pathname === "/oauth/code/callback") || (loopback && redirect.pathname === "/callback")
+      : loopback && redirect.pathname === "/auth/callback";
+    if (expectedRedirect) return url.href;
+  } catch { /* not a browser approval URL */ }
+  return undefined;
 }
 
-/** One agent-application request from the app. Progress lines arrive as `agent-app-progress` frames. */
-export async function agentAppRequest(req: AgentAppRequest, service: ServiceOptions, emit: (frame: unknown) => void): Promise<unknown> {
-  try { return await answer(req, service, emit); }
-  catch (error) {
-    // The app shows this text as the reason, so a plain error keeps its own words instead of a generic one.
-    if (error instanceof CommandFailure) throw error;
-    throw new CommandFailure("failed", "OPERATION_FAILED", error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function answer(req: AgentAppRequest, service: ServiceOptions, emit: (frame: unknown) => void): Promise<unknown> {
-  if (req.op === "agent-apps") {
-    const apps = await agentApps();
-    if (!req.refresh) return { apps };
-    const path = process.env.PATH ?? "";
-    const dirs = apps.filter(app => app.state !== "missing").flatMap(app => declared(app.name).requires.map(command => dirname(resolveOnPath(command, { ...process.env, PATH: path })!)));
-    return { apps, service: await refreshService(service, dirs, undefined, () => undefined) };
-  }
-  const progress = (line: string) => emit({ v: 1, event: "agent-app-progress", name: req.name, line });
-  if (req.op === "agent-app-sign-in") return { app: await signInAgentApp(req.name, progress) };
-  const installed = await installAgentApp(req.name, progress);
-  const done = { app: installed.app, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
-  // The install stands even when the service cannot pick it up yet, so the reply says both and Check
-  // again (`agent-apps` with refresh) tries the service once more.
-  try { return { ...done, service: await refreshService(service, installed.dirs, installed.before, progress) }; }
-  catch (error) { return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error) }; }
+/** One host operation core. Neither entry point installs or restarts the background service. */
+export async function agentAppRequest(req: AgentAppRequest, management: "service" | "local", progress: Emit): Promise<AgentAppResult> {
+  if (req.op === "agent-apps") return { apps: await agentApps(), management };
+  if (req.op === "agent-app-sign-in") return { app: await signInAgentApp(req.name, progress, management === "service") };
+  const { app, pathAdded } = await installAgentApp(req.name, management === "service" ? () => {} : progress);
+  return { app, ...(pathAdded ? { pathAdded } : {}) };
 }

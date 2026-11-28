@@ -41,6 +41,9 @@ export function nativeStub(scenario) {
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
+      if (state.trackAppNavigation && ["install", "login", "setup"].includes(request.op)) {
+        (state.connectionActions ??= []).push(request.op);
+      }
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
       if (request.op === "log") { state.logReads = (state.logReads ?? 0) + 1; if (state.logError) return fail("LOG_UNAVAILABLE", "The background service log could not be read."); return ok({ text: state.logText ?? "", truncated: state.logTruncated === true }); }
       if (request.op === "about") {
@@ -54,7 +57,7 @@ export function nativeStub(scenario) {
       if (request.op === "agent-apps") {
         state.appsRequests = [...(state.appsRequests ?? []), request.refresh === true];
         if (state.appsHold) await new Promise(() => {});
-        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: state.refreshService ?? "unchanged" } : {}) });
+        return ok({ apps: state.agentApps ?? defaultApps, ...(state.appManagement ? { management: state.appManagement } : {}), ...(request.refresh ? { service: state.refreshService ?? "unchanged" } : {}) });
       }
       if (request.op === "agent-app-install" || request.op === "agent-app-sign-in") {
         state.appActions = [...(state.appActions ?? []), `${request.op}:${request.name}`];
@@ -193,7 +196,61 @@ const accountOnly = { installed: true, signedIn: true, account: { mode: "account
 const openApps = async page => { await page.getByRole("button", { name: /^(Agent apps: |See all apps$)/ }).click(); await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor(); };
 const appButton = (page, label) => page.getByRole("button", { name: label, exact: true });
 const noApps = ["claude", "codex", "opencode", "pi", "jcode", "hermes"].map(name => appState(name, "missing"));
+const viewTab = (page, name) => page.getByRole("tab", { name, exact: true });
+async function openAppsDuringSetup(page) {
+  const tab = viewTab(page, "Agent apps");
+  assert.equal(await tab.isVisible(), true, "Agent apps is reachable without completing connection setup");
+  await viewTab(page, "Connection").focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await tab.getAttribute("aria-selected"), "true");
+  await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor();
+}
 const appsScenarios = [
+  { name: "agent-apps-before-setup", state: { trackAppNavigation: true, agentApps: noApps, appService: "none", appManagement: "local" }, act: async page => {
+    await page.locator("#sign-in-panel:not([hidden])").waitFor();
+    const title = await page.locator("#connection-title").textContent();
+    await openAppsDuringSetup(page);
+    assert.equal(await page.locator("#apps-local").isVisible(), true);
+    await appButton(page, "Install: Jcode").click();
+    await page.locator('[data-app="jcode"] .app-status').getByText(/Installed.*version/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:jcode"]);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.connectionActions ?? []), [], "installing an app never starts Cotal setup");
+    await viewTab(page, "Settings").click();
+    assert.equal(await page.locator("#settings-panel").isVisible(), true);
+    await viewTab(page, "Connection").click();
+    assert.equal(await page.locator("#connection-title").textContent(), title);
+    await openAppsDuringSetup(page);
+  } },
+  { name: "agent-apps-during-sign-in", state: { installed: true, waiting: true, trackAppNavigation: true, agentApps: noApps, appManagement: "service" }, act: async page => {
+    await page.click("#login");
+    await page.waitForFunction(() => window.__renderState.connectionActions?.includes("login"));
+    const title = await page.locator("#connection-title").textContent();
+    await openAppsDuringSetup(page);
+    await page.click("#apps-refresh");
+    await page.waitForFunction(() => window.__renderState.appsRequests?.includes(true));
+    await appButton(page, "Install: Jcode").click();
+    await page.locator('[data-app="jcode"] .app-status').getByText(/Installed.*version/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:jcode"]);
+    assert.equal(await viewTab(page, "Agent apps").getAttribute("aria-selected"), "true");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.connectionActions), ["login"]);
+    await viewTab(page, "Connection").click();
+    assert.equal(await page.locator("#connection-title").textContent(), title);
+    await openAppsDuringSetup(page);
+  } },
+  { name: "agent-apps-other-copy", state: { appManagement: "other-copy", agentApps: noApps }, act: openAppsDuringSetup, expect: async page => {
+    assert.match(await page.locator("#apps-owner").textContent(), /^Another copy of Cotal runs the background service/);
+    assert.equal(await page.locator("#app-list button").count(), 0);
+    await page.getByRole("button", { name: "Fix in Connection" }).click();
+    assert.equal(await viewTab(page, "Connection").getAttribute("aria-selected"), "true");
+  } },
+  { name: "agent-apps-checking-owner", state: { appManagement: "checking", agentApps: noApps }, act: openAppsDuringSetup, expect: async page => {
+    assert.match(await page.locator("#apps-owner").textContent(), /still checking the background service/);
+    assert.equal(await page.locator("#app-list button").count(), 0);
+    assert.equal(await page.locator("#apps-fix-connection").isVisible(), false);
+    await page.evaluate(() => { window.__renderState.appManagement = "local"; });
+    await appButton(page, "Install: Jcode").waitFor({ timeout: 8000 });
+    assert.equal(await page.locator("#apps-owner").isVisible(), false);
+  } },
   { name: "agent-apps-strip", state: connectedApps, expect: async page => {
     const chip = page.locator("#apps-chip");
     await chip.waitFor();

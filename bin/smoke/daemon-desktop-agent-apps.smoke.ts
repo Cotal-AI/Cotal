@@ -1,12 +1,12 @@
 /** The desktop bridge's agent apps through the built CLI: detection, a maker's installer run with no
  *  terminal, the PATH line it leaves to the app, a failed installer, a missing prerequisite, browser
- *  sign-in, the stop when the app goes away, and the wait while agents run on an installed service.
+ *  sign-in, the stop when the app goes away, and routing without a service restart.
  *  A recording curl stands in for the network, so no real installer is downloaded and the host's own
  *  PATH and startup files are never read. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
@@ -14,12 +14,16 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { generationOf, holdLifetime } from "../daemon/lifetime.js";
+import { withAppMutation } from "../daemon/agent-app-admission.js";
+import { daemonAppApproval } from "../daemon/desktop-agent-apps.js";
 
 if (process.platform === "win32") skipSuite("daemon-desktop-agent-apps: the recording curl and login-shell PATH are POSIX; Windows runs the real installers in the setup proof");
 const shell = basename(userInfo().shell ?? "");
 if (!["zsh", "bash"].includes(shell)) skipSuite(`daemon-desktop-agent-apps: the login shell ${shell || "(none)"} is not one whose startup files this smoke writes (zsh or bash)`);
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
-const root = mkdtempSync(join(tmpdir(), "desktop-agent-apps-"));
+const root = mkdtempSync(join(realpathSync(tmpdir()), "desktop-agent-apps-"));
+// Keep kernel socket paths short even when the runner's fixture root is long or no user session exists.
+const runtime = process.platform === "linux" ? mkdtempSync("/tmp/cotal-app-rt-") : undefined;
 let checks = 0;
 const check = (ok: unknown, what: string) => { assert.ok(ok, what); checks++; };
 
@@ -43,7 +47,7 @@ function isolated(name: string) {
   const dir = join(root, name);
   for (const leaf of ["home", "cotal", "config", "rt", "native", "cache", "data", "state"]) mkdirSync(join(dir, leaf), { recursive: true, mode: 0o700 });
   const env: NodeJS.ProcessEnv = {
-    HOME: join(dir, "home"), COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: join(dir, "config"), XDG_RUNTIME_DIR: join(dir, "rt"),
+    HOME: join(dir, "home"), COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: join(dir, "config"), XDG_RUNTIME_DIR: runtime ?? join(dir, "rt"),
     XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"),
     PATH: `${join(dir, "native")}:${sys}`, TMPDIR: tmpdir(), LANG: "C.UTF-8", USER: userInfo().username, LOGNAME: userInfo().username,
     DO_NOT_TRACK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", FAKE_INSTALLERS: join(dir, "installers"), CURL_CALLS: join(dir, "curl.calls"),
@@ -52,9 +56,10 @@ function isolated(name: string) {
   mkdirSync(env.FAKE_INSTALLERS!, { mode: 0o700 });
   // curl records its arguments and prints the fixture script named after the address's host.
   writeFileSync(join(dir, "native", "curl"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$CURL_CALLS"\nfor last; do :; done\nhost=\${last#https://}; host=\${host%%/*}\n[ -f "$FAKE_INSTALLERS/$host" ] || { echo "curl: (6) Could not resolve host: $host" >&2; exit 6; }\ncat "$FAKE_INSTALLERS/$host"\n`, { mode: 0o700 });
-  // Seeding installs the connectors with npm, so it alone runs on the host's PATH.
-  const seeded = spawnSync(node, [cli, "ext", "seed"], { env: { ...env, PATH: process.env.PATH }, encoding: "utf8", timeout: 240_000 });
-  assert.equal(seeded.status, 0, `seed ${name}: ${seeded.stderr}`);
+  if (process.platform === "linux") {
+    writeFileSync(join(dir, "native", "systemctl"), '#!/bin/sh\ncase "$*" in\n "--user show-environment") printf "HOME=%s\\nXDG_CONFIG_HOME=%s\\n" "$HOME" "$XDG_CONFIG_HOME";;\n "--user show --no-pager --property=LoadState --value cotal-daemon.service") printf "not-found\\n";;\n *) exit 99;;\nesac\n', { mode: 0o700 });
+    mkdirSync(join(env.XDG_CONFIG_HOME!, "systemd", "user"), { recursive: true, mode: 0o700 });
+  }
   return { dir, env, home: join(dir, "home") };
 }
 type Isolated = ReturnType<typeof isolated>;
@@ -81,11 +86,18 @@ const appsOf = (frames: Frame[]) => (resultOf(frames).result!.apps as App[]);
 const progressOf = (frames: Frame[], name: string) => frames.filter(frame => frame.event === "agent-app-progress" && frame.name === name).map(frame => frame.line!);
 
 try {
+  const approval = new URL("https://auth.openai.com/oauth/authorize");
+  approval.search = new URLSearchParams({ client_id: "fixture", response_type: "code", redirect_uri: "http://localhost:1455/auth/callback", code_challenge_method: "S256", code_challenge: "a".repeat(43), state: "b".repeat(64) }).toString();
+  check(approval.href.length > 200 && daemonAppApproval("codex", `Visit ${approval.href}`) === approval.href, "the full approved URL survives the service hop");
+  for (const line of [`${approval.href}&access_token=private`, `${approval.href}&code=pasteback`, `${approval.href}&state=duplicate`, "https://auth.openai.com/auth/callback?code=pasteback", "raw non-JWT secret"]) {
+    check(daemonAppApproval("codex", line) === undefined, "credential or callback output never becomes daemon progress");
+  }
   const target = isolated("main");
   // Cell 1: every seeded connector's application is listed; none is installed on this PATH.
   {
     const frames = await request(target, { op: "agent-apps" });
     check(resultOf(frames).ok === true, `agent-apps answers: ${JSON.stringify(resultOf(frames))}`);
+    check(resultOf(frames).result?.management === "local", "an unseeded profile with no service has local management");
     const apps = appsOf(frames);
     assert.deepEqual(apps.map(app => app.name).sort(), ["claude", "codex", "hermes", "jcode", "opencode", "pi"]); checks++;
     const claude = apps.find(app => app.name === "claude")!;
@@ -112,20 +124,15 @@ try {
     const lines = progressOf(frames, "claude");
     check(lines[0] === "Downloading the Claude Code installer from claude.ai", lines[0]);
     check(lines.includes("Installing claude for " + userInfo().username) && lines.includes("progress 50%") && lines.includes("Installed claude"), `installer output streamed line by line: ${lines.join(" | ")}`);
-    check(lines.some(line => line.startsWith("Added ") && line.includes(".local/bin")), "the PATH addition is reported");
     // The installer already runs with the PATH the account gets, so it never stops to ask about PATH.
     check(lines.includes("PATH already holds ~/.local/bin") && !lines.includes("PATH lacks ~/.local/bin"), `the installer sees its folder on PATH: ${lines.join(" | ")}`);
     assert.deepEqual(readFileSync(target.env.CURL_CALLS!, "utf8").trim().split("\n"), ["-fsSL --proto =https --tlsv1.2 https://claude.ai/install.sh"], "curl fetched the declared https script only"); checks++;
     const app = end.result!.app as App;
     assert.deepEqual({ state: app.state, version: app.version }, { state: "signed-out", version: "9.8.7" }); checks++;
-    check(end.result!.service === "none", "no service is installed in this fixture, so none was refreshed");
-    const startup = shell === "zsh" ? [".zshrc"] : [".bash_profile", ".bashrc"];
-    check(end.result!.pathAdded === startup.map(file => `~/${file}`).join(" and "), `pathAdded names ${startup.join(", ")}: ${String(end.result!.pathAdded)}`);
-    for (const file of startup) check(readFileSync(join(target.home, file), "utf8").endsWith('\n# Added by Cotal so the agent applications it installs are found\nexport PATH="$HOME/.local/bin:$PATH"\n'), `${file} carries the PATH line once`);
-    // Installing again writes no second line and runs the installer again.
+    check(end.result!.pathAdded === undefined, "the shipped folder is discovered without editing shell startup files");
+    check(!existsSync(join(daemonPaths(target.env, target.env.COTAL_HOME).state, "service-unit.json")), "local install did not install the Cotal background service");
     const again = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
     check(again.ok === true && again.result!.pathAdded === undefined, "a second install finds claude on PATH and adds nothing");
-    for (const file of startup) check(readFileSync(join(target.home, file), "utf8").split("export PATH=\"$HOME/.local/bin:$PATH\"").length === 2, `${file} still has one PATH line`);
   }
   // Cell 3b: Hermes runs through uv, so its install downloads uv's installer and says so.
   {
@@ -180,9 +187,7 @@ try {
       check(sleepers().length === 0, "the sign-in stopped once the app's process was gone");
     } else app.kill("SIGKILL");
   }
-  // Cell 8: with the service installed and agents running on it, an install and the app's later check
-  // both answer "waiting", and the unit, its receipt and the running service stay as they were. Any other
-  // refusal leaves the install standing: the reply is the installed app, "failed" and the reason.
+  // Cell 8: a verified owner receives the request once. Neither path restarts the service.
   if (process.platform === "linux") {
     const paths = daemonPaths(target.env, target.env.COTAL_HOME);
     const unitPath = join(target.env.XDG_CONFIG_HOME!, "systemd", "user", "cotal-daemon.service");
@@ -195,12 +200,29 @@ try {
     writeFileSync(receiptFile, receipt, { mode: 0o600 });
     // The user manager answers only where its unit directory is; any other systemctl call is recorded.
     const systemctlCalls = join(target.dir, "systemctl.calls");
-    writeFileSync(join(target.dir, "native", "systemctl"), `#!/bin/sh\nif [ "$*" = "--user show-environment" ]; then printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME"; exit 0; fi\nprintf '%s\\n' "$*" >> "${systemctlCalls}"\nexit 99\n`, { mode: 0o700 });
-    // The running service, holding the daemon's lifetime, has a Manager with a seat, so it refuses to prepare a restart.
+    const nativeState = join(target.dir, "native-state");
+    writeFileSync(nativeState, "activating\n");
+    writeFileSync(join(target.dir, "native", "systemctl"), `#!/bin/sh\nif [ "$*" = "--user show-environment" ]; then printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME"; exit 0; fi\nif [ "$*" = "--user show --no-pager --property=ActiveState --value cotal-daemon.service" ]; then cat "${nativeState}"; exit $?; fi\nprintf '%s\\n' "$*" >> "${systemctlCalls}"\nexit 99\n`, { mode: 0o700 });
+    const identity = spawnSync(node, ["--input-type=module", "-e", `import { installedDaemonIdentity } from ${JSON.stringify(new URL("../dist/daemon/install.js", import.meta.url).href)}; installedDaemonIdentity({ state: process.argv[1] }, undefined, process.argv.slice(2));`, paths.state, node, cli, "daemon", "serve"], { env: target.env, encoding: "utf8" });
+    check(identity.status === 0, `fixture identity is readable: ${identity.stderr}`);
+    const activating = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    check(!activating.ok && activating.error?.native?.code === "APP_OWNER_CHECKING", "systemd activation without a socket or lock never falls back");
+    writeFileSync(nativeState, "inactive\n");
+    const stopped = resultOf(await request(target, { op: "agent-apps" }));
+    check(stopped.ok && stopped.result?.management === "local", "a verified stopped service permits local discovery without starting it");
+    await withAppMutation(paths, async () => {
+      const maintenance = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+      check(!maintenance.ok && maintenance.error?.code === "LIFECYCLE_BLOCKED", "sidecar does not mutate while setup holds admission");
+      const start = resultOf(await request(target, { op: "install" }));
+      check(!start.ok && start.error?.code === "LIFECYCLE_BLOCKED", "Desktop Start service does not bypass app admission");
+    });
+    // Keep the lifetime acquired before exposing the endpoint, as the real daemon does.
     const ops: string[] = [];
-    let refusal = { code: "SEATS_ACTIVE", message: "hosted Manager holds 1 active seat", remedy: "stop the seat first" };
+    let dropMutation = false;
     mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
     const lifetime = holdLifetime(paths.lock);
+    const blocked = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    check(blocked.ok === false && blocked.error?.native?.code === "APP_OWNER_CHECKING", "startup without a published socket never falls back");
     const daemon = createServer(peer => {
       let buffer = "";
       peer.setEncoding("utf8");
@@ -209,7 +231,11 @@ try {
         for (let newline; (newline = buffer.indexOf("\n")) !== -1; buffer = buffer.slice(newline + 1)) {
           const { id, v, op } = JSON.parse(buffer.slice(0, newline)) as { id: string; v: number; op: string };
           ops.push(op);
-          const reply = op === "managers-prepare-restart" ? { ok: false, error: refusal } : { ok: false, error: { code: "UNKNOWN_OP", message: `unexpected ${op}` } };
+          if (dropMutation && op === "agent-app-install") { peer.destroy(); return; }
+          const row = { name: "claude", title: "Claude Code", state: "signed-in", version: "9.8.7" };
+          const reply = op === "agent-app-install" ? { ok: true, result: { app: row } }
+            : op === "agent-apps" ? { ok: true, result: { apps: [row], management: "service" } }
+              : { ok: false, error: { code: "UNKNOWN_OP", message: `unexpected ${op}` } };
           peer.write(`${JSON.stringify({ id, v, ...reply })}\n`);
         }
       });
@@ -218,18 +244,22 @@ try {
     chmodSync(paths.socket, 0o600);
     lifetime.publishing(generationOf(paths.socket));
     try {
+      const downloads = readFileSync(target.env.CURL_CALLS!, "utf8");
+      rmSync(receiptFile);
+      const noReceipt = resultOf(await request(target, { op: "agent-apps" }));
+      check(noReceipt.ok === true && noReceipt.result?.management === "checking", "a live daemon without a receipt allows only read-only discovery");
+      writeFileSync(receiptFile, receipt, { mode: 0o600 });
       const frames = await request(target, { op: "agent-app-install", name: "claude" });
       const end = resultOf(frames);
-      check(end.ok === true && end.result!.service === "waiting", `an install while agents run answers waiting: ${JSON.stringify(end)}`);
-      check((end.result!.app as App).state === "signed-in", "the installed app is still reported");
-      check(progressOf(frames, "claude").some(line => line.startsWith("service: waiting for hosted Managers")), "the wait is reported as progress");
+      check(end.ok === true && (end.result?.app as App).state === "signed-in", `the verified service answers install: ${JSON.stringify(end)}`);
       const checked = resultOf(await request(target, { op: "agent-apps", refresh: true }));
-      check(checked.ok === true && checked.result!.service === "waiting", `the app's later check also answers waiting: ${JSON.stringify(checked)}`);
-      refusal = { code: "OPERATION_FAILED", message: "hosted Manager did not confirm readiness", remedy: "try again" };
-      const failed = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
-      check(failed.ok === true && failed.result!.service === "failed" && /hosted Manager did not confirm readiness/.test(String(failed.result!.serviceError)), `an install whose service refresh fails still answers installed, with the reason: ${JSON.stringify(failed)}`);
-      check((failed.result!.app as App).state === "signed-in", "the failed refresh still reports the installed app");
-      assert.deepEqual(ops, ["managers-prepare-restart", "managers-prepare-restart", "managers-prepare-restart"], "each request asked the Manager once and never aborted or restarted"); checks++;
+      check(checked.ok === true && checked.result?.management === "service", `the verified service answers the fresh list: ${JSON.stringify(checked)}`);
+      assert.deepEqual(ops, ["agent-app-install", "agent-apps"], "no mutation replay, no service restart request"); checks++;
+      dropMutation = true;
+      const lost = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+      check(!lost.ok && lost.error?.code === "OPERATION_UNKNOWN", "losing the mutation reply does not report a definite failure");
+      assert.deepEqual(ops, ["agent-app-install", "agent-apps", "agent-app-install"], "the lost mutation reply was not replayed"); checks++;
+      check(readFileSync(target.env.CURL_CALLS!, "utf8") === downloads, "the Desktop sidecar did not run a second installer");
       check(readFileSync(unitPath, "utf8") === unit && readFileSync(receiptFile, "utf8") === receipt, "the unit and its receipt are unchanged");
       check(!existsSync(systemctlCalls), `the service was never reloaded or restarted: ${existsSync(systemctlCalls) ? readFileSync(systemctlCalls, "utf8") : ""}`);
     } finally {
@@ -240,4 +270,5 @@ try {
   console.log(`daemon-desktop-agent-apps: ${checks} checks passed (${process.platform}, login shell ${shell})`);
 } finally {
   rmSync(root, { recursive: true, force: true });
+  if (runtime) rmSync(runtime, { recursive: true, force: true });
 }
