@@ -13,6 +13,7 @@ import { heldClaim, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
 import { MissingFlags } from "../lib/missing-flags.js";
+import { localDiagnostic } from "../telemetry.js";
 import { foreignEntriesRefusal, listEntries, oldStoreForeignEntries } from "../lib/store-dir.js";
 import { cotalRoot } from "../lib/paths.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -65,7 +66,7 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   }
   if (foreign.length) throw foreignEntriesRefusal(oldStore!, foreign, "the previous store", `nothing was deleted${keepHistory}`, `\`${retry}\``, target);
   if (onlyCopy && !discardHistory)
-    throw new MissingFlags(`${onlyCopyText}, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with \`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``, target);
+    throw localDiagnostic(new MissingFlags(`${onlyCopyText}, and cleanup deletes it only with --discard-history; nothing was deleted`, `keep that store, or delete it and the ${leftOut} it holds with \`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``, target));
   if (!args.values.yes) {
     if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("scripted maintenance recovery/cleanup requires --yes after reviewing the exact attempt and paths", { target, remedy: `review it with \`cotal backup ${mode} ${attemptId} --dry-run\`, then run \`${retry}\`` });
     const confirmed = await prompts.confirm({ message: `${mode === "recover" ? "Recover the stale pre-commit attempt" : restore.method === "disaster" ? "Retire the completed restore journal for" : onlyCopy ? `Remove the unchanged retained old source, the only copy of the ${leftOut} the restore left out, for` : "Remove only the unchanged retained old source for"} ${oneLine(attemptId)} in ${oneLine(snapshot.space)}? Root ${oneLine(root)}; source ${oneLine(mode === "recover" ? snapshot.source.path : restore.previousSource?.identity.path ?? "not recorded")}. No live-owner, identity or journal guard is bypassed.`, initialValue: false });
