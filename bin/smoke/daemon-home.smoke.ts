@@ -76,6 +76,7 @@ import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, recordPreparedSpace, removePreparedSpace, setCurrent, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
+import { queryDaemon } from "../daemon/client.js";
 import { generationOf, holdLifetime } from "../daemon/lifetime.js";
 import { managerCleanupFile, writeManagerCleanup } from "../daemon/manager-cleanup.js";
 
@@ -157,7 +158,7 @@ function track(child: ChildProcess): ChildProcess {
   return child;
 }
 
-type Doc = { command?: string; target?: { space?: string; requested?: string; idp?: string; file?: string } | null; outcome?: string; result?: Record<string, any> | null; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
+type Doc = { command?: string; target?: { space?: string; requested?: string; idp?: string; file?: string } | null; outcome?: string; result?: Record<string, any> | null; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } }; warnings?: { code: string; target: unknown; message: string }[] };
 /** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
 async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv, built = false, shellJson = true): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(typeof args === "string"
@@ -592,6 +593,14 @@ try {
       writeFileSync(damagedPreparedFile, "{not-valid-prepared-json", { mode: 0o600 });
       const damagedPreparedJson = await builtCli(["status", "--daemon-home", g1Home, "--space", damagedPrepared, "--json"]);
       check("G1 unreadable prepared-space record names prepared space record and file without calling it mesh registry", damagedPreparedJson.status === 2 && damagedPreparedJson.doc.outcome === "refused" && damagedPreparedJson.doc.target?.space === damagedPrepared && damagedPreparedJson.doc.target?.file === damagedPreparedFile && damagedPreparedJson.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && damagedPreparedJson.doc.error.cause?.code === "UNAVAILABLE" && damagedPreparedJson.doc.error.message === `${damagedPreparedFile} is not a usable prepared space record.` && damagedPreparedJson.doc.error.remedy === `remove it with \`cotal space forget ${damagedPrepared}\``, damagedPreparedJson);
+      const emptyPreparedJson = await builtCli(["status", "--daemon-home", g1Home, "--space", localPrepared, "--json"]);
+      check("G1 a prepared local refusal with no hosted spaces warns about one unrelated damaged record", emptyPreparedJson.status === 2
+        && emptyPreparedJson.doc.error?.code === "TARGET_NOT_FOUND" && emptyPreparedJson.doc.error.cause?.code === "NOT_REQUESTED"
+        && emptyPreparedJson.doc.error.message?.endsWith(". It is not hosting any spaces.") === true
+        && JSON.stringify(emptyPreparedJson.doc.warnings) === JSON.stringify([{
+          code: "PREPARED_RECORD_SKIPPED", target: { file: damagedPreparedFile, space: damagedPrepared },
+          message: `${damagedPreparedFile} is not a usable prepared space record, so it is skipped; remove it with \`cotal space forget ${damagedPrepared}\``,
+        }]), emptyPreparedJson);
       rmSync(damagedPreparedFile);
       const registrations = dirname(damagedFile);
       const heldRegistrations = `${registrations}.held`;
@@ -673,7 +682,7 @@ try {
     check("G1 valid status still reaches the same daemon", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, { status: st.status, doc: st.doc });
   });
 
-  await cell("G2 a status refusal without a file does not guess from the CLI's registrations", async () => {
+  await cell("G2 a status refusal without a message does not guess from the CLI's registrations", async () => {
     const daemonHome = join(root, "status-reply-fixture");
     const clientHome = join(root, "broken-client-registry");
     const paths = daemonPathsFor(daemonHome, childEnv);
@@ -691,7 +700,7 @@ try {
         if (!line.includes("\n")) return;
         const request = JSON.parse(line) as { v: number; id: string; op: string };
         requests.push(request.op);
-        socket.end(JSON.stringify({ v: request.v, id: request.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "opaque legacy refusal" } }) + "\n");
+        socket.end(JSON.stringify({ v: request.v, id: request.id, ok: false, error: { code: "MANAGER_UNAVAILABLE" } }) + "\n");
       });
     });
     try {
@@ -710,6 +719,47 @@ try {
       try { if (peer.listening) await new Promise<void>(resolve => peer.close(() => resolve())); }
       finally { lifetime.release(); }
     }
+  });
+
+  await cell("G3 a built daemon reports a failure reading its own state folder", async () => {
+    const daemonHome = join(root, "status-state-folder");
+    const state = join(daemonHome, "daemon"), held = `${state}.held`;
+    mkdirSync(daemonHome, { mode: 0o700 });
+    const daemon = await serve(["--daemon-home", daemonHome], childEnv, true);
+    try {
+      if (!live(daemon)) throw new Error(`the built daemon did not start: ${daemon.err}`);
+      const status = ["status", "--daemon-home", daemonHome];
+      const before = await builtCli([...status, "--json"]);
+      check("G3 the daemon answers status before its state folder becomes unreadable", before.status === 0 && before.doc.result?.pid === daemon.child.pid, before);
+      const hadState = existsSync(state);
+      if (hadState) renameSync(state, held);
+      try {
+        writeFileSync(state, "not a folder", { mode: 0o600 });
+        const wire = await queryDaemon({ paths: daemonPathsFor(daemonHome, childEnv) });
+        const message = `the daemon could not complete status: ENOTDIR: not a directory, scandir '${state}'`;
+        check("G3 the daemon sends MANAGER_UNAVAILABLE with the state path, cause and remedy", !wire.ok
+          && wire.error.code === "MANAGER_UNAVAILABLE" && wire.error.message === message && wire.error.file === undefined
+          && wire.error.remedy === "read `cotal daemon status`, restore the Manager connection if needed, then run the same command again", wire);
+        const scoped = [...status, "--space", "missing"];
+        const unfilteredJson = await builtCli([...status, "--json"]);
+        const scopedJson = await builtCli([...scoped, "--json"]);
+        const unfilteredPlain = await builtCli([...status, "--plain"]);
+        const scopedPlain = await builtCli([...scoped, "--plain"]);
+        const cliMessage = `The background service could not complete the status request: ${message}`;
+        check("G3 both JSON forms exit 5 and report the same daemon-wide cause", unfilteredJson.status === 5 && scopedJson.status === 5
+          && scopedJson.out === unfilteredJson.out && scopedJson.doc.outcome === "failed" && scopedJson.doc.target === null
+          && scopedJson.doc.result === null && scopedJson.doc.error?.code === "OPERATION_FAILED" && scopedJson.doc.error.message === cliMessage,
+          { unfilteredJson, scopedJson });
+        check("G3 both plain forms exit 5 and report the same daemon-wide cause", unfilteredPlain.status === 5 && scopedPlain.status === 5
+          && scopedPlain.out === "" && unfilteredPlain.out === "" && scopedPlain.err === unfilteredPlain.err && scopedPlain.err.includes(cliMessage),
+          { unfilteredPlain, scopedPlain });
+      } finally {
+        rmSync(state, { force: true });
+        if (hadState) renameSync(held, state);
+      }
+      const recovered = await builtCli([...status, "--json"]);
+      check("G3 restoring the state folder recovers the same daemon without a restart", recovered.status === 0 && recovered.doc.result?.pid === daemon.child.pid, recovered);
+    } finally { await stop(daemon); }
   });
 
   await cell("H6 managed catalog refresh never applies to the shared registry", async () => {

@@ -59,8 +59,9 @@ prevent later resume. Sign-out reports unconfirmed retirements rather than claim
 If a local daemon cannot read the space registrations while assembling a `status` reply, it returns
 `ok: false` with `error.code: "DEPENDENCY_UNAVAILABLE"`, the absolute `error.file`, a human-readable
 `error.message` and recovery advice in `error.remedy`. This is a daemon-wide failure, not a refusal
-for a particular space. A status failure with no registry cause uses `OPERATION_FAILED` without a
-file. These fields use the existing local envelope version and do not change the mesh wire protocol.
+for a particular space. Other status failures use `MANAGER_UNAVAILABLE` with a diagnostic message
+and remedy, without `error.file`. These fields use the existing local envelope version and do not
+change the mesh wire protocol.
 
 ## Local daemon custody recovery
 

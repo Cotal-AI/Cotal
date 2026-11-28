@@ -1280,8 +1280,9 @@ the background service hosts, or says it hosts none, unless it could not read a 
 - If the background service cannot read its space registrations while assembling status,
   both forms of `status` refuse with exit 2, `DEPENDENCY_UNAVAILABLE` (`UNAVAILABLE`) and
   `target: { file }`. The path and recovery advice come from the service's reply, even with
-  `--daemon-home <dir>`. If the service returns a failure without a registry cause, both forms
-  report `OPERATION_FAILED` with exit 5 and no registration details.
+  `--daemon-home <dir>`. For other failed replies, both forms exit 5 with `OPERATION_FAILED`,
+  no space target, and the service's message if it supplied one. They do not infer a registration
+  problem from the CLI's own records.
 - For a space turned on for this computer, `LIFECYCLE_BLOCKED` (`ACCOUNT_DESIRED`) sets
   `target: { space }`. If the Manager has not started yet, there is nothing to run. If starting it is
   blocked, status gives the reason and the next step.

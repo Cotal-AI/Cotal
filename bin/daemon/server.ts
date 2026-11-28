@@ -41,8 +41,7 @@ function managerResultError(op: string, error: unknown, log: (message: string) =
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
   log(`daemon: ${op} refused: ${cause}`);
-  if (op === "status") {
-    if (!isMeshRegistryError(error)) return { code: "OPERATION_FAILED" as const, message: "The background service did not answer the status request." };
+  if (op === "status" && isMeshRegistryError(error)) {
     const file = oneLine(error.file);
     const folder = error.file === meshesDir();
     const notDirectory = (error.cause as NodeJS.ErrnoException | undefined)?.code === "ENOTDIR";

@@ -213,7 +213,9 @@ async function status(args: ParsedArgs): Promise<void> {
     if (code === "DEPENDENCY_UNAVAILABLE" && typeof file === "string" && file.length > 0) {
       throw new CommandFailure("refused", code, message, { target: { file }, remedy, native: { code: "UNAVAILABLE" } });
     }
-    throw new CommandFailure("failed", "OPERATION_FAILED", "The background service did not answer the status request.");
+    throw new CommandFailure("failed", "OPERATION_FAILED", typeof message === "string" && message.trim()
+      ? `The background service could not complete the status request: ${message}`
+      : "The background service did not answer the status request.");
   }
   if (space !== undefined && !(reply.result.managers ?? []).some(manager => manager.space === space)) {
     throw unhostedManagerStatusRefusal(space, (reply.result.managers ?? []).map(manager => manager.space), home, reply.result.account);
