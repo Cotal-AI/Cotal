@@ -15,7 +15,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * stay separate commands; this one does not absorb them.
  */
 import { lstatSync } from "node:fs";
-import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -25,6 +25,7 @@ import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
 import { applyInstall, installedDaemonIdentity, installedServicePath, planUninstall, planInstalledPathRefresh, preflightInstalledDaemon, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { claimSuspendableDaemonClosure } from "./startup-recovery.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -113,9 +114,9 @@ function restartProgress(opts: InstallOptions): (detail: string) => void {
 
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
 async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
-  const release = claimUpdateClosureAccess();
+  const closure = claimSuspendableDaemonClosure();
   try { return await ensureInstalledUnderClosure(opts, steps); }
-  finally { release(); }
+  finally { closure.release(); }
 }
 
 /** A verified unit, including a recovered one. A failed inspection of a recorded unit still refuses setup. */
@@ -149,9 +150,11 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
     outcome = "installed";
     detail = `${installed.unit} installed${installed.mechanism === "systemd-user" ? `, ${installed.lingerAlready ? "linger was already enabled" : "linger enabled"}` : ""}, restart ${installed.restart}, started by ${installed.wantedBy}`;
   }
+  let waitVersion = opts.version;
   if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
     // A start failure is not evidence that no installation was recorded.
-    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts));
+    const started = await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts));
+    if (started.recoveredVersion) waitVersion = started.recoveredVersion;
     detail = `${unit} is already installed; its owned service received a start request`;
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);
@@ -172,7 +175,8 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
       if (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) {
         const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
         if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
-        try { await restartInstalled(opts.paths, opts.daemonHome, false, opts.version, restartProgress(opts)); }
+        let restarted;
+        try { restarted = await restartInstalled(opts.paths, opts.daemonHome, false, opts.version, restartProgress(opts)); }
         catch (error) {
           if (hosted && process.platform !== "win32") {
             try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
@@ -180,13 +184,14 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
           }
           throw error;
         }
-        detail = `${unit} restarted through its recorded service to load Cotal ${opts.version}`;
+        if (restarted.recoveredVersion) waitVersion = restarted.recoveredVersion;
+        detail = `${unit} restarted through its recorded service to load Cotal ${waitVersion}`;
       }
     }
   }
   steps.push({ step: "install", outcome, detail });
   opts.report(`service: ${detail}`, steps.at(-1));
-  await waitForDaemon(opts, 60);
+  await waitForDaemon(waitVersion === opts.version ? opts : { ...opts, version: waitVersion }, 60);
   opts.report(`service: the daemon answers at ${opts.paths.socket}`, { step: "install", outcome: "ready", detail: `the daemon answers at ${opts.paths.socket}` });
   return unit;
 }
@@ -200,9 +205,9 @@ function hasNewApplications(manager: HostedManager): boolean {
 async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
   // Hosted Managers claim the same closure when they load connectors. Only native service
   // mutations run under the CLI's claim, not the later wait for a Manager to answer.
-  const release = claimUpdateClosureAccess();
+  const closure = claimSuspendableDaemonClosure();
   try { return await refreshApplicationsUnderClosure(opts, steps); }
-  finally { release(); }
+  finally { closure.release(); }
 }
 
 /** After the app installs an application into `dirs`, or when it checks again: refresh the installed
@@ -239,13 +244,14 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
     if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}. The new application will become available after the seats stop and setup runs again. No service was changed or restarted`, { native: error.native, remedy: error.remedy });
     throw error;
   }
+  let restarted;
   try {
     if (refresh) {
       const updating = `updating ${unit} pinned PATH`;
       opts.report(`service: ${updating}`, { step: "install", outcome: "running", detail: updating });
       refresh();
     }
-    await restartInstalled(opts.paths, opts.daemonHome, true, expected.version, restartProgress(opts));
+    restarted = await restartInstalled(opts.paths, opts.daemonHome, true, expected.version, restartProgress(opts));
   } catch (error) {
     try { if (process.platform !== "win32") await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
     catch { /* Preserve the installation or native service failure. */ }
@@ -254,7 +260,10 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : `restarted ${unit} with the updated PATH`;
   steps.push({ step: "install", outcome: "path-refreshed", detail });
   opts.report(`service: ${detail}`, steps.at(-1));
-  await waitForDaemon(expected, 60);
+  const waitExpected: InstallOptions = restarted.recoveredVersion && expected.version
+    ? { ...expected, version: restarted.recoveredVersion }
+    : expected;
+  await waitForDaemon(waitExpected, 60);
   return true;
 }
 
