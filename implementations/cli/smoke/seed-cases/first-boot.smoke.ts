@@ -15,20 +15,22 @@ try {
     const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();
     check("auto-seed: authority records all seven first-party exts", ever.join(",") === "claude,codex,hermes,jcode,opencode,pi,web", ever);
 
-    // The operator-global seed-store write must not be silent (#593): re-seeding `~/.config/cotal/seed/store`
-    // from a non-released checkout makes those bytes the machine-wide payload for the version key, so the
-    // reconcile announces each materialization with its path on the provenance channel (stderr).
     const storeRoot = join(cfg, "cotal", "seed", "store");
-    // The EXACT destination, not merely the store root: a line naming the root, or a sibling under it,
-    // would satisfy a substring check while no longer naming the directory that was actually written.
     const generation = readJson(join(sd, "stamp.json")).generation;
     const openCodePayload = join(storeRoot, generation, "opencode");
+    check("automatic seeding keeps payload paths off the screen", existsSync(join(openCodePayload, "package.json")) &&
+      !`${first.stdout}${first.stderr}`.includes(storeRoot), first.stderr);
+
+    const explicitCfg = track(freshCfg());
+    const explicit = cotal(explicitCfg, ["ext", "seed"]);
+    const explicitRoot = join(seedDir(explicitCfg), "store");
+    const explicitPayload = join(explicitRoot, generation, "opencode");
     check("provenance: the machine-wide seed-store write is announced with its path (not silent)",
-      first.stderr.includes("wrote operator-global seed store payload") && first.stderr.includes(storeRoot),
-      first.stderr);
+      explicit.status === 0 && explicit.stderr.includes("wrote operator-global seed store payload") && explicit.stderr.includes(explicitRoot),
+      explicit.stderr);
     check("provenance: the announced destination is the payload directory itself, not just the store root",
-      first.stderr.includes(`operator-global seed store payload (opencode): ${openCodePayload}`) && existsSync(join(openCodePayload, "package.json")),
-      first.stderr);
+      explicit.stderr.includes(`operator-global seed store payload (opencode): ${explicitPayload}`) && existsSync(join(explicitPayload, "package.json")),
+      explicit.stderr);
 
     // 2. idempotent no-op: stamp untouched on a second boot, and NO seed-store write is announced, since
     // the announce tracks a real materialization, not every boot (the fast path copies nothing).

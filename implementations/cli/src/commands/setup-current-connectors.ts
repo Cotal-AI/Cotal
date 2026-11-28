@@ -16,7 +16,7 @@ export async function reportWithoutConnectorReconciliation(version: string, rt: 
   }
   if (!recovering && rt.env.COTAL_AUTO_UPDATE !== "1" && !["space", "server", "creds", "on"].some(key => typeof target[key] === "string") && rt.canDeferConnectorBootstrap?.()) {
     reportUncheckedPreparedRecords(rt, target);
-    rt.out("No newer CLI version. No connector reconciliation was run.");
+    rt.out("No newer CLI version. Built-in connectors are set up by the first command that needs them.");
     return true;
   }
   return false;

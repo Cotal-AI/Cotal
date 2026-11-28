@@ -298,7 +298,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      }, checkInterrupted, resumeFirstSeed);
+      }, checkInterrupted, resumeFirstSeed, automatic);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
@@ -414,7 +414,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean, automatic: boolean): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -508,7 +508,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const install = async (name: string, force: boolean): Promise<void> => {
     if (mode !== "verify") {
       try {
-        seedOne(name, generation, nonce, force);
+        seedOne(name, generation, nonce, force, automatic);
         verifyInstalled(name, generation);
       } catch (error) {
         await checkInterrupted();
@@ -848,7 +848,7 @@ function resolveEverSeeded(mode: Mode, generation: string): Set<string> {
 /** Stage the payload and `ext add` it as a seed child, journaling the crash cursor around each step.
  *  The child is authenticated: it carries the live reconcile lock's nonce + this parent's PID so a
  *  forged `COTAL_EXT_SEEDING` can't skip the mutation lock for an arbitrary `ext add`. */
-function seedOne(name: string, generation: string, nonce: string, force: boolean): void {
+function seedOne(name: string, generation: string, nonce: string, force: boolean, automatic: boolean): void {
   // The re-exec entry is validated BEFORE anything is journaled (#1629). Asked after the cursor, the
   // staged payload and the pending child marker, a refusal left all three with no child to clear the
   // marker, and every later boot, `cotal ext seed --repair` included, refused as a seed that may be
@@ -864,7 +864,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   const started = Date.now();
   console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
   writeCursor({ nonce, package: name, phase: "copy" });
-  const storePath = stageSeedPayload(generation, name, { force });
+  const storePath = stageSeedPayload(generation, name, { force, quiet: automatic });
   writeCursor({ nonce, package: name, phase: "add" });
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {

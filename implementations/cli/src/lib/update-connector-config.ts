@@ -1,14 +1,21 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { CommandFailure, connectorConfigDir, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { CommandFailure, connectorConfigDir, homeCotalDir, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
 
-/** An untouched connector config has no seed state, installed prefix, or in-progress extension add. */
+/** First-use setup is pending only when there is no sign of earlier connector setup. */
 export function connectorBootstrapPending(): boolean {
   try {
-    const config = connectorConfigDir();
-    return ["seed", "extensions", ".extensions.lock"].every(name => !lstatSync(join(config, name), { throwIfNoEntry: false }));
+    const absent = (root: string, names: string[]): boolean => names.every(name => !lstatSync(join(root, name), { throwIfNoEntry: false }));
+    const global = globalConfigDir();
+    for (const config of new Set([connectorConfigDir(), global])) {
+      if (!absent(config, ["seed", "extensions", ".extensions.lock", ".extensions-promotion.json"])) return false;
+    }
+    if (!absent(homeCotalDir(), ["claude-plugin", "codex-plugin"])) return false;
+    const installs = join(global, "installs");
+    const directory = lstatSync(installs, { throwIfNoEntry: false });
+    return !directory || directory.isDirectory() && !readdirSync(installs).some(name => /^[a-f0-9]{64}$/.test(name));
   } catch { return false; }
 }
 

@@ -58,6 +58,20 @@ const rt: UpdateRuntime = {
 assert.equal(await executeUpdate(true, rt), 0, "current package closure with no newer release succeeds");
 assert.deepEqual(effects, []);
 assert.ok(output.some(line => line.includes("installed package closure is current")) && !output.some(line => line.includes("Run `cotal update` to repair connector integrations")), "a current no-op reports its observed current package closure without inventing connector repair work");
+for (const [label, env, target, recovering] of [
+  ["fresh", {}, {}, false], ["recovery", {}, {}, true], ["automatic", { COTAL_AUTO_UPDATE: "1" }, {}, false],
+  ["space", {}, { space: "fixture" }, false], ["on", {}, { on: "fixture" }, false],
+] as const) {
+  const actions: string[] = [], lines: string[] = [];
+  const fresh: UpdateRuntime = { ...rt, env, isCurrent: () => false, canDeferConnectorBootstrap: () => true,
+    reportRunningManager: async () => { actions.push("custody"); return "none"; },
+    reconcile: async () => { actions.push("reconcile"); }, extensions: () => [], claimUpdatePass: () => () => {},
+    refreshConnectors: async () => {}, refreshClients: async () => [], out: line => lines.push(line), err: line => lines.push(line),
+  };
+  assert.equal(await executeUpdate(true, fresh, target, undefined, false, false, false, recovering), 0, label);
+  assert.deepEqual(actions, label === "fresh" ? [] : ["custody", "reconcile"], label);
+  assert.equal(lines.some(line => line.includes("set up by the first command that needs them")), label === "fresh", label);
+}
 for (const consistent of [false, true]) {
   const actions: string[] = [];
   const denied: UpdateRuntime = { ...rt, isCurrent: () => consistent,

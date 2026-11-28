@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -95,10 +95,76 @@ console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(directory, "config")}`)});\
     } else {
       assert.equal(code, 0, output);
       assert.match(output, /Update:\s+no newer latest tag/);
-      assert.doesNotMatch(output, /installed daemon preflight|Built-in connectors|wrote operator-global seed store payload/);
+      assert.doesNotMatch(output, /installed daemon preflight|^Built-in connectors$|wrote operator-global seed store payload/m);
       assert.equal(existsSync(join(directory, "config/cotal/seed")), false, output);
       assert.equal(existsSync(join(directory, "config/cotal/extensions")), false, output);
     }
     console.log(`PASS real update without runtime: ${kind} receipt`);
   }
-} finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
+  await bootstrapGuards();
+} finally {
+  await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve()));
+  rmSync(root, { recursive: true, force: true });
+}
+
+async function bootstrapGuards(): Promise<void> {
+  const cases = [
+    ["daemon-lock", "home/daemon/daemon.lock"],
+    ["inventory", "config/cotal/extensions/extensions.json"],
+    ["seed", "config/cotal/seed"],
+    ["extension-lock", "config/cotal/.extensions.lock"],
+    ["old-install-key", `config/cotal/installs/${"a".repeat(64)}/sets/${version}/cotal/seed`],
+    ["older-harness-registration", "home/codex-plugin/plugins/cotal/dist/cli.json"],
+    ["automatic", ""], ["space", ""], ["on", ""],
+    ...["home/daemon/service-unit.json", "home/daemon/daemon.lock", "config/cotal/seed", "config/cotal/extensions",
+      "config/cotal/.extensions.lock", "config/cotal/.extensions-promotion.json", "config/cotal/installs",
+      "home/claude-plugin", "home/codex-plugin"].map(path => ["read-error", path]),
+  ] as const;
+  for (const [index, [kind, relative]] of cases.entries()) {
+    const directory = join(root, `guard-${index}`);
+    for (const name of ["home", "config", "tmp"]) mkdirSync(join(directory, name), { recursive: true, mode: 0o700 });
+    const path = join(directory, relative ?? "");
+    if (kind === "seed" || kind === "old-install-key") mkdirSync(path, { recursive: true, mode: 0o700 });
+    else if (relative && kind !== "read-error") {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      const data = kind === "inventory" ? { extensions: [{ pkg: "@cotal-ai/pi", version, provides: [], commands: [], source: "seeded" }] }
+        : kind === "older-harness-registration" ? { argv: [process.execPath, join(directory, "former-prefix/dist/cotal.js")] } : undefined;
+      writeFileSync(path, data ? JSON.stringify(data) : "", { mode: 0o600 });
+    }
+    const preload = join(directory, "guard.mjs");
+    writeFileSync(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const { lstatSync, readdirSync } = fs;
+fs.readdirSync = (file, ...args) => file === '/proc' ? [] : readdirSync(file, ...args);
+fs.lstatSync = (file, ...args) => {
+  if (file === ${JSON.stringify(kind === "read-error" ? path : "")} && new Error().stack.includes('canDeferConnectorBootstrap')) {
+    console.error('fixture: deciding path is unreadable');
+    throw Object.assign(new Error('fixture EACCES'), { code: 'EACCES' });
+  }
+  return lstatSync(file, ...args);
+};
+syncBuiltinESMExports();\n`);
+    const target = kind === "space" ? ["--space", "missing-space"] : kind === "on" ? ["--on", "missing-manager"] : [];
+    const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update", "--self", ...target], {
+      cwd: directory, stdio: ["ignore", "pipe", "pipe"], env: {
+        PATH: process.env.PATH, HOME: join(directory, "home"), COTAL_HOME: join(directory, "home"),
+        XDG_CONFIG_HOME: join(directory, "config"), TMPDIR: join(directory, "tmp"),
+        npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}`,
+        COTAL_ALLOW_CHECKOUT_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+        ...(kind === "automatic" ? { COTAL_AUTO_UPDATE: "1" } : {}),
+      },
+    });
+    let output = "";
+    child.stdout.on("data", chunk => output += String(chunk));
+    child.stderr.on("data", chunk => output += String(chunk));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    let code: number | null;
+    try { code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); }); }
+    finally { clearTimeout(timer); }
+    assert.notEqual(code, null, `${kind} ${relative}: ${output}`);
+    assert.doesNotMatch(output, /Built-in connectors are set up by the first command/);
+    if (kind === "read-error") assert.match(output, /fixture: deciding path is unreadable/);
+    assert.match(output, target.length ? /running manager continuity check|installed connector reconciliation admission/i
+      : /^Built-in connectors$|extensions manifest|extension mutation lock|daemon lifetime/im, `${kind} ${relative}: ${output}`);
+    console.log(`PASS real update bootstrap guard: ${kind} ${relative}`);
+  }
+}

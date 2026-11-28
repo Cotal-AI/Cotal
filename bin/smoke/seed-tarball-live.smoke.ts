@@ -19,7 +19,7 @@
  */
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, sep } from "node:path";
@@ -56,15 +56,66 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
     const update = run("update", "--self");
     const output = update.stdout + update.stderr;
     check("a fresh current self-update does not initialize any built-in connectors", update.status === 0 &&
-      /Update:\s+no newer latest tag/.test(output) && !/Built-in connectors|wrote operator-global seed store payload/.test(output) &&
+      /Update:\s+no newer latest tag/.test(output) && /set up by the first command that needs them/.test(output) && !/wrote operator-global seed store payload/.test(output) &&
       !existsSync(join(env.XDG_CONFIG_HOME!, "cotal")), output);
   }
-  const result = run("ext", "seed");
+  const result = run("ext", "remove", "@fixture/absent");
+  const output = result.stdout + result.stderr;
   const calls = existsSync(invocations) ? readFileSync(invocations, "utf8").trim().split("\n") : [];
-  check("the version check and explicit connector seed use the running Node with PATH's npm",
+  check("the version check and first-use connector seed use the running Node with PATH's npm",
     calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
-  check("explicit seeding installs the built-ins with an unsupported Node first on PATH",
-    result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
+  check("the first command that needs seeding installs the built-ins without printing their store paths",
+    result.status === 0 && /built-in web reconciled/.test(output) && !/operator-global seed store payload|[/\\]seed[/\\]store[/\\]/.test(output), output);
+}
+
+function checkNewPrefixRefresh(entry: string, cwd: string, env: NodeJS.ProcessEnv, tarballs: string[]): void {
+  const next = join(dirname(cwd), "second-prefix");
+  mkdirSync(next);
+  writeFileSync(join(next, "package.json"), JSON.stringify({ name: "tb-second-host", private: true }));
+  const install = spawnSync("npm", ["install", "--no-audit", "--no-fund", ...tarballs], { cwd: next, env, encoding: "utf8" });
+  check("npm installs the same release in a second prefix", install.status === 0, install.stderr);
+  const nextEntry = join(next, "node_modules", "cotal-ai", "dist", "cotal.js");
+  if (!existsSync(nextEntry)) return;
+
+  const tools = join(env.HOME!, "tools"), codexHome = join(env.HOME!, "codex-fixture");
+  const market = join(env.COTAL_HOME!, "codex-plugin"), plugin = join(market, "plugins/cotal");
+  const cache = join(codexHome, "plugins/cache/cotal-mesh/cotal");
+  writeFileSync(join(tools, "codex"), `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path");
+const market = ${JSON.stringify(market)}, plugin = ${JSON.stringify(plugin)}, cache = ${JSON.stringify(cache)};
+const version = () => JSON.parse(fs.readFileSync(path.join(plugin, ".codex-plugin/plugin.json"), "utf8")).version;
+const [area, noun, verb, flag] = process.argv.slice(2);
+if (area === "--version") console.log("codex-cli 0.1.0");
+else if (area === "plugin" && noun === "marketplace" && verb === "list") {
+  const marketplaces = fs.existsSync(path.join(market, "registered")) ? [{ name: "cotal-mesh", root: market }] : [];
+  console.log(flag === "--json" ? JSON.stringify({ marketplaces }) : marketplaces.map(row => row.name).join("\\n"));
+} else if (area === "plugin" && noun === "marketplace" && verb === "add") {
+  fs.writeFileSync(path.join(market, "registered"), "yes");
+} else if (area === "plugin" && noun === "add") {
+  fs.mkdirSync(cache, { recursive: true });
+  fs.cpSync(plugin, path.join(cache, version()), { recursive: true });
+} else if (area === "plugin" && noun === "list") {
+  for (const name of fs.readdirSync(cache)) console.log("cotal@cotal-mesh  installed, enabled  " + name);
+} else process.exit(2);
+`, { mode: 0o700 });
+  const run = (bin: string, root: string, ...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
+    cwd: root, encoding: "utf8", env: { ...env, CODEX_HOME: codexHome, PATH: `${tools}${delimiter}${env.PATH}` },
+  });
+  const project = join(env.HOME!, "codex-project");
+  mkdirSync(project);
+  const setup = run(entry, cwd, "setup", "--destination", "local", "--harness", "codex", "--project", project, "--space", "prefix-smoke", "--yes");
+  const registration = join(plugin, "dist/cli.json");
+  const argv = (record: string): string[] => existsSync(record) ? JSON.parse(readFileSync(record, "utf8")).argv : [];
+  check("the Codex registration initially names the first npm installation",
+    setup.status === 0 && argv(registration).some(path => path === entry || path === realpathSync(entry)), setup.stdout + setup.stderr);
+  const before = run(nextEntry, next, "update", "--check");
+  check("the second npm installation starts with an empty selected connector inventory",
+    before.status === 0 && before.stdout.includes("No extensions in the recorded inventory."), before.stdout + before.stderr);
+  const update = run(nextEntry, next, "update", "--self");
+  const cached = existsSync(cache) ? readdirSync(cache) : [];
+  check("a current self-update in a second prefix refreshes both Codex CLI records", update.status === 0 &&
+    /Built-in connectors/.test(update.stdout) && argv(registration).includes(nextEntry) &&
+    cached.length === 1 && argv(join(cache, cached[0]!, "dist/cli.json")).includes(nextEntry), update.stdout + update.stderr);
 }
 
 async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
@@ -259,7 +310,7 @@ try {
   if (process.platform !== "win32") {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
-  // Seed explicitly before reading the installed inventory.
+  // Seed before reading the installed inventory.
   const home = join(base, "home");
   mkdirSync(home, { recursive: true });
   mkdirSync(join(prefix, ".cotal"));
@@ -429,7 +480,10 @@ try {
     const physicalUpdate = update("--self");
     check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
   }
-  if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
+  if (process.platform === "linux") {
+    await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
+    checkNewPrefixRefresh(invokedBin, prefix, seedEnv, tarballs.map(file => join(tgz, file)));
+  }
 } finally {
   rmSync(base, { recursive: true, force: true });
 }
