@@ -217,7 +217,7 @@ if (subcommand === "tool-seat") {
 }
 
 import assert from "node:assert/strict";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { createServer as createTcpServer, connect as tcpConnect, type Server as TcpServer, type Socket } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -236,11 +236,12 @@ import {
 import { authDir, userAuthStateDir, workspaceSecretStore, saveSpaceAuth, recordMesh, assertUserAuthInfo } from "@cotal-ai/workspace";
 import {
   cotalAuthProvider, saveIdpSession, grantActor, loadAuthServiceInfo, saveAuthServiceInfo, loadOwnerSecret, loadPinnedIdp,
-  deriveOwnerForIdpSubject, findActorUnified, revokeActor,
+  deriveOwnerForIdpSubject, findActorUnified, findManagedActor, grantManagedActor, revokeActor,
 } from "@cotal-ai/auth";
 import { Manager, type ManagerOptions } from "../src/manager.js";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
+import { removeReleasedSeatReference, writeReleasedSeatReference, writeSeatRecord } from "../src/resume.js";
 import * as remote from "../src/remote-authority.js";
 import { RunHosting } from "../src/run-hosting.js";
 import "@cotal-ai/runtime";
@@ -277,6 +278,80 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 async function until(fn: () => boolean | Promise<boolean>, label: string, ms = 25_000): Promise<void> {
   const end = Date.now() + ms;
   while (!await fn()) { if (Date.now() > end) throw new Error(label); await wait(100); }
+}
+const malformedRetainedScopes = new Map<string, string[]>();
+
+async function checkReleasedHostedScope(manager: Manager, root: string, hostDir: string, owner: string, role?: string): Promise<void> {
+  const name = role ? "released_scope" : "released_no_role";
+  const roleLine = role === undefined ? "" : `role: ${role}\n`;
+  writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: u4-seat\n${roleLine}subscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nRetained scope fixture.\n`);
+  const started = await manager.startAgent({ name, runtime: "tmux" }, `${owner}.cli`);
+  assert.ok(started.ok, started.error);
+  const seat = manager["agents"].get(name)!;
+  const entry = manager["resumeEntryOf"](seat);
+  const reference = seat.handle.reference;
+  assert.ok(reference);
+  assert.equal(entry.launch.capabilities, undefined);
+  assert.equal(entry.role, role);
+  const row = findManagedActor(hostDir, owner, name)!;
+  assert.ok(row.tokenHash && row.custody);
+  const grant = { ...row, tokenHash: row.tokenHash, custody: row.custody };
+  const rejected = /retained user authority .* no longer matches the inventory/;
+  const panes = () => execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pane_pid} #{pane_dead}"], { encoding: "utf8" });
+  const originalPanes = panes();
+  writeReleasedSeatReference(root, space, name, { ...reference, lifecycleUid: seat.lifecycleUid, version: "cotal-released-seat/v1" });
+  const adopt = async (label: string, scope: string[], expected: boolean, record = entry): Promise<void> => {
+    if (scope.includes("")) {
+      // The ledger disallows empty tokens. Exercise one at the bound remote reply instead.
+      grantManagedActor(hostDir, { ...grant, scope: [] });
+      malformedRetainedScopes.set(name, scope);
+    } else {
+      grantManagedActor(hostDir, { ...grant, scope });
+      malformedRetainedScopes.delete(name);
+    }
+    writeSeatRecord(root, { version: "cotal-seat-record/v1", instanceId: manager["managerInstanceId"], crashes: [], agent: record });
+    manager["agents"].delete(name);
+    const diagnostics: string[] = [];
+    const logError = console.error;
+    console.error = (...args) => { diagnostics.push(args.join(" ")); logError(...args); };
+    try { await manager["preservationComponent"].adoptReleasedSeats(); }
+    finally { console.error = logError; }
+    const adopted = manager["agents"].get(name);
+    assert.equal(adopted !== undefined, expected, label);
+    if (!expected) assert.ok(diagnostics.some((line) => line.startsWith(`! ${name}:`) && rejected.test(line)), label);
+    if (adopted) {
+      assert.equal(adopted.lifecycleUid, seat.lifecycleUid, label);
+      assert.deepEqual(adopted.handle.reference, reference, label);
+    }
+    assert.equal(panes(), originalPanes, label);
+    check(`released hosted scope ${label}`, true);
+  };
+  try {
+    if (role === undefined) {
+      await adopt("accepts spawn for a role-less record", ["spawn"], true);
+      await adopt("refuses a role token for a role-less record", ["role:default"], false);
+    } else {
+      await adopt("accepts the default grant", ["spawn", "role:default"], true);
+      const held = manager["agents"].get(name)!;
+      const inventory = manager["resumeEntryOf"](held);
+      assert.equal(inventory.launch.capabilities, undefined);
+      await assert.rejects(manager["validateRetainedAuthority"](inventory), rejected);
+      await adopt("accepts the narrowed grant", ["role:default"], true);
+      await adopt("accepts an empty retained scope", [], true);
+      await adopt("refuses a nonempty scope against an explicit empty list", ["role:default"], false, { ...entry, launch: { ...entry.launch, capabilities: [] } });
+      await adopt("refuses spawn against an explicit custom list", ["spawn"], false, { ...entry, launch: { ...entry.launch, capabilities: ["custom"] } });
+      await adopt("refuses role drift", ["spawn"], false, { ...entry, role: "other" });
+      await adopt("refuses parent drift", ["spawn"], false, { ...entry, authorityParent: `${owner}.other` });
+      await adopt("refuses duplicate tokens", ["spawn", "spawn"], false);
+      for (const token of ["admin", "role:other", "Spawn", "role:Default", "run", "supervise", ""])
+        await adopt(`refuses token ${JSON.stringify(token)}`, [token], false);
+    }
+  } finally {
+    malformedRetainedScopes.delete(name);
+    grantManagedActor(hostDir, grant);
+    manager["agents"].set(name, seat);
+    removeReleasedSeatReference(root, space, name, seat.lifecycleUid);
+  }
 }
 function successful(r: EpAttributedReply): Record<string, unknown> {
   if (!r.reply.ok) throw new Error(`endpoint refused ${r.reply.error?.code}: ${r.reply.error?.message}; ${JSON.stringify(r.reply.error?.details)}`);
@@ -415,7 +490,12 @@ try {
         registrationProof: remoteManagerRegistrationProof(owner, state),
         session: { id: session.identity.id, endpoint: session.endpoint, sessionId: session.sessionId, epoch: session.epoch, exp: session.exp },
       })), "sessionServing", session.identity),
-      validateRetainedAgent: async () => { throw new Error("fixture starts no retained seat"); },
+      validateRetainedAgent: async ({ owner: heldOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
+        const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, { owner: heldOwner, actor, lifecycleUid }, actorToken, sentinelCreds);
+        const result = await cotalAuthProvider.validateRemoteRetainedAgent!({ ...callArgs, request });
+        const scope = malformedRetainedScopes.get(actor);
+        return remote.retainedAgentAuthority(scope === undefined ? result : { ...result, authority: { ...result.authority, scope } }, request);
+      },
       scanGoalIndex: async () => {
         const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
         return remote.remoteManagerGoalIndexEntries(await cotalAuthProvider.scanRemoteManagerGoalIndex!({ ...callArgs, request }), request, owner);
@@ -918,6 +998,24 @@ try {
     }
   }
   console.log(`INVENTORY_SCOPE: ${pageCount} pages, ${observedRuns.size} observed records, max reply ${Math.max(...wireLengths)} bytes; synthetic fixture records are not active lanes. No absence, restore or ownership proof.`);
+  const tmuxHome = mkdtempSync(join(tmpdir(), "u4-tmux-"));
+  const savedTmux = { TMUX_TMPDIR: process.env.TMUX_TMPDIR, TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
+  process.env.TMUX_TMPDIR = tmuxHome;
+  delete process.env.TMUX;
+  delete process.env.TMUX_PANE;
+  try {
+    await import("../../../extensions/tmux/src/index.js");
+    await checkReleasedHostedScope(manager, root, hostDir, owner, "default");
+    await checkReleasedHostedScope(manager, root, hostDir, owner);
+  } finally {
+    await manager?.stop({ withAgents: true }).catch(() => {});
+    manager = undefined;
+    try { execFileSync("tmux", ["kill-server"], { stdio: "ignore" }); } catch { /* no private server is running */ }
+    for (const [key, value] of Object.entries(savedTmux)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(tmuxHome, { recursive: true, force: true });
+  }
   console.log("U4_SCOPE: preserved native persona cells plus genuine managed PTY cotal_run start/status/answer/released-resume using its own bearerCmd; no provider/model, production or full Cloud composition acceptance.");
 } catch (error) {
   fatal = error instanceof Error ? error.message : String(error);

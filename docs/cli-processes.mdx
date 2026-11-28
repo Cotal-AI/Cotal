@@ -161,8 +161,14 @@ terminalizing, and so does a runtime that cannot reap by reference. While the na
 same-name spawn or a resume re-drives that teardown with the same recorded reference, so it reaps
 the seat again or keeps the name held.
 
-
 ### Participant manager authority
+
+At startup, a participant manager can adopt a released seat whose `cotal-seat-record/v1` has no
+saved capability list. The retained scope may be empty or contain `spawn` and the token for the
+recorded role, with no other tokens or repeats. For a seat with no recorded role, `spawn` is the
+only permitted token. The principal, lifecycle, read and post grants, role, and parent must still
+match. Explicit lists, including an empty list, and supplied resume inventories still require exact
+scope equality. Startup adoption does not issue or change a grant.
 
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
 participant may run `supervise` only when the host advertises the remote manager authority service

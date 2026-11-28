@@ -23,6 +23,22 @@ export function localUserAgentScope(capabilities: readonly string[] = []): strin
   return capabilities.filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
 }
 
+function retainedUserScopeMatches(
+  scope: readonly string[],
+  entry: ManagerResumeAgent,
+  hosted: boolean,
+  releasedRecordVersion?: "cotal-seat-record/v1",
+): boolean {
+  const capabilities = entry.launch.capabilities;
+  if (sameStrings(scope, capabilities)) return true;
+  // Local records carry persona capabilities, while the ledger stores their local projection.
+  if (!hosted) return sameStrings(scope, localUserAgentScope(capabilities));
+  // Hosted scope is exact except for a released record with no saved list.
+  return releasedRecordVersion === "cotal-seat-record/v1" && capabilities === undefined &&
+    new Set(scope).size === scope.length &&
+    scope.every((token) => token === "spawn" || (entry.role !== undefined && token === `role:${entry.role}`));
+}
+
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
  *  it asks less often than the readiness fence's 50 ms poll. */
@@ -666,6 +682,7 @@ export class PreservedResume {
    * during whole-inventory preflight, immediately before each individual spawn, and at commit. */
   async validateRetainedAuthority(
     entry: ManagerResumeAgent,
+    releasedRecordVersion?: "cotal-seat-record/v1",
   ): Promise<Pick<PreparedResume, "id" | "creds" | "userAuth">> {
     const referenceError = this.inventoryReferenceError(entry);
     if (referenceError) throw new Error(`retained agent ${entry.name}: ${referenceError}`);
@@ -800,14 +817,9 @@ export class PreservedResume {
       // never left to broker-fail after the child is already running (SPEC §13.1).
       if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
-      const capabilities = entry.launch.capabilities;
-      // Local inventories carry persona capabilities, while the local ledger records only the
-      // scope derived from them. Hosted authorities can grant the full capability list.
-      const scopeMatches = sameStrings(adopted.scope, capabilities) ||
-        (!this.remoteAuthority && sameStrings(adopted.scope, localUserAgentScope(capabilities)));
       if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
           !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
-          !scopeMatches ||
+          !retainedUserScopeMatches(adopted.scope, entry, this.remoteAuthority !== undefined, releasedRecordVersion) ||
           adopted.role !== entry.role || adopted.parent !== entry.authorityParent)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} no longer matches the inventory`);
       return {

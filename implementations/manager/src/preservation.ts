@@ -573,7 +573,7 @@ export class Preservation {
     const identity = record?.agent.identity;
     if (!reference || !record || identity?.mode !== "user" || identity.lifecycleUid !== reference.lifecycleUid) return;
     try {
-      await this.validateRetainedAuthority(record.agent);
+      await this.validateRetainedAuthority(record.agent, record.version);
     } catch (e) {
       console.error(`! ${name}: the released seat's record was not adopted: ${rejectionText(e)}`);
       return;
