@@ -22,6 +22,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; }
+a { color: var(--ink); }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
