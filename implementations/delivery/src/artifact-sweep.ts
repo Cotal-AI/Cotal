@@ -35,11 +35,15 @@ export interface SweepDeps {
   nc: NatsConnection;
   kv: { attach: KV; possess: KV; reserve: KV };
   locks: DigestLocks;
-  /** Throws when the serving generation this sweep started under has ended. */
+  /** Throws when the serving generation this sweep runs under has ended. Called immediately before
+   *  every write (E18). */
   fence: (what: string) => void;
   /** One `artifact.unconfirmed-commit` event. */
   emit: (event: { event: typeof UNCONFIRMED_COMMIT_EVENT; digest: string; principal: string; lifecycleUid: string }) => void;
   now?: () => number;
+  /** Ordered test barriers, awaited under the digest lock: after the reclaim decision, and between the
+   *  meta and chunk purges. Absent in a running daemon. */
+  hold?: (point: "reclaim-decided" | "between-purges", digest: string) => Promise<void>;
 }
 
 export interface SweepReport {
@@ -91,11 +95,13 @@ export async function sweepOnce(deps: SweepDeps): Promise<SweepReport> {
         // live attachment, so its bytes are reclaimed on schedule while fetch still says `artifact expired`.
         deps.fence("the attachment tombstone");
         await deps.kv.attach.update(e.key, enc.encode(JSON.stringify({ ...live, state: "expired", expiresAt: now + ARTIFACT_ATTACHMENT_TTL_MS })), cur.revision);
+        deps.fence("the tombstone's index row delete");
         await deps.kv.attach.delete(attachmentIndexKey(digest, channel));
         report.tombstoned++;
       } else if (live.state === "expired" && live.expiresAt <= now) {
         deps.fence("the tombstone delete");
         await deps.kv.attach.delete(e.key);
+        deps.fence("the tombstone's index row delete");
         await deps.kv.attach.delete(attachmentIndexKey(digest, channel));
         report.tombstonesDeleted++;
       }
@@ -144,10 +150,16 @@ export async function sweepOnce(deps: SweepDeps): Promise<SweepReport> {
         } else return;
       }
       if ((await liveKvEntries(deps.kv.reserve, digestPrincipalFilter(digest))).length > 0) return;
-      deps.fence("reclaiming the digest");
-      for (const p of await liveKvEntries(deps.kv.possess, digestPrincipalFilter(digest))) await deps.kv.possess.delete(p.key);
+      await deps.hold?.("reclaim-decided", digest);
+      for (const p of await liveKvEntries(deps.kv.possess, digestPrincipalFilter(digest))) {
+        deps.fence("the possession row delete");
+        await deps.kv.possess.delete(p.key);
+      }
       const stream = objectStoreStream(artifactBucket(deps.space));
+      deps.fence("the meta purge");
       await jsm.streams.purge(stream, { filter: metaSubject(deps.space, digest) });
+      await deps.hold?.("between-purges", digest);
+      deps.fence("the chunk purge");
       await jsm.streams.purge(stream, { filter: chunkFilter(deps.space, digest) });
       report.digestsReclaimed++;
     });

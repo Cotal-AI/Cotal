@@ -7,7 +7,15 @@
  * the channel learns nothing about any digest. Every refusal before an effect carries `not-executed`.
  *
  * One in-process lock per digest serializes commit, confirm, pin and the sweep on this daemon (the
- * N=1 lease holder), and every write re-checks the serve fence first.
+ * N=1 lease holder).
+ *
+ * The serve fence (E18). Every handler checks its serving generation immediately before each store
+ * write (inside the index and object layers, so a CAS retry or a rollback is checked too) and before
+ * its reply. Until a request's first write lands a fence refusal says `not-executed`; after that it
+ * says `unknown`, because a refusal after an effect must not claim nothing ran (SPEC 13.3). A read-only
+ * handler checks before its reply, so a fetch answered across a lease loss is not sent.
+ *
+ * Bytes are staged in storage framing and charged until released (E17, E20; `artifact-staging.ts`).
  *
  * confirm-attach refuses with ONE collapsed tuple for every reason a caller is not entitled (S6): no
  * such post, someone else's post, another channel, no reference to the digest, no possession, bytes
@@ -15,18 +23,18 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
-  AmbiguousAclAlias, ARTIFACT_ATTACHMENT_TTL_MS, ARTIFACT_CHUNK_MAX, ARTIFACT_MAX_BYTES, ARTIFACT_MAX_STAGED_BYTES,
-  ARTIFACT_MAX_STAGED_UPLOADS, ARTIFACT_RESERVATION_TTL_MS, ARTIFACT_STAGE_TTL_MS, assertLifecycleToken, EpEnvelopeError,
-  principalKey,
+  AmbiguousAclAlias, ARTIFACT_ATTACHMENT_TTL_MS, ARTIFACT_CHUNK_MAX, ARTIFACT_MAX_BYTES, ARTIFACT_RESERVATION_TTL_MS,
+  assertLifecycleToken, EpEnvelopeError, principalKey,
   type ArtifactsConfirmAttachInput, type ArtifactsFetchBeginInput, type ArtifactsFetchBeginOutput, type ArtifactsFetchChunkInput,
   type ArtifactsFetchChunkOutput, type ArtifactsPinInput, type ArtifactsPutBeginInput, type ArtifactsPutBeginOutput,
   type ArtifactsPutChunkInput, type ArtifactsPutChunkOutput, type ArtifactsPutCommitInput, type ArtifactsPutCommitOutput,
   type EpCaller, type EpServeContext,
 } from "@cotal-ai/core";
-import type { ArtifactIndex, Caller } from "./artifact-index.js";
+import type { ArtifactIndex, Caller, WriteGuard } from "./artifact-index.js";
 import type { ArtifactObjects } from "./artifact-objects.js";
 import { concreteChannel } from "./artifact-keys.js";
 import type { ChatEntryForConfirm } from "./artifact-chat-read.js";
+import { stagedBlocks, StagingLedger } from "./artifact-staging.js";
 import type { ServeScope } from "./endpoint-bind.js";
 
 type Code = "permission-denied" | "bad-request" | "unavailable" | "failed-precondition" | "not-found" | "resource-exhausted";
@@ -61,17 +69,14 @@ export class DigestLocks {
   }
 }
 
-/** An upload staged in daemon memory until commit. */
-interface Staged {
-  caller: Caller;
-  name: string;
-  mediaType: string;
-  size: number;
-  digest: string;
-  chunks: Uint8Array[];
-  received: number;
-  nextSeq: number;
-  timer: ReturnType<typeof setTimeout>;
+/** One request's view of the serve fence: checks before each write, and says `unknown` once any write
+ *  of the request has started (E18). */
+function writeFence(scope: ServeScope): { guard: WriteGuard; reply: (what: string) => void } {
+  let wrote = false;
+  return {
+    guard: (what) => { scope.fence.check(scope.generation, what, wrote ? "unknown" : "not-executed"); wrote = true; },
+    reply: (what) => scope.fence.check(scope.generation, what, wrote ? "unknown" : "not-executed"),
+  };
 }
 
 /** What the handlers need from the bound endpoint: the installed stores, the caller fence and read
@@ -86,12 +91,15 @@ export interface VerbDeps {
   readChatEntry: (seq: number) => Promise<ChatEntryForConfirm | undefined>;
   locks: DigestLocks;
   now?: () => number;
+  /** Ordered test barriers: awaited at the named point of a real handler, so a cell holds a verb there
+   *  and drives the sweep or a quiesce against it. Absent in a running daemon. */
+  hold?: (point: "commit-locked" | "confirm-locked" | "fetch-read") => Promise<void>;
 }
 
 /** Builds the handlers for one serving generation. Staged uploads outlive a generation: they are only
  *  ever committed under the generation the commit request arrives on. */
 export class ArtifactVerbs {
-  private readonly staged = new Map<string, Staged>();
+  readonly staging = new StagingLedger();
   constructor(private readonly deps: VerbDeps) {}
 
   private now(): number { return this.deps.now?.() ?? Date.now(); }
@@ -104,92 +112,74 @@ export class ArtifactVerbs {
 
   /** Drop every staged upload (the endpoint is closing). */
   dropStaged(): void {
-    for (const s of this.staged.values()) clearTimeout(s.timer);
-    this.staged.clear();
-  }
-
-  private stagedFor(caller: Caller): Staged[] {
-    return [...this.staged.values()].filter((s) => s.caller.owner === caller.owner && s.caller.actor === caller.actor && s.caller.uid === caller.uid);
+    this.staging.dropAll();
   }
 
   putBegin = (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsPutBeginOutput> => {
     const caller = await this.deps.fenceCaller(sctx.subject.caller, "put-begin");
     const args = sctx.request.args as unknown as ArtifactsPutBeginInput;
     if (args.size > ARTIFACT_MAX_BYTES) throw notExecuted("resource-exhausted", `put-begin: ${args.size} bytes is over the ${ARTIFACT_MAX_BYTES}-byte artifact limit; nothing was staged`);
-    const mine = this.stagedFor(caller);
-    if (mine.length >= ARTIFACT_MAX_STAGED_UPLOADS)
-      throw notExecuted("resource-exhausted", `put-begin: you already have ${mine.length} uploads staged, the most one lifecycle may hold; commit or let one lapse first`);
-    const stagedBytes = mine.reduce((n, s) => n + s.size, 0);
-    if (stagedBytes + args.size > ARTIFACT_MAX_STAGED_BYTES)
-      throw notExecuted("resource-exhausted", `put-begin: staging ${args.size} more bytes would put you over ${ARTIFACT_MAX_STAGED_BYTES} staged bytes; nothing was staged`);
+    if (args.size === 0) throw notExecuted("bad-request", "put-begin: an artifact holds at least one byte; nothing was staged");
+    const over = this.staging.refusal(caller, args.size);
+    if (over !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${over}`);
     scope.fence.check(scope.generation, "staging the upload");
     const uploadId = randomBytes(16).toString("hex");
-    const timer = setTimeout(() => this.staged.delete(uploadId), ARTIFACT_STAGE_TTL_MS);
-    timer.unref?.();
-    this.staged.set(uploadId, { caller, name: args.name, mediaType: args.mediaType, size: args.size, digest: args.digest, chunks: [], received: 0, nextSeq: 0, timer });
+    this.staging.begin(uploadId, { caller, name: args.name, mediaType: args.mediaType, size: args.size, digest: args.digest });
     return { uploadId };
   };
-
-  /** The staged upload `uploadId`, owned by this caller. Another caller's id reads as unknown. */
-  private ownStaged(uploadId: string, caller: Caller, command: string): Staged {
-    const s = this.staged.get(uploadId);
-    if (s === undefined || s.caller.owner !== caller.owner || s.caller.actor !== caller.actor || s.caller.uid !== caller.uid)
-      throw notExecuted("not-found", `${command}: no upload ${uploadId} is staged for you; begin a new one`);
-    return s;
-  }
-
-  private killUpload(uploadId: string, s: Staged): void {
-    clearTimeout(s.timer);
-    this.staged.delete(uploadId);
-  }
 
   putChunk = (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsPutChunkOutput> => {
     const caller = await this.deps.fenceCaller(sctx.subject.caller, "put-chunk");
     const args = sctx.request.args as unknown as ArtifactsPutChunkInput;
-    const s = this.ownStaged(args.uploadId, caller, "put-chunk");
-    // A failed chunk ends the upload and says so: there is no resume (plan section 8).
-    if (args.seq !== s.nextSeq) {
-      this.killUpload(args.uploadId, s);
-      throw notExecuted("failed-precondition", `put-chunk: expected chunk ${s.nextSeq}, got ${args.seq}; the upload is dead, begin a new one`);
-    }
+    const s = this.staging.own(args.uploadId, caller);
+    if (s === undefined) throw notExecuted("not-found", `put-chunk: no upload ${args.uploadId} is staged for you; begin a new one`);
     const bytes = Buffer.from(args.data, "base64");
-    if (bytes.byteLength > ARTIFACT_CHUNK_MAX || s.received + bytes.byteLength > s.size) {
-      this.killUpload(args.uploadId, s);
-      throw notExecuted("failed-precondition", `put-chunk: the chunk would take the upload past its declared ${s.size} bytes (or over ${ARTIFACT_CHUNK_MAX} per chunk); the upload is dead, begin a new one`);
+    // A failed chunk ends the upload and says so: there is no resume (plan section 8).
+    const refused = this.staging.appendRefusal(s, args.seq, bytes, ARTIFACT_CHUNK_MAX);
+    if (refused !== undefined) {
+      this.staging.drop(args.uploadId);
+      throw notExecuted("failed-precondition", refused === "out-of-order"
+        ? `put-chunk: expected chunk ${s.nextSeq}, got ${args.seq}; the upload is dead, begin a new one`
+        : refused === "empty"
+          ? "put-chunk: the chunk carries no byte, so the upload makes no progress; the upload is dead, begin a new one"
+          : `put-chunk: the chunk would take the upload past its declared ${s.size} bytes (or over ${ARTIFACT_CHUNK_MAX} per chunk); the upload is dead, begin a new one`);
     }
     scope.fence.check(scope.generation, "staging the chunk");
-    s.chunks.push(new Uint8Array(bytes));
-    s.received += bytes.byteLength;
-    s.nextSeq += 1;
+    this.staging.append(s, bytes);
     return { received: s.received };
   };
 
   putCommit = (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsPutCommitOutput> => {
     const caller = await this.deps.fenceCaller(sctx.subject.caller, "put-commit");
     const args = sctx.request.args as unknown as ArtifactsPutCommitInput;
-    const s = this.ownStaged(args.uploadId, caller, "put-commit");
-    this.killUpload(args.uploadId, s);
-    if (s.received !== s.size)
-      throw notExecuted("failed-precondition", `put-commit: ${s.received} of the declared ${s.size} bytes arrived; nothing was committed`);
-    // Hash before anything is written (S2): the meta record is only ever written for bytes this
-    // service hashed to the digest the caller declared.
-    const hash = createHash("sha256");
-    for (const c of s.chunks) hash.update(c);
-    const digest = `sha256:${hash.digest("hex")}`;
-    if (digest !== s.digest) throw notExecuted("failed-precondition", `put-commit: the bytes hash to ${digest}, not the declared ${s.digest}; nothing was committed`);
-    const { index, objects } = this.stores("put-commit");
-    await this.deps.locks.run(digest, async () => {
-      // Commit order (plan section 6): reservation, chunks, meta, possession. A blob is never visible
-      // to the sweep without a live reservation in front of it.
-      const reservationId = randomUUID();
-      scope.fence.check(scope.generation, "the reservation");
-      await index.writeReservation(digest, caller, { deadline: this.now() + ARTIFACT_RESERVATION_TTL_MS, reservationId });
-      await objects.write({ digest, size: s.size, chunks: s.chunks.length, name: s.name, mediaType: s.mediaType }, s.chunks,
-        (what) => scope.fence.check(scope.generation, what));
-      scope.fence.check(scope.generation, "the possession row");
-      await index.writePossession(digest, caller, { size: s.size, name: s.name, mediaType: s.mediaType, committedAt: this.now(), reservationId });
+    if (this.staging.own(args.uploadId, caller) === undefined)
+      throw notExecuted("not-found", `put-commit: no upload ${args.uploadId} is staged for you; begin a new one`);
+    const fence = writeFence(scope);
+    // The upload stays charged until this settles (E20), and is never addressable again.
+    const committed = await this.staging.commit(args.uploadId, async (s) => {
+      if (s.received !== s.size)
+        throw notExecuted("failed-precondition", `put-commit: ${s.received} of the declared ${s.size} bytes arrived; nothing was committed`);
+      const blocks = stagedBlocks(s);
+      // Hash before anything is written (S2): the meta record is only ever written for bytes this
+      // service hashed to the digest the caller declared.
+      const hash = createHash("sha256");
+      for (const b of blocks) hash.update(b);
+      const digest = `sha256:${hash.digest("hex")}`;
+      if (digest !== s.digest) throw notExecuted("failed-precondition", `put-commit: the bytes hash to ${digest}, not the declared ${s.digest}; nothing was committed`);
+      const { index, objects } = this.stores("put-commit");
+      await this.deps.locks.run(digest, async () => {
+        await this.deps.hold?.("commit-locked");
+        // Commit order (plan section 6): reservation, chunks, meta, possession. A blob is never visible
+        // to the sweep without a live reservation in front of it.
+        const reservationId = randomUUID();
+        await index.writeReservation(digest, caller, { deadline: this.now() + ARTIFACT_RESERVATION_TTL_MS, reservationId }, fence.guard);
+        const meta = await objects.write({ digest, name: s.name, mediaType: s.mediaType }, blocks, fence.guard);
+        await index.writePossession(digest, caller, { size: meta.size, name: s.name, mediaType: s.mediaType, committedAt: this.now(), reservationId }, fence.guard);
+      });
+      return { digest, size: s.size };
     });
-    return { digest, size: s.size };
+    fence.reply("the commit reply");
+    return committed;
   };
 
   /** Fetch's gate and digest answer, re-run on every chunk (S7). Returns the attachment's metadata. */
@@ -209,9 +199,10 @@ export class ArtifactVerbs {
     return { row: row.value, meta, objects };
   }
 
-  fetchBegin = (_scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsFetchBeginOutput> => {
+  fetchBegin = (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsFetchBeginOutput> => {
     const args = sctx.request.args as unknown as ArtifactsFetchBeginInput;
     const { row, meta } = await this.fetchGate(sctx, "fetch-begin", args.digest, args.channel);
+    scope.fence.check(scope.generation, "the fetch-begin reply");
     return { name: row.name, mediaType: row.mediaType, size: meta.size };
   };
 
@@ -221,39 +212,8 @@ export class ArtifactVerbs {
     if (args.offset > meta.size) throw notExecuted("bad-request", `fetch-chunk: offset ${args.offset} is past the ${meta.size}-byte artifact`);
     if (!sctx.replyFits) throw notExecuted("unavailable", "fetch-chunk: this serving connection cannot measure a reply, so no chunk is sent");
     const fits = sctx.replyFits;
-    // Walk the stored chunks to the one holding `offset`, then append whole stored chunks while the
-    // ACTUAL reply still fits. When not even the rest of the first chunk fits, send the largest prefix
-    // of it that does (a measured binary search), so every call makes progress or refuses by name.
-    let pos = 0, i = 0;
-    for (; i < meta.chunks; i++) {
-      const c = await objects.readChunk(meta.digest, i);
-      if (c === undefined) throw notExecuted("not-found", `fetch-chunk: ${FETCH_EXPIRED}`);
-      if (pos + c.byteLength > args.offset) break;
-      pos += c.byteLength;
-    }
-    let collected = Buffer.alloc(0);
-    for (let j = i; j < meta.chunks; j++) {
-      const c = await objects.readChunk(meta.digest, j);
-      if (c === undefined) throw notExecuted("not-found", `fetch-chunk: ${FETCH_EXPIRED}`);
-      const from = j === i ? args.offset - pos : 0;
-      const next = Buffer.concat([collected, Buffer.from(c.subarray(from))]);
-      const done = args.offset + next.byteLength >= meta.size;
-      // Two bounds: the contract caps one reply's data at one raw chunk, and the reply must fit the
-      // broker's message as actually serialized.
-      if (next.byteLength > ARTIFACT_CHUNK_MAX || !fits({ data: next.toString("base64"), complete: done }, FETCH_REPLY_CEILING)) {
-        if (collected.byteLength === 0) {
-          let lo = 0, hi = Math.min(c.byteLength - from, ARTIFACT_CHUNK_MAX);
-          while (lo < hi) {
-            const mid = Math.ceil((lo + hi) / 2);
-            if (fits({ data: Buffer.from(c.subarray(from, from + mid)).toString("base64"), complete: false }, FETCH_REPLY_CEILING)) lo = mid; else hi = mid - 1;
-          }
-          if (lo === 0) throw notExecuted("failed-precondition", "fetch-chunk: not one byte fits the broker's message limit, so no chunk can be sent");
-          collected = Buffer.from(c.subarray(from, from + lo));
-        }
-        break;
-      }
-      collected = next;
-    }
+    await this.deps.hold?.("fetch-read");
+    const collected = await collectChunk(objects, meta, args.offset, fits);
     scope.fence.check(scope.generation, "the chunk reply");
     const complete = args.offset + collected.byteLength >= meta.size;
     return { data: collected.toString("base64"), complete };
@@ -275,25 +235,26 @@ export class ArtifactVerbs {
     if (entry === undefined || entry.subject.sender !== sender || entry.subject.rest !== channel || !entry.artifactDigests.includes(args.digest))
       throw confirmRefused();
     const { index, objects } = this.stores("confirm-attach");
+    const fence = writeFence(scope);
     await this.deps.locks.run(args.digest, async () => {
+      await this.deps.hold?.("confirm-locked");
       const possession = await index.readPossession(args.digest, caller);
       if (possession === undefined) throw confirmRefused();
       // No attachment is ever created for swept bytes (plan section 6).
       if ((await objects.readMeta(args.digest)) === undefined) throw confirmRefused();
-      scope.fence.check(scope.generation, "the attachment");
       const now = this.now();
       const inserted = await index.attachIfAbsent(channel, args.digest, {
         state: "attached", confirmerLifecycleUid: caller.uid, name: possession.value.name, mediaType: possession.value.mediaType,
         size: possession.value.size, createdAt: now, expiresAt: now + ARTIFACT_ATTACHMENT_TTL_MS, pinned: false,
-      });
+      }, fence.guard);
       // Re-read possession after the insert, and roll back only an insert of our own (S19).
       if (inserted && (await index.readPossession(args.digest, caller)) === undefined) {
-        await index.rollbackAttach(channel, args.digest);
+        await index.rollbackAttach(channel, args.digest, fence.guard);
         throw confirmRefused();
       }
-      scope.fence.check(scope.generation, "consuming the reservation");
-      await index.deleteReservation(args.digest, caller);
+      await index.deleteReservation(args.digest, caller, fence.guard);
     });
+    fence.reply("the confirm reply");
     return {};
   };
 
@@ -304,17 +265,60 @@ export class ArtifactVerbs {
     const caller = await this.deps.fenceCaller(sctx.subject.caller, "pin");
     const refused = () => notExecuted("permission-denied", "pin: not authorized for that artifact");
     const { index } = this.stores("pin");
+    const fence = writeFence(scope);
     await this.deps.locks.run(args.digest, async () => {
       const row = await index.readAttachment(channel, args.digest);
       if (row === undefined || row.value.state !== "attached") throw refused();
       // Possession at the live lifecycle, or the caller is the lifecycle that confirmed this attachment.
       const holds = (await index.readPossession(args.digest, caller)) !== undefined || row.value.confirmerLifecycleUid === caller.uid;
       if (!holds) throw refused();
-      scope.fence.check(scope.generation, "the pin");
-      if (!(await index.pin(channel, args.digest))) throw refused();
+      if (!(await index.pin(channel, args.digest, fence.guard))) throw refused();
     });
+    fence.reply("the pin reply");
     return {};
   };
+}
+
+/** The bytes one `fetch-chunk` reply carries from `offset`: whole stored chunks while the ACTUAL reply
+ *  still fits, or, when not even the rest of the first chunk fits, the largest prefix of it that does (a
+ *  measured binary search), so every call makes progress or refuses by name. Stored chunks are fixed
+ *  size, so the chunk holding `offset` is found without reading the ones before it. */
+async function collectChunk(
+  objects: ArtifactObjects,
+  meta: { digest: string; size: number; chunks: number },
+  offset: number,
+  fits: (data: unknown, ceiling: number) => boolean,
+): Promise<Buffer> {
+  const read = async (j: number) => {
+    const c = await objects.readChunk(meta.digest, j);
+    if (c === undefined) throw notExecuted("not-found", `fetch-chunk: ${FETCH_EXPIRED}`);
+    return c;
+  };
+  const stride = (await read(0)).byteLength;
+  const first = Math.min(Math.floor(offset / stride), Math.max(0, meta.chunks - 1));
+  let collected = Buffer.alloc(0);
+  for (let j = first; j < meta.chunks; j++) {
+    const c = await read(j);
+    const from = j === first ? offset - first * stride : 0;
+    const next = Buffer.concat([collected, Buffer.from(c.subarray(from))]);
+    const done = offset + next.byteLength >= meta.size;
+    // Two bounds: the contract caps one reply's data at one raw chunk, and the reply must fit the
+    // broker's message as actually serialized.
+    if (next.byteLength > ARTIFACT_CHUNK_MAX || !fits({ data: next.toString("base64"), complete: done }, FETCH_REPLY_CEILING)) {
+      if (collected.byteLength === 0) {
+        let lo = 0, hi = Math.min(c.byteLength - from, ARTIFACT_CHUNK_MAX);
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          if (fits({ data: Buffer.from(c.subarray(from, from + mid)).toString("base64"), complete: false }, FETCH_REPLY_CEILING)) lo = mid; else hi = mid - 1;
+        }
+        if (lo === 0) throw notExecuted("failed-precondition", "fetch-chunk: not one byte fits the broker's message limit, so no chunk can be sent");
+        collected = Buffer.from(c.subarray(from, from + lo));
+      }
+      break;
+    }
+    collected = next;
+  }
+  return collected;
 }
 
 /** The caller fence (S5) as a reusable function over the daemon's alias read. */

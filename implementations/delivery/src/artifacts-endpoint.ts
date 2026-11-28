@@ -1,6 +1,6 @@
 /**
- * The `artifacts` endpoint as the delivery daemon serves it (artifact plane 5.1). This revision serves
- * `list`; the put, fetch, confirm and pin commands join it at checkpoint 2.
+ * The `artifacts` endpoint as the delivery daemon serves it (artifact plane 5.1): `list` here, and the
+ * put, fetch, confirm and pin commands from `artifact-verbs.ts`.
  *
  * Connections (plan section 1). The serve connection is pure rails (`endpoint-bind.ts`). The handlers
  * use two more, each on its own daemon-only credential the signer holder minted:
@@ -106,8 +106,9 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     readChatEntry: (seq) => readChatEntryForConfirm(ctx.deliveryJsm(), ctx.space, seq),
     locks,
   });
-  /** The scope of the latest bound generation: the sweep writes under its fence, so a quiesce or a lost
-   *  lease ends every sweep write until the next bind. */
+  /** The scope of the bound generation the installed set was installed with: the sweep writes under
+   *  its fence, so a quiesce or a lost lease ends every sweep write until the next bind. Set only by
+   *  `install`, together with the set, never by `defs` (E19). */
   let sweepScope: ServeScope | undefined;
   const stopSweeps = startSweeps({
     intervalMs: ARTIFACT_SWEEP_INTERVAL_MS, log: ctx.log,
@@ -168,12 +169,13 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
         objects: new ArtifactObjects(data.nc, ctx.space),
       };
       return {
-        commit: async () => {
+        install: (scope) => {
           const previous = installed;
           installed = set;
-          // Retire only connections the new set does not reuse.
-          for (const conn of [previous?.data, previous?.sweeper])
-            if (conn && conn !== set.data && conn !== set.sweeper) await drainAndClose(conn.nc).catch(() => {});
+          sweepScope = scope;
+          // Retire only connections the new set does not reuse, after the transition.
+          const retiring = [previous?.data, previous?.sweeper].filter((c): c is StoreConn => c !== undefined && c !== set.data && c !== set.sweeper);
+          return async () => { for (const conn of retiring) await drainAndClose(conn.nc).catch(() => {}); };
         },
         discard: async () => { for (const nc of opened) await drainAndClose(nc).catch(() => {}); },
       };
@@ -189,9 +191,8 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     endpoint: ARTIFACTS_ENDPOINT,
     cluster: artifactsClusterArtifacts(),
     stage,
-    // Every contract command has its handler (SPEC 13.9).
+    // Every contract command has its handler (SPEC 13.9). Building them installs nothing (E19).
     defs: (scope) => {
-      sweepScope = scope;
       const handlers: Record<string, EpCommandDef["handler"]> = {
         [ARTIFACTS_LIST_COMMAND]: list(scope),
         [ARTIFACTS_PUT_BEGIN_COMMAND]: verbs.putBegin(scope),
@@ -212,6 +213,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
       ...(installed ? [{ label: "artifact-data", binding: installed.data.native.binding() }] : []),
       ...(installed ? [{ label: "artifact-sweeper", binding: installed.sweeper.native.binding() }] : []),
     ],
+    sweepGeneration: () => sweepScope?.generation,
     close: async () => {
       stopSweeps();
       sweepScope = undefined;

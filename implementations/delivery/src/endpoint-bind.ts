@@ -45,9 +45,11 @@ import {
  *
  *  Store connections follow the serve candidate (E12): `stage` opens a candidate set from the store
  *  material without touching what serves now, and proves it (every stream the handlers need exists and
- *  is reachable on those connections). The binder installs the set with `commit` only after the serve
- *  candidate is broker-confirmed, and discards it on any refusal, so last-good keeps its serve
- *  connection AND its store connections. */
+ *  is reachable on those connections). The binder installs the set only after the serve candidate is
+ *  broker-confirmed, in the same synchronous step that publishes the bound generation, and discards it
+ *  on any refusal, so last-good keeps its serve connection, its store connections AND its sweep scope.
+ *  `defs` only builds handlers: it installs nothing, so a candidate refused after its handlers were
+ *  built leaves last-good exactly as it was (E19). */
 export interface DaemonServedEndpoint {
   endpoint: string;
   cluster: { document: ClusterDocument; rootDigest: string; manifest: ContractClosureManifest; closureDigest: string };
@@ -55,14 +57,20 @@ export interface DaemonServedEndpoint {
   defs: (scope: ServeScope) => EpCommandDef[];
   /** The connections the handlers hold, labelled for the native inventory. */
   nativeConnections?: () => { label: string; binding: NativeConnectionBinding }[];
+  /** The serving generation background work (the sweep) writes under, or `undefined` before the first
+   *  install. It moves only with an installed store set. */
+  sweepGeneration?: () => number | undefined;
   /** Close the installed store connections. */
   close?: () => Promise<void>;
 }
 
 /** A staged, proven set of store connections, not yet serving. */
 export interface StagedStores {
-  /** Make this set the one the handlers use, and retire the set it replaces. */
-  commit(): Promise<void>;
+  /** Make this set the one the handlers use, with `scope` the generation its background work (the
+   *  sweep) writes under. SYNCHRONOUS, so the binder installs it in the same step that publishes the
+   *  bound generation, with no await between the lease check and the installation (E19). Returns the
+   *  retirement of the set it replaced, which the binder awaits after the transition. */
+  install(scope: ServeScope): () => Promise<void>;
   /** Close this set without serving from it. */
   discard(): Promise<void>;
 }
@@ -89,10 +97,11 @@ export interface ServeState {
 
 /** The serve generations and the lease flag every handler checks before an effect. */
 export interface ServeFence {
-  /** Throw `unavailable` with `outcome: not-executed` unless `captured` is still a live generation
-   *  and the daemon still holds its lease. Call before every store write, every page or byte
-   *  returned, and the final reply. */
-  check(captured: number, what: string): void;
+  /** Throw `unavailable` unless `captured` is still a live generation and the daemon still holds its
+   *  lease. Call before every store write, every page or byte returned, and the final reply. The
+   *  refusal says `not-executed` by default; a handler that has already landed a write passes
+   *  `unknown`, because a refusal after an effect must never claim nothing ran (SPEC 13.3). */
+  check(captured: number, what: string, outcome?: "not-executed" | "unknown"): void;
 }
 
 /** A handler's view of its own connection's generation: the defs builder gets the generation of the
@@ -228,14 +237,20 @@ export class DaemonEndpointBinder {
     tls: boolean;
     endpoint: DaemonServedEndpoint;
     log: (line: string) => void;
+    /** Ordered test barriers inside a bind: after the candidate is broker-confirmed (a throw here is a
+     *  readiness refusal after the handlers were built), and after the transition while the
+     *  predecessors retire. Absent in a running daemon. */
+    hold?: (point: "bound" | "retiring") => Promise<void>;
   }) {
     this.unbound = `${opts.endpoint.endpoint}: no serve credential adopted yet`;
   }
 
   readonly fence: ServeFence = {
-    check: (captured, what) => {
+    check: (captured, what, outcome = "not-executed") => {
       if (!this.live.has(captured) || !this.leaseHeld)
-        throw new EpEnvelopeError("unavailable", `${this.opts.endpoint.endpoint}: the serving generation moved before ${what}; nothing was done, retry`, undefined, "not-executed");
+        throw new EpEnvelopeError("unavailable", outcome === "not-executed"
+          ? `${this.opts.endpoint.endpoint}: the serving generation moved before ${what}; nothing was done, retry`
+          : `${this.opts.endpoint.endpoint}: the serving generation moved before ${what}; an earlier write of this request may have landed, retry`, undefined, outcome);
     },
   };
 
@@ -285,9 +300,9 @@ export class DaemonEndpointBinder {
       // check above.
       handle = serveEndpoint(nc, this.opts.space, grant, this.opts.endpoint.defs({ generation, fence: this.fence }), { public: true });
       await handle.bound();
+      await this.opts.hold?.("bound");
       stillOurs("while the serve candidate bound");
       if (!this.live.has(generation)) throw new EpEnvelopeError("unavailable", `${endpoint}: the candidate's generation ended while it bound`);
-      await staged?.commit();
     } catch (error) {
       this.live.delete(generation);
       try { await handle?.stop(); } catch { /* the connection closes below */ }
@@ -300,10 +315,19 @@ export class DaemonEndpointBinder {
       endpoint, instanceId: args.instanceId, epoch: grant.epoch,
       credentialFingerprint: credsFingerprint(args.creds), adoptionOpId: args.adoptionOpId,
     };
+    // ONE synchronous transition (E19): the lease and generation were proven just above with no await
+    // since, and the store set, the sweep scope and the bound generation are published together before
+    // anything is retired. A quiesce can only come after it, and it then ends this generation too.
+    const retireStores = staged?.install({ generation, fence: this.fence });
     const previous = this.served;
     this.served = { generation, nc, handle, native: watchNativeConnection(nc, `delivery ${endpoint} serve connection`), state };
     this.unbound = "";
+    await this.opts.hold?.("retiring");
+    await retireStores?.().catch(() => { /* a superseded store connection that will not drain is already replaced */ });
     if (previous) await this.retire(previous);
+    // A quiesce during the retirement awaits ended this generation: what it bound is not serving now.
+    if (this.served?.generation !== generation)
+      throw new EpEnvelopeError("unavailable", `${endpoint}: the daemon stopped serving its shard while the bind retired its predecessor; nothing is bound`);
     this.opts.log(`✓ ${endpoint}: bound at epoch ${grant.epoch} (instance ${args.instanceId})`);
     return state;
   }
@@ -319,6 +343,13 @@ export class DaemonEndpointBinder {
   /** `serveState`: what is bound now, or why nothing is. */
   serveState(): { bound: true; state: ServeState } | { bound: false; cause: string } {
     return this.served ? { bound: true, state: this.served.state } : { bound: false, cause: this.unbound };
+  }
+
+  /** Whether the endpoint's background work runs under the generation that serves now: `false` when
+   *  a sweep would be fenced out while the endpoint still answers (E19). `undefined` when unbound. */
+  sweepCurrent(): boolean | undefined {
+    if (!this.served) return undefined;
+    return this.opts.endpoint.sweepGeneration?.() === this.served.generation;
   }
 
   /** Lease lost or quiesced: move the generation, stop serving, keep nothing bound. A later adoption

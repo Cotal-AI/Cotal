@@ -42,10 +42,11 @@ import {
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
-import { deriveDaemonServeGrant } from "../src/endpoint-bind.js";
+import { deriveDaemonServeGrant, DaemonEndpointBinder } from "../src/endpoint-bind.js";
+import { artifactsServedEndpoint } from "../src/artifacts-endpoint.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 32;
+const EXPECTED_CELLS = 35;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -314,6 +315,37 @@ try {
     control === "derived" && gateReads === 2 && /changed between its two reads/.test(raced), { control, gateReads, raced });
   const moved = (await authKv.get(gateKey))!;
   await authKv.update(gateKey, JSON.stringify(openRow), moved.revision);
+
+  // ---- E19: the store set, the sweep scope and the bound generation move as one transition ----
+  // A binder of its own over the REAL artifacts endpoint, the real gate and the minted serve credential,
+  // with ordered holds inside its bind. Nothing here touches the daemon's own binder.
+  let nextHold: ((point: "bound" | "retiring") => Promise<void>) | undefined;
+  const own = new DaemonEndpointBinder({
+    space, servers, tls: false, log: () => {},
+    endpoint: artifactsServedEndpoint({ space, servers, tls: false, store, delivery: { aclForAlias: async () => undefined }, deliveryJsm: () => readerJsm, log: () => {} }),
+    hold: async (point) => { const h = nextHold; if (h) await h(point); },
+  });
+  const ownAdopt = async () => own.adopt({ creds: (await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND)))!, instanceId: instanceId!,
+    serveId: (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT))!, adoptionOpId: mintLifecycleUid(), jsm: readerJsm });
+  const firstOwn = await ownAdopt().then((st) => st.credentialFingerprint, (e: Error) => `!${e.message}`);
+  const sweepAfterFirst = own.sweepCurrent();
+  nextHold = async (point) => { if (point === "bound") throw new EpEnvelopeError("unavailable", "readiness refused after the handlers were built"); };
+  const refusedOwn = await ownAdopt().then(() => "bound", (e: Error) => e.message);
+  nextHold = undefined;
+  const afterRefusal = own.serveState();
+  check("a candidate refused after its handlers were built leaves last-good serving AND its sweep running under last-good's generation",
+    !firstOwn.startsWith("!") && sweepAfterFirst === true && /readiness refused/.test(refusedOwn)
+      && afterRefusal.bound && afterRefusal.state.credentialFingerprint === firstOwn && own.sweepCurrent() === true, { firstOwn, refusedOwn, sweepAfterFirst, sweepNow: own.sweepCurrent() });
+  nextHold = async (point) => { if (point === "retiring") await own.quiesce("lost the lease while the bind retired its predecessor"); };
+  const quiescedOwn = await ownAdopt().then(() => "bound", (e: Error) => e.message);
+  nextHold = undefined;
+  const afterQuiesce = own.serveState();
+  check("a lease lost while a bind retires its predecessor ends that bind: it reports the refusal, serveState is unbound, and the sweep is fenced",
+    /stopped serving its shard while the bind retired/.test(quiescedOwn) && !afterQuiesce.bound && /lost the lease/.test(afterQuiesce.cause) && own.sweepCurrent() === undefined, { quiescedOwn, afterQuiesce });
+  own.leaseRegained();
+  const reboundOwn = await ownAdopt().then(() => own.sweepCurrent(), (e: Error) => `!${e.message}`);
+  check("after the lease is regained the next adoption binds, and its sweep runs under the new generation", reboundOwn === true, reboundOwn);
+  await own.close();
 
   // ---- restart takeover: the same instance re-registers, the epoch advances, the old family goes ----
   const oldServeId = (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT))!;

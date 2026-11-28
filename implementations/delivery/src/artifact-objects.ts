@@ -1,9 +1,10 @@
 /**
  * The artifacts service's object store layer (plan section 4, C5; security S2, S10).
  *
- * Layout: chunk `i` of digest `h` is the one message on `$O.<obj>.C.<h>.<i>`, and the meta record
- * `{size, chunks, digest, name, mediaType}` is the one message on the stock meta subject
- * `$O.<obj>.M.<base64url("sha256:<h>")>` (rollup, so a re-put replaces it). Every read is a
+ * Layout: chunk `i` of digest `h` is the one message on `$O.<obj>.C.<h>.<i>`, every chunk but the last
+ * {@link ARTIFACT_STORE_CHUNK_BYTES} long whatever transport chunks carried the bytes, and the meta
+ * record `{size, chunks, digest, name, mediaType}` is the one message on the stock meta subject
+ * `$O.<obj>.M.<base64url("sha256:<h>")>`. Every write is create-only. Every read is a
  * last-by-subject DIRECT.GET on a named subject: no consumer, no enumeration, and no body that can
  * select another subject (the credential holds only the subject-scoped direct-get row, never the bare
  * one a `seq` read needs).
@@ -27,6 +28,22 @@ export interface ArtifactMeta {
   chunks: number;
   name: string;
   mediaType: string;
+}
+
+/** The size of every stored chunk but the last (E17). Storage framing is fixed and independent of how
+ *  the bytes arrived: one digest names one byte string, so it names one chunk at every index, and a
+ *  re-put or a retry of a partial commit writes exactly the chunks already there. */
+export const ARTIFACT_STORE_CHUNK_BYTES = 64 * 1024;
+
+/** Headroom under the data connection's `max_payload` for a chunk publish's headers. */
+const STORE_HEADER_ALLOWANCE = 1024;
+
+/** How many stored chunks an artifact of `size` bytes has, and the length of chunk `index`. */
+export function storedChunkCount(size: number): number {
+  return Math.ceil(size / ARTIFACT_STORE_CHUNK_BYTES);
+}
+export function storedChunkLength(size: number, index: number): number {
+  return Math.min(ARTIFACT_STORE_CHUNK_BYTES, size - index * ARTIFACT_STORE_CHUNK_BYTES);
 }
 
 /** Base64url with padding, the stock object store's encoding for meta subject names. */
@@ -90,27 +107,46 @@ export class ArtifactObjects {
     return m === null ? undefined : m.data;
   }
 
-  /** Write `chunks` for `digest`, then its meta record. The caller has already hashed the bytes to
-   *  `meta.digest`; `beforeEach` runs before every publish so the serve fence can refuse a write
-   *  that has not started.
+  /** Write `blocks`, the bytes of `meta.digest` in storage framing, then its meta record. The caller
+   *  has already hashed the bytes to the digest. `guard` runs before every publish, so the serve fence
+   *  can refuse a write that has not started. Blocks not in storage framing (every block but the last
+   *  exactly {@link ARTIFACT_STORE_CHUNK_BYTES}, none empty) are refused before any publish.
    *
-   *  Each chunk publish is create-only (expected last subject sequence 0). The stream keeps every
-   *  message per subject, so an unconditional re-put of the same bytes would stack a duplicate on each
-   *  chunk subject. A chunk subject that already holds a message holds these exact bytes (the subject
-   *  names the digest and the index, and the bytes were hashed to the digest), so a refused create is
-   *  the chunk already being there, and the write moves on. */
-  async write(meta: ArtifactMeta, chunks: readonly Uint8Array[], beforeEach: (what: string) => void): Promise<void> {
+   *  Every publish is create-only (expected last subject sequence 0), so nothing is ever stacked or
+   *  replaced. A chunk subject that already holds a message is read back and must hold exactly these
+   *  bytes: the framing is fixed, so an equal chunk is the same commit's, and a different one means
+   *  the subject holds something this layout did not write, which refuses the commit before its meta
+   *  record. A meta record already there must describe the same size and chunk count; it is kept as
+   *  it is (E17). */
+  async write(meta: Omit<ArtifactMeta, "chunks" | "size">, blocks: readonly Uint8Array[], guard: (what: string) => void): Promise<ArtifactMeta> {
+    const size = blocks.reduce((n, b) => n + b.byteLength, 0);
+    if (blocks.some((b, i) => b.byteLength !== storedChunkLength(size, i)) || blocks.length !== storedChunkCount(size))
+      throw new Error(`the bytes of ${meta.digest} are not in storage framing; nothing was written`);
+    const max = this.nc.info?.max_payload;
+    if (typeof max === "number" && max < ARTIFACT_STORE_CHUNK_BYTES + STORE_HEADER_ALLOWANCE)
+      throw new Error(`the broker's ${max}-byte message limit is below one ${ARTIFACT_STORE_CHUNK_BYTES}-byte stored chunk and its headers`);
     const js = jetstream(this.nc);
-    for (const [i, chunk] of chunks.entries()) {
-      beforeEach(`chunk ${i}`);
-      const h = headers();
-      h.set("Nats-Expected-Last-Subject-Sequence", "0");
-      try { await js.publish(chunkSubject(this.space, meta.digest, i), chunk, { headers: h }); }
-      catch (e) { if (!isCasLoss(e)) throw e; }
+    const record: ArtifactMeta = { ...meta, size, chunks: blocks.length };
+    const createOnly = () => { const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0"); return h; };
+    for (const [i, chunk] of blocks.entries()) {
+      guard(`chunk ${i}`);
+      try { await js.publish(chunkSubject(this.space, meta.digest, i), chunk, { headers: createOnly() }); }
+      catch (e) {
+        if (!isCasLoss(e)) throw e;
+        const there = await this.readChunk(meta.digest, i);
+        if (there === undefined || Buffer.compare(Buffer.from(there), Buffer.from(chunk)) !== 0)
+          throw new Error(`chunk ${i} of ${meta.digest} already holds different bytes; nothing was committed over it`);
+      }
     }
-    beforeEach("the meta record");
-    const h = headers();
-    h.set("Nats-Rollup", "sub");
-    await js.publish(metaSubject(this.space, meta.digest), JSON.stringify(meta), { headers: h });
+    guard("the meta record");
+    try { await js.publish(metaSubject(this.space, meta.digest), JSON.stringify(record), { headers: createOnly() }); }
+    catch (e) {
+      if (!isCasLoss(e)) throw e;
+      const there = await this.readMeta(meta.digest);
+      if (there === undefined || there.size !== record.size || there.chunks !== record.chunks)
+        throw new Error(`the meta record of ${meta.digest} already describes ${there ? `${there.size} bytes in ${there.chunks} chunks` : "something unreadable"}; nothing was committed over it`);
+      return there;
+    }
+    return record;
   }
 }

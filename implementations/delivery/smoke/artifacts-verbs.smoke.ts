@@ -37,7 +37,7 @@ import {
   artifactAttachBucket, artifactBucket, artifactPossessBucket, artifactReserveBucket, composeSpaceAuth, confirmAttach,
   CotalEndpoint, createBrokerAuth, createSpaceAccountAuth, DEV_OWNER, fetchArtifact, idFromCreds, isReachable,
   listArtifacts, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity,
-  objectStoreStream, pinArtifact, provisionAgentDurables, putArtifact, serverConfig, setupSpaceStreams, fitPutChunk, type SecretStore,
+  objectStoreStream, pinArtifact, provisionAgentDurables, putArtifact, serverConfig, setupSpaceStreams, fitPutChunk, EP_REQUEST_HEADER_ALLOWANCE, type SecretStore,
 } from "@cotal-ai/core";
 import {
   ARTIFACT_SWEEPER_CREDS_KIND, DAEMON_ENDPOINT_BOOTSTRAPS, bootstrapDaemonEndpoint, connectionEvictorCredsKey, daemonEndpointKey,
@@ -50,7 +50,7 @@ import { DigestLocks } from "../src/artifact-verbs.js";
 import { metaSubject } from "../src/artifact-objects.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 25;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -76,9 +76,10 @@ const space = `artverbs-${Date.now()}`;
 const account = await createSpaceAccountAuth(broker, space);
 const auth = composeSpaceAuth(broker, account);
 const brokerDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(brokerDir, "server.conf"), serverConfig(broker, [account], { transport: { kind: "plaintext" }, port, storeDir: join(brokerDir, "js") }));
-const nats = spawn("nats-server", ["-c", join(brokerDir, "server.conf")], { stdio: "ignore" });
-const release = teardownOnSignal(nats, brokerDir);
+const confPath = join(brokerDir, "server.conf");
+writeFileSync(confPath, serverConfig(broker, [account], { transport: { kind: "plaintext" }, port, storeDir: join(brokerDir, "js") }));
+let nats = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
+let release = teardownOnSignal(nats, brokerDir);
 let handle: DeliveryServiceHandle | undefined;
 const endpoints: CotalEndpoint[] = [];
 const conns: NatsConnection[] = [];
@@ -140,19 +141,25 @@ try {
   const fetched = await fetchArtifact(bob, digest, channel);
   check("a reader of the channel fetches the bytes and the client verifies the digest", sha(fetched.bytes) === digest && fetched.name === "report.bin", { size: fetched.bytes.byteLength });
 
-  // ---- E6: the client sizes each chunk on the real frame, per call ----
-  // A broker this small cannot serve describe (the contract artifact floor), so the cell measures the
-  // client against a reduced budget over the REAL resolved service and request builder.
-  const service = await alice.describeService(ARTIFACTS_ENDPOINT);
-  const uploadIdProbe = "a".repeat(32);
-  const at = (maxPayload: number, seq: number) => fitPutChunk({ space, maxPayload }, service, uploadIdProbe, seq, 1 << 20);
-  const fitAt9 = at(8192, 9), fitAt10 = at(8192, 10);
-  check("the fit is measured per call: the chunk at seq 10 fits one raw byte fewer or so than at seq 9, never more",
-    fitAt9 > 0 && fitAt10 > 0 && fitAt10 <= fitAt9, { fitAt9, fitAt10 });
+  // ---- E21: each put-chunk is sized inside its own attempt, against that attempt's frame ----
+  // The measuring function every attempt runs, on stated budgets over a REAL frame: the actual
+  // put-chunk request this agent's attempt would send (route, bind, caller, nonce, deadline).
+  const frames: { seq: number; frame: (raw: number) => number }[] = [];
+  const probeId = "a".repeat(32);
+  for (const seq of [9, 10]) {
+    await alice.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_PUT_CHUNK_COMMAND, { uploadId: probeId, seq, data: "AA==" }, {
+      fitArgs: (measure) => { frames.push({ seq, frame: (raw) => measure({ uploadId: probeId, seq, data: Buffer.alloc(raw).toString("base64") }) }); return { uploadId: probeId, seq, data: "AA==" }; },
+    }).catch(() => undefined);
+  }
+  const f9 = frames.find((f) => f.seq === 9)!.frame, f10 = frames.find((f) => f.seq === 10)!.frame;
+  const budget = f9(3000);
+  const fit9 = fitPutChunk(f9, budget, 1 << 20), fit10 = fitPutChunk(f10, budget, 1 << 20);
+  check("the attempt's own frame grows a digit from seq 9 to 10, and the fit at the same budget is strictly smaller",
+    f10(fit9) === f9(fit9) + 1 && fit10 < fit9 && f9(fit9) <= budget && f10(fit10) <= budget && f10(fit10 + 1) > budget, { fit9, fit10, budget });
   let floor = "";
-  try { at(600, 0); } catch (e) { floor = `${(e as { code?: string }).code}: ${(e as Error).message}`; }
-  check("below the request floor the client refuses before any publish, naming the limit",
-    /^resource-exhausted: put-chunk: the broker's 600-byte message limit cannot carry one raw byte/.test(floor), floor);
+  try { fitPutChunk(f9, f9(1) - 1, 1 << 20); } catch (e) { floor = `${(e as { code?: string }).code}/${(e as { outcome?: string }).outcome}: ${(e as Error).message}`; }
+  check("below the request floor the measuring function refuses before any publish, not-executed, naming the limit",
+    /^resource-exhausted\/not-executed: put-chunk: the broker's message limit leaves \d+ bytes for a request and one raw byte/.test(floor), floor);
 
   // ---- the read gate first (S7) ----
   const unknownDigest = sha(new Uint8Array([9, 9, 9]));
@@ -253,6 +260,38 @@ try {
   await confirmAttach(bob, { digest: d3, channel, seq: p3b.seq });
   const back = await fetchArtifact(alice, d3, channel);
   check("a re-put after GC is a new verified commit that confirms and fetches", reput.digest === d3 && sha(back.bytes) === d3);
+
+  // ---- E21 on a real broker that is too small: restarted over the same store with a lower limit ----
+  // A caller's describe is cached per endpoint and kept across a reconnect (endpoint-control-plane.ts
+  // clears it only on refresh, a permission recovery, a currency split or a registry listing), and each
+  // attempt reads the connection's CURRENT max_payload. So alice's next put-chunk, after the broker
+  // comes back with a limit below one raw byte of that request, meets the request floor for real.
+  const low = f9(1) + EP_REQUEST_HEADER_ALLOWANCE - 64;
+  await release();
+  await new Promise((r) => nats.once("exit", r));
+  writeFileSync(confPath, serverConfig(broker, [account], { transport: { kind: "plaintext" }, port, storeDir: join(brokerDir, "js"), maxPayload: low }));
+  nats = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
+  release = teardownOnSignal(nats, brokerDir);
+  let reconnected = false;
+  for (let i = 0; i < 150 && !reconnected; i++) { await wait(200); try { reconnected = alice.maxPayload === low; } catch { /* still reconnecting */ } }
+  let lowFloor = "";
+  const lowStarted = Date.now();
+  try {
+    await alice.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_PUT_CHUNK_COMMAND, { uploadId: probeId, seq: 0, data: "AA==" }, {
+      fitArgs: (measure, budget) => { fitPutChunk((raw) => measure({ uploadId: probeId, seq: 0, data: Buffer.alloc(raw).toString("base64") }), budget, 1000); return {}; },
+    });
+  } catch (e) { lowFloor = `${(e as { code?: string }).code}/${(e as { outcome?: string }).outcome}: ${(e as Error).message}`; }
+  check("after the broker restarts with a lower limit, a put-chunk on the describe the caller already holds refuses before any publish, not-executed, naming the limit",
+    reconnected && /^resource-exhausted\/not-executed: put-chunk: the broker's message limit leaves \d+ bytes/.test(lowFloor) && Date.now() - lowStarted < 5_000, { reconnected, low, lowFloor });
+  // A caller that must describe now: the reply cannot be published under this limit, and the caller
+  // gets a named refusal inside its deadline, not a hang, a bare timeout or a retry loop.
+  let tooSmall = "";
+  const describeStarted = Date.now();
+  try { await alice.describeService(ARTIFACTS_ENDPOINT, { refresh: true, deadlineMs: 20_000 }); tooSmall = "described"; }
+  catch (e) { tooSmall = `${(e as { code?: string }).code}: ${(e as Error).message}`; }
+  const describeMs = Date.now() - describeStarted;
+  check("on a broker whose limit is below the describe reply, the caller gets resource-exhausted naming the payload limit, inside its deadline",
+    /^resource-exhausted: describe\(artifacts\) failed: the broker's payload limit is too small: the serialized reply is \d+ bytes and the broker's max_payload is \d+/.test(tooSmall) && describeMs < 20_000, { tooSmall, describeMs });
 } catch (e) {
   check("the cell ran to completion", false, (e as Error).stack ?? String(e));
 } finally {

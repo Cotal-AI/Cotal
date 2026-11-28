@@ -16,6 +16,10 @@
  *
  * Order (S19): an attach writes the index row, then the channel row; a removal deletes the channel row,
  * then the index row. So a LIVE channel row never exists without its index row.
+ *
+ * Every write takes a `guard` and calls it immediately before that one publish, CAS retries and
+ * rollback included, so the serve fence is checked at each actual mutation and never upstream of an
+ * await (E18).
  */
 import type { KV, KvEntry } from "@nats-io/kv";
 import { isCasLoss } from "@cotal-ai/core";
@@ -48,6 +52,9 @@ async function live<T>(kv: KV, key: string): Promise<{ value: T; revision: numbe
   try { return { value: e.json<T>(), revision: e.revision }; } catch { return undefined; }
 }
 
+/** Called immediately before one write; throws to stop it. */
+export type WriteGuard = (what: string) => void;
+
 /** The index stores over one `artifact-data` connection's three bound handles. */
 export class ArtifactIndex {
   constructor(private readonly kv: { attach: KV; possess: KV; reserve: KV }) {}
@@ -63,17 +70,19 @@ export class ArtifactIndex {
   }
 
   /** The first step of every commit attempt: this attempt's reservation, replacing any earlier one. */
-  async writeReservation(digest: string, caller: Caller, row: ReservationRow): Promise<void> {
+  async writeReservation(digest: string, caller: Caller, row: ReservationRow, guard: WriteGuard): Promise<void> {
+    guard("the reservation");
     await this.kv.reserve.put(principalDigestKey(digest, caller), json(row));
   }
 
   /** The last step of a commit: the possession row carrying this attempt's reservation id. A CAS update
    *  of an existing row on a re-put, a create on a first put; a lost race re-reads and retries. */
-  async writePossession(digest: string, caller: Caller, row: PossessionRow): Promise<void> {
+  async writePossession(digest: string, caller: Caller, row: PossessionRow, guard: WriteGuard): Promise<void> {
     const key = principalDigestKey(digest, caller);
     for (let attempt = 0; attempt < 4; attempt++) {
       const e = await this.kv.possess.get(key);
       try {
+        guard("the possession row");
         if (e === null || e.operation !== "PUT") await this.kv.possess.create(key, json(row));
         else await this.kv.possess.update(key, json(row), e.revision);
         return;
@@ -86,20 +95,24 @@ export class ArtifactIndex {
 
   /** Consume the confirmer's own reservation (plan section 6). Deleting a reservation never extends a
    *  lifetime. */
-  async deleteReservation(digest: string, caller: Caller): Promise<void> {
+  async deleteReservation(digest: string, caller: Caller, guard: WriteGuard): Promise<void> {
+    guard("consuming the reservation");
     await this.kv.reserve.delete(principalDigestKey(digest, caller));
   }
 
   /** Insert-if-absent attach, index row first (S19). Returns `false` when a live channel row already
-   *  exists, which is left exactly as it is: attach is idempotent and lifetime-neutral. */
-  async attachIfAbsent(channel: string, digest: string, row: AttachmentRow): Promise<boolean> {
+   *  exists, which is left exactly as it is: attach is idempotent and lifetime-neutral. An `expired`
+   *  tombstone is not live, so a confirm over one is a new attachment with a new expiry. */
+  async attachIfAbsent(channel: string, digest: string, row: AttachmentRow, guard: WriteGuard): Promise<boolean> {
     if ((await this.readAttachment(channel, digest))?.value.state === "attached") return false;
+    guard("the attachment index row");
     await this.kv.attach.put(attachmentIndexKey(digest, channel), json({ channel }));
     const key = attachmentKey(channel, digest);
     const e = await this.kv.attach.get(key);
     try {
+      if (e !== null && e.operation === "PUT" && e.json<AttachmentRow>().state === "attached") return false;
+      guard("the attachment");
       if (e === null || e.operation !== "PUT") await this.kv.attach.create(key, json(row));
-      else if (e.json<AttachmentRow>().state === "attached") return false;
       else await this.kv.attach.update(key, json(row), e.revision);
     } catch (err) {
       if (!isCasLoss(err)) throw err;
@@ -110,16 +123,19 @@ export class ArtifactIndex {
 
   /** Roll back an attach this caller just made (confirm's possession re-read failed): channel row
    *  first, then the index row (S19). */
-  async rollbackAttach(channel: string, digest: string): Promise<void> {
+  async rollbackAttach(channel: string, digest: string, guard: WriteGuard): Promise<void> {
+    guard("rolling back the attachment");
     await this.kv.attach.delete(attachmentKey(channel, digest));
+    guard("rolling back the attachment index row");
     await this.kv.attach.delete(attachmentIndexKey(digest, channel));
   }
 
   /** Clear an attachment's expiry: the explicit lifetime act (plan section 7). CAS on the row it read. */
-  async pin(channel: string, digest: string): Promise<boolean> {
+  async pin(channel: string, digest: string, guard: WriteGuard): Promise<boolean> {
     const cur = await this.readAttachment(channel, digest);
     if (cur === undefined || cur.value.state !== "attached") return false;
     if (cur.value.pinned) return true;
+    guard("the pin");
     await this.kv.attach.update(attachmentKey(channel, digest), json({ ...cur.value, pinned: true }), cur.revision);
     return true;
   }
