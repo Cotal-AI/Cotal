@@ -200,7 +200,8 @@ which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that
 space under that name and drops the prepared record. It also writes the `default` persona into
 `<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
 With an explicit `--root`, `space create` makes missing directories with private permissions under
-a protected, writable directory. `--adopt` requires an existing project folder.
+a protected, writable directory. `--adopt` requires an existing project folder. If the account
+cannot inspect the root, check access to its parent directories before retrying.
 An invalid space name is refused before connector installation or project writes.
 `--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
 directories owned by you or root, with no symlinks. World write refuses. A Linux directory can be

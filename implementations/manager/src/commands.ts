@@ -337,6 +337,13 @@ function recordIdleExit(service: ManagerServiceChild): void {
   catch (e) { console.error(c.yellow(`! the idle-exit receipt was not written, so status shows this exit with no recorded stop: ${rejectionText(e)}`)); }
 }
 
+/** The machine daemon's parent-channel question: is this Manager's serve connection up? */
+function answerConnectionQuestion(frame: { kind?: unknown; attemptId?: unknown }, mgr: { serveBound(): boolean }): boolean {
+  if (frame.kind !== "machine-connection" || typeof frame.attemptId !== "string" || !/^[A-Za-z0-9-]{1,64}$/.test(frame.attemptId)) return false;
+  process.send?.({ kind: "machine-connection-result", attemptId: frame.attemptId, ok: true, bound: mgr.serveBound() });
+  return true;
+}
+
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service?: ManagerServiceChild): Promise<void> {
   stampConsole();
   const { values: v, root: managerRoot } = service ? { values: args.values as Values, root: service.root } : superviseSelection(args.values as Values);
@@ -747,6 +754,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         catch { process.send?.({ kind: "machine-agents-result", attemptId: frame.attemptId, ok: false }); }
         return;
       }
+      if (answerConnectionQuestion(frame, mgr)) return;
       if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["inspect", "prepare", "abort"].includes(String(frame.op))) return;
       const attemptId = frame.attemptId;
       pending = pending.then(async () => {

@@ -293,9 +293,10 @@ refuses `CONFLICT` (exit 2) and launches nothing. Its Next names
 `cotal service remove <name> --instance <id> --space <space> --yes` and then `start` again, after a
 `cotal service stop` of that instance when it still runs. A controller stack's
 member definitions and records are not removed this way, since its `up` and `down` read them:
-`remove` refuses `UNSUPPORTED`, exit 2. Its Next names the owning project folder and the command
-`cotal down --space <space> --yes` to run there. Then run `cotal space forget <space>` to remove
-the stopped definitions and records with the space.
+`remove` refuses `UNSUPPORTED`, exit 2. Its Next gives a `service show` command that reads the
+definition in the selected space without changing it. If you intend to retire the whole stack,
+run `cotal down --space <space> --yes` from its owning folder, then `cotal space forget <space>`
+to remove the stopped definitions and records with the space.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
