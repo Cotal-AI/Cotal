@@ -49,13 +49,19 @@ one_at_a_time() {
   [ -z "$others" ] || die "another test machine is running ($others). Stop it first: scenarios/machines/lxd.sh stop <os>"
 }
 
+# Runs a root command in the VM and shows its output only when it fails.
+quiet() {
+  local out
+  out=$(lxc exec "$1" -- sh -c "$2" 2>&1) || { printf '%s\n' "$out" | tail -30 >&2; die "setup step failed in $1"; }
+}
+
 provision_linux() {
   local os=$1 vm=$2
   lxc exec "$vm" -- cloud-init status --wait >/dev/null 2>&1 || true
   if [ "$os" = ubuntu ]; then
-    lxc exec "$vm" -- sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq xvfb xauth x11-utils curl xz-utils ca-certificates >/dev/null 2>&1'
+    quiet "$vm" 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq xvfb xauth x11-utils curl xz-utils ca-certificates'
   else
-    lxc exec "$vm" -- sh -c 'dnf install -y -q xorg-x11-server-Xvfb xorg-x11-xauth xorg-x11-utils curl xz ca-certificates which procps-ng >/dev/null 2>&1'
+    quiet "$vm" 'dnf install -y -q xorg-x11-server-Xvfb xorg-x11-xauth xwininfo xdpyinfo curl xz ca-certificates which procps-ng'
   fi
   lxc exec "$vm" -- sh -c "id $user >/dev/null 2>&1 || useradd -m -u $uid -s /bin/bash $user"
   lxc exec "$vm" -- sh -c "echo '$user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$user && chmod 0440 /etc/sudoers.d/$user && loginctl enable-linger $user"
@@ -105,6 +111,7 @@ run() {
   local status=0
   as_user "$vm" /opt/cotal-scenario-node/bin/node /home/$user/scenarios/run.mjs run "$scenario" --out /home/$user/result "$@" || status=$?
   lxc file pull -r "$vm/home/$user/result/." "$out/" >/dev/null 2>&1 || true
+  lxc stop "$vm"
   echo "Result: $out/result.json"
   return "$status"
 }
