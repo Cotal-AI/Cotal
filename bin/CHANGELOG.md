@@ -1,5 +1,133 @@
 # cotal-ai
 
+## 0.184.0
+
+### Patch Changes
+
+- 08bb8ae: Open Agent apps before connecting a computer. The desktop can list, install, and sign in to supported apps without first setting up the background service. When this copy of Cotal owns the service, it refreshes the service after an install and when you choose Check again, so spaces can find the apps. If the app cannot verify ownership, Agent apps is read-only.
+  
+  Desktop setup can now return `LIFECYCLE_BLOCKED` while an agent app change is in progress. Wait for that change to finish, then try setup again.
+- 1e6ab66: On Windows, an application installed from the desktop app's Agent apps screen is now picked up even when another Cotal installation set up the background service, such as a command line installed with npm. The app restarts that service unchanged so it reads the new user PATH, and the service keeps its version. When the service cannot pick an application up, the app shows it as installed and says why, instead of "Couldn't install", and the reason no longer includes the service's command line. When a Windows installer stops, the row now gives the reason the installer printed, such as Codex's "Cannot replace older standalone install without confirmation", instead of only "exit code 1".
+- 6ce8ca7: `cotal daemon setup` now reports `service: <unit> is already installed` instead of claiming the unit was left as it is, prints `service: updating <unit> pinned PATH` immediately before rewriting an installed POSIX service's `PATH`, and prints `service: restarted <unit> with the updated PATH` only after the service restart completes.
+- 6d18757: Fix the Linux desktop RPM so it installs the bundled CLI files correctly and the CLI starts on Fedora.
+- 9e6d5c1: Fix building the desktop app on macOS 27, where staging the app's runtime stopped with "The deployed stock CLI did not report the expected version."
+- 3fcce36: The desktop app now has a sidebar with three sections: Connection, Agent apps and Settings. The sidebar stays in place while a section scrolls.
+- d73562c: On macOS and Linux, append the per-user installer folders declared by seeded and installed connectors (`~/.local/bin`, `~/.opencode/bin`, and `~/.pi/agent/bin` for the built-in connectors) after the caller's `PATH` when writing or refreshing the background service's systemd unit or LaunchAgent plist. On Linux, newly installed or refreshed services find agent applications added to those folders later without another setup or restart. Existing service units and plists keep their recorded `PATH` until refreshed by `cotal daemon setup` from a terminal that finds a newly installed application (or by the desktop app's application refresh).
+- e8065d4: Bind staged `cotal update --self` execution descriptors to the Node installation prefix's `bin` entry instead of transient version-manager shell symlinks such as `fnm_multishells`, so switching Node versions does not revert the active CLI generation or break concurrent shells.
+- 2cece0b: Set `OOMPolicy=continue` on the Linux `cotal-daemon` systemd user unit so an out-of-memory kill of one seat child process does not cause systemd to stop the daemon, Manager, and other running seats, and upgrade an unmodified default-home `cotal-daemon.service` unit in place during `cotal update` without restarting running seats when no loaded user unit has a pending reload. `cotal update` and automatic updates leave the existing unit alone during the update that installs this release and write `OOMPolicy=continue` on the next update run by this release, while upgrading through the installer script writes `OOMPolicy=continue` during that install.
+- 13ce458: The desktop app now notices when this computer goes offline or a space stops answering. It used to keep showing Connected. A hosted Manager tells the machine daemon whether its connection to the space is up, on the health check that already runs every five seconds, and the daemon reports a loss once two checks in a row see it, so a drop the Manager recovers from within seconds shows nothing. The Manager now pings its connection every ten seconds, as agents already do, so a network that goes away without a word, as Wi-Fi does, is found within about 45 seconds rather than several minutes. When the connection drops, `cotal daemon status` and the app's live status show a `connection` problem. It reads `offline` when this computer cannot look up the space's host, and `unreachable` when it can but the space is not answering. The app says "No internet connection" or "Can't reach your space", and the tray says "Offline" or "Can't connect". The problem clears by itself once the Manager reconnects, and a Manager that a status read during the loss left `starting` is read again until it answers, at once and then at growing intervals of up to 30 seconds, so the app returns to Connected without anyone asking. `cotal daemon service-status` for a space with a hosted Manager succeeds only while that Manager answers with no lost connection; otherwise it refuses with the code `OFFLINE` or `SPACE_UNREACHABLE` for a lost connection, or `MANAGER_<STATE>` (such as `MANAGER_STARTING`) for the Manager's own state. The daemon logs each loss and reconnect once.
+- 70ce98b: When `cotal update --self` refreshes the npm launcher and the recorded Node is no longer on disk, record the supported Node that ran the update so the launcher still starts when Node is not on PATH.
+- 08c14c8: A computer that is already set up no longer returns to the four setup steps when the network is down or a status read fails. The window, the header pill and the tray say "No internet connection" or "Can't reach your space", the connection comes back by itself, and setup does not run while the computer is known to be offline. When the background service was set up by another Cotal installation, Details says so without a command line.
+- aa1038d: The desktop app's version-update screen now says "Cotal was updated" and offers "Restart background service". If agents are running, the restart waits until they finish. When another Cotal installation owns the background service, Agent apps names the Cotal app or command-line install without exposing a path. This copy does not offer an install or service refresh it cannot perform. If ownership changes during a completed install, the warning distinguishes the local install from whether the background service can use it.
+- 82b3fb0: Report when a recorded Linux daemon service will not start after reboot or keep running after logout, and show how to enable it when linger was denied.
+- 2c2f1f4: A running Manager now stops offering an agent application as soon as it is uninstalled, without restarting the background service. Every status read, model lookup, command listing, resume and launch verifies that an available connector's recorded executables still exist and still resolve on `PATH`. When one is missing, the connector row becomes `unavailable` with `<name> harness needs <bin> on PATH - not found`, launches are refused before reserving a name or capacity, and class `spawn` and `launch` subscriptions update when no available application remains.
+- 902f3c3: Reclaim abandoned extension staging copies from the top-level connector configuration after migrating to version sets, without removing its installed connectors.
+- ec3c29f: A backup restore on a host that cannot list process command lines now starts its first listener. If that listener was spawned but its pid was never published, a later attempt refuses instead of starting a second listener. A published pid whose creation time does not match the recorded listener does not block.
+- Updated dependencies [d3489eb]
+- Updated dependencies [88eb667]
+- Updated dependencies [2122243]
+- Updated dependencies [c8ce70c]
+- Updated dependencies [6f27bc2]
+- Updated dependencies [af2a1ef]
+- Updated dependencies [68fc37d]
+- Updated dependencies [6747dde]
+- Updated dependencies [1760112]
+- Updated dependencies [9fa16c9]
+- Updated dependencies [bb1dc24]
+- Updated dependencies [fcf78b1]
+- Updated dependencies [70cbdcc]
+- Updated dependencies [880fd9e]
+- Updated dependencies [0e7cc4e]
+- Updated dependencies [898896a]
+- Updated dependencies [70739b2]
+- Updated dependencies [82ded32]
+- Updated dependencies [0805807]
+- Updated dependencies [c8d3af0]
+- Updated dependencies [df64fc1]
+- Updated dependencies [4ca366f]
+- Updated dependencies [18bcbd4]
+- Updated dependencies [2972f78]
+- Updated dependencies [5582556]
+- Updated dependencies [2f40157]
+- Updated dependencies [757b69c]
+- Updated dependencies [4974e08]
+- Updated dependencies [14aa844]
+- Updated dependencies [13ce458]
+- Updated dependencies [b0686e3]
+- Updated dependencies [5ea9e9e]
+- Updated dependencies [5e32e1c]
+- Updated dependencies [39e4c56]
+- Updated dependencies [43245f9]
+- Updated dependencies [1704bf5]
+- Updated dependencies [6b932f4]
+- Updated dependencies [e8af28c]
+- Updated dependencies [f9301f2]
+- Updated dependencies [0c14ffe]
+- Updated dependencies [345d6f8]
+- Updated dependencies [2c2f1f4]
+- Updated dependencies [902f3c3]
+- Updated dependencies [08a3e61]
+- Updated dependencies [e6dec58]
+- Updated dependencies [02f2b42]
+- Updated dependencies [35fa703]
+- Updated dependencies [52f787c]
+- Updated dependencies [76b0b64]
+- Updated dependencies [50b7040]
+- Updated dependencies [ce34959]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [a1a9b5e]
+- Updated dependencies [db3acd7]
+- Updated dependencies [5081c94]
+- Updated dependencies [5efbfdc]
+- Updated dependencies [ebb511a]
+- Updated dependencies [7fb27be]
+- Updated dependencies [274a820]
+- Updated dependencies [8dc580b]
+- Updated dependencies [aa7d8a2]
+- Updated dependencies [ccdb130]
+- Updated dependencies [4d854d3]
+- Updated dependencies [45f1b0d]
+- Updated dependencies [9e719a3]
+- Updated dependencies [7256518]
+- Updated dependencies [f24c89b]
+- Updated dependencies [eb3ae09]
+- Updated dependencies [b1ac442]
+- Updated dependencies [ec3c29f]
+  - @cotal-ai/cli@0.184.0
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/manager@0.184.0
+  - @cotal-ai/auth@0.184.0
+  - @cotal-ai/connector-core@0.184.0
+  - @cotal-ai/runtime@0.184.0
+  - @cotal-ai/delivery@0.184.0
+  - @cotal-ai/registry@0.184.0
+  - @cotal-ai/seat@0.184.0
+
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- Updated dependencies [c049810]
+- Updated dependencies [ce4a8db]
+- Updated dependencies [99e5057]
+- Updated dependencies [8740d71]
+- Updated dependencies [98aed81]
+- Updated dependencies [6038ca0]
+  - @cotal-ai/auth@0.183.1
+  - @cotal-ai/cli@0.183.1
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/connector-core@0.183.1
+  - @cotal-ai/manager@0.183.1
+  - @cotal-ai/delivery@0.183.1
+  - @cotal-ai/runtime@0.183.1
+  - @cotal-ai/registry@0.183.1
+  - @cotal-ai/seat@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes

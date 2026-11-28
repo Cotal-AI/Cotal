@@ -29,7 +29,6 @@ export interface EndpointConsumersDeps {
   notLiveMsg: () => string;
   requireLifecycleUid: (what: string) => string;
   armJoin: (channels: string[]) => Promise<Map<string, number>>;
-  backfillArmed: (frontiers: Map<string, number>, floorSeq?: number) => Promise<number>;
   emitRecoverable: (err: Error) => void;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
@@ -50,13 +49,12 @@ export class EndpointConsumers {
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: DeliveryState, private readonly deps: EndpointConsumersDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "bootMemberships" | "deliveryPlane" | "durable" | "provisioning">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: DeliveryState, private readonly deps: EndpointConsumersDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "bootMemberships" | "deliveryPlane" | "durable" | "history" | "provisioning">) {}
 
   private get authed() { return this.deps.authed(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private armJoin(channels: string[]): Promise<Map<string, number>> { return this.deps.armJoin(channels); }
-  private backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> { return this.deps.backfillArmed(frontiers, floorSeq); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
@@ -120,7 +118,7 @@ export class EndpointConsumers {
       const armed = this.firstConnect ? await this.armJoin(this.identity.channels) : undefined;
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      if (armed) await this.backfillArmed(armed, this.identity.backfillFloor);
+      if (armed) await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a

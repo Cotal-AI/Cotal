@@ -332,6 +332,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
           & pnpm --dir desktop check:size
           if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
+      - name: Verify installed Linux RPM files and bundled CLI
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -i -e DO_NOT_TRACK=1 \
+            -v "$PWD/desktop/src-tauri/target/release/bundle/rpm:/packages:ro" fedora:41 bash -se <<'FEDORA'
+          set -o pipefail
+          scratch=$(mktemp -d)
+          export HOME="$scratch/home" COTAL_HOME="$scratch/cotal" XDG_CONFIG_HOME="$scratch/config" TMPDIR="$scratch/tmp"
+          mkdir -p "$HOME" "$COTAL_HOME" "$XDG_CONFIG_HOME" "$TMPDIR"
+          dnf install -y /packages/*.rpm
+          rpm -V cotal
+          /usr/bin/cotal-node /usr/lib/Cotal/runtime/dist/cotal.js --version
+          FEDORA
       # The only notarization: Tauri gets no notarization login, so it signs the app and the disk image and
       # skips submitting. Gatekeeper assesses a downloaded disk image on open and rejects a signed, unnotarized
       # one; the notary service checks everything nested in the image, the app included, so one submission and

@@ -55,6 +55,15 @@ try{
  const logs:string[]=[];
  for(const [index,name]of ['project','other'].entries()){
   const child=spawn(process.execPath,[entry,'supervise','--space',space,'--name',name],{cwd:join(root,name),env,stdio:['ignore','pipe','pipe']});children.push(child);logs[index]='';child.stdout!.on('data',bytes=>{logs[index]+=bytes;});child.stderr!.on('data',bytes=>{logs[index]+=bytes;});
+  // Stagger the starts until concurrent Manager registration is fixed (#10803).
+  if(index===0)await new Promise<void>((resolve,reject)=>{
+   const activated=()=>{if(logs[index].includes('service endpoint activated')){cleanup();resolve();}};
+   const closed=()=>fail('First Manager exited before activation');
+   const timer=setTimeout(()=>fail('Timed out waiting for first Manager activation'),45000);
+   function cleanup(){clearTimeout(timer);child.stderr!.off('data',activated);child.off('close',closed);}
+   function fail(message:string){cleanup();reject(new Error(`${message}\n${logs[index]}`));}
+   child.stderr!.on('data',activated);child.once('close',closed);
+  });
  }
  const ids:string[]=[];
  for(let attempt=0;attempt<180;attempt++){

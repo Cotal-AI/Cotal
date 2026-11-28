@@ -59,7 +59,6 @@ export interface EndpointSubscriptionsDeps {
   authed: () => boolean;
   notLiveMsg: () => string;
   armJoin: (channels: string[]) => Promise<Map<string, number>>;
-  backfillArmed: (frontiers: Map<string, number>, floorSeq?: number) => Promise<number>;
   watchConsumerDeleteDenied: (stream: string, name: string, owner: object | undefined) => boolean;
   deleteMembershipConsumer: (jsm: JetStreamManager, stream: string, name: string) => Promise<boolean>;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -69,12 +68,11 @@ export interface EndpointSubscriptionsDeps {
  *  listings, and the membership feed's snapshot read and watches with their consumer cleanup.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointSubscriptions {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps, private readonly parts: Pick<EndpointParts, "bootMemberships" | "channelDiscovery" | "connection" | "consumers" | "durable" | "durableBackstop" | "presence">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps, private readonly parts: Pick<EndpointParts, "bootMemberships" | "channelDiscovery" | "connection" | "consumers" | "durable" | "durableBackstop" | "history" | "presence">) {}
 
   private get authed() { return this.deps.authed(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private armJoin(channels: string[]) { return this.deps.armJoin(channels); }
-  private backfillArmed(frontiers: Map<string, number>, floorSeq?: number) { return this.deps.backfillArmed(frontiers, floorSeq); }
   private watchConsumerDeleteDenied(stream: string, name: string, owner: object | undefined) { return this.deps.watchConsumerDeleteDenied(stream, name, owner); }
   private deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string) { return this.deps.deleteMembershipConsumer(jsm, stream, name); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
@@ -151,7 +149,7 @@ export class EndpointSubscriptions {
         reason = `durable backstop unavailable (${(e as Error).message})`;
       }
     }
-    const backfilled = await this.backfillArmed(armed);
+    const backfilled = await this.parts.history.backfillArmed(armed);
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 

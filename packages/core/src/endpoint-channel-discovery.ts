@@ -5,8 +5,9 @@
 import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
-import { JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
-import type { KV, KvEntry } from "@nats-io/kv";
+import type { EndpointParts } from "./endpoint-parts.js";
+import { JetStreamApiCodes } from "@nats-io/jetstream";
+import type { KvEntry } from "@nats-io/kv";
 import {
   openChannelRegistry,
   effectiveReplay,
@@ -25,7 +26,6 @@ import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
  *  never copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointChannelDiscoveryDeps {
   notLiveMsg: () => string;
-  bindKvWatch: (kv: KV) => Promise<{ iter: Awaited<ReturnType<KV["watch"]>>; info: ConsumerInfo } | undefined>;
   emitRecoverable: (err: Error) => void;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
@@ -34,10 +34,9 @@ export interface EndpointChannelDiscoveryDeps {
  *  replay and delivery-class policy they answer, and the registry watch or one-shot read that keeps
  *  the cache. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointChannelDiscovery {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly channelRegistry: ChannelRegistryState, private readonly deps: EndpointChannelDiscoveryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly channelRegistry: ChannelRegistryState, private readonly deps: EndpointChannelDiscoveryDeps, private readonly parts: Pick<EndpointParts, "connection">) {}
 
   private notLiveMsg() { return this.deps.notLiveMsg(); }
-  private bindKvWatch(kv: KV) { return this.deps.bindKvWatch(kv); }
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
 
@@ -136,7 +135,7 @@ export class EndpointChannelDiscovery {
    *  reported as a `warning` and dropped, so its channel resolves to the default policy. */
   async startChannelWatch(): Promise<void> {
     if (!this.conn.channelKv) return;
-    const bound = await this.bindKvWatch(this.conn.channelKv);
+    const bound = await this.parts.connection.bindKvWatch(this.conn.channelKv);
     if (!bound) return;
     const { iter } = bound;
     this.conn.channelWatchIter = iter;

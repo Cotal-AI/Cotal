@@ -1,4 +1,4 @@
-import type { ControlEndpoint, EpErrorCode, FirstCommand, GoalRef, Identity, InlinePersona, IssuedBinding, LaunchOpts, MeshLaunchAgent, PersonaEndpoint } from "@cotal-ai/core";
+import type { ControlEndpoint, EpErrorCode, FirstCommand, GoalRef, Identity, InlinePersona, IssuedBinding, LaunchModes, LaunchOpts, MeshLaunchAgent, PersonaEndpoint } from "@cotal-ai/core";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ContinuityAssignment } from "./launch.js";
 import type { FreeSlotCause, ForkProvenance, ManagerResumeAgent } from "./manager.js";
@@ -34,6 +34,8 @@ export interface StartAgentOpts {
   model?: string;
   /** Model variant override (the `--variant` flag). Takes precedence over the agent file's `variant:`. */
   variant?: string;
+  /** Mode choices (the `--mode` flags), checked against the connector's catalog before launch. */
+  modes?: LaunchModes;
   /** Opaque connector launch options (the `--opt k=v` flags). Merged per key over the agent file's
    *  `launchOptions:` (imperative wins); forwarded verbatim to the connector, which validates them. */
   launchOptions?: Record<string, unknown>;
@@ -136,6 +138,7 @@ export interface ManagedLaunch {
   cwd: string;
   model?: string;
   variant?: string;
+  modes?: LaunchModes;
   prompt?: string;
   subscribe?: string[];
   allowSubscribe: string[];

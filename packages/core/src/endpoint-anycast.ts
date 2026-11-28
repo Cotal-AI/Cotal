@@ -27,7 +27,6 @@ export interface EndpointAnycastDeps {
   emitRecoverable: (err: Error) => void;
   notLiveMsg: () => string;
   ref: () => EndpointRef;
-  requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
 }
 
 /** One endpoint's anycast request rail. Internal: it owns its take responder state, and `CotalEndpoint` keeps the shared fields and forwards to it. */
@@ -45,7 +44,6 @@ export class EndpointAnycast {
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
   private ref(): EndpointRef { return this.deps.ref(); }
-  private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ControlReply> { return this.deps.requestDelivery(op, args, timeoutMs); }
 
   /** (Re)bind the anycast take responder and the request records maintenance on the current
    *  connection (SPEC §8.1). The records bucket is created here as well as at space setup, so a mesh
@@ -252,7 +250,7 @@ export class EndpointAnycast {
     const held = (reason: "daemon-down" | "daemon-outdated", detail: string): AnycastTakeOutcome => ({ taken: false, drop: false, reason, detail });
     let reply: ControlReply;
     try {
-      reply = await this.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);
+      reply = await this.parts.controlPlane.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);
     } catch {
       return held("daemon-down", "no delivery daemon is answering on this mesh, so role requests wait on the queue until one does");
     }
@@ -281,7 +279,7 @@ export class EndpointAnycast {
     if (!isAnycastSeq(seq)) throw new Error(`seq must be a whole number of at least 1, got ${seq}`);
     let reply: ControlReply;
     try {
-      reply = await this.requestDelivery(op, { seq, ...(id !== undefined ? { id } : {}) }, 10_000);
+      reply = await this.parts.controlPlane.requestDelivery(op, { seq, ...(id !== undefined ? { id } : {}) }, 10_000);
     } catch (e) {
       if (this.isNoResponders(e)) throw new Error("no delivery daemon is answering on this mesh, so the request's record cannot be read");
       throw e;

@@ -1,0 +1,99 @@
+{
+  "claudeVersion": "2.1.332 (Claude Code)",
+  "recordedWith": "settings {\"disableAllHooks\":true,\"fastMode\":true}; get_settings after initialize, then apply_flag_settings {model} + get_settings per model; fastStates are the distinct initialize answers for opus over the 3 s after the first answer",
+  "launchDefault": {
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "ultracode": false,
+    "ultracodeAvailable": true
+  },
+  "byModel": {
+    "opus": {
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "fable": {
+      "model": "claude-fable-5-2",
+      "effort": "medium",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "sonnet": {
+      "model": "claude-sonnet-5-5",
+      "effort": "medium",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "haiku": {
+      "model": "claude-haiku-5-5",
+      "effort": "medium",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-fable-5-1": {
+      "model": "claude-fable-5-1",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-haiku-4-5-20251001": {
+      "model": "claude-haiku-4-5-20251001",
+      "effort": null,
+      "ultracode": false,
+      "ultracodeAvailable": false
+    },
+    "claude-sonnet-5": {
+      "model": "claude-sonnet-5",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-opus-5": {
+      "model": "claude-opus-5",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-fable-5": {
+      "model": "claude-fable-5",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-opus-4-8": {
+      "model": "claude-opus-4-8",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-opus-4-7": {
+      "model": "claude-opus-4-7",
+      "effort": "xhigh",
+      "ultracode": false,
+      "ultracodeAvailable": true
+    },
+    "claude-opus-4-6": {
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": false
+    },
+    "claude-sonnet-4-6": {
+      "model": "claude-sonnet-4-6",
+      "effort": "high",
+      "ultracode": false,
+      "ultracodeAvailable": false
+    }
+  },
+  "fastStates": [
+    {
+      "fast_mode_state": "on"
+    },
+    {
+      "fast_mode_state": "off",
+      "fast_mode_disabled_reason": "preference"
+    }
+  ]
+}

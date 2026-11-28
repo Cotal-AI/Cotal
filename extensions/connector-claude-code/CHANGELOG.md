@@ -1,5 +1,23 @@
 # @cotal-ai/connector-claude-code
 
+## 0.184.0
+
+### Minor Changes
+
+- d4caddc: Claude Code agents can now be launched with fast mode or ultracode, and the Claude model list names each model's default effort and the model Claude runs by default. `cotal models --harness claude` reads them from one headless `claude` session: each model's `get_settings` answer gives its default effort and whether it can run ultracode, and `fast` is listed on models that support it. When Claude reports fast mode off, such as when the login's organization turns it off, `fast` is listed as unavailable with Claude's reason and a launch that turns it on is refused, while `--mode fast=false` still launches. The catalog reads that state 2 seconds after Claude's first answer, because Claude gives no signal that its organization check finished. `--mode fast=true` and `--mode ultracode=true` render one `--settings` flag beside `--effort`, shared with the thinking summaries `reasoningEvents` turns on, a mode set to false is written as off, and a launch with a mode or `reasoningEvents` refuses `--opt settings=`, because Claude keeps only the last `--settings` flag. A launch with a variant and no `--model` is now checked against the default model and starts.
+
+### Patch Changes
+
+- ecc1de0: Interrupting a Claude Code seat now also stops a foreground command when a prompt sent during the turn was still waiting. Before, that command kept running in the background.
+- fcf78b1: Cotal updates finish when the local Claude or Codex plugin marketplace directory is read-only or a broken symbolic link, deferring that plugin refresh and naming the repair command.
+
+## 0.183.1
+
+### Patch Changes
+
+- 372d003: A Claude conversation in T3 Code now stays reachable on Cotal for as long as it is open, not only for the first 30 idle minutes. Claude Code stops a background command after 30 minutes unless it is given a longer timeout, at most 2 hours, so the hold now asks for the 2-hour timeout and ends by itself after 110 minutes with a line that asks Claude to start the next one. Claude did not always start a hold when asked, so while a conversation has a Cotal connection and no hold running, the plugin's Stop hook now keeps its turn going until it starts one. The hold takes the conversation's session id (`monitor.cjs --hold <session>`).
+- 20ad3e8: A Claude conversation in T3 Code now stays reachable on Cotal after it goes idle. T3 Code and other Agent SDK hosts stop an idle session's Claude Code process (T3 Code after 30 minutes), which ended the plugin's connection, so later messages woke nothing. In such a session `cotal_connect` now asks Claude to start a silent hold with the Bash tool in the background. The host keeps a session with a running background task, and each hold ends after 3 hours, inside T3 Code's 4-hour limit, so Claude starts the next.
+
 ## 0.183.0
 
 ### Patch Changes

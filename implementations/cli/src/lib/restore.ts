@@ -794,8 +794,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       sweepAttemptResidue(root);
       artifact = stageArtifact(artifactPath, stageParent);
     } catch (error) {
+      const denied = artifactReadRefusal(error, artifactPath, root);
+      if (denied) throw denied;
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw artifactReadRefusal(error, artifactPath, root) ?? new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
@@ -1001,6 +1003,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
+      // An older attempt journal has no listenerSpawn. This one stays not-started until the spawn syncs started.
+      listenerSpawn: "not-started",
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later
       // why a seat resumed from a checkpoint past its horizon reads it from the journal.
       ...(staleConsent.length

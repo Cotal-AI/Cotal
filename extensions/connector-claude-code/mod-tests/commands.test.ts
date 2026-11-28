@@ -34,7 +34,7 @@ interface Options {
   env?: Record<string, string>
   list?: Entry[]
   abort?: (turnId: string) => Stub
-  messages?: SessionMessage[]
+  messages?: SessionMessage[] | (() => SessionMessage[])
   stop?: (taskId: string) => Stub
   readerFails?: boolean
   drop?: string
@@ -85,8 +85,9 @@ function seat(on: On, options: Options = {}) {
     record.steps.push([e.turnId, e.agentId ?? 'main', e.model, e.effort ?? 'none'])
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
   })
-  // Claude writes the results an abort moved to the background just after the abort resolves, so
-  // they show only once a turn completed.
+  // Static fixtures list the session after the abort: messages through the last prompt were already
+  // there when the turn started, and the aborted turn's tool results appear once it completes.
+  const isPrompt = (m: SessionMessage) => m.role === 'user' && Boolean(m.text) && !m.toolResults?.length
   let settled = false
   on('turn.complete', () => {
     settled = true
@@ -96,7 +97,11 @@ function seat(on: On, options: Options = {}) {
     record.aborts.push(e.turnId)
     return options.abort?.(e.turnId) ?? { value: undefined }
   })
-  on('session.messages', () => ({ value: settled ? options.messages ?? [] : [] }))
+  on('session.messages', () => {
+    if (typeof options.messages === 'function') return { value: [...options.messages()] }
+    const list = options.messages ?? []
+    return { value: settled ? list : list.slice(0, list.findLastIndex(isPrompt) + 1) }
+  })
   on('tool.call', ($, e) => {
     if (e.tool !== 'TaskStop') return { deny: `this test runs no ${e.tool}` }
     const task = String((e as { task_id?: unknown }).task_id)
@@ -322,6 +327,139 @@ describe('interrupt', () => {
       reason: 'the aborted turn did not complete within 2 s, so tools it moved to the background may still run',
     })
     expect(record.stops).toHaveLength(0)
+  })
+  const userPrompt = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+  const bashUse = (id: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Bash', input: {} }] })
+  const bashAborted = (id: string, task: string): SessionMessage => ({
+    role: 'user', text: '', toolUses: [],
+    toolResults: [{ tool_use_id: id, text: '', isError: false, result: { backgroundTaskId: task, backgroundedByTurnAbort: true } }],
+  })
+  test('stops a tool whose abort result precedes a preempting prompt', async ($, on) => {
+    mock.clock(on)
+    const history: SessionMessage[] = [userPrompt('earlier'), bashAborted('u0', 'old')]
+    const { ask, record } = seat(on, { messages: () => history, abort: completes($) })
+    await start($)
+    history.push(userPrompt('run loop'))
+    await $.turn.start({ text: 'run loop', turnId: 't1' })
+    history.push(bashUse('u1'), bashAborted('u1', 'b1'), userPrompt('preempting message'))
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 5, isAborted: true, reason: 'aborted' })
+    await $.turn.start({ text: 'preempting message', turnId: 't2' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t2'])
+    expect(record.stops).toEqual(['b1'])
+  })
+  test('plain interrupt stops its task once and a later interrupt does not stop it again', async ($, on) => {
+    mock.clock(on)
+    const history: SessionMessage[] = []
+    const { ask, record } = seat(on, {
+      messages: () => history,
+      abort: (turnId) => {
+        if (turnId === 't1') history.push(bashUse('u1'), bashAborted('u1', 'b1'))
+        if (turnId === 't2') history.push(bashUse('u2'), bashAborted('u2', 'b2'))
+        return completes($)(turnId)
+      },
+    })
+    await start($)
+    history.push(userPrompt('first'))
+    await $.turn.start({ text: 'first', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.stops).toEqual(['b1'])
+    history.push(userPrompt('second'))
+    await $.turn.start({ text: 'second', turnId: 't2' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r2', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.stops).toEqual(['b1', 'b2'])
+  })
+  test('a turn that ends normally clears the mark before a later interrupt', async ($, on) => {
+    mock.clock(on)
+    const history: SessionMessage[] = []
+    const { ask, record } = seat(on, { messages: () => history, abort: completes($) })
+    await start($)
+    history.push(userPrompt('first'))
+    await $.turn.start({ text: 'first', turnId: 't1' })
+    history.push(bashUse('u1'), bashAborted('u1', 'b1'), userPrompt('second'))
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 5, isAborted: true, reason: 'aborted' })
+    await $.turn.start({ text: 'second', turnId: 't2' })
+    await $.turn.complete({ turnId: 't2', answer: 'done', durationMs: 5, isAborted: false, reason: 'answer' })
+    history.push(userPrompt('third'))
+    await $.turn.start({ text: 'third', turnId: 't3' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t3'])
+    expect(record.stops).toEqual([])
+  })
+  test('two aborted turns in a row before an interrupt stop both tasks', async ($, on) => {
+    mock.clock(on)
+    const history: SessionMessage[] = [userPrompt('earlier'), bashAborted('u0', 'old')]
+    const { ask, record } = seat(on, { messages: () => history, abort: completes($) })
+    await start($)
+    history.push(userPrompt('first'))
+    await $.turn.start({ text: 'first', turnId: 't1' })
+    history.push(bashUse('u1'), bashAborted('u1', 'b1'), userPrompt('second'))
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 5, isAborted: true, reason: 'aborted' })
+    await $.turn.start({ text: 'second', turnId: 't2' })
+    history.push(bashUse('u2'), bashAborted('u2', 'b2'), userPrompt('third'))
+    await $.turn.complete({ turnId: 't2', answer: '', durationMs: 5, isAborted: true, reason: 'aborted' })
+    await $.turn.start({ text: 'third', turnId: 't3' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t3'])
+    expect(record.stops).toEqual(['b1', 'b2'])
+  })
+  test('a timed-out interrupt clears the mark before a later interrupt', async ($, on) => {
+    const clock = mock.clock(on)
+    const history: SessionMessage[] = []
+    const { ask, record } = seat(on, {
+      messages: () => history,
+      abort: (turnId) => {
+        if (turnId === 't1') return void clock.advance(2000)
+        return completes($)(turnId)
+      },
+    })
+    await start($)
+    history.push(userPrompt('first'))
+    await $.turn.start({ text: 'first', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({
+      id: 'r1', op: 'interrupt', outcome: 'interrupted',
+      reason: 'the aborted turn did not complete within 2 s, so tools it moved to the background may still run',
+    })
+    history.push(bashUse('u1'), bashAborted('u1', 'b1'))
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 2500, isAborted: true, reason: 'aborted' })
+    history.push(userPrompt('second'))
+    await $.turn.start({ text: 'second', turnId: 't2' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r2', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t1', 't2'])
+    expect(record.stops).toEqual([])
+  })
+  test('stops a tool when the abort appends its result and a queued prompt lands after it', async ($, on) => {
+    mock.clock(on)
+    const history: SessionMessage[] = [userPrompt('earlier'), bashAborted('u0', 'old')]
+    const { ask, record } = seat(on, {
+      messages: () => history,
+      abort: (turnId) => {
+        history.push(bashUse('u1'), bashAborted('u1', 'b1'), userPrompt('queued mid-turn input'))
+        return completes($)(turnId)
+      },
+    })
+    await start($)
+    history.push(userPrompt('run loop'))
+    await $.turn.start({ text: 'run loop', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t1'])
+    expect(record.stops).toEqual(['b1'])
+  })
+  test('a rejected session.messages at turn.start falls back to the last prompt on interrupt', async ($, on) => {
+    mock.clock(on)
+    let reads = 0
+    const { ask, record } = seat(on, {
+      messages: () => {
+        if (++reads === 1) throw new Error('session messages unavailable')
+        return ABORTED
+      },
+      abort: completes($),
+    })
+    await start($)
+    await $.turn.start({ text: 'run the two scripts', turnId: 't1' })
+    expect(await ask({ op: 'interrupt' })).toEqual({ id: 'r1', op: 'interrupt', outcome: 'interrupted' })
+    expect(record.aborts).toEqual(['t1'])
+    expect(record.stops).toEqual(['b1', 'b2'])
   })
 })
 

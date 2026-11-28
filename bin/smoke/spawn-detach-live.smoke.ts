@@ -26,6 +26,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertScratchHeld, makeScratch } from "./_scratch.js";
+import { openTelemetryIntake } from "../../implementations/cli/smoke/_telemetry-intake.js";
 
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
@@ -41,6 +42,7 @@ const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
+process.env.DO_NOT_TRACK = "1";
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
@@ -113,6 +115,9 @@ const e2eCon: Connector = {
   name: "e2e",
   requires: ["node"],
   supportsModelVariant: true,
+  // The Manager launches only a variant the catalog lists, and a persona that names no model uses
+  // the default row.
+  listModels: () => ({ models: [{ id: "fancy", isDefault: true, variants: [{ name: "high" }] }] }),
   supportsPrompt: true, // the suite spawns with --prompt; the contract is default-deny (#315)
   buildLaunch: (o) => {
     lastOpts = o;
@@ -1019,9 +1024,11 @@ try {
     await new Promise<void>((resolve) => tarpit.listen(0, "127.0.0.1", resolve));
     const address = tarpit.address();
     if (!address || typeof address === "string") throw new Error("resume probe listener has no TCP address");
-    const childRun = (args: string[]): Promise<{ status: number | null; out: string; stdout: string; stderr: string }> => new Promise((resolve) => {
+    const intake = await openTelemetryIntake();
+    const childRun = (args: string[], measure = false): Promise<{ status: number | null; out: string; stdout: string; stderr: string }> => new Promise((resolve) => {
+      const env = { ...subEnv, CLAUDE_CONFIG_DIR: transcriptRoot, ...(measure ? { DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url } : {}) };
       const child = spawnProc(TSX, [join(import.meta.dirname, "..", "cotal.ts"), ...args], {
-        cwd: callerRoot, env: { ...subEnv, CLAUDE_CONFIG_DIR: transcriptRoot }, stdio: ["ignore", "pipe", "pipe"],
+        cwd: callerRoot, env, stdio: ["ignore", "pipe", "pipe"],
       });
       kids.push(child);
       let out = "";
@@ -1045,6 +1052,17 @@ try {
           result.status === status && result.stderr === "" && envelope?.outcome === "refused" && envelope.error?.code === code
           && envelope.target?.requestId === undefined && (harness !== "claude" || envelope.error?.remedy === "pass --on <instance>"), result);
       }
+      const shortId = "fixture-local-session", title = "fixture session title";
+      writeFileSync(join(transcriptRoot, "projects", "synthetic", `${shortId}.jsonl`), JSON.stringify({ type: "custom-title", customTitle: title }) + "\n");
+      for (const selector of [shortId, title]) {
+        const before = intake.received.length;
+        const result = await childRun(["spawn", "--detach", "--harness", "claude", "--space", SPACE, "--resume", selector, "--json"], true);
+        const events = intake.received.slice(before).filter(event => event.event === "command");
+        ok("local transcript selection keeps its details in the refusal and out of the command event",
+          result.status === 1 && result.stdout.includes(shortId) && events.length === 1 && events[0]?.command === "spawn" &&
+          events[0].errorCode === "USAGE_INVALID" && events[0].errorMessage === null && events[0].errorStack === null &&
+          !JSON.stringify(events).includes(shortId) && !JSON.stringify(events).includes(title));
+      }
       for (const [label, id, explicit, expected] of [
         ["held implicit", heldId, false, 2],
         ["unheld implicit", unheldId, false, 2],
@@ -1058,6 +1076,7 @@ try {
         ok(`${label} resume does not repeat the registry sweep`, probes === expected, { probes, expected });
       }
     } finally {
+      intake.server.close();
       const { removeMesh } = await import("@cotal-ai/workspace");
       removeMesh("resume-offline");
       for (const socket of sockets) socket.destroy();

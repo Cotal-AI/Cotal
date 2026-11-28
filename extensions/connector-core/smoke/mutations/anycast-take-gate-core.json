@@ -29,7 +29,7 @@
     {
       "name": "the probe a take falls back to waits on the probe's reply only",
       "file": "packages/core/src/endpoint-anycast.ts",
-      "find": "      reply = await this.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);",
+      "find": "      reply = await this.parts.controlPlane.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);",
       "replace": "      const { controlServiceSubject, CONTROL_DELIVERY } = await import(\"./subjects.js\");\n      const probeSubject = controlServiceSubject(this.identity.space, CONTROL_DELIVERY, this.identity.owner, this.identity.actor);\n      const probe = { op: ANYCAST_TAKES_OP, args: {}, from: this.ref() };\n      reply = (await this.conn.nc!.request(probeSubject, JSON.stringify(probe), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${probeSubject}.reply.${randomUUID()}` })).json<ControlReply>();",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",

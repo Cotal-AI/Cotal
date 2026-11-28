@@ -794,11 +794,14 @@ commands from a mod until that person sends input, so a command then ends `refus
 stop ends the same way with `dropped by a local Stop`. An organization's mod cannot run a command a
 person's mod registered, and Claude refuses that run too.
 
-`interrupt` stops the main turn with the mod's turn abort, then stops each tool the abort moved to
-the background, such as a running Bash command. It answers `interrupted`, or `idle` when no turn ran.
-When Claude refuses to stop such a tool, it still answers `interrupted`, and the seat's log says
-`a tool is still running`. Claude fires no hook when a mod stops a turn, so the connector ends the
-turn itself: presence reads idle and the next queued command can start. The mod has 10 s to answer.
+`interrupt` stops the main turn with the mod's turn abort, then stops each tool that a turn abort
+moved to the background, such as a running Bash command. This holds when a prompt arrived during the
+turn and was still queued: Claude appends it after the abort, and the connector still finds the
+tool. Tools left running by an earlier chain of turns that already ended are not touched. It answers
+`interrupted`, or `idle` when no turn ran. When Claude refuses to stop such a tool, it still answers
+`interrupted`, and the seat's log says `a tool is still running`. Claude fires no hook when a mod
+stops a turn, so the connector ends the turn itself: presence reads idle and the next queued command
+can start. The mod has 10 s to answer.
 
 `turn` hands the owner's words to the mod, which submits them with `$.prompt.submit` as the person's
 own, so the model reads them without a plugin frame. The transcript records them under the plugin's
@@ -868,9 +871,9 @@ results publish by default on a separately authorized payload rail (below). A tu
 started opens a run without republishing that message. Native wake and inline prompts attributed
 to the Cotal plugin follow the same rule, including when they arrive during an open run.
 Reasoning is off by default. A launch with `reasoningEvents` publishes it as `REASONING_*` events,
-and passes `--settings '{"showThinkingSummaries":true}'`: without that setting Claude records each
-thinking block with empty text, and an empty block publishes nothing. Such a launch refuses a
-`settings` launch option. Programs can read these events directly. The launcher
+and sets `showThinkingSummaries: true` in the launch's one `--settings` flag, beside any modes:
+without that setting Claude records each thinking block with empty text, and an empty block
+publishes nothing. Such a launch refuses a `settings` launch option. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.

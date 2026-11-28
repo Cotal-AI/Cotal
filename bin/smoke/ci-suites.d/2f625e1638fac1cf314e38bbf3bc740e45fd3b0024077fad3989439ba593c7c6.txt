@@ -1,0 +1,2 @@
+# A spawn whose variant or modes its model catalog does not list is refused before launch.
+smoke:manager-spawn-catalog-choice

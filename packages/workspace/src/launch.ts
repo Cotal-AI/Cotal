@@ -18,6 +18,9 @@ export interface ManagedLaunchRequest {
   defaultAgent?: string;
   model?: string;
   variant?: string;
+  /** Mode choices, as `--mode` gave them. Sent only when there are some, so a Manager older than the
+   *  field still takes a launch that chose none. */
+  modes?: Record<string, boolean | string>;
   supervise?: { restarts: number; windowMs: number };
   launchOptions?: Record<string, string>;
   cwd?: string;
@@ -56,6 +59,7 @@ export function requestManagedLaunch<R>(request: ManagedLaunchRequest, start: Ma
     config: request.config,
     model: request.model,
     variant: request.variant,
+    ...(request.modes !== undefined ? { modes: request.modes } : {}),
     ...(request.supervise !== undefined ? { supervise: request.supervise } : {}),
     launchOptions: request.launchOptions,
     cwd: request.cwd,

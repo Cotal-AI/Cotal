@@ -5,20 +5,18 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
-import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, type ParsedSubject } from "./subjects.js";
+import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, parsePrincipalKey, unicastRecvFilter, unicastSubject, type ParsedSubject } from "./subjects.js";
 import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
+import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
-import type { CotalMessage, HistoryMessage, Delivery, MessageMeta, ControlReply } from "./types.js";
+import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
-  requestDelivery: (op: string, args: Record<string, unknown>) => Promise<ControlReply>;
-  joinPolicyFresh: (channel: string) => Promise<{ replay: boolean; windowMs?: number }>;
-  chatMayHaveLost: (subject: string, sinceSeq: number) => Promise<boolean>;
   emit: (event: string, ...args: unknown[]) => boolean;
   decodeHistory: (message: { subject: string; headers?: MsgHdrs; json: <T>() => T }) => HistoryMessage | undefined;
   isRecord: (value: unknown) => value is Record<string, unknown>;
@@ -130,7 +128,7 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "consumers">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane">) {}
 
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
@@ -386,7 +384,7 @@ export class EndpointHistory {
    *  different authorization model, and one handler with two authz paths is the wrong shape on the
    *  surface where a mistake exposes messages). */
   async readHistory(channel: string, opts?: { limit?: number }): Promise<HistoryPage> {
-    const reply = await this.deps.requestDelivery("readHistory", { channel, limit: opts?.limit });
+    const reply = await this.parts.controlPlane.requestDelivery("readHistory", { channel, limit: opts?.limit });
     if (!reply.ok) throw new Error(reply.error ?? "readHistory failed");
     const data = reply.data as { items?: unknown; complete?: unknown } | undefined;
     // Validate rather than coerce. A malformed reply must not be massaged into a plausible page:
@@ -1033,7 +1031,7 @@ export class EndpointHistory {
   ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
     if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
-    const policy = await this.deps.joinPolicyFresh(channel);
+    const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
     const subject = chatSubject(this.identity.space, "*", "*", channel);
     let raw: JsMsg[];
@@ -1063,7 +1061,7 @@ export class EndpointHistory {
     }
     let dropped: boolean;
     try {
-      dropped = await this.deps.chatMayHaveLost(subject, sinceSeq);
+      dropped = await this.chatMayHaveLost(subject, sinceSeq);
     } catch (e) {
       // Completeness could not be read, so the read is reported as unanswered: nothing settles on it.
       this.deps.emit("error", e as Error);
@@ -1071,5 +1069,83 @@ export class EndpointHistory {
       return { messages: [], seqs: [], dropped: true, unanswered: true };
     }
     return { messages: collected, seqs, dropped, unanswered: false };
+  }
+
+  async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
+    const keys = [...new Set(principals)].map((p) => {
+      const key = parsePrincipalKey(p);
+      if (!key) throw new Error(`dmHistoryOf: "${p}" is not a principal <owner>.<actor>`);
+      return key;
+    });
+    if (!keys.length) return { state: "read", items: [] };
+    const limit = opts?.limit ?? 100;
+    const read = (subjects: string[]) => this.streamHistory(dmStream(this.identity.space), subjects, limit, undefined, opts?.signal);
+    let rows: { seq: number; msg: HistoryMessage }[];
+    try {
+      // A consumer refuses overlapping filters, and a DM between two of these principals matches a
+      // recipient filter and a sender filter, so each direction is its own read.
+      rows = (await Promise.all([
+        read(keys.map((k) => unicastRecvFilter(this.identity.space, k.owner, k.actor))),
+        read(keys.map((k) => unicastSubject(this.identity.space, "*", "*", k.owner, k.actor))),
+      ])).flat();
+    } catch (e) {
+      if (isPermissionDenied(e)) return { state: "denied", reason: (e as Error).message };
+      throw e;
+    }
+    const bySeq = new Map(rows.map((r) => [r.seq, r.msg]));
+    return { state: "read", items: [...bySeq].sort(([a], [b]) => a - b).slice(-limit).map(([, msg]) => msg) };
+  }
+
+  /** Phase 2 of a join — backfill each armed channel's history up to its frontier (replay-gated),
+   *  AFTER the filter flip. `floorSeq`, when set, is this incarnation's last-consumed CHAT stream
+   *  sequence before a preservation cut (SPEC-external, manager-recorded) — it bounds the read from
+   *  below so a resumed seat does not re-read messages it already consumed. Only the boot-channel
+   *  call site (`start()`) passes it; `joinChannel`'s mid-session call never does (a channel joined
+   *  after the cut was never read by this incarnation, so its replay window is the join contract).
+   *  Returns the total backfilled. */
+  async backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> {
+    let total = 0;
+    for (const [ch, frontier] of frontiers) {
+      const policy = await this.joinPolicyFresh(ch);
+      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+    }
+    return total;
+  }
+
+  /** Replay policy + backfill window read straight from the registry bucket (vs the watch cache)
+   *  — the authoritative read for a join decision (a join is infrequent, and at startup the async
+   *  cache may not have caught up). Falls to the built-in default only with no registry open. */
+  private async joinPolicyFresh(channel: string): Promise<{ replay: boolean; windowMs?: number }> {
+    if (!this.conn.channelKv) return { replay: effectiveReplay(undefined, undefined) };
+    // A wildcard subscription (`review.>`) has no single registry entry — and `>`/`*` are illegal
+    // KV keys, so a per-channel get would throw. Read only the space defaults for it; concrete
+    // channels still get their per-channel override.
+    const [cfg, defaults] = await Promise.all([
+      isConcreteChannel(channel) ? readChannelConfig(this.conn.channelKv, channel) : Promise.resolve(undefined),
+      readChannelDefaults(this.conn.channelKv),
+    ]);
+    return { replay: effectiveReplay(cfg, defaults), windowMs: effectiveReplayWindowMs(cfg, defaults) };
+  }
+
+  /** Whether the chat stream's limits may have removed posts on `subject` after `sinceSeq`, read from
+   *  the stream's own config rather than a compiled default. Throws when it cannot read, so no caller
+   *  takes an unread stream for a complete one. It reports possible loss, never proof: a removed
+   *  sequence does not record its subject, so the stream cannot say which channel lost it.
+   *
+   *  Either rule is enough. The stream's oldest retained post is past the watermark, so every post up
+   *  to it is gone, from this channel or another. Or a sender on the channel is at the stream's
+   *  per-sender limit and the channel's oldest retained post is past the watermark, so that sender's
+   *  eviction may have reached into the window; a sender at exactly the limit may have lost nothing.
+   *  A hole behind a retained older post, as a channel-filtered purge leaves, sets neither. */
+  private async chatMayHaveLost(subject: string, sinceSeq: number): Promise<boolean> {
+    if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
+    const info = await this.conn.jsm.streams.info(chatStream(this.identity.space), { subjects_filter: subject });
+    if (info.state.first_seq > sinceSeq + 1) return true;
+    const cap = info.config.max_msgs_per_subject;
+    let maxPerSubject = 0;
+    for (const count of Object.values(info.state.subjects ?? {})) maxPerSubject = Math.max(maxPerSubject, count);
+    if (cap < 1 || maxPerSubject < cap) return false; // no sender at the cap ⇒ none evicted
+    const oldest = (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }))[0]?.seq;
+    return oldest !== undefined && oldest > sinceSeq + 1;
   }
 }

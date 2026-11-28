@@ -17,7 +17,7 @@
   "mutations": [
     {
       "name": "old status iterators may overwrite the current connection epoch",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "        if (this.conn.nc !== nc) continue;",
       "replace": "        if (false) continue;",
       "expectRed": "late disconnect and close from the OLD epoch are ignored after the replacement is current",
@@ -26,7 +26,7 @@
     },
     {
       "name": "disconnect status no longer produces a transport edge",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "          this.emit(\"transport\", { connected: false, server: s.server } satisfies TransportState);",
       "replace": "          void s.server;",
       "expectRed": "a NATS disconnect makes transport false WITHOUT flapping full-bind readiness",
@@ -35,7 +35,7 @@
     },
     {
       "name": "reconnect status no longer restores transport",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "          this.emit(\"transport\", { connected: true, server: s.server } satisfies TransportState);",
       "replace": "          void s.server;",
       "expectRed": "the distinguishable NATS reconnect edge restores transport without another readiness event",
@@ -44,7 +44,7 @@
     },
     {
       "name": "status watcher does not publish its explicit initial live state",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    this.emit(\"transport\", { connected: true, server: nc.getServer() } satisfies TransportState);",
       "replace": "    void nc;",
       "expectRed": "arming status publishes an explicit initial transport=true with the real server",
@@ -116,8 +116,8 @@
     },
     {
       "name": "initial start leaves resources bound when stop wins the race",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    if (await this.connection.tearDownIfStopped()) return;\n    this.superviseConnection();",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "    if (await this.tearDownIfStopped()) return;\n    this.superviseConnection();",
       "replace": "    this.superviseConnection();",
       "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "cell": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
@@ -152,7 +152,7 @@
     },
     {
       "name": "a stale status iterator rejection is surfaced after its epoch was replaced",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "      if (!this.lifecycle.stopped && this.conn.nc === nc) this.emit(\"error\", e as Error);",
       "replace": "      if (!this.lifecycle.stopped) this.emit(\"error\", e as Error);",
       "expectRed": "a controlled stale status iterator THROW is ignored after the replacement epoch is current",
@@ -161,7 +161,7 @@
     },
     {
       "name": "a terminal close leaves transport reported live",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "        if (s.type === \"close\") {\n          this.emit(\"transport\", { connected: false } satisfies TransportState);\n",
       "replace": "        if (s.type === \"close\") {\n",
       "expectRed": "current terminal close confirms false with server omitted and is idempotent at MeshAgent",

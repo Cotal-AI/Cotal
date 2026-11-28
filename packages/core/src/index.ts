@@ -123,6 +123,7 @@ export * from "./jetstream-missing.js";
 export * from "./endpoint.js";
 export * from "./spaces.js";
 export * from "./connector.js";
+export * from "./launch-choice.js";
 export * from "./connector-setup.js";
 export * from "./command.js";
 export * from "./runtime.js";

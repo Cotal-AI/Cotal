@@ -73,22 +73,29 @@ See [Launch agents](launch-agents.mdx) for persona selection and terminal contro
 
 ## Choose a model [#choose-a-model]
 
-List the models and reasoning efforts available to the execution host's Codex account:
+List the models, reasoning efforts and modes available to the execution host's Codex account:
 
 ```bash
 cotal models --harness codex
 ```
 
+The catalog marks the model Codex runs when a launch names none, and each model's default reasoning effort.
 Choose values from that catalog:
 
 ```bash
-cotal spawn --harness codex --model <model-id> --variant <reasoning-effort>
+cotal spawn --harness codex --model <model-id> --variant <reasoning-effort> --mode fast=true
 ```
 
 You can also set `model:` and `variant:` in the agent file.
 Explicit flags override those fields.
-The connector passes model IDs and reasoning efforts through to Codex without local validation, so unsupported values fail when Codex handles the request.
+Each launch is checked against the catalog: a reasoning effort or mode that the model's row does not list is refused before launch.
+Codex itself accepts any effort and drops a service tier it does not know without saying so.
 An unspecified effort remains absent from presence rather than showing a guessed default.
+
+`--mode fast=true` runs the model on Codex's Fast service tier, and `--mode fast=false` runs it at standard speed.
+The connector renders the choice as Codex's `service_tier` setting.
+Without `--mode fast`, the model runs on its own default tier, which the catalog shows as the mode's default.
+The mode and an `--opt service_tier=<tier>` launch option both set the tier, so a spawn that names both is refused before launch. Use `--opt service_tier=<tier>` alone for a tier other than Fast or standard.
 
 ## Inspect the integration [#how-it-binds]
 
@@ -157,7 +164,7 @@ If you move the Cotal home, move its `codex-plugin` directory with it. When the 
 If Cotal needs to move the marketplace registration and `config.toml` is read-only, the update leaves the file and its permissions unchanged. It names the registration it could not change and refreshes the cache only if Codex can still list the installed plugin. Make the file writable and run `cotal update` to finish. A computer without the plugin needs no Codex executable.
 If Codex has been uninstalled, upgrades leave its cached plugin unchanged and report that Codex is not installed.
 The retained cache is not verified as current. Reinstall Codex and run `cotal update` to refresh it.
-If the Cotal plugin cache is read-only, the CLI update finishes and reports the plugin version it left installed. Make the named cache directory writable and run `cotal update` to refresh the plugin. An unreadable cache still prevents Cotal from verifying the integration.
+If the local `codex-plugin` marketplace directory or the Cotal plugin cache is read-only, or if `codex-plugin` is a broken symbolic link, the CLI update finishes without modifying Codex's configuration and reports the retained plugin version when Codex can still list it. Repair the named path and run `cotal update` to refresh the plugin. An explicit `cotal setup` fails when `codex-plugin` is read-only or a broken symbolic link and names the same path and remedy. An unreadable cache still prevents Cotal from verifying the integration.
 Start a new Codex conversation after setup, then ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
 On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 Nothing joins a signed-in space before you approve.

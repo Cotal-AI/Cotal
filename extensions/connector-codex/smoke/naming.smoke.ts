@@ -4,7 +4,8 @@
  *
  * Covered: one ephemeral `codex exec` on the seat's CODEX_HOME that ignores any config file there, with
  * the seat's own `-c` overrides first and low reasoning, a read-only sandbox and web search off after
- * them, so they win; every codex feature that gives the model a tool or runs a command turned off;
+ * them, so they win; a seat on the priority (Fast) tier asked on the default tier, any other tier
+ * kept; every codex feature that gives the model a tool or runs a command turned off;
  * the seat's model when the launch pinned none; the request on stdin and never in argv; no `COTAL_*` in its env; an empty private
  * directory removed after; the last message read back; a failed turn rejects with codex's reason; an
  * abort stops the process.
@@ -87,6 +88,17 @@ try {
     check("in an empty private directory, removed afterwards", seen.cwd.startsWith(tmpdir()) && same(seen.entries, []) && !existsSync(seen.cwd), seen.cwd);
     const pinned = fakeCodex("pinned", `fs.writeFileSync(out, "x");`);
     await ask(seat(pinned.bin, { overrides: [["model", '"gpt-pinned"']] }));
+    const tierOf = async (name: string, tier: string) => {
+      const c = fakeCodex(name, `fs.writeFileSync(out, "x");`);
+      await ask(seat(c.bin, { overrides: [["service_tier", tier]] }));
+      return configs(c.record().argv).filter((a) => a.startsWith("service_tier="));
+    };
+    const fast = await tierOf("fast", '"priority"');
+    check("a Fast seat's request runs on the default tier, after the seat's priority so it wins", same(fast, ['service_tier="priority"', 'service_tier="default"']), fast);
+    const bare = await tierOf("fast-bare", "priority");
+    check("an operator's unquoted priority tier is turned down too", same(bare, ["service_tier=priority", 'service_tier="default"']), bare);
+    const flex = await tierOf("flex", '"flex"');
+    check("any other tier the seat runs is kept", same(flex, ['service_tier="flex"']), flex);
     check("a launch that pinned its model keeps it, and the thread's model is not added", same(configs(pinned.record().argv).filter((c) => c.startsWith("model=")), ['model="gpt-pinned"']), configs(pinned.record().argv));
   }
 

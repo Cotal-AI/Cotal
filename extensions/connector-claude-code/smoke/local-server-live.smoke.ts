@@ -260,18 +260,36 @@ try {
     const codeC = await serve(installed, [], root, { CLAUDE_CODE_ENTRYPOINT: "sdk-ts" });
     const sessionC = bindSession(root), readC = reader(sessionC);
     const connectedC = await codeC.call("cotal_connect", { name: "claude_sdk", space, context: sessionC });
-    const hold = /run_in_background set to true: (.+ --hold)\n/.exec(connectedC)?.[1];
-    check("an Agent SDK host's connect asks for a hold", connectedC.includes("Connected as claude_sdk") && hold !== undefined, connectedC);
-    const holding = spawn("sh", ["-c", hold!], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const hold = /timeout set to 7200000: (.+ --hold [A-Za-z0-9_-]+)\n/.exec(connectedC)?.[1];
+    check("an Agent SDK host's connect asks for a hold of this conversation", connectedC.includes("Connected as claude_sdk") && hold?.endsWith(` --hold ${sessionC}`) === true, connectedC);
+    const idC = /connection_id: ([0-9a-f-]{36})/.exec(connectedC)![1]!;
+    // The plugin's Stop hook, as Claude Code runs it when this conversation's turn would end.
+    const stop = (fields: object = {}, entrypoint = "sdk-ts") => {
+      const r = spawnSync(process.execPath, [HOOK], { cwd: dir, env: { ...hostEnv, CLAUDE_CODE_ENTRYPOINT: entrypoint },
+        input: JSON.stringify({ hook_event_name: "Stop", session_id: sessionC, ...fields }), encoding: "utf8", timeout: 10_000 });
+      return r.stdout.trim();
+    };
+    const blocked = stop();
+    check("a turn that would end with a connection and no hold continues to start one",
+      /"decision":"block"/.test(blocked) && blocked.includes(`--hold ${sessionC}`), blocked);
+    check("  but not once a block already continued it", stop({ stop_hook_active: true }) === "");
+    check("  and not outside an Agent SDK host", stop({}, "cli") === "");
+    // Its own process group, which Claude Code stops whole, as it does a background command.
+    const holding = spawn("sh", ["-c", hold!], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     children.push(holding);
     let holdOut = "", holdErr = "";
     holding.stderr!.on("data", (d: Buffer) => { holdErr += d.toString(); });
     holding.stdout!.on("data", (d: Buffer) => { holdOut += d.toString(); });
     await sleep(2_000);
     check("  and that hold runs silently", holding.exitCode === null && holdOut === "", `${hold}\n${holdOut}${holdErr}`);
-    holding.kill("SIGTERM");
+    check("a turn ends freely while its hold runs", stop() === "");
+    process.kill(-holding.pid!, "SIGTERM");
+    await new Promise((r) => holding.exitCode === null ? holding.once("exit", r) : r(undefined));
+    await sleep(500);
+    check("once the hold is gone, the next turn asks for another", /"decision":"block"/.test(stop()));
+    check("a conversation that disconnected is not asked", (await codeC.call("cotal_disconnect", { connection_id: idC })).includes("Disconnected") && stop() === "");
     codeC.p.stdin!.end();
-    check("  and the server closes cleanly and retires its identity", await within(codeC.exited) === 0 && identities(space).length === 0);
+    check("  and the server closes cleanly", await within(codeC.exited) === 0 && identities(space).length === 0);
     readC.p.kill("SIGTERM");
 
     // Desktop chat supplies no native session, so even with this one mesh running it opens nothing.

@@ -1,5 +1,105 @@
 # @cotal-ai/cli
 
+## 0.184.0
+
+### Minor Changes
+
+- 68fc37d: A launch now runs only an effort level or mode its harness lists for the model, and is refused before launch otherwise. A model catalog row can name its default variant, the harness's default model, and modes such as a fast tier, which `cotal models` prints and `cotal spawn --mode id=value` chooses. The Manager's `spawn` takes `modes` (Manager revision 58) and checks a variant or modes against the last catalog it read for that connector, reading one only when it holds none. A mode the account cannot use is listed with an `unavailable` reason, which `cotal models` prints, and a launch that turns it on is refused with that reason. A launch that sets it off, `false` or the choice's default, still runs. A connector declares `supportsModes` to render them, and a resumed seat launches with the modes it was spawned with. A variant on a connector without a catalog, or on a model its catalog does not list, is now refused rather than launched at a setting the harness picks.
+
+### Patch Changes
+
+- d3489eb: Keep Manager instance IDs out of telemetry when the answering managers report that none hosts the requested agent. The local refusal still lists the managers that answered.
+- 88eb667: Self-update resolves an asdf `npm` shim from the current project before running npm outside the project, including during connector reconciliation, using the project's selection even when asdf also sets a home default.
+- 2122243: Identify a dangling directory link in a backup destination so the retry does not ask you to create a folder where the link already exists.
+- c8ce70c: Report denied access to a backup folder as a permission error during inspection and verification.
+- 6f27bc2: Refuse backup destinations inside the maintenance attempt directory before suggesting that a missing parent be created.
+- af2a1ef: Tell operators when a file occupies `.cotal` in the requested startup project instead of suggesting preparation over that file.
+- 1760112: Keep explicit confirmation in the suggested legacy stop when the requested space matches this folder's startup registration.
+- 9fa16c9: Keep a shutdown preview read-only and in the requested format when the space is prepared elsewhere or only a connection folder is known. Keep the folder and space name local in these refusals.
+- bb1dc24: Keep local paths out of telemetry when a command refuses a control directory as its project or a checkout tries to write the connector store. Project retries identify which folder option to change without dropping other options.
+- 70cbdcc: Direct spawn previews now check channel overrides against the local persona, so a preview no longer succeeds for a subscription the foreground launch would refuse.
+- 880fd9e: Report a permission refusal with recovery guidance when doctor auth cannot list the selected space's agent credential directory.
+- 0e7cc4e: Show how to restore read access when permissions prevent doctor auth from reading a renewal record. Keep backup guidance for malformed records.
+- 898896a: Tell endpoint check users to omit an unsupported option such as `--server` rather than supplying a value that the offline check would refuse.
+- 70739b2: Report a missing npm executable as a dependency refusal during a staged extension install, with guidance to restore npm on PATH and retry the original request.
+- 82ded32: When a legacy preserved stop commits but does not finish, `up` and `up --no-manager` tell the operator how to complete the stop before resuming.
+- 0805807: Foreground spawn and its preview now report a permission refusal when the caller cannot enter the requested working directory. Search permission is sufficient; the directory need not be readable.
+- c8d3af0: When a foreground launch or its preview cannot find a named persona, offer a read-only listing of the prepared or registered space's catalog. Keep missing persona paths and names local, along with restart paths when a connection refuses a space that has not started.
+- df64fc1: When space preparation finds a name or folder already in use, offer a read-only inspection of the existing registration in the requested format. Keep prepared and occupied project paths out of conflict telemetry. When the broker requires authentication but the folder holds another space's trust, keep names, the address and the trust path in the local remedy.
+- 4ca366f: Keep foreground connector launch diagnostics, including the temporary directory and control socket path, out of telemetry. The local error still explains how to correct the path.
+- 18bcbd4: When startup refuses a different broker address for a stack that already ran, tell the operator to correct the address in the original command. Keep the requested foreground, broker-only and output options on retry.
+- 2972f78: When scripted setup is missing inputs, show only the flags to add to the original command. Keep the operator's project, destination, output format and startup choices on the retry.
+- 5582556: Keep file paths local when a broker store directory or its parent is a file. The CLI still names the obstruction and refuses without overwriting it. A startup conflict with a relative registration path also keeps the diagnostic local and preserves the record.
+- 2f40157: Keep space names, log paths and process IDs local when a service preset has never started or the requested service action does not own the process. Telemetry still reports the refusal code.
+- 757b69c: Keep local session lookup details out of diagnostic events when a managed resume cannot select a transcript or needs a Manager pin. The operator still sees the original refusal and how to proceed.
+- 14aa844: Keep service identifiers and preference link paths local when startup or configuration is refused. Preserve JSON or plain output in the printed startup retry after a separately started service is stopped.
+- b0686e3: Explain what forgetting a conflicting registration clears and how to verify an in-place replacement.
+- 5ea9e9e: Keep the space name in the local error target and out of the diagnostic event when startup refuses to convert a legacy membership store.
+- 5e32e1c: When stop or terminal input cannot find an agent, keep the requested Manager, space, broker and output format in the suggested roster command.
+- 39e4c56: Keep a missing service preview read-only by offering a listing in the selected space and output format. Keep local file paths out of telemetry when endpoint checks refuse to open the contract.
+- 43245f9: Keep JSON or plain output in the suggested space listing when a requested space cannot be found.
+- 1704bf5: Keep the requested broker address and Manager options when following startup advice for a moved project.
+- 6b932f4: Refuse to start a different space when a file or a permissions problem blocks access to the selected project folder.
+- e8af28c: Keep the selected space, broker and output format when looking up a Manager after an invalid remote persona pin.
+- f9301f2: Keep the requested loopback broker port in first-start advice for a named prepared space. Do not suggest starting a local broker for a remote address.
+- 0c14ffe: Keep the requested output format when retrying a shutdown preview from the owning project. Keep project paths and space names local in wrong-folder shutdown refusals. When registering a space, distinguish an inaccessible root from a non-directory and keep the path in the local remedy.
+- 345d6f8: Keep paths with control or bidirectional formatting characters out of project refusal telemetry. When `space create` cannot inspect its root because access was denied, report a permission error and leave the project untouched.
+- 08a3e61: Keep JSON or plain output when `space add` suggests inspecting a registration this machine started or a catalog lists.
+- e6dec58: Allow ext remove to use an installed package's listed name when its npm scope starts with a dot.
+- 02f2b42: On Linux, `cotal update` proceeds while a Manager from another self-updated installation keeps running after that installation's prefix is renamed.
+- 52f787c: When a file or control directory blocks the restore destination, suggest an unused store path in an existing writable directory. Ordinary startup guidance is unchanged.
+- 76b0b64: Report a permission denial when restore cannot list or search the backup folder, and tell the operator which folder needs access.
+- 50b7040: When a prepared space's project folder is missing, offer restoring the original folder before forgetting the space. The space list suggests inspecting that entry. If a symbolic link loop prevents checking a prepared space for running processes, `space forget` reports that nothing was forgotten. An unknown `use` selection keeps the local space inventory out of telemetry.
+- ce34959: When startup cannot find the selected project folder, explain how to restore it without forgetting the space. Keep the path and space names in the local diagnostic.
+- a1a9b5e: Keep the requested output format when suggesting how to retry endpoint creation in another directory.
+- 5081c94: Keep the requested space and output format when `service list` refuses an extra definition name.
+- 5efbfdc: Self-update restores missing owner read, write, and search permissions on verified owned connector directories before staging, and reports when it restores owner access to the Cotal connector configuration across online and offline updates.
+- ebb511a: When service status or logs needs a definition name, suggest a read-only listing that keeps the selected space and output format.
+- 7fb27be: When a service definition is missing, the suggested inventory command keeps the requested JSON or plain-text format.
+- 274a820: Offer read-only inspection when a stack-owned service cannot be removed on its own. Keep the link and destination paths in local recovery guidance when a declared service adapter path crosses a symlink.
+- 8dc580b: Report malformed skills ownership records separately from denied reads, and check the record before setup writes project or skill files.
+- aa7d8a2: Use shared channel address builders for history, credential grants, and backups without changing broker addresses.
+- ccdb130: Keep the project path out of telemetry when `space create` refuses a root that is not a directory. The local remedy still identifies the path.
+- 4d854d3: When a foreground spawn refuses a credential file, its managed alternative now tells you to omit the file and select a registered space you can access. Detached mode alone cannot authorize the launch. For a runtime request without an interactive terminal, the advice now requires detached mode rather than offering a Manager pin alone.
+- 45f1b0d: Report a foreground subscription that conflicts with the persona's read policy as a usage refusal, with the same guidance as preview. Keep the channel names in local diagnostics and out of the reported mismatch.
+- 9e719a3: Keep first-time user-auth team setup on the manifest's project, broker and identity provider when the command runs from another folder. The retry preserves the manifest filename and output mode.
+- 7256518: When a stopped user-auth team's boot needs sign-in, the suggested retry preserves the original manifest path, foreground option and output mode.
+- f24c89b: `cotal update --self` treats an npm registry that accepts the connection and never answers as unreachable, so nothing is replaced and the command exits 0.
+- eb3ae09: Keep the selected project, space, Manager settings and output format in the startup retry when a user-auth stack starts without a signed-in Manager.
+- b1ac442: Record the typed failure code that a JSON watch stream reports when it cannot open, without sending its diagnostic text.
+- ec3c29f: A backup restore on a host that cannot list process command lines now starts its first listener. If that listener was spawned but its pid was never published, a later attempt refuses instead of starting a second listener. A published pid whose creation time does not match the recorded listener does not block.
+- Updated dependencies [68fc37d]
+- Updated dependencies [14aa844]
+- Updated dependencies [f9301f2]
+- Updated dependencies [902f3c3]
+- Updated dependencies [35fa703]
+- Updated dependencies [50b7040]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [5efbfdc]
+- Updated dependencies [274a820]
+- Updated dependencies [aa7d8a2]
+- Updated dependencies [ec3c29f]
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/seat@0.184.0
+
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- ce4a8db: `cotal backup verify` accepts an unchanged Windows artifact whose NTFS file ids are larger than a JavaScript number can hold, and still refuses a file that was replaced.
+- 8740d71: `cotal update --check` now reports when npm offline mode skipped the registry version lookup instead of blaming registry access or an unreadable extension inventory.
+- 98aed81: Stop and restart `stack-delivery` ahead of `stack-auth` when `cotal up` repairs a crashed broker in a user-auth stack, keep the stopped-auth refusal ahead of delivery startup when the broker still runs, and update the plane-claim refusal guidance to reflect delivery-first startup.
+- 6038ca0: On Windows, status and other CLI hints print an off-PATH fallback command that runs directly in PowerShell and Command Prompt.
+- Updated dependencies [c049810]
+- Updated dependencies [99e5057]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/seat@0.183.1
+
 ## 0.183.0
 
 ### Minor Changes

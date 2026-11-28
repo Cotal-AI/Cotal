@@ -1,5 +1,41 @@
 # @cotal-ai/auth
 
+## 0.184.0
+
+### Patch Changes
+
+- 6747dde: Show root credential deadlines in UTC. If a foreground agent's root credential expires:
+  
+  End this foreground launch. In the original `cotal spawn` command, change `--name` to `<new_name>`, or add `--name <new_name>` if it had none. Rerun the command to start a new agent. The old name stays taken, and no command in this release frees it. The old agent's permissions don't move. Messages to its old name and direct messages already queued for it won't reach the new agent.
+- Updated dependencies [68fc37d]
+- Updated dependencies [14aa844]
+- Updated dependencies [f9301f2]
+- Updated dependencies [902f3c3]
+- Updated dependencies [35fa703]
+- Updated dependencies [50b7040]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [5efbfdc]
+- Updated dependencies [274a820]
+- Updated dependencies [aa7d8a2]
+- Updated dependencies [ec3c29f]
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/lang@0.184.0
+
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- 98aed81: Stop and restart `stack-delivery` ahead of `stack-auth` when `cotal up` repairs a crashed broker in a user-auth stack, keep the stopped-auth refusal ahead of delivery startup when the broker still runs, and update the plane-claim refusal guidance to reflect delivery-first startup.
+- Updated dependencies [c049810]
+- Updated dependencies [99e5057]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/lang@0.183.1
+
 ## 0.183.0
 
 ### Patch Changes

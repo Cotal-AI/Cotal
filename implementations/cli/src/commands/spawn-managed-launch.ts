@@ -51,10 +51,12 @@ import {
   recordOperationSpace,
   resolveMeshTarget,
   resolveControlTarget,
+  parseLaunchModes,
 } from "@cotal-ai/workspace";
 import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { localDiagnostic } from "../telemetry.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { cliControl, failIfNotOk, onRerun } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
@@ -255,6 +257,7 @@ export async function launchManagedPersona(
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
+    modes: parseLaunchModes(values.mode),
     ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
     cwd,
@@ -595,14 +598,13 @@ async function carryTranscript(flags: ConnectFlags, on: string | undefined, id: 
   try {
     found = connector.resumeTranscript?.find(id, process.env);
   } catch (error) {
-    if (isCommandFailure(error)) throw error;
-    throw new CommandFailure("refused", "USAGE_INVALID", `resume: ${(error as Error).message}`, { selfContained: true });
+    throw localDiagnostic(isCommandFailure(error) ? error : new CommandFailure("refused", "USAGE_INVALID", `resume: ${(error as Error).message}`, { selfContained: true }));
   }
   if (found === undefined) return undefined;
   if (on === undefined) {
-    throw new CommandFailure("refused", "USAGE_INVALID", `resume: session ${id} is held on this host, and carrying it needs one manager instance`, {
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `resume: session ${id} is held on this host, and carrying it needs one manager instance`, {
       remedy: "pass --on <instance>", selfContained: true,
-    });
+    }));
   }
   const bytes = readFileSync(found.path);
   const sha256 = createHash("sha256").update(bytes).digest("hex");

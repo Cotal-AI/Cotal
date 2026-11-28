@@ -43,7 +43,7 @@ const root = join(sandbox, "root");
 const out = join(sandbox, "out");
 for (const dir of [home, configDir, root, out]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const SPACE = basename(root);
 const record = (template: string) => canonicalLocalProcessPath(template, { root, space: SPACE });
 
@@ -154,8 +154,8 @@ try {
   const miss = cli("stop", "absent-seat", "--space", SPACE, "--server", SERVER, "--on", on, "--json");
   const error = envelope(miss.stdout)?.error;
   const roster = error?.remedy?.match(/`cotal (ps [^`]+)`/)?.[1];
-  ok("a missing seat's roster retry keeps the selected space, broker and manager", miss.status === 2 && error?.code === "TARGET_NOT_FOUND" && roster === `ps --on ${on} --space ${SPACE} --server ${SERVER}`, error);
-  const followed = cli(...roster!.split(" "), "--json");
+  ok("a missing seat's roster retry keeps the selected space, broker, manager and JSON output", miss.status === 2 && error?.code === "TARGET_NOT_FOUND" && roster === `ps --on ${on} --json --space ${SPACE} --server ${SERVER}`, error);
+  const followed = cli(...roster!.split(" "));
   ok("the suggested roster read reaches the manager", followed.status === 0 && envelope(followed.stdout)?.outcome === "ok", followed.stderr);
 
   // 1. the manager's own runtime, so a refusal below is about the runtime step and nothing else.

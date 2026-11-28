@@ -269,6 +269,7 @@ export class SeatCustody {
         cwd: entry.launch.cwd,
         model: entry.launch.model,
         variant: entry.launch.variant,
+        modes: entry.launch.modes,
         subscribe: entry.launch.subscribe,
         allowSubscribe: entry.launch.allowSubscribe,
         allowPublish: entry.launch.allowPublish,

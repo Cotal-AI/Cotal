@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { registry, type CommandCatalog, type CommandListOpts, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
+import { registry, type CommandCatalog, type CommandListOpts, type Connector, type LaunchModes, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type ModeInfo } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { askAppServer } from "./app-server-once.js";
 import type { CodexSkill } from "./app-server.js";
@@ -42,9 +42,24 @@ interface CodexModelEntry {
   id?: string;
   model?: string;
   displayName?: string;
+  description?: string;
   hidden?: boolean;
+  isDefault?: boolean;
   supportedReasoningEfforts?: { reasoningEffort?: string; description?: string }[];
+  defaultReasoningEffort?: string;
+  serviceTiers?: { id: string; name: string }[];
+  defaultServiceTier?: string | null;
 }
+
+/** Codex's service tier ids: the fast tier the `fast` mode turns on, and the standard tier it runs
+ *  when the mode is off. */
+const SERVICE_TIER = { fast: "priority", standard: "default" } as const;
+
+/** The refusal when the fast mode and an operator `service_tier` both pick the tier. */
+const TIER_CONFLICT =
+  'codex connector: mode "fast" and launch option "service_tier" both set Codex\'s service tier, so ' +
+  "one would silently override the other. Use --mode fast=true or fast=false for the Fast or " +
+  "standard tier, or --opt service_tier=... alone for another tier, not both.";
 
 /** The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
  *  pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
@@ -58,21 +73,42 @@ function codexBin(resolved: Readonly<Record<string, string>> | undefined): strin
 async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   const bin = codexBin(opts.resolvedBinaries);
   const result = ((await askAppServer({ bin, env: discoveryEnv(), method: "model/list", params: {}, boundMs: 10_000 })) ?? {}) as { data?: CodexModelEntry[] };
-  const models: ModelInfo[] = (result.data ?? [])
-    .filter((m) => !m.hidden && (m.model || m.id))
-    .map((m) => ({
-      id: m.model ?? m.id!,
-      provider: "openai",
-      ...(m.displayName ? { name: m.displayName } : {}),
-      ...(m.supportedReasoningEfforts?.length
-        ? {
-            variants: m.supportedReasoningEfforts
-              .filter((e) => typeof e.reasoningEffort === "string")
-              .map((e) => ({ name: e.reasoningEffort!, ...(e.description ? { options: { description: e.description } } : {}) })),
-          }
-        : {}),
-    }));
+  const models = (result.data ?? []).filter((m) => !m.hidden && (m.model || m.id)).map(codexModelInfo);
   return { source: "codex app-server model/list", models };
+}
+
+/** One catalog row from a `model/list` entry, with the defaults Codex names. A model that offers the
+ *  fast tier gets the `fast` toggle, labeled as Codex names that tier. */
+function codexModelInfo(m: CodexModelEntry): ModelInfo {
+  const fast = m.serviceTiers?.find((t) => t.id === SERVICE_TIER.fast);
+  const modes: ModeInfo[] | undefined = fast && [{ id: "fast", label: fast.name, kind: "toggle", default: m.defaultServiceTier === SERVICE_TIER.fast }];
+  return {
+    id: m.model ?? m.id!,
+    provider: "openai",
+    ...(m.displayName ? { name: m.displayName } : {}),
+    ...(m.description ? { description: m.description } : {}),
+    ...(m.isDefault === true ? { isDefault: true } : {}),
+    ...(m.supportedReasoningEfforts?.length
+      ? {
+          variants: m.supportedReasoningEfforts
+            .filter((e) => typeof e.reasoningEffort === "string")
+            .map((e) => ({ name: e.reasoningEffort!, ...(e.description ? { options: { description: e.description } } : {}) })),
+        }
+      : {}),
+    ...(typeof m.defaultReasoningEffort === "string" ? { defaultVariant: m.defaultReasoningEffort } : {}),
+    ...(modes ? { modes } : {}),
+  };
+}
+
+/** The service tier a launch's modes select, or undefined when they leave it to Codex. Codex lists
+ *  only the `fast` toggle, so any other mode, or a value that is not true or false, is refused. */
+function serviceTier(modes: LaunchModes | undefined): string | undefined {
+  for (const [id, value] of Object.entries(modes ?? {})) {
+    if (id !== "fast") throw new Error(`codex connector: mode ${JSON.stringify(id)} is not one Codex offers; its only mode is "fast"`);
+    if (typeof value !== "boolean") throw new Error(`codex connector: mode "fast" is a toggle, so it takes true or false, not ${JSON.stringify(value)}`);
+  }
+  if (modes?.fast === undefined) return undefined;
+  return modes.fast === true ? SERVICE_TIER.fast : SERVICE_TIER.standard;
 }
 
 /** The skills a seat started in `cwd` would run, from `skills/list` on a short-lived app-server
@@ -109,7 +145,8 @@ export const codexConnector: Connector = {
     signIn: { status: ["codex", "login", "status"], login: ["codex", "login"] },
   },
   readinessTimeoutMs: 35_000, // leave room for the app-server's 30s listen timeout and teardown
-  supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
+  supportsModelVariant: true, // variant = Codex reasoning effort, as model/list names it for each model
+  supportsModes: true, // the fast toggle, rendered as Codex's service_tier
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // Codex serves a first turn from an initial message — see buildLaunch
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
@@ -228,12 +265,16 @@ export const codexConnector: Connector = {
     // host injects it as thread developerInstructions).
     if (opts.configPath) env.COTAL_AGENT_FILE = resolve(opts.configPath);
     if (opts.model) env.COTAL_MODEL = opts.model;
-    if (opts.variant) env.COTAL_VARIANT = opts.variant; // reasoning effort; unvalidated here, like the CLI itself
+    if (opts.variant) env.COTAL_VARIANT = opts.variant; // reasoning effort, checked by the launcher against the catalog
+    const tier = serviceTier(opts.modes);
+    if (tier) env.COTAL_CODEX_SERVICE_TIER = tier;
     // Opaque connector options → codex `-c key=value` config overrides on the app-server child,
     // RAW passthrough (the spawn capability is the trust boundary, not the key set — see
     // connectorLaunchOptions). The key-shape guard admits top-level config keys only (no dotted
     // paths). The host appends its autonomy defaults (approval_policy, sandbox_mode) and the
-    // model/effort selectors ONLY for keys the operator didn't set, so an explicit --opt wins.
+    // model and effort selectors ONLY for keys the operator didn't set, so an explicit --opt wins.
+    // The service tier is the exception: the fast mode and an operator service_tier both choose
+    // it, and either winning would run a tier the other asked against, so the mix is refused.
     const overrides: Record<string, unknown> = {};
     let hasOverrides = false;
     for (const [k, v] of connectorLaunchOptions("codex", opts.launchOptions)) {
@@ -261,6 +302,7 @@ export const codexConnector: Connector = {
       overrides[k] = v;
       hasOverrides = true;
     }
+    if (tier && "service_tier" in overrides) throw new Error(TIER_CONFLICT);
     if (hasOverrides) env.COTAL_CODEX_CONFIG = JSON.stringify(overrides);
 
     // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a

@@ -1,4 +1,4 @@
-import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
+import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModeInfo, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
 import { cliControl, onFlag, onRerun, refuseControlCreds } from "../lib/control.js";
@@ -110,23 +110,43 @@ function catalogSection(row: ConnectorModelCatalog): Section {
   else if (!row.supported) blocks.push({ kind: "lines", lines: [{ text: row.unavailable ?? "no model catalog exposed", tone: "hint" }] });
   else if (!row.models.length) blocks.push({ kind: "lines", lines: [{ text: "(no models reported)", tone: "hint" }] });
   else {
-    const named = row.models.some((m) => m.name && m.name !== m.id);
+    const named = row.models.some((m) => (m.name && m.name !== m.id) || m.isDefault);
     const variants = row.models.some((m) => m.variants?.length);
+    const defaults = row.models.some((m) => m.defaultVariant !== undefined);
+    const modes = row.models.some((m) => m.modes?.length);
     blocks.push({
       kind: "table",
       columns: [
         { key: "id", label: "Model" },
         ...(named ? [{ key: "name", label: "Name" }] : []),
         ...(variants ? [{ key: "variants", label: "Variants" }] : []),
+        ...(defaults ? [{ key: "defaultVariant", label: "Default variant" }] : []),
+        ...(modes ? [{ key: "modes", label: "Modes" }] : []),
       ],
       rows: row.models.map((m) => ({
         id: m.id,
-        name: m.name && m.name !== m.id ? { text: m.name, tone: "hint" } : "",
+        name: modelName(m),
         variants: modelVariants(m) ?? "",
+        defaultVariant: m.defaultVariant ?? "",
+        modes: (m.modes ?? []).map(modeChoices).join(", "),
       })),
     });
   }
   return { title: row.agent, blocks };
+}
+
+/** A model's name, marked when it is the harness default. */
+function modelName(m: ModelInfo): string | { text: string; tone: "hint" } {
+  const text = [m.name && m.name !== m.id ? m.name : "", m.isDefault ? "(default)" : ""].filter(Boolean).join(" ");
+  return text ? { text, tone: "hint" } : "";
+}
+
+/** A mode as `--mode` takes it, with its default: `fast=true|false (default false)`, or the reason
+ *  the account cannot run it: `fast (unavailable: <reason>)`. */
+function modeChoices(mode: ModeInfo): string {
+  if (mode.unavailable !== undefined) return `${mode.id} (unavailable: ${mode.unavailable})`;
+  const values = mode.kind === "toggle" ? ["true", "false"] : mode.options.map((o) => o.id);
+  return `${mode.id}=${values.join("|")} (default ${String(mode.default)})`;
 }
 
 const JCODE_DECLARED_WARNING = "declared by Jcode config; provider acceptance is validated only at launch";

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   DEV_OWNER,
   createSpaceAuth,
@@ -259,6 +260,7 @@ const resetCapturedLaunch = () => { capturedLaunch = undefined; };
 const connector: Connector = {
   kind: "connector",
   name: "preserve-connector",
+  supportsModes: true,
   buildLaunch: (opts) => {
     capturedLaunch = opts;
     return { command: "true", args: [], env: {} };
@@ -616,6 +618,40 @@ let openInventory: ManagerResumeAgent;
   let absentAccepted = true;
   try { parseResumeControlArgs(absentArgs); } catch { absentAccepted = false; }
   check("schema accepts an inventory with no backfillFloor", absentAccepted);
+}
+
+// A seat's modes are part of its launch: the cut writes them, the resume schema reads them, and the
+// resumed seat launches with them. A connector that no longer renders modes refuses the resume.
+{
+  const modes = { fast: true, agent: "plan" };
+  const manager = managerWith((name) => fakeHandle(name));
+  const map = (manager as unknown as { agents: Map<string, { launch: Record<string, unknown> }> }).agents;
+  map.set("worker", managed("worker", "open_principal_modes", fakeHandle("worker"), "persona"));
+  map.get("worker")!.launch.modes = modes;
+  const cut = await manager.preparePreservation("modes-cut");
+  check("the cut writes the seat's modes into the inventory", cut.ok && isDeepStrictEqual(cut.inventory.agents[0]?.launch.modes, modes), JSON.stringify(cut.inventory.agents[0]?.launch));
+  manager.abortPreservation("modes-cut");
+
+  const withModes: ManagerResumeAgent = { ...openInventory, launch: { ...openInventory.launch, modes } };
+  let accepted = true;
+  try { parseResumeControlArgs({ attemptId: "modes-schema", inventory: inventoryOf(withModes) }); } catch { accepted = false; }
+  let emptyRefused = false;
+  try { parseResumeControlArgs({ attemptId: "modes-empty", inventory: inventoryOf({ ...withModes, launch: { ...withModes.launch, modes: {} } }) }); } catch (e) { emptyRefused = /modes/.test((e as Error).message); }
+  check("the resume schema reads modes and refuses an empty set", accepted && emptyRefused, { accepted, emptyRefused });
+
+  const resumer = managerWith((name) => fakeHandle(name));
+  resetCapturedLaunch();
+  const resumed = await resumer.resumePreserved(inventoryOf(withModes));
+  const seat = (resumer as unknown as { agents: Map<string, { launch: { modes?: unknown } }> }).agents.get("worker");
+  check("a resumed seat launches with its modes and keeps them on its launch record",
+    resumed.ok && isDeepStrictEqual(capturedLaunch?.modes, modes) && isDeepStrictEqual(seat?.launch.modes, modes), JSON.stringify({ resumed, modes: capturedLaunch?.modes }));
+
+  const noModes: Connector = { kind: "connector", name: "preserve-no-modes", buildLaunch: () => ({ command: "true", args: [] }) };
+  registry.register(noModes);
+  const refusing = managerWith((name) => fakeHandle(name));
+  const refused = await refusing.resumePreserved(inventoryOf({ ...withModes, launch: { ...withModes.launch, connector: "preserve-no-modes" } }));
+  check("a resume whose connector no longer renders modes is refused, not launched without them",
+    !refused.ok && /does not support modes \(modes\)/.test(JSON.stringify(refused)), JSON.stringify(refused));
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,

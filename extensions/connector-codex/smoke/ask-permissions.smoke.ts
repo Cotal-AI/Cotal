@@ -34,13 +34,13 @@ const refusal = (f: () => unknown): string => {
 };
 const value = (overrides: [string, string][], key: string): string | undefined => overrides.find(([k]) => k === key)?.[1];
 
-const asking = configOverrides("gpt", undefined, true);
+const asking = configOverrides("gpt", undefined, true, undefined);
 check(
   "an asking launch sets no approval_policy, sandbox_mode or network default",
   ["approval_policy", "sandbox_mode", "sandbox_workspace_write"].every((k) => value(asking, k) === undefined),
   asking,
 );
-const plain = configOverrides("gpt", undefined, false);
+const plain = configOverrides("gpt", undefined, false, undefined);
 check(
   "a launch without it keeps approval_policy never and the workspace-write sandbox",
   value(plain, "approval_policy") === '"never"' && value(plain, "sandbox_mode") === '"workspace-write"',
@@ -48,7 +48,7 @@ check(
 );
 for (const key of ["approval_policy", "sandbox_mode", "approvals_reviewer"]) {
   process.env.COTAL_CODEX_CONFIG = JSON.stringify({ [key]: '"on-request"' });
-  check(`an asking launch whose options set ${key} is refused`, refusal(() => configOverrides("gpt", undefined, true)).includes(`askPermissions sets ${key} itself`));
+  check(`an asking launch whose options set ${key} is refused`, refusal(() => configOverrides("gpt", undefined, true, undefined)).includes(`askPermissions sets ${key} itself`));
 }
 delete process.env.COTAL_CODEX_CONFIG;
 check("the Codex connector declares supportsAskPermissions", codexConnector.supportsAskPermissions === true);

@@ -47,7 +47,7 @@ import type { ModDelta } from "./command-frames.js";
 import { claudeCommands, commandTurns } from "./commands.js";
 import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
-import { holdAdvice, holdCommand, sdkHosted } from "./sdk-hold.js";
+import { holdAdvice, holdCommand, markNeeded, sdkHosted } from "./sdk-hold.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
@@ -102,7 +102,24 @@ async function serveLocal(desktop: boolean): Promise<void> {
   });
   feed?.onNative((event) => host.nativeEvent(event));
   let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
-  const served = await serveGatewayStdio(host, {
+  // An Agent SDK host stops an idle session, so each session this server holds a connection for is
+  // marked for the Stop hook until that connection closes (`sdk-hold.ts`).
+  const holds = !desktop && sdkHosted(process.env);
+  const gateway: typeof host = holds ? {
+    ...host,
+    async open(...args) {
+      const connection = await host.open(...args);
+      const session = host.sessionFor(connection.id);
+      if (session) markNeeded(session, true);
+      return connection;
+    },
+    async close(account, id) {
+      const session = host.sessionFor(id);
+      try { return await host.close(account, id); }
+      finally { if (session) markNeeded(session, false); }
+    },
+  } : host;
+  const served = await serveGatewayStdio(gateway, {
     source: "claude-local",
     connectContext: !desktop,
     space: !desktop,
@@ -146,7 +163,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
               const reader = feed.supportsInline(session)
                 ? "The Cotal incoming-message reader is connected with complete short-message delivery. New messages can start a turn, subject to Claude's Stop and organization policies."
                 : "The Cotal incoming-message reader is connected in notification-only mode. Read messages with cotal_inbox; reload the Cotal plugin to enable complete short-message delivery.";
-              return sdkHosted(process.env) ? `${reader}\n${holdAdvice(holdCommand(process.execPath, process.argv[1] ?? ""))}` : reader;
+              return holds ? `${reader}\n${holdAdvice(holdCommand(process.execPath, process.argv[1] ?? "", session))}` : reader;
             },
           },
         }

@@ -1,5 +1,19 @@
 # @cotal-ai/connector-codex
 
+## 0.184.0
+
+### Minor Changes
+
+- 3dc025c: Codex agents can now launch on Codex's Fast tier with `cotal spawn --mode fast=true`, and `cotal models -H codex` shows Codex's default model, each model's default effort and description, and which models run Fast by default. The catalog is read from Codex's own `model/list` answer, so a launch is checked against the efforts and modes Codex lists for the logged-in account. The connector renders the `fast` toggle as Codex's `service_tier` (`priority` on, `default` off), and refuses a spawn that also sets `--opt service_tier=...`.
+
+### Patch Changes
+
+- fcf78b1: Cotal updates finish when the local Claude or Codex plugin marketplace directory is read-only or a broken symbolic link, deferring that plugin refresh and naming the repair command.
+
+## 0.183.1
+
+No changes in this release.
+
 ## 0.183.0
 
 ### Patch Changes

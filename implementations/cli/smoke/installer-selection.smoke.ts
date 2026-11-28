@@ -216,20 +216,65 @@ fi
   assert.equal(readlinkSync(npmLauncher), npmLink);
   assert.equal(readFileSync(npmLauncher, "utf8"), launcherText, "refresh writes the same launcher as a fresh install");
   const wrapper = realpathSync(npmLauncher);
-  for (const [contents, mode] of [
-    [oldLauncher, 0o775],
-    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755],
-    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755],
+  for (const [contents, mode, kept] of [
+    [oldLauncher, 0o775, true],
+    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755, true],
+    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755, false],
   ] as const) {
     writeFileSync(wrapper, contents);
     chmodSync(wrapper, mode);
     const skipped = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
     assert.equal(skipped.status, 0, output(skipped));
-    assert.equal(readFileSync(wrapper, "utf8"), contents);
+    if (kept) assert.equal(readFileSync(wrapper, "utf8"), contents);
+    else {
+      const repinned = readFileSync(wrapper, "utf8");
+      assert.notEqual(repinned, contents, "a missing recorded Node is replaced by the Node running the refresh");
+      assert.match(repinned, new RegExp(`^  node='${realpathSync(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'$`, "m"));
+      assert.equal(readlinkSync(npmLauncher), npmLink, "replacing a missing Node keeps the npm bin link");
+    }
     const version = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(process.execPath) }, encoding: "utf8", timeout: 10_000 });
     assert.equal(version.status, 0, output(version));
     assert.equal(version.stdout.trim(), "cotal-ai 0.0.0");
+    if (!kept) {
+      const offPath = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+      assert.equal(offPath.status, 0, output(offPath));
+      assert.equal(offPath.stdout.trim(), "cotal-ai 0.0.0");
+    }
   }
+  writeFileSync(wrapper, launcherText);
+  const refreshingNode = realpathSync(process.execPath);
+  const recordedNode = join(root, "recorded-node", "bin", "node");
+  mkdirSync(dirname(recordedNode), { recursive: true });
+  copyFileSync(process.execPath, recordedNode);
+  chmodSync(recordedNode, 0o755);
+  assert.notEqual(realpathSync(recordedNode), refreshingNode);
+  const recordedPin = launcherText
+    .replaceAll(`'${refreshingNode}'`, `'${recordedNode}'`)
+    .replaceAll(`'${dirname(refreshingNode)}'`, `'${dirname(recordedNode)}'`);
+  assert.notEqual(recordedPin, launcherText);
+  writeFileSync(wrapper, recordedPin);
+  chmodSync(wrapper, 0o755);
+  const keptRecorded = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(keptRecorded.status, 0, output(keptRecorded));
+  assert.equal(readFileSync(wrapper, "utf8"), recordedPin, "a recorded Node that still exists stays pinned when refresh runs under a different Node");
+  const dangling = join(root, "dangling-node");
+  symlinkSync(join(npmHome, "gone-node"), dangling);
+  assert.equal(existsSync(dangling), false);
+  const danglingPin = launcherText.replace(/^  node='.*'$/m, `  node='${dangling}'`);
+  writeFileSync(wrapper, danglingPin);
+  chmodSync(wrapper, 0o755);
+  const replacedDangling = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(replacedDangling.status, 0, output(replacedDangling));
+  assert.match(readFileSync(wrapper, "utf8"), new RegExp(`^  node='${refreshingNode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'$`, "m"), "a dangling recorded Node is replaced by the Node running the refresh");
+  const danglingLaunch = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+  assert.equal(danglingLaunch.status, 0, output(danglingLaunch));
+  assert.equal(danglingLaunch.stdout.trim(), "cotal-ai 0.0.0");
+  const relativePin = launcherText.replace(/^  node='.*'$/m, "  node='node'");
+  writeFileSync(wrapper, relativePin);
+  chmodSync(wrapper, 0o755);
+  const keptRelative = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(keptRelative.status, 0, output(keptRelative));
+  assert.equal(readFileSync(wrapper, "utf8"), relativePin, "a recorded path that is not absolute is left unchanged");
   writeFileSync(wrapper, launcherText);
   const npmTools = mkdirSync(join(npmHome, "npm-tools"), { recursive: true })!;
   const projectNpm = join(npmTools, "npm");

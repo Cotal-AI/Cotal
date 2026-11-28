@@ -12,7 +12,7 @@ import { readAcl } from "./acls.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
-import type { ControlReply, CotalMessage } from "./types.js";
+import type { CotalMessage } from "./types.js";
 import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
 
@@ -20,7 +20,6 @@ import { nanos } from "@nats-io/transport-node";
  *  copied, and every method is looked up on the endpoint at call time, so a member a caller replaced on
  *  the endpoint is the one that runs. A peer part is read from the parts record at call time. */
 export interface EndpointDurableDeps {
-  requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
   emitRecoverable: (err: Error) => void;
 }
@@ -34,9 +33,8 @@ export class EndpointDurable {
    *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
   private readonly pendingDurableLeave = new Map<string, number>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDurableDeps, private readonly parts: Pick<EndpointParts, "consumers" | "durableBackstop" | "reconnection">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDurableDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane" | "durableBackstop" | "reconnection">) {}
 
-  private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ControlReply> { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
 
@@ -120,7 +118,7 @@ export class EndpointDurable {
    *  when no privileged writer is present (open / no delivery daemon). 30s timeout — activation catch-up may
    *  run before the reply (the window is small, but a busy channel can take more than the 5s default). */
   async durableJoinChannel(channel: string): Promise<{ durable: boolean; reason?: string; generation?: number }> {
-    const reply = await this.requestDelivery("durableJoin", { channel }, 30_000);
+    const reply = await this.parts.controlPlane.requestDelivery("durableJoin", { channel }, 30_000);
     if (!reply.ok) throw new Error(reply.error ?? "durable join rejected");
     return (reply.data as { durable: boolean; reason?: string; generation?: number }) ?? { durable: false };
   }
@@ -130,7 +128,7 @@ export class EndpointDurable {
    *  it) AND this incarnation's lifecycleUid — membership rows are lifecycle-keyed (SPEC 13.1), and a
    *  leave must resolve the selected principal-owned row even after the ACL row was narrowed or purged. */
   async durableLeaveChannel(channel: string, generation?: number, lifecycleUid = this.requireLifecycleUid("leaving a durable channel")): Promise<void> {
-    const reply = await this.requestDelivery("durableLeave", { channel, generation, lifecycleUid });
+    const reply = await this.parts.controlPlane.requestDelivery("durableLeave", { channel, generation, lifecycleUid });
     if (!reply.ok) throw new Error(reply.error ?? "durable leave rejected");
   }
 

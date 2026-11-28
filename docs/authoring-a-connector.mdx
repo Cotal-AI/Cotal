@@ -49,7 +49,7 @@ It carries the space, identity, credentials, channel access, persona path, model
 Forward the required identity and access fields without widening them.
 Read the complete field contracts in [`connector.ts`](../packages/core/src/connector.ts).
 
-Render `model` and `variant` as supplied.
+Render `model`, `variant` and `modes` as supplied.
 The launcher has already applied explicit flags over the persona's fields and refused whitespace-only values.
 Do not read those values again from the persona file, which may have changed.
 Read that file only for the persona text.
@@ -61,7 +61,7 @@ The caller reports the thrown value's `message`, or its text representation when
 
 Declare only the features your connector implements:
 
-- Set `supportsPrompt`, `supportsModelVariant`, or `supportsResume` only when the application can honor that request.
+- Set `supportsPrompt`, `supportsModelVariant`, `supportsModes`, or `supportsResume` only when the application can honor that request.
   Unsupported requests are refused before provisioning.
   Resume creates a new session from the source transcript and leaves the source unchanged.
 - Set `supportsAskPermissions` when the connector can launch the application in its mode that asks before it uses a tool.
@@ -91,6 +91,13 @@ Declare only the features your connector implements:
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
   The Manager passes the boot `resolvedBinaries` and the `spawn.env` names a launch would receive as `envAllow`.
   A read that runs the application builds its environment from them as `buildLaunch` does, so it lists the models a seat reaches.
+  List on each model only the `variants` and `modes` the application offers for the logged-in account.
+  Set `defaultVariant` to the variant it runs when a launch names none, and `isDefault` on the one model it runs when a launch names no model.
+  A mode is a `toggle` with a boolean `default`, or a `choice` with `options` and the default option's id.
+  When the model offers a mode that the account cannot use, list it with `unavailable` set to the application's own reason, so a launcher can show it disabled.
+  The manager refuses a variant or mode a launch names that the model's row does not list, and a launch that turns an unavailable mode on, with its reason. Setting such a mode off, `false` or the choice's default, launches.
+  It keeps the last catalog it read, from a `models` read or an earlier launch, and checks each launch against it, so only a launch that finds none kept waits on `listModels`.
+  A catalog with two default models, a default that is not among its own values, or an empty `unavailable` reason is reported as unreadable.
 - Use `setup` and `pluginRoot` for connector-owned installation support when needed.
   Use `launchHint` to describe what an operator sees after a direct foreground launch.
 - Set a positive safe-integer `readinessTimeoutMs` if bootstrap needs a different bound from the manager's default.

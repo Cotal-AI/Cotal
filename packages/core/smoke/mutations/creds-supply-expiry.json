@@ -69,7 +69,7 @@
     },
     {
       "name": "the self-heal never runs after a credential refusal (the guard strands a renewable endpoint)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "      void this.reestablishLoop();\n",
       "replace": "      if (!this.identity.credsSource) void this.reestablishLoop();\n",
       "expectRed": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",

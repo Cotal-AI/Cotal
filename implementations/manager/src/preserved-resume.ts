@@ -284,6 +284,7 @@ export class PreservedResume {
         source: a.launch.source,
         model: a.launch.model,
         variant: a.launch.variant,
+        ...(a.launch.modes ? { modes: a.launch.modes } : {}),
         subscribe: a.launch.subscribe,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
@@ -933,7 +934,7 @@ export class PreservedResume {
       }
       const unavailable = connector.launchUnavailable?.({ cwd: entry.launch.cwd, resume: entry.launch.forkSource });
       if (unavailable !== undefined) return { ok: false, error: unavailable };
-      await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
+      await this.parts.connectorInventory.refreshConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
@@ -1012,6 +1013,7 @@ export class PreservedResume {
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,
           variant: entry.launch.variant,
+          modes: entry.launch.modes,
           launchOptions,
           resume: retainedSession ? undefined : entry.launch.forkSource,
           continueSession: exact ? undefined : retainedSession,
@@ -1104,6 +1106,7 @@ export class PreservedResume {
           cwd: entry.launch.cwd,
           model: entry.launch.model,
           variant: connector.name === "claude" ? prepared.spec.env?.COTAL_VARIANT : entry.launch.variant,
+          modes: entry.launch.modes,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,

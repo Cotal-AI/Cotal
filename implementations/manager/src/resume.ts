@@ -91,6 +91,9 @@ const agent = z.strictObject({
     source,
     model: short.optional(),
     variant: short.min(1).optional(),
+    // Absent on a launch that chose no modes, which is every inventory written before the field.
+    modes: z.record(z.string().min(1).max(128), z.union([z.boolean(), z.string().min(1).max(256)]))
+      .refine((v) => Object.keys(v).length >= 1 && Object.keys(v).length <= 32, "must name 1 to 32 modes").optional(),
     subscribe: stringList.optional(),
     allowSubscribe: stringList,
     allowPublish: stringList.optional(),

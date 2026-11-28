@@ -18,8 +18,9 @@ import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFail
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
-import type { HostedManager, HostedAgents } from "./protocol.js";
-import { readHostedAgents } from "./agents.js";
+import type { HostedManager, HostedAgents, ManagerConnection } from "./protocol.js";
+import { readHostedAgents, readServeBound } from "./agents.js";
+import { lostConnection } from "./lost-connection.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
@@ -70,6 +71,11 @@ export interface Live {
   stopTask?: Promise<void>;
   failures: number;
   healthFailures?: number;
+  /** Consecutive health checks in which the Manager graded its serve connection unbound. */
+  unboundSamples?: number;
+  /** The wait before the next re-read of a connected Manager left `starting`, and when it ends. */
+  rereadWait?: number;
+  rereadAt?: number;
 }
 
 async function selectRunningAgent(local: Live | undefined, lifecycleUid: string) {
@@ -301,7 +307,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: command(`wait for activation or read \`cotal daemon status --space ${space}\``) };
     if (!l?.child || !l.view.instanceId || l.stopping || l.starting || recordError(space)) return status(space);
     return l.refreshing ??= (async () => {
-      const child = l.child!, selected = l.view.instanceId!;
+      const child = l.child!, selected = l.view.instanceId!, before = l.view.state;
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
         // This includes caller issuance, broker admission and contract resolution, not only status.
@@ -318,8 +324,62 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           }
         }
       } finally { if (deadline) clearTimeout(deadline); }
+      // A status read that changed what this Manager reports reaches the live feed too.
+      if (l.view.state !== before) notify();
       return status(space);
     })().finally(() => { l.refreshing = undefined; });
+  };
+  /** Why `space` cannot be reached. The loss itself is the Manager's own grade; the mesh record only
+   *  tells no internet from a space that is not answering, so a record that cannot be read still
+   *  leaves the loss to report, with the reason it could not be told apart. */
+  const describeLoss = async (space: string): Promise<ManagerConnection> => {
+    try {
+      const server = findMesh(space)?.server;
+      if (!server) throw new Error("no mesh record names its server");
+      return await lostConnection(server);
+    } catch (error) {
+      return { state: "unreachable", reason: `the space is not answering, and its address could not be checked: ${safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 300)}` };
+    }
+  };
+  /** The Manager's own grade of its serve connection. A Manager that came up and then lost it reports
+   *  why. Once it reconnects the problem clears, and a Manager a failed status probe left `starting`
+   *  is read again until it answers. */
+  const observeConnection = async (l: Live, child: ChildProcess, current: () => boolean) => {
+    if (l.starting || !l.view.instanceId) return;
+    let bound: boolean;
+    // A Manager built before this question does not answer it, which says nothing about its connection.
+    try { bound = await readServeBound(child); } catch { return; }
+    if (!current()) return;
+    if (bound) {
+      l.unboundSamples = 0;
+      if (l.view.connection) {
+        console.log(`machine daemon: the hosted Manager for ${l.view.space} is connected again`);
+        l.view = { ...l.view, connection: undefined };
+        notify();
+      }
+      // A status read that failed during a loss, or just after it while the space's exchange was not
+      // back yet, leaves `starting`. While the app only watches, nothing else reads again. Each read
+      // dials the space, so the first comes at once and later ones wait longer, up to 30 s.
+      if (l.view.state !== "starting") { l.rereadWait = undefined; l.rereadAt = undefined; return; }
+      if (Date.now() < (l.rereadAt ?? 0)) return;
+      l.rereadWait = Math.min(30_000, (l.rereadWait ?? 2500) * 2);
+      l.rereadAt = Date.now() + l.rereadWait;
+      void refresh(l.view.space).catch(() => {});
+      return;
+    }
+    l.rereadWait = undefined; l.rereadAt = undefined;
+    // One unbound check can be a re-dial already under way; a loss is two checks in a row.
+    l.unboundSamples = (l.unboundSamples ?? 0) + 1;
+    if (l.unboundSamples < 2) return;
+    const connection = await describeLoss(l.view.space);
+    if (!current() || l.starting) return;
+    const known = l.view.connection;
+    if (known?.state === connection.state && known.reason === connection.reason) return;
+    l.view = { ...l.view, connection };
+    // The service's log is bounded. A lookup that fails with a different code each time changes only
+    // the reason, which the feed carries, so the log gets one line per loss and per change of state.
+    if (known?.state !== connection.state) console.log(`machine daemon: the hosted Manager for ${l.view.space} lost its connection (${connection.state}): ${connection.reason}`);
+    notify();
   };
   const observe = (l: Live) => {
     if (l.healthTimer) clearTimeout(l.healthTimer);
@@ -355,6 +415,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
                 if (prevState !== "unreadable") notify();
               }
             }
+            await observeConnection(l, child, current);
           }
         } catch (error) {
           if (!current()) return;
@@ -560,7 +621,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         resolve();
         const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
         const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
-        l.view = { ...l.view, pid: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
+        l.unboundSamples = 0;
+        l.view = { ...l.view, pid: undefined, connection: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
         if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
           l.view = { ...l.view, reason: exitReason };

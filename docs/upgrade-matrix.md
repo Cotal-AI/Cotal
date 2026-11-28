@@ -42,8 +42,9 @@ result when available; a harness fault does not hold a release.
 
 `workflow_dispatch` takes `phase`, `source_sha`, `target_version` and `profile`. Use an immutable
 40-character SHA whose package version matches the target. `bounded` is the supported profile.
-`extended` refuses explicitly instead of silently running a smaller set. There is no ref-wide
-cancellation, so one new head or publication cannot evict an older qualification.
+`extended` refuses explicitly instead of silently running a smaller set. A new push to a pull
+request cancels the matrix of the head it replaces. A publication and a manual run are never
+cancelled by a later run.
 
 ## Required release set
 
@@ -239,8 +240,10 @@ which installed source executes the first update attempt.
 
 Use Node >= 22.10. Native service and agent cells require a disposable hosted runner. On a persistent
 Linux host the harness refuses them and places other cells in private mode 700 homes under
-`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require 20 GiB free before
-installation or build. Do not run the container fixture on a workstation.
+`/var/tmp/upgrade-matrix-<uid>`, where `<uid>` is the account's numeric user ID. The account must
+own that directory and its mode must be 700. Without `--output` or `RUNNER_TEMP`, the harness writes
+evidence to `upgrade-evidence` under that directory. It never uses the operator's Cotal state.
+Require 20 GiB free before installation or build. Do not run the container fixture on a workstation.
 
 ```sh
 node scripts/automatic-update-platform-baseline.mjs --list linux
