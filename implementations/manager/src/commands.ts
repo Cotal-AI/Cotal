@@ -50,6 +50,7 @@ import { drainSeats } from "@cotal-ai/seat";
 import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerParticipationAuthorizationRequest, remoteManagerParticipationAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
+import { listenForDarwinMachineRemoval } from "./machine-removal-darwin.js";
 
 type Values = Record<string, string | undefined>;
 
@@ -738,6 +739,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   }
   // Only the machine-daemon composition root opts into its private parent channel.
   if (args.values["machine-parent"] === true && process.connected) {
+    listenForDarwinMachineRemoval();
     let pending = Promise.resolve();
     let heldAttempt: string | undefined;
     process.on("message", (raw: unknown) => {

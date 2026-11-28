@@ -80,6 +80,26 @@ export class SharedController {
 
   async seatRequest(seat: string, body: SharedSeatRequestBody): Promise<ServerReply> {
     const connection = await this.forSeat(seat);
+    return this.requestSeat(connection, seat, body);
+  }
+
+  /** Pin the already authenticated writer. No operation on this view dials or retries. */
+  pinWriter(verifyPeer: (socket: Socket) => boolean) {
+    const connection = this.current;
+    if (!connection?.authenticated || connection.socket.destroyed || !verifyPeer(connection.socket))
+      throw new SharedControlError("not-admitted", "the incumbent shared PTY writer is not verified");
+    const recheck = () => {
+      if (this.current !== connection || connection.socket.destroyed || !verifyPeer(connection.socket))
+        throw new SharedControlError("unknown", "the incumbent shared PTY writer changed");
+    };
+    return { recheck, request: (seat: string, body: SharedSeatRequestBody) => {
+      recheck();
+      if (!isSeatId(seat)) throw new SharedControlError("not-admitted", "invalid shared PTY seat id");
+      return this.requestSeat(connection, seat, body);
+    } };
+  }
+
+  private async requestSeat(connection: Connection, seat: string, body: SharedSeatRequestBody): Promise<ServerReply> {
     const id = this.nextId++;
     const reply = await this.request(connection, { id, op: "seat", seat, request: { ...body, id } });
     if (!reply.ok || reply.op !== "seat") throw new SharedControlError("unknown", "invalid shared PTY seat reply");
