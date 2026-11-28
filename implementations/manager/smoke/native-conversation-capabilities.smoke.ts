@@ -49,7 +49,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
   process.on("SIGINT", stop);
   await new Promise(() => {});
 } else {
-  const { spawn } = await import("node:child_process");
+  const { execFile, spawn } = await import("node:child_process");
+  const { promisify } = await import("node:util");
   const { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
@@ -106,6 +107,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     child.once("exit", () => resolve()); child.kill("SIGTERM");
   });
   const identities = () => existsSync(join(home, "app-identities")) ? readdirSync(join(home, "app-identities")).filter((n) => !n.endsWith(".lock")).length : 0;
+  const cli = async (...words: string[]) => (await promisify(execFile)(process.execPath, [
+    join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words, "--space", space,
+  ], { cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, timeout: 30_000 })).stdout;
   async function checkOrphanRenewal(args: {
     owner: string; actor: string; connection: string; observer: InstanceType<typeof CotalEndpoint>;
     call: (name: string, args: object) => Promise<{ text: string; isError: boolean }>;
@@ -123,13 +127,26 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
       !disconnected.isError && !findManagedActor(stateDir, args.owner, args.actor) && !!findManagedActor(stateDir, args.owner, name));
     await until(() => presence()?.condition?.code === "auth", "first renewal refusal did not reach the roster");
     const refusal = presence()!.condition!.message;
-    const command = ["cotal", "pnpm cotal"].some((cli) => refusal?.includes(`\`${cli} spawn ${name} --name NEW_NAME --detach --space=${space}\``));
-    check("presence names the missing grant and gives the owner a replacement command", command && !refusal?.includes("re-grant"), refusal);
+    check("presence gives only the missing-grant diagnosis with actor, spawner and space",
+      refusal === `agent "${name}": spawner "${args.owner}.${args.actor}" is no longer granted. Renewal requires that spawner's grant in space "${space}".`, refusal);
     const { agentLifecycleSecretFilePaths, readAgentAuthHealth } = await import("@cotal-ai/workspace");
     const health = agentLifecycleSecretFilePaths(root, space, name, seat.lifecycleUid!).health;
     const first = readAgentAuthHealth(health);
     check("the health record read by ps has the same diagnosis", refusal && first?.state === "failed" && first.reason?.endsWith(refusal), first?.reason);
     assert(first);
+    const ps = JSON.parse(await cli("ps", "--json"));
+    const row = ps.result.items.find((item: { name: string }) => item.name === name);
+    check("ps JSON retains the command-free health reason", row?.authReason === first.reason, row);
+    const status = JSON.parse(await cli("status", name, "--json"));
+    check("named status JSON retains the command-free health reason", status.result.details.authReason === first.reason, status);
+    for (const words of [["ps"], ["status", name]]) {
+      const text = await cli(...words, "--plain");
+      const lines = text.split("\n").map((line) => line.trim());
+      const at = `--on ${row.instanceId} --space ${space}`;
+      check(`${words.join(" ")} renders the owner's replacement and named stop commands`,
+        lines.some((line) => line.endsWith(` spawn ${name} --name NEW_NAME --detach ${at}`)) &&
+        lines.some((line) => line.endsWith(` stop ${name} ${at}`)) && text.includes("stop the old seat so it stops retrying"), text);
+    }
     await until(() => presence()?.status === "offline", "the last bearer did not expire");
     check("the live observer's offline row retains the last reported condition", presence()?.condition?.message === refusal);
 
@@ -137,11 +154,12 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     // seat a new token or ask it to reconnect: its own next scheduled renewal must restore it.
     grantManagedActor(stateDir, { ...parent, tokenHash: hashActorToken(randomBytes(32).toString("base64url")), lifecycleUid: mintLifecycleUid(), custody: { kind: "foreground" } });
     try {
-      await until(() => presence()?.status === "idle" && !presence()?.condition && readAgentAuthHealth(health)?.state === "ok",
-        "the slow renewal did not reconnect the unchanged child", 250_000);
+      await until(() => presence()?.status === "idle" && readAgentAuthHealth(health)?.state === "ok",
+        "the slow renewal did not reconnect the unchanged child", 270_000);
+      check("the first successful renewal after the spawner returns clears the auth condition", !presence()?.condition, presence());
       const elapsed = Date.parse(readAgentAuthHealth(health)!.at) - Date.parse(first.at);
       check("the scheduled retry reconnects the same seat after two to four minutes",
-        elapsed >= 120_000 && elapsed < 245_000 && presence()?.lifecycleUid === seat.lifecycleUid, elapsed);
+        elapsed >= 120_000 && elapsed < 265_000 && presence()?.lifecycleUid === seat.lifecycleUid, elapsed);
     } finally {
       revokeManagedActor(stateDir, args.owner, args.actor);
     }

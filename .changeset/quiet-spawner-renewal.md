@@ -1,7 +1,7 @@
 ---
 "@cotal-ai/auth": patch
+"@cotal-ai/cli": patch
 "@cotal-ai/core": patch
-"@cotal-ai/manager": patch
 ---
 
-Seats whose spawner loses its grant retry less often and show the reason and recovery steps in `cotal ps`.
+Seats running this release retry less often when their spawner loses its grant, and `cotal ps` and `cotal status <seat>` show the reason and recovery steps.

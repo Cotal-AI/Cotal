@@ -120,6 +120,12 @@ try {
       const health = JSON.parse(readFileSync(healthFile, "utf8")); assert.equal(health.state, "failed", `${face} records failure`); assert.match(health.reason, unreadable(code), `${face} records decode reason`);
     }
     set(403, { error: "fixture-denial" }); assert.match((await bearer(local)).err, /exchange refused: fixture-denial/, `${face} preserves readable refusal`);
+    const missing = `agent "${actor}": spawner "${owner}.parent" (an ancestor) is no longer granted`;
+    set(401, { error: `${missing} - re-grant it, then respawn (\`cotal spawn\`)` });
+    const refused = await bearer(local);
+    const diagnosis = `agent-bearer: exchange refused: ${missing}. Renewal requires that spawner's grant in space "${space}".`;
+    assert.deepEqual(refused, { code: 1, out: "", err: `${diagnosis}\n` }, `${face} strips older authority recovery instructions from stderr`);
+    assert.equal(JSON.parse(readFileSync(healthFile, "utf8")).reason, diagnosis, `${face} records only the command-free reason`);
   }
 
   const command = registry.all<Command>("command").find(c => c.name === "actor")!;

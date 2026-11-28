@@ -444,7 +444,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | --- | --- | --- | --- |
 | `card` | `AgentCard` | MUST | identity record |
 | `status` | `PresenceStatus` | MUST | `idle`, `waiting`, `working`, or `offline` |
-| `condition` | `PresenceCondition` | MAY | Structured condition. Missing means nothing was reported. A connector relays what its harness reports and MUST NOT infer a harness condition. A user-auth endpoint may report `auth` when its own bearer exchange refuses renewal because a spawner's grant is missing. It clears that report on successful renewal |
+| `condition` | `PresenceCondition` | MAY | Structured condition. Missing means nothing was reported. A connector relays what its harness reports and MUST NOT infer a harness condition. A user-auth endpoint may report `auth` in place of a harness condition when its own bearer exchange refuses renewal because a spawner's grant is missing. The endpoint clears that report on any other renewal outcome |
 | `environment` | string | MAY | opaque reference whose meaning belongs to the provider that issued it. Core MUST NOT parse it |
 | `activity` | string | MAY | freeform current activity |
 | `statusSince` | number | MAY | epoch ms when the instance entered its current `status` and `activity`. A change to either moves it; a heartbeat or a repeated report does not, so `ts` dates liveness and `statusSince` dates the report. An offline record MUST NOT carry it: an observer that derives `offline` from a stale `ts` does not know when the peer left |

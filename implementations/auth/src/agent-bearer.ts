@@ -18,15 +18,11 @@ export function writeAgentAuthHealth(path: string, state: "ok" | "failed", reaso
   writePrivateRecord(path, JSON.stringify({ state, at: new Date().toISOString(), ...(reason ? { reason } : {}) } satisfies AgentAuthHealth));
 }
 
-// Match the diagnosis, not the instructions: a seat can be refreshing against an older authority.
-async function missingSpawnerRecovery(reason: string | undefined, actor: string, space: string, managed: boolean): Promise<string | undefined> {
+// Keep the diagnosis from both current and older authorities, without their operator instructions.
+function missingSpawnerDiagnosis(reason: string | undefined, actor: string, space: string): string | undefined {
   const missing = /^agent "([A-Za-z0-9_]+)": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted(?=[. ]|$)/.exec(reason ?? "");
   if (missing?.[1] !== actor) return reason;
-  if (!managed) return `${missing[0]}. Renewal requires that spawner's grant.`;
-  const { resolveOnPath } = await import("@cotal-ai/workspace");
-  const cli = resolveOnPath("cotal") ? "cotal" : "pnpm cotal";
-  const target = /^[A-Za-z0-9_.-]+$/.test(space) ? ` --space=${space}` : "";
-  return `${missing[0]}. The seat retries slowly and reconnects if the grant returns. If its saved persona is named ${actor}, start a replacement from the owner's terminal with \`${cli} spawn ${actor} --name NEW_NAME --detach${target}\`${target ? "." : " in the seat's space."} Use an unused name in place of NEW_NAME.`;
+  return `${missing[0]}. Renewal requires that spawner's grant in space ${JSON.stringify(space)}.`;
 }
 
 /** `cotal agent-bearer` — the ONE thing a spawned user-mode agent execs to refresh its auth: read
@@ -139,7 +135,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
         process.stdout.write(`retry-after ${limited.retryAfterSeconds}\n`);
         throw Object.assign(new Error(`agent-bearer: ${limited.message}; ${limited.remedy}`), { exitCode: 2 });
       }
-      const detail = res.status === 401 ? await missingSpawnerRecovery(body.error, actor, space, !managerCall && !!v["health-file"]) : body.error;
+      const detail = res.status === 401 ? missingSpawnerDiagnosis(body.error, actor, space) : body.error;
       throw new Error(`agent-bearer: exchange refused: ${detail ?? `HTTP ${res.status}`}`);
     }
     const out = (await readAuthResponseJson(res, `agent-bearer: the exchange at ${exchangeUrl}`)) as { token?: string };

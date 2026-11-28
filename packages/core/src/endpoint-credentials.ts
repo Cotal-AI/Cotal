@@ -118,19 +118,26 @@ export class EndpointCredentials {
       if (missingSpawnerRefusal.test(reason)) {
         this.missingSpawner = true;
         this.parts.presence.setBearerCondition(reason.slice("agent-bearer: exchange refused: ".length));
+      } else if (this.missingSpawner) {
+        this.missingSpawner = false;
+        this.cred.bearerRenewalFailures = 0;
+        this.parts.presence.setBearerCondition(undefined);
       }
       if (this.cred.bearerRenewalFailures === 0 && !this.missingSpawner)
         this.emitRecoverable(new Error(`bearer refresh failed (${reason}) - retrying with backoff; this connection dies at its current token's expiry if the auth service stays down`));
       // Never retry inside a wait the source named, or shorten the slow retry for a missing grant.
       const named = retryAfterMs(e);
       const slow = EndpointCredentials.MISSING_SPAWNER_RETRY_MS;
-      const delay = this.missingSpawner ? Math.max(named, jitteredBackoffMs(0, slow, slow)) : named > 0 ? named
-        : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
+      const delay = this.missingSpawner ? Math.max(named, jitteredBackoffMs(0, slow, slow)) : this.bearerRetryDelay(named);
       this.cred.bearerRenewalFailures++;
       const timer = setTimeout(() => void this.renewBearerOnTimer(), delay);
       timer.unref?.();
       this.armBearerTimer(() => clearTimeout(timer));
     }
+  }
+
+  private bearerRetryDelay(named: number): number {
+    return named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);
   }
 
   private armBearerTimer(cancel: () => void): void {
