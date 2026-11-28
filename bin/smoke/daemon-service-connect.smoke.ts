@@ -2258,6 +2258,10 @@ process.stdin.once('data', () => {
       if (upgrading) {
         const fixturePackage = join(root, "daemon-smoke-connector");
         renameSync(pkg, fixturePackage);
+        if (finishConnectorUpdate) {
+          const entry = join(fixturePackage, "index.js");
+          writeFileSync(entry, readFileSync(entry, "utf8").replace(JSON.stringify(coreUrl), '"@cotal-ai/core"'));
+        }
         const bounded = finishConnectorUpdate ? { timeout: 120_000, killSignal: "SIGKILL" as const } : {};
         const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], ...bounded });
         let addingOutput = "";
