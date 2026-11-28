@@ -203,6 +203,13 @@ for (const level of ["regular", "minimal"]) {
   check("a refused command's event carries the outcome and the typed error code", ps.sent.length === 1 && ps.sent[0]?.outcome === "refused" && ps.sent[0]?.errorCode === error?.code && ps.sent[0]?.exitCode === 2, ps.sent[0]);
   check("…and the refusal's message, with no path in it", typeof ps.sent[0]?.errorMessage === "string" && (ps.sent[0]!.errorMessage as string).length > 0 && !(ps.sent[0]!.errorMessage as string).includes(s.home) && !/\/[\w.-]+\/[\w.-]+/.test(ps.sent[0]!.errorMessage as string), ps.sent[0]?.errorMessage);
   check("…and a stack whose frames name no directory outside node_modules", typeof ps.sent[0]?.errorStack === "string" && /^at /.test(ps.sent[0]!.errorStack as string) && !(ps.sent[0]!.errorStack as string).includes(s.home) && !/\(\/|\(file:/.test(ps.sent[0]!.errorStack as string), ps.sent[0]?.errorStack);
+  const watch = await s.run(["watch", "--json", "--space", "absent-watch-fixture"]);
+  const records = watch.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  const event = watch.sent[0];
+  check("the JSON watch refusal reports its stream code without sending the stream diagnostic",
+    watch.status === 2 && records.length === 2 && records[0]?.type === "error" && records[0]?.data?.code === "TARGET_NOT_FOUND" && records[1]?.type === "end"
+    && watch.sent.length === 1 && event?.command === "watch" && event.outcome === "refused" && event.errorCode === records[0].data.code
+    && event.errorMessage === null && event.errorStack === null && !JSON.stringify(event).includes("absent-watch-fixture"));
   const usage = await s.run(["ext", "frobnicate"]);
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
