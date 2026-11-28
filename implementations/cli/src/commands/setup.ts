@@ -73,7 +73,7 @@ import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
-import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
+import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, projectRootKind, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
 
 const ONBOARD_VERSION = "2";
@@ -316,8 +316,9 @@ function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Setu
     throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, remedy);
   }
   const project = resolve(v.project!);
-  const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
-  if (!isDir(project) && !createProject) throw localDiagnostic(usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one"));
+  const kind = projectRootKind(project);
+  const createProject = kind === "missing" && v.destination === "local" && v.yes === true;
+  if (kind !== "directory" && !createProject) throw localDiagnostic(usage(`--project ${project} is not a directory`, kind === "missing" ? "create the folder first, or pass an existing one" : "pass an existing directory with --project"));
   return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 

@@ -77,6 +77,7 @@ To prepare a Cloud space from a script, first run `cotal login --cloud` in a ter
 Then use `--destination self-hosted --space <name>` with the other required flags.
 
 A missing required flag is refused before setup writes anything.
+For local setup, `--yes` allows a missing project folder to be created. If a file blocks the project path, pass a different directory with `--project`.
 Scripts set up only the optional runtimes named with `--runtime <name>`.
 Add `--json` to get a result whose `written` list names the files setup wrote.
 If an application executable is missing, setup saves the other preparation and exits with code 4.
