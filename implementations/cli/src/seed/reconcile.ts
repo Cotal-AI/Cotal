@@ -691,12 +691,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 }
 
 /** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order
- *  {@link reconcile} would refuse: a missing extensions inventory, a writer that may not write a
- *  store that is not current, then an executable older than the store. Neither check writes anything. */
+ *  {@link reconcile} would refuse: a writer that may not write a store that is not current, then an
+ *  executable older than the store. A missing extensions inventory is named and the command continues.
+ *  Neither check writes anything. */
 export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
   if (extensionsInventoryMissing()) {
-    return new Error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
+    console.error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
+    return undefined;
   }
   let current = false;
   try {

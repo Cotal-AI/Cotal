@@ -21,12 +21,24 @@ export const SEED_BUILTINS: readonly string[] = Object.keys(SEEDED_EXTENSIONS);
 
 /** A witnessed prefix whose inventory file is gone while npm still has packages installed. A prefix
  *  that was never seeded, or an empty prefix, is not this state: there is no inventory to restore. */
+function entryExists(path: string): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
 export function extensionsInventoryMissing(): boolean {
   if (!existsSync(witnessPath())) return false;
-  if (lstatSync(extensionsManifestPath(), { throwIfNoEntry: false })) return false;
+  if (entryExists(extensionsManifestPath())) return false;
   const prefix = extensionsDir();
-  return lstatSync(join(prefix, "package-lock.json"), { throwIfNoEntry: false })?.isFile() === true
-    || lstatSync(join(prefix, "node_modules"), { throwIfNoEntry: false })?.isDirectory() === true;
+  try {
+    return lstatSync(join(prefix, "package-lock.json"), { throwIfNoEntry: false })?.isFile() === true
+      || lstatSync(join(prefix, "node_modules"), { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false;
+  }
 }
 
 /** `<config>/cotal/seed` — the seed engine's own state root (NOT inside the npm prefix). */

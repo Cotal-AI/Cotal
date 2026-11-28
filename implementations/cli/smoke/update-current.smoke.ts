@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -842,6 +842,22 @@ process.exit(real.status ?? 1);
     assert.doesNotMatch(hinted.stdout + hinted.stderr, /Reconciling built-in/);
     assert.equal(calls(), before, "an ordinary command does not call npm");
     assert.equal(existsSync(manifest), false);
+    const humanList = cli("ext", "list");
+    assert.equal(humanList.status, 4, humanList.stdout + humanList.stderr);
+    assert.match(humanList.stdout, /extensions inventory is missing/i);
+    assert.doesNotMatch(humanList.stdout, /No extensions installed/);
+    const zodDir = join(extensions, "node_modules", "zod");
+    mkdirSync(zodDir, { recursive: true });
+    writeFileSync(join(zodDir, "index.js"), "");
+    const dependency = cli("ext", "remove", "zod");
+    assert.equal(dependency.status, 0, dependency.stdout + dependency.stderr);
+    assert.match(dependency.stdout, /already absent/);
+    assert.doesNotMatch(dependency.stdout, /files remain/);
+    writeFileSync(join(zodDir, "package.json"), JSON.stringify({ name: "zod", version: "1.0.0" }));
+    const packageDir = cli("ext", "remove", "zod");
+    assert.equal(packageDir.status, 0, packageDir.stdout + packageDir.stderr);
+    assert.match(packageDir.stdout, /not registered, and its files remain/);
+    rmSync(zodDir, { recursive: true, force: true });
     const listed = cli("ext", "list", "--json");
     assert.equal(listed.status, 4, listed.stdout + listed.stderr);
     assert.match(listed.stdout + listed.stderr, /cotal ext seed --repair/);
@@ -913,13 +929,21 @@ process.exit(real.status ?? 1);
     assert.doesNotMatch(empty.stdout + empty.stderr, /inventory is missing|Reconciling built-in/);
     assert.equal(existsSync(join(emptyExtensions, "extensions.json")), false);
     const neverHome = mkdtempSync(join(home, "never-"));
+    const neverConfig = join(neverHome, "xdg");
+    const neverExtensions = join(neverConfig, "cotal", "extensions");
+    const neverModules = join(neverExtensions, "node_modules", "@cotal-ai", "tmux");
+    mkdirSync(neverModules, { recursive: true });
+    writeFileSync(join(neverModules, "package.json"), JSON.stringify({ name: "@cotal-ai/tmux", version, main: "index.js" }));
+    writeFileSync(join(neverModules, "index.js"), "");
+    writeFileSync(join(neverExtensions, "package-lock.json"), JSON.stringify({ name: "cotal-extensions", lockfileVersion: 3, packages: { "": {} } }));
     const nevered = spawnSync(entry, [...argv.slice(1), "space", "forget", "ghost"], {
       cwd: neverHome, encoding: "utf8", timeout: 60_000,
-      env: { ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")), HOME: neverHome, USERPROFILE: neverHome, COTAL_HOME: join(neverHome, "cotal"), XDG_CONFIG_HOME: join(neverHome, "xdg"), XDG_RUNTIME_DIR: neverHome },
+      env: { ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")), HOME: neverHome, USERPROFILE: neverHome, COTAL_HOME: join(neverHome, "cotal"), XDG_CONFIG_HOME: neverConfig, XDG_RUNTIME_DIR: neverHome },
     });
     assert.notEqual(nevered.status, 0, nevered.stdout + nevered.stderr);
     assert.match(nevered.stdout + nevered.stderr, /refusing to reconcile the operator-global seed store/);
     assert.doesNotMatch(nevered.stdout + nevered.stderr, /inventory is missing/);
+    assert.equal(existsSync(join(neverExtensions, "extensions.json")), false);
     rmSync(manifest);
     const project = join(home, "project");
     mkdirSync(project);
@@ -927,9 +951,34 @@ process.exit(real.status ?? 1);
       cwd: project, encoding: "utf8", timeout: 60_000,
       env: Object.fromEntries(Object.entries(env).filter(([key]) => key !== "COTAL_ALLOW_CHECKOUT_SEED")),
     });
-    assert.notEqual(checkout.status, 0, checkout.stdout + checkout.stderr);
+    assert.equal(checkout.status, 0, checkout.stdout + checkout.stderr);
     assert.match(checkout.stdout + checkout.stderr, /extensions inventory is missing/);
-    assert.doesNotMatch(checkout.stdout + checkout.stderr, /refusing to reconcile the operator-global seed store/);
+    assert.match(checkout.stdout + checkout.stderr, /running in the background/);
+    assert.doesNotMatch(checkout.stdout + checkout.stderr, /DEPENDENCY_UNAVAILABLE|Reconciling built-in/);
+    assert.equal(existsSync(manifest), false);
+    const restored = spawnSync(entry, [...argv.slice(1), "backup", "restore", join(home, "no-such-backup")], {
+      cwd: home, encoding: "utf8", timeout: 60_000, env,
+    });
+    assert.notEqual(restored.status, 0, restored.stdout + restored.stderr);
+    assert.match(restored.stdout + restored.stderr, /extensions inventory is missing/);
+    assert.doesNotMatch(restored.stdout + restored.stderr, /DEPENDENCY_UNAVAILABLE/);
+    assert.equal(existsSync(manifest), false);
+    chmodSync(extensions, 0);
+    try {
+      const blocked = cli("version");
+      assert.notEqual(blocked.status, 0, blocked.stdout + blocked.stderr);
+      assert.match(blocked.stderr, /cannot read the extensions manifest/);
+      assert.doesNotMatch(blocked.stdout + blocked.stderr, /ext seed --repair|extensions inventory is missing/);
+      const blockedCheck = cli("update", "--check");
+      const blockedStatus = cli("status", "--json");
+      const blockedVersion = cli("version", "--json");
+      for (const result of [blockedCheck, blockedStatus, blockedVersion]) {
+        assert.notEqual(result.status, 0, result.stdout + result.stderr);
+        assert.match(result.stdout + result.stderr, /cannot read the extensions manifest/);
+        assert.match(result.stdout + result.stderr, /restore this account's read access/);
+        assert.doesNotMatch(result.stdout + result.stderr, /ext seed --repair|extensions inventory is missing/);
+      }
+    } finally { chmodSync(extensions, 0o700); }
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

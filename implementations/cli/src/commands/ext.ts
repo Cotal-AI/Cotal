@@ -716,7 +716,8 @@ async function removeUnlocked(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
   if (!entry) {
-    const installed = lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })?.isDirectory() === true;
+    const installed = lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })?.isDirectory() === true
+      && installedExtensionPackage(pkg) !== undefined;
     console.log(installed
       ? `${pkg} is not registered, and its files remain in ${extensionPackageDir(pkg)}. Nothing was removed. Run \`${displayCmd()} ext add\` with its original spec to register it.`
       : `${pkg} is already absent. Nothing was removed.`);
@@ -884,13 +885,13 @@ function list(presentation: Presentation): void {
     command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },
     warnings,
     ...(missing.length ? { completeness: "partial" as const, partial: { message: "the installed extensions could not be listed", remedy: pending.kind === "unreadable" ? pending.instruction : undefined } } : warnings.length ? { completeness: "partial" as const, partial: { message: "Some recorded extension packages could not be verified." } } : {}),
-  }, extensionsView);
+  }, (result) => extensionsView(result, missing.length > 0));
 }
 
-function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }): Report {
+function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }, inventoryMissing = false): Report {
   return {
     sections: [
-      { title: "Extensions", blocks: r.items.length ? [{
+      { title: "Extensions", blocks: inventoryMissing ? [{ kind: "lines", lines: ["The extensions inventory is missing."] }] : r.items.length ? [{
         kind: "table",
         columns: [{ key: "pkg", label: "Package" }, { key: "version", label: "Version" }, { key: "source", label: "Source" }, { key: "provides", label: "Provides" }],
         rows: r.items.map((row) => ({ pkg: row.pkg, version: row.version, source: row.seeded ? "included" : "added", provides: { text: row.provides.join(", "), tone: "hint" } })),
