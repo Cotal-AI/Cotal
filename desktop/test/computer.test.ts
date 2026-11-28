@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown } from "../src/model.ts";
+import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown, surfaceState, type SurfaceState } from "../src/model.ts";
 
 test("computer list follows desired intent while retaining connected local spaces", () => {
   const desired = { space: "mine", desired: true, observed: "starting" };
@@ -40,7 +40,7 @@ test("window title and tray share one summary of the listed spaces", () => {
   assert.equal(computerSummary([{ ...row, observed: "not-requested" }], false), "starting");
   assert.equal(computerSummary([{ ...row, observed: "stopping" }], false), "starting");
   assert.equal(computerSummary([{ ...row, observed: "refused" }], false), "attention");
-  assert.equal(computerSummary([row, { ...row, space: "other", observed: "disconnected" }], false), "attention");
+  assert.equal(computerSummary([row, { ...row, space: "other", observed: "disconnected" }], false), "starting");
   // The row shows the saved refusal, so the title and tray must not say Starting.
   assert.equal(computerSummary([{ ...row, lastRefusal: "Manager is not answering" }], false), "attention");
   assert.equal(computerSummary([{ ...row, observed: "refused" }], true), "connected");
@@ -66,4 +66,34 @@ test("every space state the daemon can report has a decided label", () => {
   assert.equal(reported.length, 22);
   assert.deepEqual(reported.filter(state => !spaceStateKnown(state)), []);
   assert.equal(spaceStateKnown("a state added later"), false);
+});
+
+test("Connection title and sidebar word/dot use the canonical tray state table", () => {
+  const row = { space: "mine", desired: true, observed: "connected" };
+  const idle = { rows: [], anyConnected: false };
+  const desired = (observed: string) => ({ ...idle, rows: [{ ...row, observed }] });
+  const cases: readonly (readonly [Parameters<typeof surfaceState>[0], SurfaceState["word"], SurfaceState["dot"], string])[] = [
+    [{ rows: [row], anyConnected: true }, "Connected", "ok", "This computer is connected"],
+    [desired("starting"), "Starting", "waiting", "This computer is starting"],
+    [desired("offline"), "Offline", "problem", "No internet connection"],
+    [desired("unreachable"), "Can't connect", "problem", "Can't reach your space"],
+    [{ ...idle, signedOut: true }, "Sign in required", "problem", "Signed out"],
+    [{ ...idle, signInRequired: true }, "Sign in required", "problem", "Sign in to keep this computer connected"],
+    [{ ...idle, service: "stopped" }, "Service stopped", "problem", "The background service is stopped"],
+    [{ ...idle, anyConnected: true, updating: true }, "Updating", "waiting", "Cotal is updating"],
+    [{ ...idle, service: "not-set-up" }, "Not set up", "waiting", "This computer is not set up"],
+    [{ ...idle, anyConnected: true, diskFull: true }, "Disk full", "problem", "Your disk is full"],
+    [{ ...idle, repairNeeded: true }, "Repair needed", "problem", "This computer needs a repair"],
+    [{ ...idle, rows: [{ ...row, lastRefusal: "Ask the owner" }, { ...row, space: "other", observed: "refused" }] }, "Can't connect", "problem", "Can't connect to your spaces"],
+    [{ ...idle, starting: true }, "Starting", "waiting", "This computer is starting"],
+    [{ ...idle, rows: [{ ...row, desired: false, observed: "removed on this computer" }] }, "Connected", "ok", "No space is using this computer"],
+    [idle, "Connected", "ok", "This computer is connected to your account"],
+  ];
+  assert.equal(new Set(cases.map(([, word]) => word)).size, 10);
+  for (const [input, word, dot, title] of cases) {
+    const actual = surfaceState(input);
+    assert.deepEqual([actual.word, actual.dot, actual.title], [word, dot, title]);
+  }
+  assert.equal(surfaceState({ ...idle, diskFull: true }).description, "Free up space on this computer. Cotal continues by itself once there is room.");
+  assert.equal(surfaceState({ ...idle, service: "stopped" }).description, "You stopped the background service. Start it to run agents on this computer again.");
 });

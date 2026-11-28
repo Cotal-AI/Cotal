@@ -48,41 +48,55 @@ const SETTLED_SPACE_STATE: Record<string, string> = {
   unsupported: "Unsupported by this space",
   stopped: "Stopped",
 };
-/** A space whose Manager lost its connection. It reconnects by itself, so nobody needs to act. */
-const NETWORK_SPACE_STATE: Record<string, string> = {
-  offline: "No internet connection",
-  unreachable: "Can't reach this space",
-};
-/** The window title, the header pill and the tray all read these words for one connection state. */
-export const CONNECTION_COPY: Record<"offline" | "unreachable", { title: string; description: string; pill: string; icon: "offline" | "warning" }> = {
+const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this computer"];
+const NETWORK_SPACE_STATE = { offline: "No internet connection", unreachable: "Can't reach this space" };
+export const CONNECTION_COPY = {
   offline: { title: "No internet connection", description: "Cotal reconnects by itself when this computer is back online.", pill: "Offline", icon: "offline" },
   unreachable: { title: "Can't reach your space", description: "Cotal reconnects by itself when the space answers again.", pill: "Can't connect", icon: "warning" },
-};
+} as const;
 export function networkState(observed: string): "offline" | "unreachable" | undefined {
   return observed === "offline" || observed === "unreachable" ? observed : undefined;
 }
-const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this computer"];
 /** Whether this app has decided what to show for a state the daemon reports. */
 export function spaceStateKnown(observed: string): boolean {
-  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(NETWORK_SPACE_STATE, observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
+  return OWN_SPACE_STATE.includes(observed) || Boolean(networkState(observed)) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
 }
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
-  return NETWORK_SPACE_STATE[row.observed] ?? SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
+  const network = networkState(row.observed);
+  return network ? NETWORK_SPACE_STATE[network] : SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
 }
 export type ComputerSummary = "connected" | "offline" | "unreachable" | "attention" | "starting" | "idle";
-/** One answer for the window title and the tray, so the two cannot disagree. A lost connection comes
- *  before other problems, because it can cause them. */
 export function computerSummary(rows: readonly ComputerSpace[], anyConnected: boolean): ComputerSummary {
   if (anyConnected) return "connected";
-  if (rows.some(row => networkState(row.observed) === "offline")) return "offline";
-  if (rows.some(row => networkState(row.observed) === "unreachable")) return "unreachable";
-  if (rows.some(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed))) return "attention";
-  if (rows.some(row => row.desired && row.observed !== "removed on this computer")) return "starting";
-  return "idle";
+  const desired = rows.filter(row => row.desired && row.observed !== "removed on this computer");
+  if (desired.some(row => networkState(row.observed) === "offline")) return "offline";
+  if (desired.some(row => networkState(row.observed) === "unreachable")) return "unreachable";
+  if (!desired.length) return "idle";
+  return desired.every(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed)) ? "attention" : "starting";
+}
+
+/** One word and dot for the window, sidebar, tray menu and tooltip. */
+export type SurfaceWord = "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed";
+export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "problem"; title: string; description: string }
+export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; signedOut?: boolean; signInRequired?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean; starting?: boolean }): SurfaceState {
+  const summary = computerSummary(input.rows, input.anyConnected);
+  const lost = networkState(summary);
+  if (lost) return { word: CONNECTION_COPY[lost].pill, dot: "problem", title: CONNECTION_COPY[lost].title, description: CONNECTION_COPY[lost].description };
+  if (input.diskFull) return { word: "Disk full", dot: "problem", title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room." };
+  if (input.signedOut) return { word: "Sign in required", dot: "problem", title: "Signed out", description: "Sign in to use this computer from your spaces again." };
+  if (input.signInRequired) return { word: "Sign in required", dot: "problem", title: "Sign in to keep this computer connected", description: "Approve this computer in your browser to keep managing its spaces." };
+  if (input.service === "stopped") return { word: "Service stopped", dot: "problem", title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again." };
+  if (input.service === "not-set-up") return { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };
+  if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
+  if (input.updating) return { word: "Updating", dot: "waiting", title: "Cotal is updating", description: "It finishes by itself. Agents keep running." };
+  if (summary === "connected") return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
+  if (summary === "attention") return { word: "Can't connect", dot: "problem", title: "Can't connect to your spaces", description: "Check the spaces below for what to do next." };
+  if (summary === "starting" || input.starting) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
+  return { word: "Connected", dot: "ok", title: input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: "Turn on the spaces that can use it in the dashboard." };
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
@@ -211,9 +225,10 @@ export function shownSpaceLabel(label: string | undefined, space: string): strin
   return label && label.trim() ? label : space;
 }
 
-/** The kind chip beside a space. A missing or whitespace-only kind is not one, so the chip says Space. */
+/** Human-readable kind beside the space name. */
 export function shownSpaceKind(kind: string | undefined): string {
-  return kind && kind.trim() ? kind : "Space";
+  const value = kind?.trim();
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Space";
 }
 
 /** Discovery selects a target, but never grants consent to connect. */
