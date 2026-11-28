@@ -313,6 +313,13 @@ if (process.getuid && process.getuid() !== 0) {
     refused(harness, 1, "USAGE_INVALID") && /no harness "nope"; known harnesses: .*codex/.test(harness.env?.error?.message ?? "") && /`cotal ext add <npm-package>`/.test(harness.env?.error?.remedy ?? ""), shown(harness));
   const absent = await json(FULL("a1", join(home, "absent")));
   check("a script's project folder must exist: USAGE_INVALID", refused(absent, 1, "USAGE_INVALID") && /is not a directory/.test(absent.env?.error?.message ?? "") && !existsSync(join(home, "absent")), shown(absent));
+  const blocker = join(home, "project-blocker");
+  writeFileSync(blocker, "keep");
+  for (const path of [blocker, join(blocker, "child")]) {
+    const blocked = await json([...FULL("blocked-project", path), "--yes", "--configure-only"]);
+    check(`setup refuses a ${path === blocker ? "file" : "path beneath a file"} before preparing the space`, refused(blocked, 1, "USAGE_INVALID") &&
+      blocked.env?.error?.remedy === "pass an existing directory with --project" && readFileSync(blocker, "utf8") === "keep" && findPreparedSpace("blocked-project") === undefined, shown(blocked));
+  }
   const name = await json(FULL("bad name", dirs.name));
   check("a space name that is not a token is USAGE_INVALID, with the name respelled as the remedy",
     refused(name, 1, "USAGE_INVALID") && name.env?.error?.remedy === "pass --space bad_name, or another name of letters, digits, - and _", shown(name));

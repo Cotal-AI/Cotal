@@ -640,7 +640,7 @@ export function recordLocalSpace(name: string, root: string, flag: "--root" | "-
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
-function projectRootKind(path: string): "directory" | "missing" | "other" {
+export function projectRootKind(path: string): "directory" | "missing" | "other" {
   try {
     return statSync(path).isDirectory() ? "directory" : "other";
   } catch (error) {
