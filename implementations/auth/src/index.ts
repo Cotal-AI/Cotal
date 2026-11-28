@@ -1,6 +1,6 @@
 /** @module index */
 export { observeSpaceQuiescence, type SpaceQuiescenceOptions, type SpaceQuiescenceObservation } from "./space-quiescence.js";
-export { retainManagerAuthorityRoute } from "./provider.js";
+export { preflightManagerAuthorityRoute, retainManagerAuthorityRoute } from "./provider.js";
 export { signOutIdpSession, type SignOutIdpSessionResult } from "./logout.js";
 export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -207,7 +207,7 @@ export {
 export type { EndpointDeregisterGranter } from "./endpoint-deregister.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./service-adapter.js"; // self-registers the native auth service preset and child
-export { chooseAccount, chooseAccountChoice } from "./commands.js";
+export { chooseAccount, chooseAccountChoice, type DaemonLogoutCoordinator } from "./commands.js";
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
 // re-exported here (import it directly from the module in smokes/provisioning). The public

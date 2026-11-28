@@ -377,7 +377,10 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
     const remedy = r.remedy ?? r.manager?.next;
-    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}${r.manager.connection ? `; connection ${r.manager.connection.state}: ${r.manager.connection.reason}` : ""}` : ""}`, { ...native, ...(remedy ? { remedy } : {}) });
+    const managerDetail = r.manager
+      ? `; Manager ${r.manager.state}${r.manager.reason && r.manager.reason !== r.message ? `: ${r.manager.reason}` : ""}${r.manager.connection ? `; connection ${r.manager.connection.state}: ${r.manager.connection.reason}` : ""}`
+      : "";
+    throw new CommandFailure("refused", code, `${r.message}${managerDetail}`, { ...native, ...(remedy ? { remedy } : {}) });
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
     { title: "Machine service and Manager", blocks: [

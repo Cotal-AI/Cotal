@@ -14,9 +14,62 @@ import { validAccountComputerStatus } from "./account-state.js";
 import { randomUUID } from "node:crypto";
 import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
-import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type LogoutChange, type LogoutResult, type LogoutRunningAgent, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { observeLifetimeRecord, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { CommandFailure } from "@cotal-ai/workspace";
+
+export type LogoutDaemonReply =
+  | { readonly ok: true; readonly result: LogoutResult }
+  | {
+      readonly ok: false;
+      readonly code: string;
+      readonly message: string;
+      readonly remedy?: string;
+      readonly outcome?: "failed" | "refused" | "unknown" | "partial";
+      readonly changed?: readonly LogoutChange[];
+      readonly agents?: readonly LogoutRunningAgent[];
+    };
+
+/** Ask the daemon to disconnect this account's spaces and sign out its session. */
+export async function logoutViaDaemon(
+  opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & {
+    readonly idp: string;
+    readonly local?: boolean;
+    readonly stopAgents?: boolean;
+  },
+): Promise<LogoutDaemonReply> {
+  const sock = await openVerified({ ...opts, timeoutMs: 5000 });
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({
+      v: DAEMON_PROTOCOL_VERSION,
+      id,
+      op: "logout",
+      idp: opts.idp,
+      ...(opts.local !== undefined ? { local: opts.local } : {}),
+      ...(opts.stopAgents !== undefined ? { stopAgents: opts.stopAgents } : {}),
+    }));
+    const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
+    if (reply.id !== id || "event" in reply) throw new Error("the daemon answered logout with an unexpected frame");
+    if (!reply.ok) {
+      return {
+        ok: false,
+        code: reply.error.code,
+        message: reply.error.message,
+        ...(reply.error.remedy ? { remedy: reply.error.remedy } : {}),
+        ...(reply.error.outcome ? { outcome: reply.error.outcome } : {}),
+        ...(reply.error.changed ? { changed: reply.error.changed } : {}),
+        ...(reply.error.agents ? { agents: reply.error.agents } : {}),
+      };
+    }
+    if (!("kind" in reply.result) || reply.result.kind !== "logout") {
+      throw new Error("the daemon answered logout with something else");
+    }
+    return { ok: true, result: reply.result };
+  } finally {
+    sock.destroy();
+  }
+}
 
 /** Read or change shared update preferences, or run the existing cached check without installing. */
 export async function updateViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "update-settings"; auto?: boolean; notify?: boolean } | { op: "update-check" }): Promise<DaemonStatus> {

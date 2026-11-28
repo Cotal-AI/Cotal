@@ -33,7 +33,7 @@ export type DesktopRequest =
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly op: "login"; readonly idp: string }
-  | { readonly op: "logout"; readonly idp: string }
+  | { readonly op: "logout"; readonly idp: string; readonly stopAgents?: boolean }
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
   | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string }
   | { readonly op: "repair-plan" }
@@ -59,7 +59,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   }
   const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
+  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "logout" ? ["op", "idp", "stopAgents"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-policy") {
     if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
@@ -104,7 +104,11 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: "setup", space: o.space, idp: normalizeIdpUrl(o.idp) };
   }
-  return { op: o.op as "login" | "logout", idp: normalizeIdpUrl(o.idp) };
+  if (o.op === "logout") {
+    if (o.stopAgents !== undefined && typeof o.stopAgents !== "boolean") throw new Error("invalid stopAgents");
+    return { op: "logout", idp: normalizeIdpUrl(o.idp), ...(o.stopAgents !== undefined ? { stopAgents: o.stopAgents } : {}) };
+  }
+  return { op: "login", idp: normalizeIdpUrl(o.idp) };
 }
 
 export async function readDesktopRequest(input: Readable): Promise<DesktopRequest> {

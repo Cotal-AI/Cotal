@@ -29,6 +29,7 @@
 .repair-panel li[data-outcome="unchecked"] { color: var(--dim); }
 #space-panel .actions { margin-top: 0; }
 #add-space-panel:not(:empty) { margin: 12px 0; }
+#spaces-heading + .row-group:not(:has(> :not([hidden]):not(:empty))) { display: none; }
 #connected-space { display: none; }
 #dashboard-spaces-note { margin: 8px 0 0; }
 #move-offer { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule); }
@@ -96,9 +97,11 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 #settings-download-copy, #settings-message:empty, #account-confirm-spaces:empty, #account-outcome:empty { display: none; }
 #settings-message { margin-top: 8px; }
 .account-actions { display: flex; flex-wrap: wrap; gap: 4px; }
-.account-confirmation, #account-outcome-back { margin-top: 8px; }
+.account-confirmation, #account-outcome-retry, #account-outcome-back { margin-top: 8px; }
 .account-confirmation ul { margin: 6px 0; padding-left: 20px; overflow-wrap: anywhere; }
 #account-outcome { white-space: pre-line; }
+.account-outcome-view #account-outcome { color: var(--ink); }
+#account-outcome-detail { margin: 4px 0 0; color: var(--dim); font-size: 11px; }
 #settings-panel:is(.confirming-account, .account-outcome-view) > section:not(:has(#account-confirmation)) { display: none; }
 #settings-panel:has(#service-log[open]) > section:not(:has(#service-log)),
 #settings-panel:has(#service-log[open]) .row-group:has(#service-log) > :not(#service-log) { display: none; }

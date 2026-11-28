@@ -2720,6 +2720,113 @@ process.stdin.once('data', () => {
             await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
             await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
           } finally { await stopStatusPoll?.(); }
+          if (process.argv.includes("--logout-disconnect-repro")) {
+            const publicCli = async (...args: string[]) => {
+              const command = spawn(process.execPath, [cliEntry, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let out = "", err = "";
+              command.stdout.on("data", b => { out += String(b); });
+              command.stderr.on("data", b => { err += String(b); });
+              const code = await new Promise<number | null>(resolve => command.once("close", resolve));
+              return { code, out, err };
+            };
+            assert.equal((await cli("spaces", "--refresh")).code, 0, "catalog synced into local space list before logout");
+            check("L0 space is registered locally as a discovered catalog space before logout", findMesh(ON)?.origin === "catalog");
+            const beforeState = await observed();
+            const managerBefore = beforeState.managers.find((r: any) => r.space === ON);
+            const instanceIdBefore = managerBefore?.instanceId as string;
+            const managerPidBefore = managerBefore?.pid as number;
+            const managerHostPath = join(daemonDir, spaceSegment(ON), "manager-host.json");
+            const serviceStorePath = join(daemonDir, spaceSegment(ON), "service-store");
+            const signedOutAccountPath = join(daemonDir, "signed-out-account.json");
+            const accountSpacesPath = join(daemonDir, "account-spaces.json");
+            check("L0a hosted Manager is answering with a live PID and recorded intent before logout", managerBefore?.state === "answering" && typeof instanceIdBefore === "string" && typeof managerPidBefore === "number" && existsSync(managerHostPath) && (hostedShape || (existsSync(intentFile(ON)) && existsSync(serviceStorePath))), managerBefore);
+            const seatName = "logout_disconnect_seat";
+            const seatSpawn = await publicCli("spawn", "--on", instanceIdBefore, "--space", ON, "--harness", "daemon-smoke", "--name", seatName, "--no-events", "--detach", "--json");
+            check("L0b live seat is joined on the hosted Manager before logout", seatSpawn.code === 0 && JSON.parse(seatSpawn.out).result?.readiness === "joined", seatSpawn);
+            const beforeSignOuts = signOutSuccesses;
+            const beforeDeregisters = deregisterRequests;
+
+            // (1) Non-TTY logout with a running agent refuses LIFECYCLE_BLOCKED / AGENTS_RUNNING without changing anything.
+            const refusedAgents = await publicCli("logout", "--idp", idpUrl, "--json");
+            const refusedDoc = JSON.parse(refusedAgents.out);
+            check("L1 non-TTY logout with running agent refuses LIFECYCLE_BLOCKED / AGENTS_RUNNING naming the agent and --stop-agents", refusedAgents.code === 2 && refusedDoc.error?.code === "LIFECYCLE_BLOCKED" && refusedDoc.error?.cause?.code === "AGENTS_RUNNING" && JSON.stringify(refusedDoc).includes(seatName) && JSON.stringify(refusedDoc).includes("--stop-agents"), refusedDoc);
+            check("L1a refused logout leaves login, Manager, and space connection untouched", signOutSuccesses === beforeSignOuts && deregisterRequests === beforeDeregisters && loadIdpSession(home, idpUrl) !== undefined && (await observed()).managers.find((r: any) => r.space === ON)?.pid === managerPidBefore);
+
+            // (2) If a space disconnect cannot finish, logout stops before revoking/clearing the session and preserves enabled binding.
+            deregisterMode = "unsupported";
+            let failedDisconnectLogout;
+            try {
+              failedDisconnectLogout = await publicCli("logout", "--idp", idpUrl, "--stop-agents", "--json");
+            } finally {
+              deregisterMode = undefined;
+            }
+            const failedDisconnectDoc = JSON.parse(failedDisconnectLogout.out);
+            check("L2 failed disconnect during logout refuses before revoking or clearing the session", failedDisconnectLogout.code === 2 && signOutSuccesses === beforeSignOuts && loadIdpSession(home, idpUrl) !== undefined && failedDisconnectDoc.error?.code === "DEPENDENCY_UNAVAILABLE", failedDisconnectDoc);
+            // Restore answering Manager and fresh seat so step 3 tests clean computer logout with a running agent.
+            const restoredManager = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000);
+            assert.ok(restoredManager.ok && resultOf(restoredManager).state === "answering", "restored Manager answers");
+            const instanceIdRestored = resultOf(restoredManager).instanceId as string;
+            const seatName2 = "logout_disconnect_seat_2";
+            const seatSpawn2 = await publicCli("spawn", "--on", instanceIdRestored, "--space", ON, "--harness", "daemon-smoke", "--name", seatName2, "--no-events", "--detach", "--json");
+            assert.ok(seatSpawn2.code === 0 && JSON.parse(seatSpawn2.out).result?.readiness === "joined", "restored seat joined");
+
+            // (3) Logout with --stop-agents stops the agent, disconnects the space while signed in, revokes/clears login, and records signed-out computer state while preserving account-computer desired intent.
+            const preCleanDeregisters = deregisterRequests;
+            const logout = await publicCli("logout", "--idp", idpUrl, "--stop-agents", "--plain");
+            check("L3 logout --stop-agents disconnects spaces while signed in, revokes session, and removes catalog registration", logout.code === 0 && signOutSuccesses === beforeSignOuts + 1 && deregisterRequests >= preCleanDeregisters + 1 && loadIdpSession(home, idpUrl) === undefined && findMesh(ON) === undefined && logout.out.includes(ON) && logout.out.includes("Sign in again to use this computer from your spaces."), logout);
+            const signedOutStatus = await observed();
+            const observerAfterLogout = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
+            let seatHeadAfterLogout;
+            try {
+              const lifecycle = await openLifecycleRegistry(observerAfterLogout, ON);
+              seatHeadAfterLogout = await readLifecycleHeadForOperation(lifecycle, fixture.owner, seatName2);
+            } finally { await observerAfterLogout.close(); }
+            const onSvcAfterLogout = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+            const l3aDetails = {
+              mode: signedOutStatus.account?.mode,
+              idpUrl: signedOutStatus.account?.idpUrl,
+              expectedIdpUrl: idpUrl,
+              svcState: onSvcAfterLogout.state,
+              onManagers: signedOutStatus.managers.filter((r: any) => r.space === ON),
+              seatState: seatHeadAfterLogout?.mapping.state,
+              accountDesired,
+              signedOutFile: existsSync(signedOutAccountPath),
+              savedOn: existsSync(accountSpacesPath) ? JSON.parse(readFileSync(accountSpacesPath, "utf8")).spaces?.[ON] : undefined,
+            };
+            check("L3a computer logout stops Manager, retires seat, disconnects service, keeps account desired binding enabled, and reports signed-out with idpUrl",
+              l3aDetails.mode === "signed-out" && l3aDetails.idpUrl === idpUrl
+              && l3aDetails.svcState === "not-registered" && !existsSync(intentFile(ON))
+              && l3aDetails.onManagers.every((r: any) => r.state === "stopped" && r.registrationCleanup === undefined)
+              && l3aDetails.seatState === "retired"
+              && l3aDetails.accountDesired === true && l3aDetails.signedOutFile
+              && l3aDetails.savedOn === undefined,
+              l3aDetails);
+
+            // (4) Next sign-in automatically reconnects the enabled space without manual re-setup.
+            recoverOnApproval = true;
+            try {
+              const relogin = await publicCli("daemon", "login", "--idp", idpUrl, "--plain");
+              check("L4 next sign-in succeeds and clears signed-out mode", relogin.code === 0 && loadIdpSession(home, idpUrl) !== undefined && !existsSync(signedOutAccountPath), relogin);
+              if (!hostedShape) {
+                await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.machineService === "approval-pending"), "L4a re-signed-in space requests machine approval");
+                await approve(host, ON, fixture.owner);
+                assert.equal((await cli("service-connect", "--space", ON)).code, 0, "approved machine service connects");
+              }
+              await waitAccount(s => s.account?.mode === "account" && s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected") && s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "L4b enabled space returns automatically after next sign-in");
+
+              // (5) Direct service-disconnect when session file is absent refuses cleanly without duplicate Manager reason or broken endpoint deregister remedy.
+              assert.equal((await cli("spaces", "--refresh")).code, 0);
+              deleteIdpSession(home, idpUrl);
+              const disconnectSignedOut = await publicCli("daemon", "service-disconnect", "--space", ON, "--plain");
+              const combinedDisconnectOut = `${disconnectSignedOut.out}\n${disconnectSignedOut.err}`;
+              const authLineCount = combinedDisconnectOut.split("\n").filter(l => l.includes("not signed in to")).length;
+              check("L5 signed-out direct service-disconnect prints sign-in + service-disconnect remedy without duplicate reason or broken endpoint deregister",
+                disconnectSignedOut.code === 2 && authLineCount === 1 && combinedDisconnectOut.includes("login --idp") && combinedDisconnectOut.includes("service-disconnect") && !combinedDisconnectOut.includes("endpoint deregister"),
+                combinedDisconnectOut);
+            } finally { recoverOnApproval = false; }
+            assert.equal(pass + fail, 15 + (hostedShape ? 0 : 1), `expected ${15 + (hostedShape ? 0 : 1)} assertions in --logout-disconnect-repro, saw ${pass + fail}`);
+            return;
+          }
           if (process.argv.includes("--account-custody-repro")) {
             const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
             const session = loadIdpSession(home, idpUrl)!;

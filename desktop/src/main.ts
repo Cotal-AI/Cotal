@@ -1,13 +1,13 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
+import { renderAgents, runningAgentNamesInSpaces, shownAgentName, applicationName, type AgentAction, type LocalAgent } from "./agents";
 import { AgentApps } from "./agent-apps";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, CONNECTION_COPY, networkState, surfaceState, surfaceInputs, type SurfaceFrame, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
+import { forTerminal, canonicalProvider, sameProvider, disconnectSpacesForProvider, activeComputerAccount, isSignedOutComputerAccount, logoutConfirmationCopy, logoutFailureOutcome, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, CONNECTION_COPY, networkState, surfaceState, surfaceInputs, type SurfaceFrame, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
 import { icon, type Icon } from "./icons";
 import { consents, readPlan, reinstallNeeded, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
@@ -99,7 +99,7 @@ function readSurface(anyConnected: boolean): SurfaceState {
   const verified = [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space));
   const registered = account?.mode === "account" || account?.mode === "sign-in-required";
   const starting = !initialized || managers.some(item => item.state === "starting");
-  return surfaceState({ ...surfaceInputs(frame && { ...frame, account }, rows, anyConnected && verified, registered, starting, verified), service: !initialized ? undefined : serviceAvailability });
+  return surfaceState({ ...surfaceInputs((frame || account) ? { ...frame, account } : undefined, rows, anyConnected && verified, registered, starting, verified), service: !initialized ? undefined : serviceAvailability });
 }
 function renderSurface(surface: SurfaceState): void {
   text("sidebar-status-word", surface.word);
@@ -235,31 +235,19 @@ function renderSettings(): void {
   renderAccountActions();
   el("settings-panel").classList.toggle("confirming-account", !!pendingAccountAction);
   el("settings-panel").classList.toggle("account-outcome-view", accountOutcomeOpen);
-  el("account-outcome-back").hidden = !accountOutcomeOpen;
+  el("account-outcome-retry").hidden = !accountOutcomeOpen || !accountOutcomeRetryProvider;
+  el("account-outcome-back").hidden = !accountOutcomeOpen || !!accountOutcomeRetryProvider;
+  el("account-outcome-details").hidden = !accountOutcomeOpen || !accountOutcomeDetail;
+  text("account-outcome-detail", accountOutcomeDetail);
   el("account-outcome").hidden = !accountOutcomeOpen;
 }
 type AccountAction = { kind: "logout" | "disconnect"; provider: string; spaces: string[]; trigger: string };
 let pendingAccountAction: AccountAction | undefined;
-let accountOutcomeOpen = false;
+let accountOutcomeOpen = false, accountOutcomeDetail = "", accountOutcomeRetryProvider: string | undefined;
 const signedOutProviders = new Set<string>();
-let signedInProviders: string[] = [];
-let signedInProvidersKnown = false;
-function accountProvider(): string | undefined {
-  return signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl ?? (signedInProviders.length === 1 ? signedInProviders[0] : undefined);
-}
-function sameProvider(left: string | undefined, right: string | undefined): boolean {
-  if (!left || !right) return false;
-  try { return canonicalProvider(left) === canonicalProvider(right); } catch { return false; }
-}
-function disconnectSpaces(provider: string | undefined): string[] {
-  if (!provider) return [];
-  const names = new Set<string>();
-  if (sameProvider(computerAccount?.idpUrl, provider)) for (const row of computerAccount?.spaces ?? []) {
-    if (row.desired || (row.observed !== "removed on this computer" && row.observed !== "disconnected")) names.add(row.space);
-  }
-  for (const [space, state] of connections) if (sameProvider(providers.get(space), provider) && state !== "disconnected" && state !== "removed on this computer") names.add(space);
-  return [...names];
-}
+let signedInProviders: string[] = [], signedInProvidersKnown = false;
+function accountProvider(): string | undefined { return signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl ?? (signedInProviders.length === 1 ? signedInProviders[0] : undefined); }
+function disconnectSpaces(provider: string | undefined): string[] { return disconnectSpacesForProvider(provider, computerAccount, connections, providers); }
 function signedInAccountProvider(): string | undefined {
   const provider = accountProvider();
   if (!provider || [...signedOutProviders].some(item => sameProvider(item, provider))) return undefined;
@@ -292,10 +280,11 @@ function confirmAccountAction(kind: AccountAction["kind"]): void {
   if (!provider) return;
   const spaces = disconnectSpaces(provider);
   if (kind === "disconnect" && !spaces.length) return;
-  text("account-outcome", ""); accountOutcomeOpen = false;
+  text("account-outcome", ""); accountOutcomeOpen = false; accountOutcomeDetail = ""; accountOutcomeRetryProvider = undefined; el<HTMLDetailsElement>("account-outcome-details").open = false;
+  const agents = kind === "logout" ? runningAgentNamesInSpaces(serviceStatus ?? {}, spaces) ?? [] : [];
   pendingAccountAction = { kind, provider, spaces, trigger: kind === "logout" ? "settings-signout" : "settings-disconnect" };
   text("account-confirm-title", kind === "logout" ? `Sign out of ${accountHost(provider)}?` : `Disconnect this computer from ${accountHost(provider)}?`);
-  text("account-confirm-copy", kind === "logout" ? "Existing connections keep running. Disconnect this computer first if you also want to stop its connections. Only this provider will be signed out." : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
+  text("account-confirm-copy", kind === "logout" ? logoutConfirmationCopy(agents) : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
   el("account-confirm-spaces").replaceChildren(...(kind === "disconnect" ? spaces : []).map(space => {
     const li = document.createElement("li"); const label = shownSpaceLabel(accountSpaces.get(space)?.label, space);
     li.textContent = label !== space ? `${label} (${space})` : space; return li;
@@ -312,15 +301,20 @@ async function runAccountAction(): Promise<void> {
   const spaceLabel = (space: string): string => spaceLabels.get(space) ?? space;
   const acknowledged = new Set<string>();
   let catalogRefreshed = false;
+  let signedOutSuccess = false, logoutDetail = "";
   try {
     if (target.kind === "logout") {
       try {
-        const result = await request({ op: "logout", idp: target.provider });
+        const result = await request({ op: "logout", idp: target.provider, stopAgents: true });
         if (result.localLoginCleared !== true && result.localLogin !== "absent") throw new Error("Sign-out was not confirmed. Refresh and check before retrying.");
         signedOutProviders.add(canonicalProvider(target.provider));
         if (sameProvider(signedInProvider, target.provider)) signedInProvider = undefined;
-        outcomes.push(result.localLogin === "absent" ? `No cached sign-in for ${accountHost(target.provider)}. Other server sessions were not revoked. Existing connections keep running.` : `Signed out of ${accountHost(target.provider)}. Existing connections keep running.`);
-      } catch (error) { outcomes.push(`Sign-out: ${error instanceof Error ? error.message : String(error)}`); }
+        for (const space of target.spaces) { connections.delete(space); instances.delete(space); applicationRefusals.delete(space); }
+        signedOutSuccess = true;
+      } catch (error) {
+        const out = logoutFailureOutcome(error, s => shownSpaceLabel(accountSpaces.get(s)?.label, s), a => `${shownAgentName(a.name)} (${applicationName(a.application)})`);
+        outcomes.push(out.summary); logoutDetail = out.detail; accountOutcomeRetryProvider = target.provider;
+      }
     } else {
       for (const space of target.spaces) {
         try {
@@ -332,7 +326,7 @@ async function runAccountAction(): Promise<void> {
         text("account-outcome", outcomes.join("\n"));
       }
     }
-    try { await spaces(false); catalogRefreshed = true; } catch (error) { outcomes.push(`Space refresh: ${error instanceof Error ? error.message : String(error)}`); }
+    try { await spaces(false); catalogRefreshed = true; } catch (error) { if (target.kind !== "logout") outcomes.push(`Space refresh: ${error instanceof Error ? error.message : String(error)}`); }
     await refresh();
     // Replace progress-only rows with the final observation, keeping operation errors.
     for (const space of acknowledged) {
@@ -356,15 +350,22 @@ async function runAccountAction(): Promise<void> {
         } catch (error) { outcomes.push(`${spaceLabel(space)}: refresh could not confirm removal. ${error instanceof Error ? error.message : String(error)}`); }
       }
     }
-    if (!ready) {
+    if (!ready && target.kind !== "logout") {
       for (const space of acknowledged) outcomes.push(`${spaceLabel(space)}: service reported disconnected, but current removal status is unverified.`);
       outcomes.push("Current status could not be refreshed. Check the connection before retrying.");
     }
   } catch (error) {
     outcomes.push(`The operation could not be fully verified. ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    text("account-outcome", outcomes.join("\n")); accountOutcomeOpen = true;
-    busy = false; refreshGeneration++; pendingAccountAction = undefined; buttons(); renderSettings(); el("account-outcome").focus();
+    busy = false; refreshGeneration++; pendingAccountAction = undefined;
+    if (signedOutSuccess) {
+      if (!isSignedOutComputerAccount(computerAccount)) computerAccount = { idpUrl: target.provider, mode: "signed-out", hostSupport: "unknown", spaces: [] };
+      text("account-outcome", ""); accountOutcomeOpen = false; accountOutcomeDetail = ""; accountOutcomeRetryProvider = undefined; listOpened = true;
+      selectView("view-connection"); buttons(); showStage("finished", true);
+    } else {
+      accountOutcomeDetail = logoutDetail; text("account-outcome", outcomes.join("\n")); accountOutcomeOpen = true;
+      buttons(); renderSettings(); el("account-outcome").focus();
+    }
   }
 }
 let upgradeNeeded = false;
@@ -506,6 +507,7 @@ function showStage(next: Stage, focus = false): void {
   stage = next;
   renderSettings();
   const anyConnected = [...connections].some(([space, value]) => value === "launch-ready" && !computerRows.get(space)?.lastRefusal);
+  const signedOutAccount = isSignedOutComputerAccount(computerAccount);
   const surface = readSurface(!upgradeNeeded && anyConnected);
   renderSurface(surface);
   const needsSignIn = surface.word === "Sign in required" && next !== "sign-in" && !setupActive;
@@ -532,7 +534,7 @@ function showStage(next: Stage, focus = false): void {
   if (needsSignIn) { title = surface.title; description = surface.description; }
   else if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
-  else if (finished && computerAccount?.hostSupport === "supported") { title = surface.title; description = surface.description; }
+  else if (finished && (computerAccount?.hostSupport === "supported" || signedOutAccount)) { title = surface.title; description = surface.description; }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
   else if (finished) { title = surface.title; description = surface.description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
@@ -580,17 +582,19 @@ function showStage(next: Stage, focus = false): void {
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   el("another-space").hidden = addingSpace;
   text("another-space", connections.size ? "Add to another space" : "Add a space");
-  el("sign-in-again").hidden = !needsSignIn;
-  el("connected-spaces").hidden = needsSignIn;
+  const signInCard = needsSignIn || (finished && signedOutAccount);
+  el("sign-in-again").hidden = addingSpace || !signInCard;
+  if (signInCard) text("sign-in-again", "Sign in");
+  el("connected-spaces").hidden = signInCard;
   el("retry-login").hidden = addingSpace;
   el("choose-space").hidden = true;
   el("sync").hidden = addingSpace;
-  if (needsSignIn) {
+  if (signInCard) {
     for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
-  el("spaces-heading").hidden = needsSignIn || (finished && computerAccount?.hostSupport === "supported" ? !anyConnected : connections.size === 0);
-  document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = needsSignIn || connections.size === 0;
-  el("dashboard-spaces-note").hidden = needsSignIn || !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerSpaces(computerAccount).length === 0;
+  el("spaces-heading").hidden = signInCard || (finished && computerAccount?.hostSupport === "supported" ? !anyConnected : connections.size === 0);
+  document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = signInCard || connections.size === 0;
+  el("dashboard-spaces-note").hidden = signInCard || !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerSpaces(computerAccount).length === 0;
   placeRefreshAction();
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
   renderConnections();
@@ -900,12 +904,7 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
 }
 /** Agents running on this computer, named as the agent list names them, or undefined when the
  *  service does not report them. */
-function runningAgentNames(): string[] | undefined {
-  try {
-    const inventory = agentInventory(serviceStatus ?? {});
-    return inventory.available && !inventory.unreadable.length ? inventory.agents.filter(agent => agent.state === "running").map(agent => `${shownAgentName(agent.name)} (${agent.application})`) : undefined;
-  } catch { return undefined; }
-}
+function runningAgentNames(): string[] | undefined { return runningAgentNamesInSpaces(serviceStatus ?? {}); }
 function runningAgents(): number | undefined { return runningAgentNames()?.length; }
 /** An updated app restarts the older background service into its own version, the daemon's idle
  *  restart, only while no agent runs on this computer. While agents run it waits and says so. */
@@ -957,7 +956,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   if (Array.isArray(status.managers)) for (const item of status.managers) if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
   const space = selectedSpace();
   computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
-  if (computerAccount?.hostSupport === "supported") {
+  if (computerAccount?.hostSupport === "supported" || isSignedOutComputerAccount(computerAccount)) {
     computerRows.clear(); connections.clear();
     for (const row of computerSpaces(computerAccount)) {
       computerRows.set(row.space, row);
@@ -967,7 +966,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     if (launchReady(manager)) { instances.set(space, manager.instanceId); }
     else instances.delete(space);
     connection = { space, state: connections.get(space) ?? "ready" };
-    if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
+    if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || isSignedOutComputerAccount(computerAccount) || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
   }
   for (const name of observedReadySpaces) connections.set(name, "launch-ready");
   for (const name of accountSpaces.keys()) {
@@ -1241,6 +1240,7 @@ el("retry-login").addEventListener("click", beginSignIn);
 el("sign-in-again").addEventListener("click", () => {
   if (busy) return;
   const recoverSignIn = !el("sign-in-again").hidden;
+  customHost = false;
   beginSignIn();
   if (recoverSignIn) el<HTMLFormElement>("login-form").requestSubmit();
 });
@@ -1416,7 +1416,12 @@ el("apps-fix-connection").addEventListener("click", () => { selectView("view-con
 el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
 el("recover-apps").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && !agentApps.busy && (appsOpen || agentApps.apps && Date.now() - appsLoadedAt > 30_000)) void agentApps.load(); });
-el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
+el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; accountOutcomeDetail = ""; accountOutcomeRetryProvider = undefined; renderSettings(); el("settings-title").focus(); });
+el("account-outcome-retry").addEventListener("click", () => {
+  const provider = accountOutcomeRetryProvider; if (!provider || busy || loginActive) return;
+  text("account-outcome", ""); accountOutcomeOpen = false; accountOutcomeDetail = ""; accountOutcomeRetryProvider = undefined; el<HTMLDetailsElement>("account-outcome-details").open = false;
+  pendingAccountAction = { kind: "logout", provider, spaces: disconnectSpaces(provider), trigger: "settings-signout" }; void runAccountAction();
+});
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
 el("settings-repair").addEventListener("click", () => { if (!busy) { selectView("view-connection"); void action(openRepair); } });
@@ -1504,8 +1509,8 @@ async function start(): Promise<void> {
     await refresh();
     if (ready) {
       await spaces(false);
-      if (selectedSpace()) { if (!linked) showStage("connect"); await refresh(); }
-      else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("connect");
+      if (selectedSpace()) { if (!linked && !isSignedOutComputerAccount(computerAccount)) showStage("connect"); await refresh(); }
+      else if (!linked && !isSignedOutComputerAccount(computerAccount) && el<HTMLSelectElement>("space").options.length > 1) showStage("connect");
     }
   } catch (error) {
     if (error instanceof DaemonRefusal && error.code === "SETUP_INTERRUPTED") text("machine-details", "Computer information is unavailable while setup is incomplete.");

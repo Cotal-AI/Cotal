@@ -119,8 +119,10 @@ try {
   assert.equal(signOuts, 2);
   assert.deepEqual(loadIdpSession(machineHome, idp), selected, "unconfirmed revocation retains login for retry");
 
-  for (const field of ["local", "token", "dir"]) {
-    const invalid = { ...request, [field]: field === "local" ? true : "renderer-controlled" };
+  assert.deepEqual(parseDesktopRequest({ ...request, stopAgents: true }), { ...request, stopAgents: true });
+  assert.throws(() => parseDesktopRequest({ ...request, local: true }), /unknown operation or field/);
+  for (const field of ["token", "dir"]) {
+    const invalid = { ...request, [field]: "renderer-controlled" };
     assert.throws(() => parseDesktopRequest(invalid), /unknown operation or field/);
     assert.equal(parseRequest(JSON.stringify({ v: 1, id: "bad", ...invalid })).ok, false);
     // Deliberately bypass the desktop parser to prove the actual daemon also refuses the field.

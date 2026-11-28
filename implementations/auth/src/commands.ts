@@ -113,8 +113,9 @@ async function retireInteractiveActorLifecycle(
   return body.retired && body.alreadyRetired !== true;
 }
 
-function canChooseAccount(): boolean {
-  return Boolean(process.stdin.isTTY && process.stdout.isTTY) && !inputDisabledByFlag() && process.env.COTAL_NO_PROMPT !== "1";
+function canChooseAccount(allowJson = false): boolean {
+  const tty = Boolean(process.stdin.isTTY && (process.stdout.isTTY || (allowJson && process.stderr.isTTY)));
+  return tty && !inputDisabledByFlag() && process.env.COTAL_NO_PROMPT !== "1";
 }
 
 function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): void {
@@ -325,7 +326,42 @@ async function runLogin(args: ParsedArgs): Promise<void> {
   });
 }
 
-const DAEMON_SIGN_OUT_NOTICE = "A connected daemon stays connected on the computer's own service proof, not the human session. To end it, run `cotal daemon service-disconnect --space <space>` on this computer, or remove the computer in the dashboard.";
+type DaemonLogoutAgent = { readonly space: string; readonly name: string; readonly application: string };
+type DaemonLogoutOutcome =
+  | { readonly handled: false }
+  | { readonly handled: true; readonly result: Awaited<ReturnType<typeof signOutIdpSession>> & { readonly disconnectedSpaces?: readonly string[] } }
+  | { readonly handled: true; readonly needsConfirm: true; readonly agents: readonly DaemonLogoutAgent[] };
+
+export interface DaemonLogoutCoordinator {
+  readonly kind: "daemon-logout";
+  readonly name: "default";
+  logout(opts: { idp: string; local: boolean; stopAgents: boolean }): Promise<DaemonLogoutOutcome>;
+}
+
+export function renderLogoutResult(
+  presentation: ReturnType<typeof presentationOf>,
+  idp: string,
+  local: boolean,
+  result: Awaited<ReturnType<typeof signOutIdpSession>> & { readonly disconnectedSpaces?: readonly string[] },
+): void {
+  if ("localLogin" in result) {
+    writeResult(presentation, { command: "logout", target: { idp }, result, noOp: !result.disconnectedSpaces?.length }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp], ...(result.disconnectedSpaces?.length ? [["Spaces disconnected", result.disconnectedSpaces.join(", ")] as [string, string]] : [])] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }] }] }] }));
+    return;
+  }
+  const conversationWarnings = conversationLogoutWarnings(result);
+  writeResult(presentation, { command: "logout", target: { idp }, result }, (data) => ({ sections: [
+    { title: local ? "Signed out on this computer" : "Signed out", blocks: [{ kind: "fields", rows: [
+      ["Provider", idp],
+      ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }],
+      ["Local login", "cleared"],
+      ...(data.disconnectedSpaces?.length ? [["Spaces disconnected", data.disconnectedSpaces.join(", ")] as [string, string]] : []),
+      ["Discovered spaces removed", String(data.removedRegistrations.length)],
+    ] }, { kind: "lines", lines: [{ text: "Sign in again to use this computer from your spaces.", tone: "hint" }] }] },
+    ...(data.skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: data.skippedServices }] }] : []),
+    ...(conversationWarnings.length ? [{ title: "Conversation retirements not confirmed", blocks: [{ kind: "lines" as const, lines: conversationWarnings }] }] : []),
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
+  ] }));
+}
 
 async function runLogout(args: ParsedArgs): Promise<void> {
   validateAccountArguments(args, "logout");
@@ -336,18 +372,41 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     return;
   }
   const local = args.values.local === true;
-  const result = await signOutIdpSession({ dir: homeCotalDir(), idp, local });
-  if ("localLogin" in result) {
-    writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null, daemonNotice: DAEMON_SIGN_OUT_NOTICE }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }, { text: DAEMON_SIGN_OUT_NOTICE, tone: "hint" }] }] }] }));
-    return;
+  let stopAgents = args.values["stop-agents"] === true;
+  if (registry.has("daemon-logout", "default")) {
+    const coordinator = registry.resolve<DaemonLogoutCoordinator>("daemon-logout", "default");
+    let outcome = await coordinator.logout({ idp, local, stopAgents });
+    if (outcome.handled && "needsConfirm" in outcome) {
+      const runningAgents = outcome.agents;
+      const names = runningAgents.map(a => `${oneLine(a.name)} (${oneLine(a.space)})`).join(", ");
+      const flagCmd = idp === COTAL_CLOUD_IDP ? `cotal logout${local ? " --local" : ""} --stop-agents` : `cotal logout --idp ${idp}${local ? " --local" : ""} --stop-agents`;
+      if (!canChooseAccount(presentation === "json")) {
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${runningAgents.length === 1 ? "1 agent is" : `${runningAgents.length} agents are`} running on this computer (${names}). Sign-out stopped before changing anything`, {
+          target: { idp },
+          native: { code: "AGENTS_RUNNING", detail: { agents: runningAgents } },
+          remedy: `stop ${runningAgents.length === 1 ? "it" : "them"} first, or run \`${flagCmd}\` to stop ${runningAgents.length === 1 ? "it" : "them"} and sign out`,
+        });
+      }
+      const confirmed = await untilInputEnds(signal => prompts.confirm({
+        message: `Stop ${runningAgents.length === 1 ? "running agent" : `${runningAgents.length} running agents`} (${names}) and sign out this computer?`,
+        initialValue: false,
+        output: presentation === "json" ? process.stderr : process.stdout,
+        signal,
+      }));
+      if (prompts.isCancel(confirmed) || confirmed !== true) {
+        writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", cancelled: true, serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "Sign-out cancelled", blocks: [{ kind: "lines", lines: ["Sign-out cancelled. Running agents, space connections and your sign-in were not changed."] }] }] }));
+        return;
+      }
+      stopAgents = true;
+      outcome = await coordinator.logout({ idp, local, stopAgents });
+    }
+    if (outcome.handled && "result" in outcome) {
+      renderLogoutResult(presentation, idp, local, outcome.result);
+      return;
+    }
   }
-  const conversationWarnings = conversationLogoutWarnings(result);
-  writeResult(presentation, { command: "logout", target: { idp }, result: { ...result, daemonNotice: DAEMON_SIGN_OUT_NOTICE } }, (result) => ({ sections: [
-    { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }, { text: result.daemonNotice, tone: "hint" }] }] },
-    ...(result.skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: result.skippedServices }] }] : []),
-    ...(conversationWarnings.length ? [{ title: "Conversation retirements not confirmed", blocks: [{ kind: "lines" as const, lines: conversationWarnings }] }] : []),
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
-  ] }));
+  const result = await signOutIdpSession({ dir: homeCotalDir(), idp, local });
+  renderLogoutResult(presentation, idp, local, result);
 }
 
 /** The space-scoped provider state the `actor` commands operate on, at the target
@@ -744,15 +803,16 @@ const authCommands: Command[] = [
     kind: "command",
     name: "logout",
     group: "Identity",
-    summary: "revoke the IdP session and clear the cached login --idp <auth base URL> [--local]",
-    examples: [{ command: "cotal logout --idp <url>", note: "sign out and revoke the session" }, { command: "cotal logout --idp <url> --local", note: "forget the login on this machine only" }],
-    usage: "cotal logout [--idp <auth base URL>] [--local] [--json|--plain]",
+    summary: "disconnect this computer's spaces, revoke the IdP session and clear the cached login",
+    examples: [{ command: "cotal logout", note: "disconnect spaces, sign out and revoke the session" }, { command: "cotal logout --idp <url> --stop-agents", note: "stop running agents on this computer and sign out" }, { command: "cotal logout --idp <url> --local", note: "disconnect spaces and forget the login on this machine only" }],
+    usage: "cotal logout [--idp <auth base URL>] [--stop-agents] [--local] [--json|--plain]",
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
     validate: (args) => validateAccountArguments(args, "logout"),
     flags: [
       jsonFlag, plainFlag,
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "stop-agents", type: "boolean", description: "Stop running agents on this computer for this account's spaces without prompting" },
       { name: "local", type: "boolean", description: "forget this machine's cached login without contacting the provider; its session stays valid until it expires or is revoked there" },
     ],
     run: runLogout,

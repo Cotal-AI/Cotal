@@ -1,14 +1,14 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string; digest?: string; consent?: string[] };
+export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; stopAgents?: boolean; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string; digest?: string; consent?: string[] };
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
 }
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
-export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress" | "repair-progress" | "status"; watchMode?: string; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: Record<string, unknown> }; detail?: Record<string, unknown> }; code?: string; message?: string }
+export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress" | "repair-progress" | "status"; watchMode?: string; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; agents?: readonly { space: string; name: string; application: string }[]; native?: { code: string; detail?: Record<string, unknown> }; detail?: Record<string, unknown> }; code?: string; message?: string }
 
 export class DaemonRefusal extends Error {
-  constructor(readonly code: string, message: string, readonly native?: string, readonly remedy?: string, readonly detail?: Record<string, unknown>, readonly result?: Record<string, unknown>) { super(message); }
+  constructor(readonly code: string, message: string, readonly native?: string, readonly remedy?: string, readonly detail?: Record<string, unknown>, readonly result?: Record<string, unknown>, readonly agents?: readonly { space: string; name: string; application: string }[]) { super(message); }
 }
 
 export function launchReady(manager: unknown): boolean {
@@ -104,8 +104,8 @@ export const SERVICE_START: { op: "start" } = { op: "start" };
 export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "problem"; title: string; description: string }
 /** The fields the window reads off one status frame. `diskFull` is the frame's own flag. `generation`
  *  present means an update is in progress. `recovery` is the repair #10913 reports; nothing else is. */
-export interface SurfaceFrame { diskFull?: unknown; generation?: unknown; recovery?: unknown; account?: { mode?: unknown; reason?: unknown; spaces?: readonly ComputerSpace[] } }
-export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean, accountKnown = false, managerStarting = false, verified = false): { rows: ComputerSpace[]; anyConnected: boolean; verified: boolean; accountKnown: boolean; managerStarting: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
+export interface SurfaceFrame { diskFull?: unknown; generation?: unknown; recovery?: unknown; account?: { mode?: unknown; reason?: unknown; idpUrl?: unknown; spaces?: readonly ComputerSpace[] } }
+export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean, accountKnown = false, managerStarting = false, verified = false): { rows: ComputerSpace[]; anyConnected: boolean; verified: boolean; accountKnown: boolean; managerStarting: boolean; signedOut: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
   const account = frame?.account;
   return {
     rows: rows.map(row => ({ ...row })),
@@ -117,6 +117,7 @@ export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly Co
     accountKnown,
     // A Manager that has begun but is not launch-ready yet.
     managerStarting,
+    signedOut: account?.mode === "signed-out" && typeof account?.idpUrl === "string" && account.idpUrl.length > 0,
     signInRequired: account?.mode === "sign-in-required",
     computerRemoved: account?.mode === "sign-in-required" && account?.reason === "computer-removed",
     updating: frame?.generation !== undefined && frame?.generation !== null,
@@ -124,7 +125,7 @@ export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly Co
     repairNeeded: frame?.recovery !== undefined && frame?.recovery !== null,
   };
 }
-export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; verified?: boolean; accountKnown?: boolean; managerStarting?: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
+export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; verified?: boolean; accountKnown?: boolean; managerStarting?: boolean; signedOut?: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
   // A lost connection names itself before other problems, on any row, even one the sidebar summary ignores.
   const lost = input.anyConnected ? undefined : input.rows.some(row => networkState(row.observed) === "offline") ? "offline" as const : input.rows.some(row => networkState(row.observed) === "unreachable") ? "unreachable" as const : undefined;
   if (lost === "offline") return { word: "Offline", dot: "problem", title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description };
@@ -141,6 +142,7 @@ export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnect
   if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
   if (input.anyConnected) return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
   if (desired.some(row => row.observed !== "removed on this computer")) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
+  if (input.signedOut && !input.verified) return { word: "Not set up", dot: "waiting", title: "You signed out", description: "Sign in to use this computer from your spaces again." };
   // No account and no verified Manager. A Manager that is starting stays Starting. Anything else was never set up.
   if (!input.verified && !input.accountKnown && !input.rows.length) return input.managerStarting
     ? { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." }
@@ -158,6 +160,26 @@ export function canonicalProvider(value: string): string {
   return url.origin + (path || "/api/auth");
 }
 
+export function sameProvider(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) return false;
+  try { return canonicalProvider(left) === canonicalProvider(right); } catch { return false; }
+}
+
+export function disconnectSpacesForProvider(
+  provider: string | undefined,
+  account: ComputerAccount | undefined,
+  connections: ReadonlyMap<string, string>,
+  providers: ReadonlyMap<string, string>,
+): string[] {
+  if (!provider) return [];
+  const names = new Set<string>();
+  if (sameProvider(account?.idpUrl, provider)) for (const row of account?.spaces ?? []) {
+    if (row.desired || (row.observed !== "removed on this computer" && row.observed !== "disconnected")) names.add(row.space);
+  }
+  for (const [space, state] of connections) if (sameProvider(providers.get(space), provider) && state !== "disconnected" && state !== "removed on this computer") names.add(space);
+  return [...names];
+}
+
 export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
 
 /** The name the settings account line shows beside the host. A missing or whitespace-only label is not
@@ -169,9 +191,57 @@ export function shownAccountLabel(label: string | undefined, sub: string | undef
 }
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
-  if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
+  if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider))
+    ?? (account.mode === "signed-out" && account.idpUrl !== undefined && canonicalProvider(account.idpUrl) === canonicalProvider(provider) ? account : undefined);
   const supported = account.accounts.filter(item => item.hostSupport === "supported");
-  return supported.length === 1 ? supported[0] : undefined;
+  if (supported.length === 1) return supported[0];
+  if (!account.accounts.length && account.mode === "signed-out") return account;
+  return undefined;
+}
+
+export function isSignedOutComputerAccount(account: ComputerAccount | undefined): account is ComputerAccount {
+  return account?.mode === "signed-out" && typeof account.idpUrl === "string" && account.idpUrl.length > 0;
+}
+
+export function logoutConfirmationCopy(agents: readonly string[]): string {
+  if (agents.length > 0) {
+    const list = new Intl.ListFormat("en", { type: "conjunction" }).format(agents);
+    return `Signing out stops ${agents.length === 1 ? `1 running agent (${list})` : `${agents.length} running agents (${list})`} and disconnects this computer from your spaces. Your spaces come back automatically when you sign in again.`;
+  }
+  return "Signing out disconnects this computer from your spaces and ends your sign-in here. Your spaces come back automatically when you sign in again.";
+}
+
+function cleanDetailText(text: string): string {
+  return text.replace(/\n*Next:\s*[\s\S]*$/i, "").replace(/`[^`]*`/g, "").replace(/\b(?:cotal|pnpm|npm)\s+[^\n.]*/gi, "").replace(/\s{2,}/g, " ").trim();
+}
+
+export function logoutFailureOutcome(
+  error: unknown,
+  spaceLabel: (space: string) => string,
+  agentLabel: (agent: { name: string; application: string }) => string,
+): { summary: string; detail: string } {
+  const raw = error instanceof Error ? error.message : String(error);
+  const detailObj = error instanceof DaemonRefusal ? error.detail : undefined;
+  const failedSpace = typeof detailObj?.failedSpace === "string" ? detailObj.failedSpace : undefined;
+  if (failedSpace) {
+    const stillConnected = Array.isArray(detailObj?.stillConnectedSpaces)
+      ? detailObj.stillConnectedSpaces.filter((s): s is string => typeof s === "string").map(spaceLabel)
+      : [spaceLabel(failedSpace)];
+    const stopped = Array.isArray(detailObj?.stoppedAgents)
+      ? detailObj.stoppedAgents.filter((a): a is { name: string; application: string } => Boolean(a && typeof a === "object" && typeof a.name === "string" && typeof a.application === "string")).map(agentLabel)
+      : [];
+    const lines = [
+      `You're still signed in. Cotal couldn't disconnect ${spaceLabel(failedSpace)}, so it stopped signing out.`,
+      ...(stillConnected.length ? [`Still connected: ${stillConnected.join(", ")}.`] : []),
+      ...(stopped.length ? [`These agents were stopped: ${stopped.join(", ")}.`] : []),
+    ];
+    const detailReason = typeof detailObj?.rawReason === "string" ? detailObj.rawReason : raw;
+    return { summary: lines.join("\n"), detail: cleanDetailText(detailReason) };
+  }
+  return {
+    summary: "You're still signed in. Cotal couldn't finish signing out.",
+    detail: cleanDetailText(raw),
+  };
 }
 
 /** Return a non-blocking notice only when the active provider refreshed successfully. */
@@ -286,7 +356,7 @@ export function requireResult(frame: Frame): Record<string, unknown> {
     const message = frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.";
     const remedy = frame.error?.remedy && !forTerminal(frame.error.remedy) && !/[`]|\/|\\/.test(frame.error.remedy) ? frame.error.remedy : undefined;
     const shown = forTerminal(message) ? "The background service refused this request. Repair shows what it found." : message;
-    throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [shown, remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+    throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [shown, remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result, frame.error?.agents);
   }
   if (!frame.result || typeof frame.result !== "object" || Array.isArray(frame.result)) throw new Error("The daemon returned an unsupported result.");
   return frame.result;

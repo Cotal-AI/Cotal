@@ -610,13 +610,15 @@ If the updater cannot reconcile or restore a complete generation, automatic upda
 and status names the installed version and `cotal update --self` as the repair command.
 Use `cotal update --auto off` to disable automatic installation while keeping CLI notices.
 
-The closed local `logout` request takes the selected provider's `idp` URL. It uses the same
-session revocation and cached sign-in cleanup as `cotal logout`, in the daemon's login directory.
-An active browser sign-in refuses the request. An unconfirmed provider response keeps the local
-login and reports an unknown outcome. Local cleanup failures report partial progress.
-Signing out does not stop existing hosted Managers or machine-service connections.
-The desktop's confirmed disconnect action uses `service-disconnect` for each named space.
-It reports incomplete outcomes per space and does not claim credential erasure or remote revocation.
+The closed local `logout` request takes the selected provider's `idp` URL and optional `local`
+and `stopAgents` booleans. It checks running agents for that account's spaces (refusing with
+`AGENTS_RUNNING` unless `stopAgents` is true), disconnects each of the account's spaces on this
+computer while still signed in (stopping before session revocation if a disconnect cannot finish),
+and then runs the same session revocation and cached sign-in cleanup as `cotal logout` in the
+daemon's login directory. An active browser sign-in refuses the request. An unconfirmed provider
+response keeps the local login and reports an unknown outcome. Local cleanup failures report
+partial progress. The desktop's separate disconnect action uses `service-disconnect` for each
+named space and reports incomplete outcomes per space without signing out.
 
 ```bash
 cotal daemon setup [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]

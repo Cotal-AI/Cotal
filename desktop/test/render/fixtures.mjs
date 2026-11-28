@@ -139,9 +139,30 @@ export function nativeStub(scenario) {
       if (request.op === "logout") {
         state.accountRequests.push({ ...request });
         if (state.accountAction === "signout-busy") await new Promise(() => {});
-        if (state.accountAction === "signout-refusal") return fail("LOGOUT_FAILED", "The provider refused to revoke this sign-in. Try again.");
+        if (state.accountAction === "signout-disconnect-refusal") {
+          return {
+            v: 1,
+            event: "result",
+            ok: false,
+            error: {
+              code: "MANAGER_UNAVAILABLE",
+              message: "disconnecting research did not finish (the governing auth service refused endpoint deregistration). Sign-out stopped (already disconnected: acme-team, your sign-in was kept)",
+              remedy: "run `cotal daemon service-disconnect --space research`",
+              detail: {
+                failedSpace: "research",
+                stillConnectedSpaces: ["research"],
+                stoppedAgents: [{ space: "acme-team", name: "writer-1", application: "codex" }],
+                rawReason: "the governing auth service refused endpoint deregistration",
+              },
+            },
+          };
+        }
+        if (state.accountAction === "signout-refusal" && state.accountRequests.length === 1) return fail("LOGOUT_FAILED", "The provider refused to revoke this sign-in. Try again.");
         state.signedIn = false;
-        return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, removedRegistrations: [], skippedServices: [] });
+        state.connected = false;
+        state.account = { idpUrl: request.idp, mode: "signed-out", hostSupport: "unknown", spaces: [] };
+        state.agents = [];
+        return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, disconnectedSpaces: ["acme-team", "research"], removedRegistrations: ["acme-team", "research"], skippedServices: [] });
       }
       if (request.op === "space-recover") {
         state.accountRequests.push({ ...request });
@@ -524,13 +545,13 @@ export const scenarios = [
   { name: "details-address-for-terminal", state: { installed: true, signedIn: true, connected: true }, act: async page => {
     await page.locator("#connected-panel:visible").waitFor();
     await page.evaluate(() => {
+      const fail = { v: 1, event: "result", ok: false, error: { code: "UNREACHABLE", message: "the service stopped at https://cloud.cotal.ai/api/auth" } };
       const invoke = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) => command === "daemon_request" && (args.request.op === "status" || args.request.op === "status-watch")
-        ? Promise.resolve({ v: 1, event: "result", ok: false, error: { code: "UNREACHABLE", message: "the service stopped at https://cloud.cotal.ai/api/auth" } })
+        ? Promise.resolve(fail)
         : invoke(command, args);
+      window.__closeStatusWatch?.(fail);
     });
-    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-    await page.click("#open-settings"); await page.click("#open-settings");
     await page.locator("#recovery-panel:visible").waitFor();
   }, expect: async page => {
     assert.doesNotMatch(await page.locator("#refusal-detail").textContent(), /https?:\/\//);
@@ -852,35 +873,52 @@ export const scenarios = [
     assert.equal(await page.evaluate(() => window.__renderState.connected), true);
     assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
   } },
-  ...["signout", "disconnect"].flatMap(action => (action === "signout" ? ["confirmation", "cancel", "success", "refusal", "outcome-back", "busy"] : ["confirmation", "cancel", "success", "refusal", "partial", "unknown", "busy"]).map(mode => ({
+  { name: "account-signedout-window", state: { installed: true, signedIn: false, connected: false, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "signed-out", hostSupport: "unknown", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "You signed out");
+    assert.equal(await page.locator("#connection-description").textContent(), "Sign in to use this computer from your spaces again.");
+    assert.equal(await page.locator("#sign-in-again").isVisible(), true);
+    assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
+    assert.deepEqual(await page.locator("#connection-view button:visible").allTextContents(), ["Sign in"]);
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Not set up");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "waiting");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Not set up" });
+    assert.equal(await page.locator("#dashboard").isVisible(), false);
+  } },
+  ...["signout", "disconnect"].flatMap(action => (action === "signout" ? ["confirmation", "agents-confirmation", "cancel", "success", "refusal", "disconnect-refusal", "retry", "busy"] : ["confirmation", "cancel", "success", "refusal", "partial", "unknown", "outcome-back", "busy"]).map(mode => ({
     name: `account-${action}-${mode}`,
-    state: { installed: true, signedIn: true, connected: true, multiple: true, accountAction: `${action}-${mode}`, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "account-owner", mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected" })) } },
+    state: { installed: true, signedIn: true, connected: true, multiple: true, ...(mode === "agents-confirmation" || mode === "disconnect-refusal" ? { agents: [{ space: "acme-team", state: "read", agents: [{ name: "writer-1", application: "codex", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" }] }] } : {}), accountAction: `${action}-${mode === "retry" ? "refusal" : mode}`, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "account-owner", mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected" })) } },
     act: async page => {
       await page.click("#view-settings");
       await page.click(`#settings-${action}`);
       await page.locator("#account-confirmation:not([hidden])").waitFor();
-      if (mode === "confirmation") return;
+      if (mode === "confirmation" || mode === "agents-confirmation") return;
       if (mode === "cancel") await page.click("#account-cancel");
       else {
         await page.click("#account-confirm");
         if (mode === "busy") await page.waitForFunction(() => window.__renderState.accountRequests.length === 1);
-        else {
+        else if (action === "signout" && mode === "success") {
+          await page.locator("#settings-panel").waitFor({ state: "hidden" });
+        } else {
           await page.locator("#account-confirmation").waitFor({ state: "hidden" });
           await page.locator("#account-outcome:not([hidden])").waitFor();
           if (mode === "outcome-back") await page.click("#account-outcome-back");
+          if (mode === "retry") {
+            await page.click("#account-outcome-retry");
+            await page.locator("#settings-panel").waitFor({ state: "hidden" });
+          }
         }
       }
     },
     expect: async page => {
       const snapshot = await page.evaluate(() => ({ requests: window.__renderState.accountRequests, connected: window.__renderState.connected, signedIn: window.__renderState.signedIn, spaces: window.__renderState.account.spaces }));
-      if (mode === "confirmation" || mode === "cancel") {
+      if (mode === "confirmation" || mode === "agents-confirmation" || mode === "cancel") {
         assert.deepEqual(snapshot.requests, []);
         assert.equal(snapshot.connected, true);
         assert.equal(snapshot.signedIn, true);
-        assert.equal(await page.locator("#account-confirmation").isVisible(), mode === "confirmation");
-        if (mode === "confirmation") {
+        assert.equal(await page.locator("#account-confirmation").isVisible(), mode !== "cancel");
+        if (mode !== "cancel") {
           assert.equal(await page.locator("#account-confirm-title").textContent(), action === "signout" ? "Sign out of Cotal Cloud, cloud.cotal.ai?" : "Disconnect this computer from Cotal Cloud, cloud.cotal.ai?");
-          assert.equal(await page.locator("#account-confirm-copy").textContent(), action === "signout" ? "Existing connections keep running. Disconnect this computer first if you also want to stop its connections. Only this provider will be signed out." : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
+          assert.equal(await page.locator("#account-confirm-copy").textContent(), action === "signout" ? (mode === "agents-confirmation" ? "Signing out stops 1 running agent (writer-1 (Codex)) and disconnects this computer from your spaces. Your spaces come back automatically when you sign in again." : "Signing out disconnects this computer from your spaces and ends your sign-in here. Your spaces come back automatically when you sign in again.") : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
           assert.equal(await page.locator("#account-cancel").evaluate(el => el === document.activeElement), true);
           if (action === "disconnect") {
             assert.match(await page.locator("#account-confirm-spaces").textContent(), /acme-team/);
@@ -907,21 +945,51 @@ export const scenarios = [
           assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height && geometry.right <= geometry.width, `${id} fully restored within viewport`);
         }
         assert.equal(await page.locator("#account-outcome-back").isVisible(), false);
-        assert.equal(snapshot.connected, true);
+        assert.equal(snapshot.connected, false);
+        return;
+      }
+      if (action === "signout" && (mode === "success" || mode === "retry")) {
+        assert.equal(snapshot.requests.length, mode === "retry" ? 2 : 1);
+        assert.equal(snapshot.requests[0].idp, "https://cloud.cotal.ai/api/auth");
+        assert.equal(snapshot.requests[0].stopAgents, true);
+        assert.equal(snapshot.connected, false);
+        assert.equal(snapshot.signedIn, false);
+        assert.equal(await page.locator("#settings-panel").isVisible(), false);
+        assert.equal(await page.locator("#view-connection").getAttribute("aria-selected"), "true");
+        assert.equal(await page.locator("#connection-title").textContent(), "You signed out");
+        assert.equal(await page.locator("#connection-description").textContent(), "Sign in to use this computer from your spaces again.");
+        assert.equal(await page.locator("#sign-in-again").isVisible(), true);
+        assert.deepEqual(await page.locator("#connection-view button:visible").allTextContents(), ["Sign in"]);
+        assert.equal(await page.locator("#sidebar-status-word").textContent(), "Not set up");
+        assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "waiting");
+        assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Not set up" });
         return;
       }
       assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), true);
-      assert.equal(await page.locator("#account-outcome-back").isVisible(), true);
       assert.equal(await page.locator("#settings-versions").isVisible(), false);
       const outcome = (await page.locator("#account-outcome").textContent()).trim();
       assert.ok(outcome, "completed actions always describe their outcome");
       if (action === "signout") {
         assert.equal(snapshot.requests.length, 1);
         assert.equal(snapshot.requests[0].idp, "https://cloud.cotal.ai/api/auth");
-        assert.equal(snapshot.connected, true, "signing out does not disconnect the computer");
-        assert.equal(snapshot.signedIn, mode !== "success");
-        assert.equal(outcome, mode === "success" ? "Signed out of Cotal Cloud, cloud.cotal.ai. Existing connections keep running." : "Sign-out: The provider refused to revoke this sign-in. Try again.");
+        assert.equal(snapshot.requests[0].stopAgents, true);
+        assert.equal(snapshot.connected, true);
+        assert.equal(snapshot.signedIn, true);
+        assert.equal(await page.locator("#account-outcome-retry").isVisible(), true);
+        assert.equal(await page.locator("#account-outcome-back").isVisible(), false);
+        if (mode === "disconnect-refusal") {
+          assert.equal(outcome, "You're still signed in. Cotal couldn't disconnect Research, so it stopped signing out.\nStill connected: Research.\nThese agents were stopped: writer-1 (Codex).");
+          await page.locator("#account-outcome-details summary").click();
+          const detailText = await page.locator("#account-outcome-detail").textContent();
+          assert.equal(detailText, "the governing auth service refused endpoint deregistration");
+          assert.ok(!detailText.includes("cotal "), "Details never includes command lines");
+        } else {
+          assert.equal(outcome, "You're still signed in. Cotal couldn't finish signing out.");
+          assert.equal(await page.locator("#account-outcome-detail").textContent(), "The provider refused to revoke this sign-in. Try again.");
+        }
       } else {
+        assert.equal(await page.locator("#account-outcome-back").isVisible(), true);
+        assert.equal(await page.locator("#account-outcome-retry").isVisible(), false);
         assert.deepEqual(snapshot.requests.map(request => request.space), ["acme-team", "research"]);
         assert.match(outcome, /Acme team/);
         assert.match(outcome, /Research/);
@@ -1036,7 +1104,9 @@ export const scenarios = [
       }
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
+        assert.equal(await page.locator("#connection-description").textContent(), "Approve this computer in your browser to keep managing its spaces.");
         assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
+        assert.deepEqual(await page.locator("#connection-view button:visible").allTextContents(), ["Sign in"]);
         assert.equal(await page.locator("#sign-in-again").evaluate(el => el.classList.contains("primary")), true);
       }
     },
@@ -1423,11 +1493,14 @@ auditCase("audit-move-offer", "audit-e4-move-offer-spacing", async page => {
   assert.ok(spacing.margin >= 16 && spacing.divider >= 1 && spacing.gap >= 16,
     `E4: move offer has a top divider and breathing room: ${JSON.stringify(spacing)}`);
 });
-auditCase("account-signout-outcome-back", "audit-e5-post-signout-labels", async page => {
-  assert.equal(await page.locator("#settings-spaces").isHidden(), true, "Settings only shows the space count while signed in");
+auditCase("account-signout-disconnect-refusal", "audit-e5-post-signout-labels", async page => {
+  const copy = await page.locator("#account-outcome").textContent();
+  console.log(`E5 signout disconnect refusal: ${copy}`);
+  assert.match(copy, /Research/, "E5: sign-out disconnect refusal names Research");
+  assert.doesNotMatch(copy, /acme-team|research/, "E5: sign-out disconnect refusal does not fall back to raw slugs");
   await page.click("#view-connection");
   assert.deepEqual(await page.locator('[data-testid="connected-space-row"] strong').allTextContents(),
-    ["Acme team", "Research"], "E5: Connected view retains labels after sign-out");
+    ["Acme team", "Research"], "E5: Connected view retains labels after sign-out refusal");
 });
 for (const outcome of ["success", "partial", "refusal", "unknown"]) {
   auditCase(`account-disconnect-${outcome}`, `audit-e5-disconnect-${outcome}-labels`, async page => {

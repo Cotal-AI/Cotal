@@ -174,7 +174,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { push: async () => { pushWatchStatus?.(); await settle(); }, dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; return new Promise(resolve => realTimeout(resolve, 0)); }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { push: async () => { pushWatchStatus?.(); await settle(); }, dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, connect: () => { connected = true; }, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; return new Promise(resolve => realTimeout(resolve, 0)); }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -1170,3 +1170,41 @@ test("linked space missing from discovered spaces shows an unavailable notice an
     assert.match(a.node("notice").textContent ?? "", /The requested space is not available to this account/);
   } finally { a.dom.window.close(); }
 });
+
+for (const idpUrl of [COTAL_CLOUD_IDP, "https://example.com/api/auth"]) {
+  test(`signed-out computer account signs back in to ${idpUrl} and restores enabled spaces`, async () => {
+    const a = await app({
+      installed: true,
+      count: 0,
+      provider: idpUrl,
+      account: { idpUrl, sub: undefined, mode: "signed-out", hostSupport: "unknown", spaces: [] },
+    });
+    try {
+      assert.equal(a.node("connection-title").textContent, "You signed out");
+      assert.equal(a.node("connection-description").textContent, "Sign in to use this computer from your spaces again.");
+      assert.equal(a.node("sign-in-again").hidden, false);
+      assert.equal(a.node("sign-in-again").textContent, "Sign in");
+      assert.equal(a.node("dashboard").hidden, true);
+      assert.equal(a.node("another-space").hidden, true);
+      assert.equal(a.node("sidebar-status-word").textContent, "Not set up");
+      assert.equal(a.node("sidebar-status-dot").dataset.tone, "waiting");
+      a.options.account = {
+        idpUrl,
+        sub: "user-1",
+        mode: "account",
+        hostSupport: "supported",
+        spaces: [{ space: "team", label: "My team", desired: true, observed: "connected" }],
+      };
+      a.connect();
+      a.options.count = 1;
+      await a.click("sign-in-again");
+      const logins = a.calls.filter(r => r.op === "login");
+      assert.equal(logins.length, 1);
+      assert.equal(logins[0]?.idp, idpUrl);
+      await a.login();
+      assert.equal(a.node("connection-title").textContent, "This computer is connected");
+      assert.equal(a.node("sidebar-status-word").textContent, "Connected");
+      assert.equal(a.node("sidebar-status-dot").dataset.tone, "ok");
+    } finally { a.dom.window.close(); }
+  });
+}

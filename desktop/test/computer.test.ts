@@ -142,6 +142,11 @@ test("one state feeds the window, the pill, the dot and the tray", () => {
   assert.equal(surfaceState({ rows: [], anyConnected: false, diskFull: true }).description, "Free up space on this computer. Cotal continues by itself once there is room.");
   assert.equal(surfaceState({ rows: [], anyConnected: false, service: "stopped" }).description, "You stopped the background service. Start it to run agents on this computer again.");
   assert.equal(surfaceState({ rows: [], anyConnected: false, signInRequired: true, computerRemoved: true }).description, "This computer was removed from your account. Sign in to add it back.");
+  assert.deepEqual(surfaceState({ rows: [], anyConnected: false, signedOut: true }), { word: "Not set up", dot: "waiting", title: "You signed out", description: "Sign in to use this computer from your spaces again." }, "deliberate sign-out uses Not set up and You signed out");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, signedOut: true, service: "stopped" }).word, "Service stopped", "a stopped service still names itself after sign-out");
+  const signedOutInputs = surfaceInputs({ account: { mode: "signed-out", idpUrl: "https://cotal.cloud/api/auth", spaces: [] } }, [], false);
+  assert.equal(signedOutInputs.signedOut && !signedOutInputs.signInRequired, true, "deliberate sign-out is distinct from sign-in-required");
+  assert.equal(surfaceInputs({ account: { mode: "signed-out", spaces: [] } }, [], false).signedOut, false, "never-signed-in account status is not a deliberate sign-out");
   const frame = { diskFull: true, generation: { installed: "2", running: "1", waiting: "preparing" }, recovery: { code: "DAEMON_LOST" }, account: { mode: "sign-in-required", reason: "computer-removed" } };
   const read = surfaceInputs(frame, [row], true);
   assert.equal(read.diskFull && read.updating && read.repairNeeded && read.signInRequired && read.computerRemoved, true, "the frame's fields reach the shared state");

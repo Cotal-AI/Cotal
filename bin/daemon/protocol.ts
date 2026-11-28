@@ -47,7 +47,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
   "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins"] },
-  logout: { required: ["idp"], optional: [] },
+  logout: { required: ["idp"], optional: ["local", "stopAgents"] },
   "login-cancel": { required: ["attempt"], optional: [] },
   "connect-check": { required: ["space"], optional: [] },
   register: { required: ["space"], optional: [] },
@@ -60,9 +60,15 @@ export type LogoutChange =
   | { readonly kind: "local-login"; readonly idp: string; readonly cleared: true }
   | { readonly kind: "idp-session"; readonly idp: string; readonly revoked: true };
 
-type LogoutResult =
-  | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
-  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[]; readonly unconfirmedConversations?: readonly UnconfirmedConversation[]; readonly conversationCheck?: "unavailable" };
+export interface LogoutRunningAgent {
+  readonly space: string;
+  readonly name: string;
+  readonly application: string;
+}
+
+export type LogoutResult =
+  | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null; readonly disconnectedSpaces?: readonly string[] }
+  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[]; readonly disconnectedSpaces?: readonly string[]; readonly unconfirmedConversations?: readonly UnconfirmedConversation[]; readonly conversationCheck?: "unavailable" };
 
 export type AgentRowRequest = { readonly space: string; readonly lifecycleUid: string } & (
   { readonly op: "agent-stop" } | { readonly op: "agent-terminal" }
@@ -72,7 +78,7 @@ export const isAgentLifecycleUid = (value: unknown): value is string => typeof v
 export type DaemonRequest =
   | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly appVersion: string } & AgentAppRequest)
   | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string } & AgentRowRequest)
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string; readonly local?: boolean; readonly stopAgents?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
@@ -99,7 +105,7 @@ export type DaemonRequest =
 type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
   | "SCHEMA_INVALID" | "OPERATION_UNKNOWN" | "OPERATION_PARTIAL"
-  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
+  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "AGENTS_RUNNING" | "GENERATION_PENDING";
 
 export interface DaemonUpdateStatus {
   readonly restartEvidence?: { readonly prepared: boolean; readonly managers: readonly { readonly space: string; readonly seats: number; readonly fenced: boolean }[] };
@@ -253,7 +259,7 @@ export interface DaemonSpaces {
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
   | (Envelope & { readonly ok: true; readonly result: AgentAppResult | HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | { readonly argv: readonly string[] } })
-  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode | import("@cotal-ai/workspace").CommandFailure["code"]; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
+  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode | import("@cotal-ai/workspace").CommandFailure["code"]; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[]; readonly agents?: readonly LogoutRunningAgent[]; readonly detail?: Record<string, unknown> } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult })
   | (Envelope & { readonly ok: true; readonly event: "agent-app-progress"; readonly line: string })
@@ -353,7 +359,10 @@ export function parseRequest(line: string): ParsedRequest {
   } catch {
     return bad(id, "idp must be an HTTPS auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment");
   }
-  if (op === "logout") return { ok: true, request: { v, id, op, idp } };
+  if (op === "logout") {
+    if ([obj.local, obj.stopAgents].some(value => value !== undefined && typeof value !== "boolean")) return bad(id, "local and stopAgents must be booleans");
+    return { ok: true, request: { v, id, op, idp, ...(obj.local !== undefined ? { local: obj.local as boolean } : {}), ...(obj.stopAgents !== undefined ? { stopAgents: obj.stopAgents as boolean } : {}) } };
+  }
   if (obj.clientId !== undefined && (typeof obj.clientId !== "string" || !obj.clientId.trim() || obj.clientId.length > MAX_CLIENT_ID)) return bad(id, `clientId must be a non-empty string of at most ${MAX_CLIENT_ID} characters`);
   let discoveryPins: { url: string; issuer: string; audience: string } | undefined;
   if (obj.discoveryPins !== undefined) {

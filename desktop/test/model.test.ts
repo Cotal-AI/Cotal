@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, surfaceState } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, surfaceState, DaemonRefusal, sameProvider, disconnectSpacesForProvider, isSignedOutComputerAccount, activeComputerAccount, logoutConfirmationCopy, logoutFailureOutcome } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -217,4 +217,54 @@ test("kept credential notice names each well-formed file and is empty otherwise"
   const two = keptCredentialsNotice({ credentialsKept: [{ space: "a", path: "/p/a", reason: "EACCES" }, { space: "b", path: "/p/b", reason: "it is a symbolic link" }, { path: 1 }] });
   assert.match(two, /^Signed in, but 2 credential files of the previous account's spaces could not be deleted: \/p\/a \(a: EACCES\), \/p\/b \(b: it is a symbolic link\)\. Delete each file named\./);
   assert.match(keptCredentialsNotice({ credentialsKept: [{ space: "a", path: "/p/a", reason: "EACCES" }] }), /^Signed in, but a credential file /);
+});
+
+test("computer sign-out confirmation, signed-out account detection, and failed-disconnect outcome copy", () => {
+  assert.equal(sameProvider("https://cotal.cloud", "https://cotal.cloud/api/auth/"), true);
+  assert.equal(sameProvider("https://cotal.cloud/api/auth", "https://example.com/api/auth"), false);
+  const spaces = disconnectSpacesForProvider(
+    "https://cotal.cloud/api/auth",
+    {
+      idpUrl: "https://cotal.cloud",
+      mode: "account",
+      hostSupport: "supported",
+      spaces: [
+        { space: "acme-team", desired: true, observed: "connected" },
+        { space: "off", desired: false, observed: "disconnected" },
+        { space: "drifted", desired: false, observed: "connected" },
+      ],
+    },
+    new Map([["direct-space", "launch-ready"], ["other-idp-space", "launch-ready"]]),
+    new Map([["direct-space", "https://cotal.cloud/api/auth"], ["other-idp-space", "https://example.com/api/auth"]]),
+  );
+  assert.equal(spaces.length, 3);
+  assert.deepEqual(spaces, ["acme-team", "drifted", "direct-space"]);
+  assert.equal(isSignedOutComputerAccount(undefined), false);
+  assert.equal(isSignedOutComputerAccount({ mode: "signed-out", hostSupport: "unknown", spaces: [] }), false);
+  const signedOut = { idpUrl: "https://cotal.cloud/api/auth", mode: "signed-out", hostSupport: "unknown", spaces: [], accounts: [] };
+  assert.equal(isSignedOutComputerAccount(signedOut), true);
+  assert.equal(activeComputerAccount(signedOut), signedOut);
+  assert.equal(activeComputerAccount(signedOut, "https://cotal.cloud/api/auth"), signedOut);
+  assert.equal(logoutConfirmationCopy([]), "Signing out disconnects this computer from your spaces and ends your sign-in here. Your spaces come back automatically when you sign in again.");
+  assert.equal(logoutConfirmationCopy(["writer-1 (Codex)"]), "Signing out stops 1 running agent (writer-1 (Codex)) and disconnects this computer from your spaces. Your spaces come back automatically when you sign in again.");
+  assert.equal(logoutConfirmationCopy(["writer-1 (Codex)", "reviewer (Claude Code)"]), "Signing out stops 2 running agents (writer-1 (Codex) and reviewer (Claude Code)) and disconnects this computer from your spaces. Your spaces come back automatically when you sign in again.");
+  const refusal = new DaemonRefusal(
+    "MANAGER_UNAVAILABLE",
+    "disconnecting research did not finish. Next: run `cotal daemon service-disconnect --space research`",
+    undefined,
+    "run `cotal daemon service-disconnect --space research`",
+    {
+      failedSpace: "research",
+      stillConnectedSpaces: ["research", "ops"],
+      stoppedAgents: [{ space: "acme-team", name: "writer-1", application: "codex" }],
+      rawReason: "the governing auth service refused endpoint deregistration; run `cotal endpoint deregister`",
+    },
+  );
+  const out = logoutFailureOutcome(
+    refusal,
+    s => ({ research: "Research", ops: "Ops" }[s] ?? s),
+    a => `${a.name} (${a.application})`,
+  );
+  assert.equal(out.summary, "You're still signed in. Cotal couldn't disconnect Research, so it stopped signing out.\nStill connected: Research, Ops.\nThese agents were stopped: writer-1 (codex).");
+  assert.ok(!out.detail.includes("cotal "), "Details omits command lines");
 });

@@ -110,13 +110,17 @@ export const cotalAuthProvider: AuthProvider = {
   name: AUTH_PROVIDER_NAME,
   async deregisterEndpoint({ store, dir, request }) {
     const parsed = parseRemoteEndpointDeregisterRequest(request);
-    let route: Awaited<ReturnType<typeof managerAuthorityEndpoint>>;
+    let route: Awaited<ReturnType<typeof managerAuthorityEndpoint>> | undefined;
     let idpJwt: string;
     try {
       route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
       const session = requireIdpSession(idpSessionDir(), route.idpUrl);
       idpJwt = await fetchIdpJwt(route.idpUrl, session.token);
-    } catch {
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "signed-out" || error instanceof IdpSessionRejectedError)
+        throw new CommandFailure("refused", "AUTH_REQUIRED", `not signed in to ${route?.idpUrl ?? "this space's provider"}; endpoint deregistration was not sent`, {
+          ...(route?.idpUrl ? { remedy: `run \`${loginRecoveryCommand(route.idpUrl)}\`, then retry` } : {}),
+        });
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "endpoint deregistration was not sent; restore the original authority and sign-in before retrying");
     }
     const endpoint = route.endpoint.replace(/\/manager-service-authority$/, "/endpoint-deregister");
@@ -930,6 +934,12 @@ function managerInstanceList(body: unknown, url: string): ManagerInstanceListing
 /** Retain provider-owned nonsecret routing before a hosted Manager can register. */
 export async function retainManagerAuthorityRoute(store: SecretStore, dir: string, space: string): Promise<void> {
   await managerAuthorityEndpoint(store, dir, space, "retaining hosted Manager cleanup authority");
+}
+
+/** Verify the retained or pinned Manager authority route and return its IdP URL without mutating state. */
+export async function preflightManagerAuthorityRoute(store: SecretStore, dir: string, space: string): Promise<{ idpUrl: string }> {
+  const { idpUrl } = await managerAuthorityEndpoint(store, dir, space, "removing a hosted Manager registration");
+  return { idpUrl };
 }
 
 /** Resolve local authority or the original pinned remote route without substituting credentials. */

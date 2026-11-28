@@ -314,14 +314,14 @@ their refusal names the selected sign-in store and a command such as
 `COTAL_HOME=<store> cotal login --idp <url>`.
 
 These services share the approved provider session, including its expiry and revocation.
-`cotal logout` revokes that session. `cotal logout --local` removes matching shared copies
-on this machine without contacting the provider. Independently approved service sessions
-are not cleared. Machine daemons connected with their own service proof keep the separate
-disconnect behavior described below.
+`cotal logout` disconnects this computer from the account's spaces while still signed in,
+revokes the session, and clears the cached login. `cotal logout --local` disconnects this
+computer's spaces and removes matching shared copies on this machine without contacting the
+provider. Independently approved service sessions are not cleared.
 
 ```bash
 cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
-cotal logout --idp <auth base URL> [--local]
+cotal logout [--idp <auth base URL>] [--stop-agents] [--local]
 ```
 
 Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
@@ -618,11 +618,13 @@ not confirm sign-out. The provider session stays valid until it expires or is re
 provider, and the receipt says so. `logout` does not seed or refresh connectors, so a connector
 install problem does not keep the cached login.
 
-Signing out leaves an already connected daemon connected on the computer's own service proof,
-not the human session. The sign-out receipt explains this in text and its JSON `daemonNotice`.
-To end that connection, run `cotal daemon service-disconnect --space <space>` on this computer,
-or remove the computer in the dashboard. Disconnect removes its local renewal credentials and
-identity records. It does not revoke the remote authority.
+Signing out on a computer logs that computer out. If agents are running for the account's
+spaces on this computer, `cotal logout` names them and asks first in a terminal (declining
+changes nothing); without a terminal, it refuses unless `--stop-agents` is passed. It then
+disconnects this computer from each of the account's spaces while still signed in, stopping
+before anything else changes if a disconnect cannot finish, and finally revokes the provider
+session and clears the local login. On next sign-in, the spaces enabled for this computer
+reconnect automatically.
 
 
 `endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including

@@ -22,17 +22,18 @@ import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type DaemonPeerLifetime, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
 import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
-import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
+import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
+import { runDaemonLogout } from "./logout-computer.js";
 import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
 import { withAppMutation } from "./agent-app-admission.js";
 
@@ -549,24 +550,25 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           return;
         }
         logoutActive = true;
-        replyTask(signOutIdpSession({ dir: machineHome, idp: req.idp, local: false }).then(async (result) => {
-          account.signedIn();
-          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        }, async (error: unknown) => {
-          counters.requestsRefused++;
-          if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "OPERATION_UNKNOWN" || error.code === "OPERATION_PARTIAL" || error.code === "DEPENDENCY_UNAVAILABLE")) {
-            const changed: LogoutChange[] = [];
-            for (const change of error.changed ?? []) {
-              if (!change || typeof change !== "object" || !("idp" in change) || change.idp !== req.idp || !("kind" in change)) continue;
-              if (change.kind === "local-login" && "cleared" in change && change.cleared === true)
-                changed.push({ kind: "local-login", idp: req.idp, cleared: true });
-              else if (change.kind === "idp-session" && "revoked" in change && change.revoked === true)
-                changed.push({ kind: "idp-session", idp: req.idp, revoked: true });
-            }
-            if (changed.some(change => change.kind === "local-login")) account.signedIn();
-            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy, outcome: error.outcome, ...(error.changed ? { changed } : {}) } });
+        replyTask(runDaemonLogout({
+          home: machineHome,
+          idp: req.idp,
+          local: req.local,
+          stopAgents: req.stopAgents,
+          managers,
+          services,
+          reconciler,
+          account,
+          notifyStatusWatchers,
+        }).then(async (outcome) => {
+          if (outcome.ok) {
+            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: outcome.result });
             return;
           }
+          counters.requestsRefused++;
+          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: outcome.error });
+        }, async () => {
+          counters.requestsRefused++;
           await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "OPERATION_UNKNOWN", outcome: "unknown", message: "the sign-out outcome could not be confirmed; no success is assumed" } });
         }).finally(() => { logoutActive = false; }));
         return;

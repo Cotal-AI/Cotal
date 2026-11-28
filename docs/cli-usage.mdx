@@ -598,7 +598,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Identity | [`actor`](cli-auth.mdx#actor) | Legacy, hidden from `cotal help`: the actor ledger; `auth grants`, `auth grant` and `auth revoke` replace it |
 | Identity | [`service-endpoint`](cli-endpoints.mdx#service-endpoint) | Decide and inspect service endpoint registrations on the space's auth service |
 | Identity | [`login`](cli-auth.mdx#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
-| Identity | [`logout`](cli-auth.mdx#login) | Revoke the IdP session and clear the cached login |
+| Identity | [`logout`](cli-auth.mdx#login) | Disconnect this computer's spaces, revoke the IdP session and clear the cached login |
 | Identity | [`auth`](cli-auth.mdx#auth-mint) | Mint credentials, inspect account metadata, manage actor grants and export a protected account signer |
 | Teams | [`team`](cli-startup.mdx#manifest-deploys) | Inspect teams, boot a fresh mesh from a manifest, or add its channels and agents to a running one |
 | Endpoints | [`endpoint`](cli-endpoints.mdx#endpoint-authoring) | Save endpoint references, author contracts offline, inspect or invoke native endpoints, and deregister a departed instance |
