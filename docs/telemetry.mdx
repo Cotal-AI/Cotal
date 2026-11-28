@@ -87,6 +87,7 @@ If `down` refuses because another project owns the stack, space names and paths 
 When a project name is already prepared elsewhere or another space already uses the root, the local preparation conflict names the folder. The event reports `CONFLICT` without that diagnostic text or stack.
 If a broker requires authentication and the registration folder holds trust for a different space, the event reports the mismatch. The names, broker address and trust path stay in the local remedy.
 If a project command refuses to use a control directory as the project folder, the paths stay local. A refusal to write the machine's connector store from a checkout or unrecognized executable also keeps the store and executable paths local.
+When a foreground launch or its preview refuses a missing persona, the file or catalog path stays in the local diagnostic. A connection refusal for a space that has not started also keeps its restart path and space name local.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at

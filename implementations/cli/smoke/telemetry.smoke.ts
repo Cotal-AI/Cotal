@@ -302,6 +302,12 @@ for (const level of ["regular", "minimal"]) {
   const denied = seed.sent.find(body => body.event === "command");
   check("a refused checkout writer keeps the seed store and executable local", seed.status === 2 && seed.stdout.includes(marker) && denied?.errorCode === "DEPENDENCY_UNAVAILABLE"
     && denied.errorMessage === null && denied.errorStack === null && !JSON.stringify(seed.sent).includes(marker), shown(seed));
+  const missing = await s.run(["spawn", "absent", "--dry-run", "--space", "existing", "--json"]), miss = missing.sent.find(body => body.event === "command");
+  check("a missing launch persona shows the catalog only locally", missing.status === 2 && missing.stdout.includes(marker) && missing.stdout.includes("persona --space existing --json")
+    && miss?.errorCode === "TARGET_NOT_FOUND" && miss.errorMessage === null && miss.errorStack === null && !JSON.stringify(missing.sent).includes(marker), shown(missing));
+  const stopped = await s.run(["channel", "show", "general", "--space", "existing", "--json"]), target = stopped.sent.find(body => body.event === "command");
+  check("a connection refusal for an unstarted project keeps the restart folder local", stopped.status === 2 && stopped.stdout.includes(marker)
+    && target?.errorCode === "TARGET_UNAVAILABLE" && target.errorMessage === null && target.errorStack === null && !JSON.stringify(stopped.sent).includes(marker), shown(stopped));
   const selected = await s.run(["use", "existing"], { DO_NOT_TRACK: "1" });
   renameSync(root, `${root}-parked`);
   const moved = await s.run(["up", "--open", "--server", "nats://127.0.0.1:1", "--json"]), event = moved.sent.find(body => body.event === "command");
