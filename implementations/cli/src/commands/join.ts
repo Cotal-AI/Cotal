@@ -46,7 +46,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, type TerminalSeat, type TerminalSeatTarget, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { grantOption, shellWord } from "../lib/endpoint-errors.js";
@@ -143,7 +143,7 @@ async function preflightChannelMode(space: string, servers: string, creds: strin
 }
 
 /** The signer reads authority before issuing the seat. Its provisioner credential never reaches the join. */
-async function staticJoinChannelMode(target: { server: string; space: string; tlsRequired: boolean; auth: SpaceAuth }, channel: string): Promise<boolean> {
+async function staticJoinChannelMode(target: TerminalSeatTarget, channel: string): Promise<boolean> {
   if (!hasPluginChannelRoot(channel)) return false;
   const { space, server, auth, tlsRequired } = target;
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
@@ -153,6 +153,24 @@ async function staticJoinChannelMode(target: { server: string; space: string; tl
     return snapshot.state.enabled ? "isolated" as const : "legacy" as const;
   }).catch((error: unknown) => isStreamNotFound(error) ? "legacy" as const : undefined);
   return namedChannelMode(mode, channel, space) === "isolated";
+}
+
+async function retireJoinSeat(target: TerminalSeatTarget, seat: TerminalSeat, channel: string): Promise<void> {
+  await retireTerminalSeat(target, seat);
+  if (!isConcreteChannel(channel) && !isChannelFamily(channel)) return;
+  const principal = principalKey(DEV_OWNER, seat.actor).key;
+  try {
+    const creds = await mintCreds(target.auth, newIdentity(), "deprovisioner", {
+      deprovisionTarget: { principal, lifecycleUid: seat.lifecycleUid, memberChannels: [channel] },
+    });
+    await withControlConnection(target.server, { creds, tls: target.tlsRequired }, async (nc) => {
+      // An in-flight boot join must not recreate the row after retirement.
+      await deleteAcl(await openAclRegistry(nc, target.space), principal, seat.lifecycleUid);
+      await deleteMember(await openMembersRegistry(nc, target.space), channel, principal, seat.lifecycleUid);
+    });
+  } catch (e) {
+    stderrLine("! ", `this session's durable channel membership was not retired: ${(e as Error).message}`, c.yellow);
+  }
 }
 
 /** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
@@ -366,23 +384,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         const pluginChannelsEnabled = await staticJoinChannelMode(seatTarget, channel);
         await withProvisioner({ space, servers: server, tls: seatTarget.tlsRequired, auth: spaceAuth }, "join-provisioner", async (prov) => {
           await activateTerminalSeat(seatTarget, thisSeat);
-          retireSeat = async () => {
-            await retireTerminalSeat(seatTarget, thisSeat);
-            if (!isConcreteChannel(channel) && !isChannelFamily(channel)) return;
-            const principal = principalKey(DEV_OWNER, thisSeat.actor).key;
-            try {
-              const creds = await mintCreds(spaceAuth, newIdentity(), "deprovisioner", {
-                deprovisionTarget: { principal, lifecycleUid: thisSeat.lifecycleUid, memberChannels: [channel] },
-              });
-              await withControlConnection(server, { creds, tls: seatTarget.tlsRequired }, async (nc) => {
-                // An in-flight boot join must not recreate the row after retirement.
-                await deleteAcl(await openAclRegistry(nc, space), principal, thisSeat.lifecycleUid);
-                await deleteMember(await openMembersRegistry(nc, space), channel, principal, thisSeat.lifecycleUid);
-              });
-            } catch (e) {
-              stderrLine("! ", `this session's durable channel membership was not retired: ${(e as Error).message}`, c.yellow);
-            }
-          };
+          retireSeat = () => retireJoinSeat(seatTarget, thisSeat, channel);
           // Record the read ACL so the endpoint can self-join its channel's durable backstop.
           auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
             acceptedToken = issue.issued.acceptedToken;
