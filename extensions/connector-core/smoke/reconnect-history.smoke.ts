@@ -10,7 +10,7 @@ import {
   newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { MeshAgent, fmtItem } from "@cotal-ai/connector-core";
+import { MeshAgent, cotalToolSpecs, fmtItem } from "@cotal-ai/connector-core";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const port = await freePort();
@@ -113,24 +113,51 @@ async function checkOverlappingWindows(manager: CotalEndpoint, publisher: CotalE
   await agent.stop();
 }
 
-async function checkInterruptedReplay(manager: CotalEndpoint) {
+async function checkInterruptedReplay(manager: CotalEndpoint, publisher: CotalEndpoint) {
+  const count = 3_000;
+  const family = "replay.retry.>";
+  const expected: string[] = [];
+  for (let i = 0; i < count; i += 4) {
+    const posts = await Promise.all(Array.from({ length: 4 }, (_, j) =>
+      publisher.multicast("retained before runtime join", { channel: `replay.retry.c${(i + j) % 8}` }),
+    ));
+    expected.push(...posts.map(post => post.id));
+  }
   const agent = await wideReader(manager, "replay-reconnect", []);
   await agent.start();
-  let replayed = 0;
+  const tool = cotalToolSpecs(agent.config).find(spec => spec.name === "cotal_join")!;
+  const join = () => tool.run(agent, agent.config, { channel: family });
+  const replayed: string[] = [];
+  const live = new Set<string>();
   let reconnect: Promise<void> | undefined;
   let disconnected = false;
   agent.on("transport", ({ connected }) => { if (!connected) disconnected = true; });
-  agent.ep.on("message", (_message, _delivery, meta) => {
-    if (!meta.historical) return;
-    if (++replayed === 1) reconnect = agent.ep.reconnect();
+  agent.ep.on("message", (message, _delivery, meta) => {
+    if (!meta.historical) { live.add(message.id); return; }
+    replayed.push(message.id);
+    if (replayed.length === 1) reconnect = agent.ep.reconnect();
   });
-  const result = await agent.joinChannel(">").then(() => undefined, (error: Error) => error);
+  const first = await join();
   assert(reconnect, "replay must start and trigger a real connection rebuild");
   await reconnect;
   assert(disconnected && agent.connected, "the endpoint must replace its connection");
-  assert(replayed >= 256 && replayed < 12_000, `receive the fetched page before failing, got ${replayed}`);
-  assert.equal(result?.message, `channel history replay did not complete. Delivered ${replayed} messages before the read ended.`);
-  console.log(`interrupted channel replay: ${replayed} historical posts received; ${result!.message}`);
+  const partial = replayed.length;
+  const joinedAfterFirst = agent.joinedChannels().includes(family);
+  const durableAfterFirst = agent.ep.hasDurableMembership(family);
+  const between = await publisher.multicast("posted while unjoined", { channel: "replay.retry.c0" });
+  const retry = await join();
+  console.log(`runtime replay: ${JSON.stringify({ partial, joinedAfterFirst, durableAfterFirst, first, retry, total: replayed.length })}`);
+  assert.equal(partial, 256, "receive the full fetched page before failing");
+  assert(!joinedAfterFirst, "the interrupted runtime join must leave the channel unjoined");
+  assert(!durableAfterFirst, "the failed join must not write a durable membership");
+  assert(first.isError && first.text.includes(`Couldn't join #${family}: channel history replay did not complete. Delivered ${partial} messages`), first.text);
+  assert(!retry.isError && retry.text.startsWith(`Joined #${family} `), retry.text);
+  assert(retry.text.includes(`Backfilled ${count - partial} earlier messages`), retry.text);
+  assert(agent.joinedChannels().includes(family), "the successful retry must record the join");
+  assert.deepEqual(replayed.sort(), expected.sort(), "retry must finish replay without re-emitting any delivered post");
+  const after = await publisher.multicast("posted after retry", { channel: "replay.retry.c0" });
+  await until(() => live.has(after.id), "the successful join must receive live posts");
+  assert(!live.has(between.id), "the interrupted join must not receive live posts while unjoined");
   await agent.stop();
 }
 
@@ -170,7 +197,7 @@ try {
     await agent.start();
     return agent;
   }
-  const alice = await identity([channel, "replay.wide.>", "replay.policy.>"]);
+  const alice = await identity([channel, "replay.wide.>", "replay.policy.>", "replay.retry.>"]);
   const publisher = new CotalEndpoint({
     space, servers, creds: alice.creds, lifecycleUid: alice.uid, channels: [channel],
     consume: false, watchPresence: false, registerPresence: false,
@@ -263,7 +290,7 @@ try {
   await replayOffSeat.stop();
   await seedChannelRegistry({ servers, space, creds, file: { defaults: { replay: true }, channels: {} } });
   await checkWideReplay(manager, publisher);
-  await checkInterruptedReplay(manager);
+  await checkInterruptedReplay(manager, publisher);
   await checkOverlappingWindows(manager, publisher, creds);
 } finally {
   for (const agent of agents.reverse()) await agent.stop();

@@ -7,6 +7,7 @@ import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js"
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
+import type { RuntimeReplay } from "./endpoint-history.js";
 import { ClosedConnectionError, TimeoutError } from "@nats-io/transport-node";
 import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
@@ -68,6 +69,9 @@ export interface EndpointSubscriptionsDeps {
  *  listings, and the membership feed's snapshot read and watches with their consumer cleanup.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointSubscriptions {
+  private readonly joining = new Map<string, Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>>();
+  private readonly replays = new Map<string, RuntimeReplay>();
+
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointSubscriptionsDeps, private readonly parts: Pick<EndpointParts, "bootMemberships" | "channelDiscovery" | "connection" | "consumers" | "durable" | "durableBackstop" | "history" | "presence">) {}
 
   private get authed() { return this.deps.authed(); }
@@ -94,33 +98,48 @@ export class EndpointSubscriptions {
   async joinChannel(
     channel: string,
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {
+    const pending = this.joining.get(channel);
+    if (pending) return pending;
+    const join = this.completeJoin(channel);
+    this.joining.set(channel, join);
+    try { return await join; } finally { this.joining.delete(channel); }
+  }
+
+  private async completeJoin(channel: string) {
     if (!this.conn.jsm) throw new Error(this.notLiveMsg());
     if (this.identity.channels.includes(channel))
       return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
-    // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
-    // delivers post-subscribe live messages (> frontier), so the two never overlap.
-    const armed = await this.armJoin([channel]);
+    // The frontier belongs to the first attempt. A retry resumes that read before committing the join.
+    const replay = this.replays.get(channel) ?? { through: (await this.armJoin([channel])).get(channel)!, beganAt: Date.now(), seq: 0 };
+    const nc = this.conn.nc;
+    this.replays.set(channel, replay);
     // Live read (SPEC v0.3): open the native core subscription — MANAGER-FREE, broker-enforced by
     // sub.allow. This is what lets an agent join a channel's live feed on its own. The sub.allow
     // refusal is async — broker-confirm before committing local join state; the subscribe handler
     // ALSO drops a channel on ANY refusal (incl. a late one), so this is not a timing gamble (#13).
     this.parts.consumers.subscribeChat(channel);
+    let backfilled: number;
     try {
-      await this.parts.consumers.confirmChatSub();
+      try {
+        await this.parts.consumers.confirmChatSub();
+      } catch (e) {
+        throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
+      }
+      if (this.delivery.chatSubDenied.has(channel))
+        throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
+      backfilled = await this.parts.history.backfillRuntimeJoin(channel, replay, () => this.replays.get(channel) === replay);
+      if (this.delivery.chatSubDenied.has(channel))
+        throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
+      if (this.replays.get(channel) !== replay || this.lifecycle.stopped || this.conn.nc !== nc || nc?.isClosed())
+        throw new Error(`channel history replay did not complete. Delivered ${backfilled} messages before the read ended.`);
     } catch (e) {
-      // The confirm boundary (flush) failed — the connection drained/closed mid-join, so we have NO
-      // confirmation the subscribe was accepted. Fail closed: undo the half-open join rather than
-      // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
-      // pushed to). unsubscribeChat clears chatSubs.
       this.parts.consumers.unsubscribeChat(channel);
-      throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
+      if (replay.seq === 0 && this.replays.get(channel) === replay) this.replays.delete(channel);
+      throw e;
     }
-    if (this.delivery.chatSubDenied.has(channel)) {
-      this.parts.consumers.unsubscribeChat(channel);
-      throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
-    }
+    this.replays.delete(channel);
     this.identity.channels.push(channel);
     // Durable backstop. The live core-sub above already delivers (manager-free). For a `durable`-class
     // channel, request a Plane-3 per-member backstop from the server-side delivery daemon (durableJoin via ctl.delivery) so a post reaches a
@@ -149,7 +168,6 @@ export class EndpointSubscriptions {
         reason = `durable backstop unavailable (${(e as Error).message})`;
       }
     }
-    const backfilled = await this.parts.history.backfillArmed(armed);
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 
@@ -185,6 +203,7 @@ export class EndpointSubscriptions {
       if (memberships !== undefined) this.delivery.plane3Channels.delete(channel);
     }
     this.parts.consumers.unsubscribeChat(channel);
+    this.replays.delete(channel);
     const i = this.identity.channels.indexOf(channel);
     if (i >= 0) this.identity.channels.splice(i, 1);
     return { left };

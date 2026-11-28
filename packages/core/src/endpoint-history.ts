@@ -16,6 +16,7 @@ import type { HistoryPage } from "./endpoint.js";
 
 type ChatHistoryRead = { untilSeq?: number; limit?: number; visitPage?: (page: readonly JsMsg[]) => Promise<void>; active?: () => boolean };
 type ReplayFilter = { channel: string; subject: string; frontier: number; since: number };
+export type RuntimeReplay = { through: number; beganAt: number; seq: number };
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
@@ -980,22 +981,27 @@ export class EndpointHistory {
 
   /** Replay the union of the group's policy windows through its broadest broker-authorized filter.
    *  A preservation floor replaces the time windows. The live tail owns posts beyond the join frontier. */
-  private async backfillChannel(group: ReplayFilter[], previous: ReplayFilter[], floorSeq?: number): Promise<number> {
+  private async backfillChannel(
+    group: ReplayFilter[], previous: ReplayFilter[], floorSeq?: number,
+    runtime?: { checkpoint: RuntimeReplay; active: () => boolean },
+  ): Promise<number> {
     const filter = group[0]!;
     const { subject } = filter;
     const covered = group.slice(1);
     const upToSeq = group.reduce((max, entry) => Math.max(max, entry.frontier), 0);
     const since = group.reduce((min, entry) => Math.min(min, entry.since), filter.since);
-    if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
+    const resumeSeq = runtime?.checkpoint.seq || floorSeq;
+    if (resumeSeq !== undefined && resumeSeq >= upToSeq) return 0;
     const start =
-      floorSeq !== undefined ? { seq: floorSeq + 1 } : since === 0 ? { seq: 1 } : { time: new Date(since) };
-    const joined = (entry: ReplayFilter) => this.identity.channels.includes(entry.channel);
+      resumeSeq !== undefined ? { seq: resumeSeq + 1 } : since === 0 ? { seq: 1 } : { time: new Date(since) };
+    const joined = (entry: ReplayFilter) => runtime ? runtime.active() : this.identity.channels.includes(entry.channel);
     const active = () => !this.lifecycle.stopped && group.some(joined);
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
     let n = 0;
     const visitPage = async (page: readonly JsMsg[]) => {
       for (const sm of page) {
         if (!active()) break;
+        if (runtime) runtime.checkpoint.seq = sm.seq;
         const inWindow = (entry: ReplayFilter) => sm.seq <= entry.frontier &&
           (entry.since === 0 || sm.time.getTime() >= entry.since);
         if (!(joined(filter) && inWindow(filter)) && !covered.some(entry =>
@@ -1015,6 +1021,15 @@ export class EndpointHistory {
       throw new Error(`channel history replay did not complete. Delivered ${n} messages before the read ended.`, { cause: error });
     }
     return n;
+  }
+
+  /** A runtime retry keeps the first attempt's replay horizon and skips frames it already handled. */
+  async backfillRuntimeJoin(channel: string, checkpoint: RuntimeReplay, active: () => boolean): Promise<number> {
+    const policy = await this.joinPolicyFresh(channel);
+    if (!policy.replay || !active()) return 0;
+    const since = policy.windowMs === undefined ? 0 : Math.max(0, checkpoint.beganAt - policy.windowMs);
+    const filter = { channel, subject: chatSubject(this.identity.space, "*", "*", channel), frontier: checkpoint.through, since };
+    return this.backfillChannel([filter], [], undefined, { checkpoint, active });
   }
 
   private emitReplay(sm: JsMsg, noop: Delivery): boolean {
