@@ -65,10 +65,10 @@ function ids(dir: string): string[] {
   return readInterruptedRunRecovery(dir).notes.map((row) => row.runId);
 }
 
-async function until(label: string, ready: () => boolean): Promise<void> {
-  const end = Date.now() + 4_000;
+async function until(label: string, ready: () => boolean, budget = 4_000): Promise<void> {
+  const end = Date.now() + budget;
   while (!ready()) {
-    if (Date.now() > end) throw new Error(label);
+    if (Date.now() > end) throw new Error(`${label}: waited ${budget}ms`);
     await wait(50);
   }
 }
@@ -175,10 +175,11 @@ async function until(label: string, ready: () => boolean): Promise<void> {
   };
   try {
     await host.reconcile();
-    await until("the rejected write was not logged", () => logs.some((line) => line.includes("could not record its note")));
+    await until("the rejected write was not logged", () => logs.some((line) => line.includes("run-blocked") && line.includes("could not record its note")));
+    await until("recovery did not try again after the rejected write", () => logs.some((line) => line.includes("run-blocked") && line.includes("retrying automatic recovery")), 8_000);
     const listed = await host.list({ endpoint: "manager" }).then(() => "answered", () => "refused-the-read");
     check("a rejected note write leaves the host answering", refused.length === 0 && listed === "refused-the-read", { refused, listed, logs });
-    check("a rejected note write is logged and the retry continues", logs.some((line) => line.includes("could not record its note")) && logs.some((line) => line.includes("retrying automatic recovery")), logs);
+    check("a rejected note write is logged and the retry continues", logs.some((line) => line.includes("run-blocked") && line.includes("could not record its note")) && logs.some((line) => line.includes("run-blocked") && line.includes("retrying automatic recovery")), logs);
   } finally {
     interruptedRunRecoveryStore.write = real;
     process.off("unhandledRejection", onRejection);
