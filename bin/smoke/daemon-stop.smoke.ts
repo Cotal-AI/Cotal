@@ -409,11 +409,17 @@ if (process.platform === "linux") {
   const kept = disableFailedPersonStart(livePaths, { prepareStop() { blocked.on = false; throw new Error("disable refused"); } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
   check("a failed start whose disable fails keeps the marker", kept === false && blocked.on === false && existsSync(marker), { kept, blocked: blocked.on });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
-  let disableRefused = "";
-  let disableRemedy = "";
-  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => true, setEnabled() { throw new Error("disable refused"); } }); }
-  catch (error) { disableRefused = error instanceof Error ? error.message : String(error); disableRemedy = error instanceof CommandFailure ? error.remedy ?? "" : ""; }
-  check("a failed start whose disable fails says automatic start is on and names stop and start", disableRefused.includes("Automatic start is on, and it could not be turned off") && disableRefused.includes("cotal daemon stop") && disableRefused.includes("cotal daemon start") && disableRemedy.includes("cotal daemon stop") && disableRemedy.includes("cotal daemon start") && existsSync(marker), { disableRefused, disableRemedy });
+  const once = (text: string, sentence: string) => text.split(sentence).length - 1 === 1;
+  const innerFailure = (cause: "disabled" | "enabled") => new CommandFailure("unknown", "OPERATION_UNKNOWN", "Windows daemon restart failed during prepare: the replacement does not have one enabled native task instance; the start was not proven (a start does not pause the task); the generation fence, source and receipt were retained", { cause });
+  let commonRead = "";
+  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: innerFailure("disabled"), setEnabled() { throw new Error("the outer disable must not decide a start the inner catch already settled"); } }); }
+  catch (error) { commonRead = error instanceof Error ? error.message : String(error); }
+  check("a failed Windows start whose disable worked says automatic start is off exactly once", once(commonRead, "Automatic start is off") && once(commonRead, "cotal daemon start") && !commonRead.includes("cotal daemon stop") && existsSync(marker), { commonRead });
+  let refusedRead = "";
+  let refusedRemedy = "";
+  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: innerFailure("enabled"), setEnabled() { throw new Error("the outer disable must not decide a start the inner catch already settled"); } }); }
+  catch (error) { refusedRead = error instanceof Error ? error.message : String(error); refusedRemedy = error instanceof CommandFailure ? error.remedy ?? "" : ""; }
+  check("a failed Windows start whose disable failed says automatic start is on exactly once and names stop and start", once(refusedRead, "Automatic start is on") && once(refusedRead, "cotal daemon stop") && once(refusedRead, "cotal daemon start") && refusedRemedy.includes("cotal daemon stop") && refusedRemedy.includes("cotal daemon start") && existsSync(marker), { refusedRead, refusedRemedy });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const readFailure = await probeStop("unread");
   check("a macOS start whose automatic start cannot be read says the service started and leaves no stop marker", readFailure.doc?.started === true && readFailure.doc.enabled === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === false, readFailure);
