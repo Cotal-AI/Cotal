@@ -257,8 +257,8 @@ npm caches that are removed afterwards. After a successful self-update on Linux 
 removes earlier archive caches in its temporary location when it can verify that their owner and
 npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
 after their recorded owner and npm process group have exited. A terminal hangup during package
-replacement or reconciliation waits for the step in progress to finish without starting the next
-step, removes its temporary scratch at once, and exits 129. A
+staging, replacement or reconciliation waits for the step in progress to finish without starting
+the next step, removes its temporary scratch at once, and exits 129. A
 successful retry also reclaims private update scratch idle for more than an hour when it contains
 only the Node compile cache. On Linux, it also removes that scratch after an hour if the
 reconciliation cache holds only records that prove the updater and child process group have exited,
@@ -316,9 +316,9 @@ Update that app with its signed platform installer so the app, CLI and runtime s
 If npm is missing from `PATH`, `update --self` exits 1 and `update --check` reports partial results
 with exit 4. Install npm or add it to `PATH`, then retry. A registry connection failure still
 leaves the installation unchanged without failing `update --self`.
-On Linux and macOS, an installed self-update restores owner write access to its own connector
-directories before staging a release. If it cannot make those directories writable, it names the
-directory to fix and stops before staging.
+On Linux and macOS, an installed self-update restores owner read, write, and search access to its
+own connector directories before staging a release, and reports when it restores that access. If it
+cannot restore access, it names the directory to fix and stops before staging.
 On Linux and macOS, `cotal update --self` can restore owner read access to its extensions manifest
 and owner search access to folders on its path inside the Cotal config. It does this only for a
 regular manifest and real folders owned by your account. It reports the repair and continues without
