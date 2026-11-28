@@ -116,7 +116,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         if (legacy) continue;
         // Persist custody before the first operation, so restart knows which spaces it may remove.
         saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision: bindingRevisions[row.id]! }; persist();
-        const check = await connectCheck(row.slug, home);
+        const check = await connectCheck(row.slug, home, undefined, observe);
         if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new Error(check.outcome);
         const manager = await ensureHostedManager(row.slug, managers);
         if (manager.state !== "answering") throw new Error("Manager is not answering");

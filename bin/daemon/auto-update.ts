@@ -32,7 +32,10 @@ export function automaticUpdates(host: UpdateHost, observe?: ObserveWrite): { st
   const desktop = existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url)));
   const home = homeCotalDir();
   const file = join(home, "update-attempt.json");
-  const check = () => observeAsyncWrite(observe, home, checkForUpdate);
+  const check = (manual = false) => observeAsyncWrite(observe, home, () => checkForUpdate(error => {
+    if (manual) throw error;
+    observe?.(error, home);
+  }));
   let state: Attempt = { failures: 0, result: "not checked", next: Date.now() + Math.random() * UPDATE_HOUR_MS };
   try {
     const value = JSON.parse(readFileSync(file, "utf8"));
@@ -180,7 +183,7 @@ export function automaticUpdates(host: UpdateHost, observe?: ObserveWrite): { st
     busy = tick().catch(error => { host.report(`automatic update: ${String(error)}`); }).finally(() => { busy = undefined; });
   }, 30_000);
   timer.unref();
-  return { status, async check() { await check(); return status(); }, updating: () => child !== undefined || launchdPending || windowsPending, async close() {
+  return { status, async check() { await check(true); return status(); }, updating: () => child !== undefined || launchdPending || windowsPending, async close() {
     closed = true; clearInterval(timer);
     if (child) {
       child.stdout?.destroy(); child.stderr?.destroy(); child.unref();

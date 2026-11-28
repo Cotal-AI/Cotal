@@ -9,6 +9,7 @@ import { join, parse } from "node:path";
 import { homeCotalDir } from "./cotal-home.js";
 import { readFileSync } from "node:fs";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { isDiskFull } from "./local-write.js";
 
 export const UPDATE_DAY_MS = 24 * 60 * 60 * 1000;
 export const UPDATE_HOUR_MS = 60 * 60 * 1000;
@@ -45,13 +46,17 @@ export async function observeUpdateVersion(version: string): Promise<number> {
   finally { held.release(); }
 }
 
-/** Registry access goes through npm so scoped registry, proxy and TLS policy stay authoritative. */
-export async function checkForUpdate(): Promise<UpdateCheck | undefined> {
+/** Registry access goes through npm so scoped registry, proxy and TLS policy stay authoritative.
+ * Lock contention returns the cache. A full disk acquiring the lock also reports its error to the observer. */
+export async function checkForUpdate(onLockWriteFailure?: (error: unknown) => void): Promise<UpdateCheck | undefined> {
   if (process.env.COTAL_NO_UPDATE_CHECK === "1") return readUpdateCheck();
   mkSecretDir(homeCotalDir());
   let held;
   try { held = acquireLock(join(homeCotalDir(), "update-check.lock"), { label: "update check", waitMs: 0 }); }
-  catch { return readUpdateCheck(); }
+  catch (error) {
+    if (isDiskFull(error)) onLockWriteFailure?.(error);
+    return readUpdateCheck();
+  }
   try {
     const now = Date.now();
     const cached = readUpdateCheck();

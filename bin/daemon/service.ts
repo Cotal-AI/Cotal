@@ -39,7 +39,7 @@ import {
   ServiceAccessNotYetValidError, ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
@@ -308,7 +308,7 @@ export function createServiceConnections(home: string = homeCotalDir(), observe?
     if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
     const entry = findMesh(space);
     if (!entry || entry.mode !== "user" || !entry.userAuth) { l.state = entry ? "unsupported" : "not-registered"; return result(space); }
-    const w = await daemonWitness(space, home, signal);
+    const w = await daemonWitness(space, home, signal, observe);
     signal.throwIfAborted();
     if ("outcome" in w) { l.state = fromRegister(w); l.remedy = "remedy" in w ? w.remedy : undefined; return result(space); }
     const witness = w.witness;
@@ -389,7 +389,7 @@ export function createServiceConnections(home: string = homeCotalDir(), observe?
     const path = daemonConnectIntentFile(space, home);
     observeWrite(observe, dirname(path), () => {
       mkSecretDir(dirname(path));
-      writeSecretFile(path, `${JSON.stringify({ v: 1, space })}\n`);
+      writeSecretFileAtomic(path, `${JSON.stringify({ v: 1, space })}\n`);
     });
   };
   const cancelRetry = (space: string): void => {
@@ -421,7 +421,7 @@ export function createServiceConnections(home: string = homeCotalDir(), observe?
       const abort = new AbortController();
       registering.set(space, abort);
       try {
-        const r = await registerDaemon(space, home, abort.signal);
+        const r = await registerDaemon(space, home, abort.signal, observe);
         const current = live.get(space);
         // Registration alone cannot replace a live transport's state or revive ended authority.
         if (!abort.signal.aborted && !closed && !current?.endpoint && current?.state !== "ended") {
