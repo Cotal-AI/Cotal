@@ -384,6 +384,13 @@ export async function openAuthAuthorityPlaneWithCustody(opts: OpenAuthAuthorityP
   }
 }
 
+function rootRepairCoordinates(dir: string, space: string, args: { owner: string; actor: string; lifecycleUid: string }) {
+  return () => {
+    const row = findActorUnified(dir, args.owner, args.actor);
+    return [row?.lifecycleUid === args.lifecycleUid ? row : undefined, space] as const;
+  };
+}
+
 /** The body of the plane opener, which owns the unwind of a failed construction. */
 async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwind: (() => Promise<unknown>)[], onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"]): Promise<AuthAuthorityPlane> {
   const interactiveManagerSelection = runtimeSelection(opts);
@@ -1044,7 +1051,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     recordToolResultConsent,
     mintConnectCredential: (args) => {
       refuseIfFenced();
-      return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` });
+      return ensureRootCredential(registry, { ...args, managerInstance: `auth-service:${space}` }, rootRepairCoordinates(opts.dir, space, args));
     },
     selectManagerInstance,
     listManagerInstances,

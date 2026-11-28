@@ -41,6 +41,10 @@
 .app.settings-open { overflow: hidden; }
 .app.settings-open .sidebar { flex-shrink: 0; }
 .app.settings-open main { overflow: hidden; padding-block: 8px; justify-content: flex-start; }
+#desktop-views { display: flex; gap: 4px; flex-shrink: 0; margin: 0 0 8px; }
+#desktop-views button { min-height: 32px; border: 1px solid transparent; border-radius: var(--r-md); background: transparent; color: var(--ink); font: inherit; font-size: var(--t-label); padding: 5px 10px; }
+#desktop-views button[aria-selected="true"] { background: var(--card); border-color: var(--ink); font-weight: 650; }
+.app.loading #desktop-views { display: none; }
 #move-offer { margin-top: 16px; padding-top: 16px; border-top: 2px solid var(--rule); }
 .header-control { border: 2px solid var(--ink); border-radius: 999px; padding: 4px 8px; min-height: 32px; background: var(--card); color: var(--ink); font: 600 11px/1.4 var(--mono); }
 #settings-startup { border-top: 2px solid var(--rule); padding-top: var(--s-1); }
@@ -177,8 +181,14 @@ main { flex: 1; display: flex; flex-direction: column; justify-content: safe cen
 .connection-card { max-height: calc(100dvh - 150px); overflow-y: auto; }
 @media (max-width: 640px) { .connection-card { max-height: calc(100dvh - 130px); } }
 #journey { margin: 0 0 24px; flex-shrink: 0; }
-.connection-card { flex-shrink: 0; }
+.connection-card { flex-shrink: 1; min-height: 0; }
 footer { flex-shrink: 0; }
+@media (max-height: 700px) {
+  .app.settings-open main:has(#settings-panel:not([hidden])) { padding-block: 6px; }
+  #desktop-views:has(#view-settings[aria-selected="true"]) { margin-bottom: 4px; }
+  #settings-panel { padding-block: 5px; }
+  #settings-panel:not([hidden]) ~ footer { margin-top: 4px; }
+}
 @media (max-width: 640px) { .sidebar { padding: 8px 24px; } main { padding: 8px 24px; } #journey { margin-bottom: 16px; } }
 #refusal-detail { max-height: none; overflow: visible; padding-bottom: 3px; }
 .connection-card.has-refusal { min-height: 0; max-height: calc(100vh - 180px); overflow-y: auto; }
@@ -277,6 +287,7 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .apps-message { margin: 0 0 var(--s-1); padding: 8px 12px; border-radius: var(--r-sm); background: var(--t-green); color: var(--green-ink); font-size: var(--t-label); }
 .apps-message:empty { display: none; }
 .apps-message.error { background: var(--t-red); color: var(--red-ink); }
+.apps-message.warning { background: var(--t-gold); color: var(--gold-ink); }
 .app-list { list-style: none; margin: 0; padding: 0; }
 .app-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 0; border-top: 2px solid var(--rule); }
 .app-row:first-child { border-top: 0; }
