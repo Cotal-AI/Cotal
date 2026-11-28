@@ -15,13 +15,17 @@
  *  E. rows that do not apply are left out: no "Durable delivery on open" row for a static space,
  *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
  *  F. `team boot` on a running stack names inspection, stop preview and ordinary restart.
- *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
+ *  G. folder `b` attempts a fresh channel-only `team boot` on `s`'s address. The refusal names
+ *     the conflicting space, address and retry. Changing the manifest to a free port lets the
+ *     printed retry start the stack. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
- *     auth mode in words; the JSON keeps the recorded values.
+ *     auth mode in words; the JSON keeps the recorded values. Its printed stop preview runs from
+ *     the sibling folder where the team was booted.
  *     Its show and both `team remove` forms offer `cotal down --space <space> --dry-run` with the
  *     space filled in. The refusal also works after stop and directs callers to the recorded root. After
- *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and the earlier boot's ID,
- *     and that `cotal up` starts the stack again.
+ *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and a space-scoped
+ *     inspection command. The command works with another space selected, and `cotal up` starts
+ *     the stack again.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
  *     from `team remove` with and without `--dry-run`.
  *  I. `team boot --dry-run` of another space's manifest in this prepared folder says the folder
@@ -38,17 +42,19 @@
  *     The confirmation commands retain the target and output mode, and replay previews and removes the card.
  *  N. the printed fresh boot summary command works with a different space selected.
  *  O. an invalid launch name blocks validation and deployment before any channel is created.
+ *  P. a returned mixed deployment permits the same stack to restart without relaunching its seat.
  *
- * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
- * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
+ * The mixed deployment uses the local Jcode Harness API stand-in. COTAL_HOME is sandboxed, the
+ * child environment carries no `COTAL_` variable of the runner, and each stack is stopped here.
  * Needs `nats-server` on PATH. Run: pnpm smoke:team-views:live
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { shellPath } from "@cotal-ai/workspace";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "dist", "cotal.js");
@@ -122,7 +128,7 @@ manifest("order.yaml", SPACE, Object.fromEntries(Array.from({ length: 11 }, (_, 
 manifest("inherit.yaml", SPACE, { design: "", ops: "    replay: true\n", fine: "    deliveryClass: live\n" });
 const OTHER = `other-${process.pid}`, SERVER_OTHER = `nats://127.0.0.1:${await freePort()}`;
 for (const dir of [s, c]) manifest("other.yaml", OTHER, { x: "    deliveryClass: live\n" }, { dir, server: SERVER_OTHER });
-manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
+manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER });
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
@@ -141,6 +147,27 @@ function checkForegroundPreview(): void {
   check("the foreground plain preview also finishes", plain.status === 0 && /Lifetime request:\s+terminal-bound/.test(plain.stdout), plain.out);
   const apply = cotal(b, ...args, "--json");
   check("a foreground apply still refuses structured output", apply.status === 1 && envelope(apply.stdout)?.error?.code === "USAGE_INVALID", apply.out);
+}
+
+function checkFreshBootAddressConflict(): void {
+  const path = join(b, "boot.yaml"), original = readFileSync(path, "utf8");
+  const control = join(b, ".cotal"), before = readdirSync(control, { recursive: true }).sort();
+  const plain = cotal(b, "team", "boot", "boot.yaml", "--plain");
+  check("fresh boot names the recorded broker conflict and prints a plain retry",
+    plain.status === 2 && plain.stderr.includes("CONFLICT") && plain.stderr.includes(SERVER) &&
+    plain.stderr.replace(/\s+/g, " ").includes(`local space "${SPACE}"`) && /^Next$/m.test(plain.stderr) && plain.stderr.includes("`broker.servers`") &&
+    ["cotal", "pnpm cotal"].some((launcher) => plain.stderr.includes(`\`${launcher} team boot boot.yaml --plain\``)), plain.out);
+
+  const file = "../boot project/boot.yaml";
+  const json = cotal(c, "team", "boot", file, "--json");
+  const failure = envelope(json.stdout);
+  check("fresh boot keeps the structured conflict target and quotes a relative manifest in the JSON retry",
+    json.status === 2 && failure?.outcome === "refused" && failure.error?.code === "CONFLICT" && failure.target?.server === SERVER &&
+    JSON.stringify(failure.target.otherSpaces) === JSON.stringify([SPACE]) &&
+    failure.error.remedy?.includes(`\`cotal team boot '${file}' --json\``) === true, json.out);
+  check("both conflicts leave the fresh root's startup paths and manifest unchanged",
+    JSON.stringify(readdirSync(control, { recursive: true }).sort()) === JSON.stringify(before) && readFileSync(path, "utf8") === original);
+  writeFileSync(path, original.replace(SERVER, SERVER_B));
 }
 
 function checkInvalidLaunchName(): void {
@@ -182,6 +209,44 @@ function checkDeployAuthConflict(): void {
   check("deploy apply still refuses the auth mismatch", apply.status === 2 && envelope(apply.stdout)?.error?.code === "CONFLICT", apply.out);
 }
 
+function checkMixedRestart(): void {
+  manifest("mixed.yaml", SPACE, { "team-observer": "    deliveryClass: live\n    subscribe: [observer]\n    allowPublish: [observer]\n" }, {
+    head: "agent: jcode\nagents:\n  observer:\n    role: observer\n    model: gpt-6.2-sol\n    instructions: Respond only to test prompts.\n",
+  });
+  const deploy = cotal(s, "team", "deploy", "mixed.yaml", "--json");
+  const receipt = envelope(deploy.stdout)?.result;
+  const id = receipt?.deploymentId;
+  const returned = deploy.status === 0 && typeof id === "string" && receipt?.returnedReceipt === true &&
+    Array.isArray(receipt.createdAgents) && receipt.createdAgents.length === 1 && receipt.createdAgents[0]?.name === "observer" &&
+    Array.isArray(receipt.createdChannels) && receipt.createdChannels.length === 1 && receipt.createdChannels[0]?.name === "team-observer";
+  check("the mixed deployment returns one joined seat and one created card", returned, deploy.out);
+  if (!returned || typeof id !== "string") return;
+  const shownBefore = cotal(s, "team", "show", id, "--space", SPACE, "--json");
+
+  const stopped = cotal(s, "down", "--yes", "--with-agents", "--json");
+  const stoppedMembers = envelope(stopped.stdout)?.result?.members as { role: string; state: string }[] | undefined;
+  check("down with agents stops the three members", stopped.status === 0 &&
+    ["broker", "delivery", "manager"].every((role) => stoppedMembers?.some((row) => row.role === role && row.state === "stopped")), stopped.out);
+  if (stopped.status !== 0) return;
+  const restarted = cotal(s, "up", "--detach", "--server", SERVER, "--json");
+  const members = envelope(restarted.stdout)?.result?.members as { role: string; state: string }[] | undefined;
+  check("up restarts the broker, delivery and manager over the returned mixed deployment", restarted.status === 0 &&
+    ["broker", "delivery", "manager"].every((role) => members?.some((row) => row.role === role && row.state === "started")), restarted.out);
+  if (restarted.status !== 0) return;
+
+  const seats = cotal(s, "ps", "--space", SPACE, "--json");
+  const roster = envelope(seats.stdout);
+  check("restart does not bring the stopped seat back", seats.status === 0 && roster?.completeness === "complete" &&
+    Array.isArray(roster.result?.items) && !roster.result.items.some((row) => row.name === "observer"), seats.out);
+  const card = cotal(s, "channel", "show", "team-observer", "--space", SPACE, "--json");
+  const registry = envelope(card.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined;
+  check("the mixed deployment's card remains in the broker", card.status === 0 && Object.hasOwn(registry?.channels ?? {}, "team-observer"), card.out);
+  const shown = cotal(s, "team", "show", id, "--space", SPACE, "--json");
+  const before = envelope(shownBefore.stdout)?.result?.receipt;
+  check("up leaves the original returned deployment receipt unchanged", answered(shownBefore) && before !== undefined &&
+    answered(shown) && JSON.stringify(envelope(shown.stdout)?.result?.receipt) === JSON.stringify(before), shown.out);
+}
+
 let up = false, bUp = false, openUp = false;
 try {
   const noApplications = join(base, "no-applications");
@@ -202,6 +267,15 @@ try {
   check("up -f --dry-run refuses before printing a plan with Claude absent from PATH",
     refusedUp.status === 1 && refusedUp.stdout === "" && refusedUp.stderr.includes("connector preflight failed: claude needs claude on PATH"), refusedUp);
 
+  if (process.platform !== "win32") {
+    const fake = join(WT, "extensions", "connector-jcode", "smoke", "fake-jcode.mjs");
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "jcode"), `#!/bin/sh\nexec ${shellPath(process.execPath)} ${shellPath(fake)} "$@"\n`, { mode: 0o755 });
+    env.PATH = `${bin}${delimiter}${env.PATH ?? ""}`;
+    const jcode = cotal(s, "ext", "add", join(WT, "extensions", "connector-jcode"));
+    check("the workspace Jcode connector installs into the sandbox", jcode.status === 0, jcode.out);
+  }
   check("space create prepares the folder", cotal(s, "space", "create", SPACE).status === 0);
   up = true;
   const started = cotal(s, "up", "--server", SERVER);
@@ -339,13 +413,32 @@ try {
 
   console.log("\nG. a fresh boot's records in words");
   check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);
+  const priorBootNotice = "This stopped root records an earlier team boot";
+  const firstPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run", "--json");
+  check("a newly prepared root previews without an earlier boot blocker", answered(firstPreview) &&
+    !envelope(firstPreview.stdout)?.warnings?.some((warning) => warning.code === "LIFECYCLE_BLOCKED"), firstPreview.out);
+  checkFreshBootAddressConflict();
   bUp = true;
-  const booted = cotal(b, "team", "boot", "boot.yaml");
-  check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
-    booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
+  const booted = cotal(c, "team", "boot", "../boot project/boot.yaml", "--plain");
+  check("the retry starts the fresh stack on the new address and names the auth mode in words",
+    booted.status === 0 && booted.stdout.split("\n").some((line) => line.trim().replace(/\s+/g, " ") === `Broker: ${SERVER_B}`) &&
+    /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
   const bootCommand = booted.stdout.split("\n").map((line) => line.trim()).find((line) => /^(?:pnpm )?cotal team show /.test(line))?.split(/ {2,}/)[0] ?? "";
   const bootArgs = bootCommand.replace(/^(?:pnpm )?cotal /, "").split(" ");
   const bootId = bootArgs[2] ?? "";
+  const receiptPreview = booted.stdout.split("\n").find((line) => line.includes("Preview the guarded whole-stack stop"))
+    ?.trim().replace(/ {2,}Preview the guarded whole-stack stop$/, "");
+  const receiptLaunchers = ["cotal", "pnpm cotal", [process.execPath, CLI].map(shellWord).join(" ")];
+  const receiptScoped = receiptLaunchers.some((cli) => receiptPreview === `cd ${shellPath(realpathSync(b))} && ${cli} down --space ${SPACE_B} --dry-run`);
+  check("the sibling boot receipt quotes the project root in its scoped stop preview", receiptScoped, booted.stdout);
+  if (receiptScoped && process.platform !== "win32") {
+    assertSmokeSandboxDown(sandboxes.get(b), ["down", "--space", SPACE_B, "--dry-run"], { cwd: b, env });
+    const replayed = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${receiptPreview}`, process.execPath, CLI],
+      { cwd: c, env, encoding: "utf8", timeout: 180_000 });
+    check("the copied boot receipt preview works from the sibling without stopping the stack",
+      replayed.status === 0 && replayed.stdout.includes("Whole-stack stop plan") && replayed.stdout.includes(SPACE_B) &&
+      replayed.stdout.includes("Nothing was stopped or written"), replayed);
+  }
   const repeat = cotal(c, "team", "boot", "../boot project/boot.yaml", "--foreground");
   const repeatPreview = repeat.stderr.split("`").find((part) => part.startsWith("cd ") && part.includes("--dry-run"));
   const scopedPreview = `cd ${shellPath(realpathSync(b))} && cotal down --space ${SPACE_B} --dry-run`;
@@ -382,19 +475,47 @@ try {
   check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
   const freshList = cotal(b, "team");
   check("the inventory row names them in words", new RegExp(`${bootId}\\s+fresh boot\\s+boot returned\\s+inspect the stack`).test(freshList.stdout), freshList.stdout);
-  check("the boot preview names the requested auth mode in words", /Auth mode request:\s+static auth\n/.test(cotal(b, "team", "boot", "boot.yaml", "--dry-run").stdout));
+  const runningPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run");
+  check("the running boot preview names the auth mode without claiming a completed stop", runningPreview.status === 0 &&
+    /Auth mode request:\s+static auth\n/.test(runningPreview.stdout) && !runningPreview.out.includes(priorBootNotice), runningPreview.out);
   const stopped = cotal(b, "down", "--yes");
   const applyStoppedBoot = cotal(b, "team", "remove", bootId, "--space", SPACE_B, "--yes", "--json");
   check("the fresh boot refusal and remedy are unchanged after the separate whole-stack stop",
     stopped.status === 0 && /Controller stack stopped/.test(stopped.stdout) && applyStoppedBoot.status === 2 &&
       JSON.stringify(envelope(applyStoppedBoot.stdout)?.error) === JSON.stringify(bootRefusal), { down: stopped.out, remove: applyStoppedBoot.out });
+  const stoppedPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run", "--plain");
+  check("the stopped boot preview names the blocker even with a matched summary", reported(stoppedPreview, priorBootNotice) &&
+    new RegExp(`${bootId}\\s+${SPACE_B}\\s+matched`).test(stoppedPreview.stdout), stoppedPreview.out);
+  manifest("changed-boot.yaml", SPACE_B, { changed: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
+  const changedPreview = cotal(b, "team", "boot", "changed-boot.yaml", "--dry-run", "--json");
+  const changedReceipt = envelope(changedPreview.stdout);
+  check("a changed manifest still previews the earlier boot blocker in JSON with no effect", answered(changedPreview) &&
+    changedReceipt?.result?.effectAttempted === false && changedReceipt.warnings?.some((warning) =>
+      warning.code === "LIFECYCLE_BLOCKED" && warning.target.space === SPACE_B && warning.target.root === realpathSync(b) &&
+      warning.message.includes(priorBootNotice)) === true, changedPreview.out);
   // A stopped stack that carried a team is not booted with another one. The refusal names the
-  // earlier boot's ID and cotal up, which starts that stack again.
+  // earlier boot's ID and space, and cotal up, which starts that stack again.
   const again = cotal(b, "team", "boot", "boot.yaml", "--json");
-  const againError = envelope(again.stdout)?.error;
-  check("a second team boot after down refuses LIFECYCLE_BLOCKED, naming cotal up and the earlier boot's ID",
-    stopped.status === 0 && again.status === 2 && againError?.code === "LIFECYCLE_BLOCKED" &&
-      againError.remedy === `start this stack again with \`cotal up\` in ${realpathSync(b)}, or inspect the earlier boot with \`cotal team show ${bootId}\``, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
+  const againRefusal = envelope(again.stdout);
+  check("a second team boot after down refuses LIFECYCLE_BLOCKED and scopes the earlier boot inspection",
+    stopped.status === 0 && again.status === 2 && againRefusal?.target?.space === SPACE_B && againRefusal.error?.code === "LIFECYCLE_BLOCKED" &&
+      againRefusal.error.remedy === `start this stack again with \`cotal up\` in ${realpathSync(b)}, or inspect the earlier boot with \`cotal team show ${bootId} --space ${SPACE_B}\``, { down: stopped.out.slice(-400), again: again.out.slice(-800) });
+  const selectedForRefusal = cotal(s, "use", SPACE);
+  check("another space is selected while the booted stack is stopped", selectedForRefusal.status === 0 &&
+    envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, selectedForRefusal.out);
+  try {
+    const plain = cotal(b, "team", "boot", "boot.yaml", "--plain");
+    const inspection = plain.stderr.split("`").find((part) => /^(?:pnpm )?cotal team show /.test(part));
+    const scoped = ["cotal", "pnpm cotal"].some((cli) => inspection === `${cli} team show ${bootId} --space ${SPACE_B}`);
+    check("the plain refusal prints a team show command for the stopped space",
+      plain.status === 2 && plain.stderr.includes("LIFECYCLE_BLOCKED") && scoped, plain.out);
+    if (inspection && scoped) {
+      const replay = cotal(b, ...inspection.replace(/^(?:pnpm )?cotal /, "").split(" "));
+      check("the printed inspection finds the earlier boot without changing the saved selection",
+        replay.status === 0 && replay.stdout.includes("Recorded fresh boot") && replay.stdout.includes(bootId) &&
+        envelope(cotal(b, "use", "--json").stdout)?.result?.current === SPACE, replay.out);
+    }
+  } finally { cotal(b, "use", "--clear"); }
   const restarted = cotal(b, "up");
   check("cotal up there starts that stack again", restarted.status === 0 && /Controller stack started/.test(restarted.stdout), restarted.out.slice(-800));
   const additiveShow = cotal(s, "team", "show", deployment);
@@ -653,6 +774,10 @@ try {
     check(`team ${args[0]} of a copied summary points status at the folder and space holding the copy`,
       copied.status === 2 && error?.code === "CONFLICT" && error.remedy?.includes(`\`cd '${realpathSync(c)}' && cotal status --space=${OTHER}\``) === true, copied.out);
   }
+  if (process.platform !== "win32") {
+    console.log("\nP. the stack restarts after stopping a returned mixed deployment");
+    checkMixedRestart();
+  }
 } finally {
   if (openUp) {
     const down = cotal(c, "down", "--yes");
@@ -663,8 +788,8 @@ try {
     check("down --yes stops the stack in b", down.status === 0, down.out.slice(-600));
   }
   if (up) {
-    const down = cotal(s, "down", "--yes");
-    check("down --yes stops the stack", down.status === 0, down.out.slice(-600));
+    const down = cotal(s, "down", "--yes", "--with-agents");
+    check("down stops the static-auth stack", down.status === 0, down.out.slice(-600));
   }
   rmSync(base, { recursive: true, force: true });
 }

@@ -12,7 +12,7 @@ import {
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { backslashPersonaWarning, catalogReadRefusal, hasBackslashPersonaSelector, hasBlankPersonaSelector, listPersonaNames, readPersonas } from "../lib/personas.js";
+import { catalogReadRefusal, hasBlankPersonaSelector, hasUnsupportedPersonaSelector, listPersonaNames, personaSelectorWarning, readPersonas } from "../lib/personas.js";
 import {
   assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaCreateOccupied, personaNameProblem, personaNameWords, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
@@ -31,7 +31,7 @@ export const personaFlags = [
   { name: "from", type: "string", value: "<path>", description: "create: read the body from a file, or - for explicit stdin" },
   { name: "role", type: "string", value: "<role>", description: "create: role" },
   { name: "model", short: "m", type: "string", value: "<model>", description: "create: model pin" },
-  { name: "subscribe", type: "string", value: '<a,b|"">', description: "create from body: explicit read set, empty for none" },
+  { name: "subscribe", type: "string", value: "<a,b>", description: "create from body: explicit read set (use --subscribe= for none)" },
   { name: "yes", short: "y", type: "boolean", description: "remove: confirm deletion of the named local definition" },
   { name: "on", type: "string", value: "<manager-instance>", description: "list/show/create: address this exact manager's caller-owned catalog" },
   { name: "harness", short: "H", type: "string", value: "<application>", description: "create: application pin" },
@@ -189,7 +189,7 @@ async function createSource(name: string, path: string, values: Values, presenta
     }
     return bytes;
   }
-  if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
+  if (values.subscribe === undefined) throw usage("provide --subscribe <a,b> or --subscribe= for none");
   if (values.harness !== undefined) checkHarness(values.harness);
   assertLabels(values);
   // A refusal that quotes a value escapes its control characters, so the value cannot rewrite the terminal.
@@ -223,21 +223,22 @@ function list(catalog: PersonaCatalog, presentation: Presentation, target: strin
   const items = entries.map(entry => ({
     name: entry.name, path: entry.path, role: entry.def?.role ?? null, model: entry.def?.model ?? null,
     description: entry.def?.description ?? null, harness: entry.def?.agent ?? null,
-    valid: !entry.error && !hasBackslashPersonaSelector(entry),
+    valid: !entry.error && !hasUnsupportedPersonaSelector(entry),
   }));
   const invalid = entries.filter(entry => entry.error);
+  const selectorWarning = (entry: (typeof entries)[number]) => personaSelectorWarning(entry, target, presentation === "json" ? "cotal" : displayCmd());
   // A linked persona still lists and launches, but show, edit and remove refuse it.
   const linked = entries.filter(entry => entry.link !== undefined);
   writeResult(presentation, {
     command: "persona", target: catalog, result: { kind: "personas", items }, completeness: invalid.length ? "partial" : "complete",
     warnings: [
       ...invalid.map(entry => hasBlankPersonaSelector(entry)
-        ? { code: "USAGE_INVALID", target: { name: entry.name, path: entry.path }, message: entry.error! }
+        ? { code: "USAGE_INVALID", target: { name: entry.name, path: entry.path }, message: hasUnsupportedPersonaSelector(entry) ? selectorWarning(entry) : entry.error! }
         : entry.notRegular
           ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
           : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}: ${personaDefinitionProblem(entry.error, entry.path)}` }),
-      ...entries.filter(hasBackslashPersonaSelector).map(({ name, path }) => ({
-        code: "USAGE_INVALID", target: { name, path }, message: backslashPersonaWarning(path, target, presentation === "json" ? "cotal" : displayCmd()),
+      ...entries.filter(entry => hasUnsupportedPersonaSelector(entry) && !hasBlankPersonaSelector(entry)).map(entry => ({
+        code: "USAGE_INVALID", target: { name: entry.name, path: entry.path }, message: selectorWarning(entry),
       })),
       ...linked.map(entry => ({ code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path, link: entry.link }, message: `persona '${entry.name}' at ${entry.path} is a link to ${entry.link}; persona show, edit and remove refuse a link` })),
     ],
@@ -250,14 +251,14 @@ function list(catalog: PersonaCatalog, presentation: Presentation, target: strin
         columns: [{ key: "name", label: "Persona" }, { key: "role", label: "Role" }, { key: "harness", label: "Application" }, ...(result.items.some(item => item.model) ? [{ key: "model", label: "Model pin" }] : []), ...(result.items.some(item => !item.valid) ? [{ key: "state", label: "Definition" }] : [])],
         rows: result.items.map(item => {
           const blankSelector = hasBlankPersonaSelector(item);
-          const state = blankSelector || hasBackslashPersonaSelector(item) ? "invalid selector" : "unreadable";
+          const state = blankSelector || hasUnsupportedPersonaSelector(item) ? "invalid selector" : "unreadable";
           return { name: blankSelector ? JSON.stringify(item.name) : item.name, role: item.role ?? "not set", harness: item.harness ?? "user default", model: item.model ?? "application default", state: item.valid ? "readable" : { text: state, tone: "failed" as const } };
         }),
       }] : [{ kind: "lines" as const, lines: ["No personas in this catalog."] }]),
       { kind: "lines", lines: [{ text: "Definitions, not running agents. Editing a persona does not change a live session.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
-      ...(result.items.some(item => !hasBackslashPersonaSelector(item)) ? [{ command: `cotal p show <name>${target}`, description: "Read a definition" }] : []),
+      ...(result.items.some(item => !hasUnsupportedPersonaSelector(item)) ? [{ command: `cotal p show <name>${target}`, description: "Read a definition" }] : []),
       { command: `cotal p create <name> --file <persona.md>${target}`, description: "Create a local persona" },
       { command: `cotal ps${target}`, description: "See running agents" },
     ] }] },
@@ -310,7 +311,8 @@ export function personaComplete(argv: string[]): CompletionResult {
     let catalog: PersonaCatalog;
     try { catalog = personaCatalog({ space: completedFlagValue(argv, personaFlags, "space"), server: completedFlagValue(argv, personaFlags, "server") }); }
     catch { return { items: [], directive: "nofiles" }; }
-    return { items: listPersonaNames(catalog.root).map(value => ({ value })), directive: "nofiles" };
+    const names = listPersonaNames(catalog.root, words[0] === "show");
+    return { items: names.map(value => ({ value })), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimExtensionMutationLock, claimUpdateClosureAccess, inspectLock, installationWriter, previousUpdateConnectorConfig, processStartToken, protectedLocalDirectory, protectedResolvedDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -19,6 +19,41 @@ function save(record: Promotion): void {
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });
   renameSync(temp, path);
 }
+
+export function reclaimAbandonedExtensionStages(): void {
+  reclaimExtensionStages(connectorConfigDir, () => canRecoverConnectorConfig());
+}
+
+export function reclaimPreviousExtensionStages(): void {
+  reclaimExtensionStages(previousUpdateConnectorConfig);
+}
+
+/** Reclaim unpublished stages only when their prefix has no live writer or promotion journal. */
+function reclaimExtensionStages(resolveConfig: () => string | undefined, canReclaim?: () => boolean): void {
+  const uid = process.getuid?.();
+  if (uid === undefined) return;
+  try {
+    if (installationWriter()) return;
+    const selected = resolveConfig();
+    if (selected === undefined) return;
+    const config = protectedResolvedDirectory(selected);
+    const names = readdirSync(config).filter(name => /^\.extensions\.stage-[A-Za-z0-9]{6}(?:\.ready)?$/.test(name));
+    if (!names.length || canReclaim?.() === false || resolveConfig() !== selected) return;
+    const release = claimExtensionMutationLock({}, config);
+    try {
+      if (canReclaim?.() === false || resolveConfig() !== selected || protectedResolvedDirectory(selected) !== config ||
+          lstatSync(join(config, ".extensions-promotion.json"), { throwIfNoEntry: false })) return;
+      for (const name of names) {
+        const path = join(config, name);
+        const stat = lstatSync(path, { throwIfNoEntry: false });
+        // The renamed prefix keeps the verified install's mode. The mkdtemp wrapper is private.
+        const mask = name.endsWith(".ready") ? 0o022 : 0o077;
+        if (stat?.isDirectory() && stat.uid === uid && (stat.mode & mask) === 0) rmSync(path, { recursive: true, force: true });
+      }
+    } finally { release(); }
+  } catch { /* Optional cleanup must not refuse an update. */ }
+}
+
 function checkedRecord(): Promotion | undefined {
   const path = journalPath();
   if (!existsSync(path)) return undefined;
@@ -73,7 +108,7 @@ function finish(record: Promotion, prepareForUpdate = false): void {
         const writable = (path: string): void => {
           const stat = lstatSync(path);
           if (!stat.isDirectory() || stat.uid !== process.getuid!()) throw new Error(`cannot repair unowned rollback directory: ${path}`);
-          if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+          if ((stat.mode & 0o700) !== 0o700) chmodSync(path, (stat.mode & 0o7777) | 0o700);
           for (const entry of readdirSync(path, { withFileTypes: true })) if (entry.isDirectory()) writable(join(path, entry.name));
         };
         writable(record.old);

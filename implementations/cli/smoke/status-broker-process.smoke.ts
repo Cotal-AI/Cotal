@@ -3,6 +3,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { MANAGER_PIDFILE, assertRecordIdentity, canonicalLocalProcessPath, processStopped, shellPath, spaceSegment } from "@cotal-ai/workspace";
@@ -11,6 +12,7 @@ import type { StatusResult } from "../src/commands/status.js";
 import { findNatsServer } from "../src/lib/nats-bin.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
+import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-status-broker-"));
 console.log(`Evidence: ${scratch}`);
@@ -24,13 +26,13 @@ const stubs = join(scratch, "service-stubs");
 for (const dir of [root, home, cotalHome, config, runtime, stubs]) mkdirSync(dir, { mode: 0o700 });
 const serviceCalls = join(scratch, "native-service-calls.log");
 writeFileSync(serviceCalls, "");
-for (const command of ["systemctl", "launchctl", "schtasks"]) {
+for (const command of ["systemctl", "systemd-run", "launchctl", "schtasks"]) {
   const file = join(stubs, command);
-  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${command}' >> '${serviceCalls}'\nexit 99\n`);
+  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "${command} $*" >> '${serviceCalls}'\nexit 99\n`);
   chmodSync(file, 0o700);
 }
 const env = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key !== "DBUS_SESSION_BUS_ADDRESS" && key !== "INVOCATION_ID")),
   HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime,
   PATH: `${stubs}${delimiter}${process.env.PATH}`, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1",
   COTAL_TELEMETRY: "off", NO_COLOR: "1",
@@ -76,6 +78,8 @@ try {
   const started = run("up", "--no-manager", "--server", server, "--json");
   check("isolated controller stack starts without a manager", started.status === 0, started.stdout);
   if (started.status !== 0) throw new Error("up failed");
+  const startupCalls = readFileSync(serviceCalls, "utf8");
+  check("up in a private runtime directory without a user bus does not call a native service manager", startupCalls === "", startupCalls);
   const running = status();
   const broker = running.result.services?.instances?.find((row) => row.definition === "stack-broker");
   brokerPid = broker?.pid ?? undefined;
@@ -222,7 +226,8 @@ try {
   const stopped = run("down", "--yes", "--json");
   check("down stops the owned stack", stopped.status === 0 && (brokerPid === undefined || !alive(brokerPid)), stopped.stdout);
   if (stopped.status !== 0 || brokerPid !== undefined && alive(brokerPid)) throw new Error("owned stack cleanup failed");
-  check("no native service manager was called", readFileSync(serviceCalls, "utf8") === "");
+  const calls = readFileSync(serviceCalls, "utf8");
+  check("no native service manager was called", calls === "", calls);
 }
 {
   const stopped = status();
@@ -235,12 +240,16 @@ try {
     writeFileSync(journal, '{"schemaVersion":1,"kind":\n');
     const implicit = run("ps", "--space", "status-broker", "--json");
     const matching = run("ps", "--space", "status-broker", "--server", server, "--json");
-    const different = run("ps", "--space", "status-broker", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
-    const expected = JSON.parse(implicit.stdout).error, actual = JSON.parse(matching.stdout).error;
+    const serverOnly = run("ps", "--server", server, "--json");
+    const otherPort = `nats://127.0.0.1:${await freePort()}`;
+    const different = run("ps", "--space", "status-broker", "--server", otherPort, "--json");
+    const differentServerOnly = run("ps", "--server", otherPort, "--json");
+    const expected = JSON.parse(implicit.stdout).error, actual = JSON.parse(matching.stdout).error, actualServerOnly = JSON.parse(serverOnly.stdout).error;
     check("ps with the saved address reports the same truncated journal and recovery as ps without it",
-      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journal) && matching.status === 1 && JSON.stringify(actual) === JSON.stringify(expected), matching.stdout);
+      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journal) && matching.status === 1 && JSON.stringify(actual) === JSON.stringify(expected) && serverOnly.status === 1 && JSON.stringify(actualServerOnly) === JSON.stringify(expected), { matching: matching.stdout, serverOnly: serverOnly.stdout });
     check("ps with a different address does not diagnose the local journal",
-      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journal), different.stdout);
+      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journal) &&
+      differentServerOnly.status === 2 && JSON.parse(differentServerOnly.stdout).error?.code === "TARGET_UNAVAILABLE" && !differentServerOnly.stdout.includes(journal), { different: different.stdout, differentServerOnly: differentServerOnly.stdout });
   } finally { writeFileSync(journal, bytes, { mode: 0o600 }); }
   try {
     rmSync(journal);
@@ -392,6 +401,33 @@ ${replace ? `ln -sf ${shellPath(realNats)} "$0"\n` : ""}exec ${shellPath(realNat
     const cleared = local("use", "--clear");
     if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
   }
+  const journalPath = join(project, ".cotal", "stack-controller.json");
+  const journalBytes = readFileSync(journalPath);
+  const otherAddress = `nats://127.0.0.1:${await freePort()}`;
+  const forgotten = local("space", "forget", space);
+  if (forgotten.status !== 0) throw new Error(forgotten.stdout + forgotten.stderr);
+  try {
+    writeFileSync(journalPath, '{"operation":');
+    const implicit = local("ps", "--json");
+    const matching = local("ps", "--space", space, "--server", address, "--json");
+    const plainMatching = local("ps", "--plain", "--space", space, "--server", address);
+    const serverOnly = local("ps", "--server", address, "--json");
+    const different = local("ps", "--space", space, "--server", otherAddress, "--json");
+    const otherSpace = local("ps", "--space", "unrelated-space", "--server", address, "--json");
+    const expected = JSON.parse(implicit.stdout).error;
+    check("ps with the saved open address and space reports the truncated journal even without a prepared record",
+      implicit.status === 1 && expected.code === "SCHEMA_INVALID" && expected.message.includes(journalPath) &&
+      matching.status === 1 && JSON.stringify(JSON.parse(matching.stdout).error) === JSON.stringify(expected) &&
+      plainMatching.status === 1 && /Code:\s+SCHEMA_INVALID/.test(plainMatching.stderr) && plainMatching.stderr.includes(journalPath) &&
+      serverOnly.status === 1 && JSON.stringify(JSON.parse(serverOnly.stdout).error) === JSON.stringify(expected),
+      { implicit: implicit.stdout, matching: matching.stdout, plain: plainMatching.stderr, serverOnly: serverOnly.stdout });
+    check("ps with an unrelated address or space keeps the broker connection refusal on a stopped open root",
+      different.status === 2 && JSON.parse(different.stdout).error?.code === "TARGET_UNAVAILABLE" && !different.stdout.includes(journalPath) &&
+      otherSpace.status === 2 && JSON.parse(otherSpace.stdout).error?.code === "TARGET_UNAVAILABLE" && !otherSpace.stdout.includes(journalPath),
+      { different: different.stdout, otherSpace: otherSpace.stdout });
+  } finally {
+    writeFileSync(journalPath, journalBytes, { mode: 0o600 });
+  }
 }
 if (process.platform === "linux") {
   const legacyRoot = join(scratch, "legacy-zombie");
@@ -433,13 +469,34 @@ if (process.platform === "linux") {
     try { await finished; } finally { clearTimeout(timeout); }
   }
 }
+async function checkOccupiedControllerAddress(project: string, space: string, port: number): Promise<void> {
+  const address = `nats://127.0.0.1:${port}`;
+  const listener = createServer(socket => {
+    socket.on("error", () => {});
+    socket.end("not nats\r\n");
+  });
+  await new Promise<void>((resolve, reject) => listener.once("error", reject).listen(port, "127.0.0.1", resolve));
+  try {
+    for (const [command, code] of [["status", 0], ["ps", 2]] as const) {
+      const result = await foregroundCliProbe(cli, import.meta.resolve("tsx"), project, env, [command, "--space", space, "--plain"], 60_000);
+      const text = result.out + result.err;
+      check(`${command} names only the controller stack's recorded address for restart`,
+        result.code === code && text.includes(`non-NATS listener holds ${address}`) &&
+        ["cotal", "pnpm cotal"].some(launcher => text.includes(`stop the listener at ${address} and run \`${launcher} up\` in ${project}`)) &&
+        !/up --server|another (?:port|broker address)/.test(text), text);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+  }
+}
+
 if (process.platform === "linux") {
   const project = join(scratch, "controller-zombie"), space = "controller-zombie";
   mkdirSync(project, { mode: 0o700 });
   const prepared = runFrom(project, "space", "create", space);
   if (prepared.status !== 0) throw new Error(prepared.stdout + prepared.stderr);
   const controllerSandbox = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
-  const address = `nats://127.0.0.1:${await freePort()}`;
+  const port = await freePort(), address = `nats://127.0.0.1:${port}`;
   const owner = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli,
     "up", "--foreground", "--open", "--space", space, "--server", address], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
   const ownerState = observeOwnedChild(owner);
@@ -470,6 +527,9 @@ if (process.platform === "linux") {
     const components = runFrom(project, "status", "--space", space, "--components");
     check("component health marks the unreaped owned broker absent",
       /^  broker\s+absent[^\n]*\bgone\b/m.test(components.stdout), components.stdout);
+    owner.kill("SIGCONT");
+    await waitForOwnedChild(() => ownerState.exited, 60_000, "the foreground controller observed the broker exit");
+    await checkOccupiedControllerAddress(project, space, port);
   } finally {
     if (pausedManager !== undefined) process.kill(pausedManager, "SIGCONT");
     if (!ownerState.closed) owner.kill("SIGCONT");

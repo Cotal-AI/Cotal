@@ -3,7 +3,8 @@
  * seat started in a directory on this host, read before any seat exists, under the names the seat's
  * `command` takes. Each connector reads them from its own harness (`Connector.commands`).
  */
-import { EpEnvelopeError, fitCommandEntries, loadCotalConfig, rejectionText, spawnEnvAllow, type CommandEntry, type Connector } from "@cotal-ai/core";
+import { EpEnvelopeError, fitCommandEntries, loadCotalConfig, ProjectConfigTrustError, rejectionText, spawnEnvAllow, type CommandEntry, type Connector } from "@cotal-ai/core";
+import { isCommandFailure, isTrustedProject } from "@cotal-ai/workspace";
 import type { ManagerParts } from "./manager-parts.js";
 
 /** `supported: false`: the harness's seats run no commands or skills on this install, for `reason`.
@@ -28,7 +29,12 @@ export async function listHarnessCommands(
   await parts.connectorInventory.refreshUnavailableConnectors(agent, true);
   const harness = parts.harnessResolution.launchHarness(connector);
   if ("refusal" in harness) throw new EpEnvelopeError("failed-precondition", harness.refusal, undefined, "not-executed");
-  const envAllow = spawnEnvAllow(loadCotalConfig(workspaceRoot));
+  let envAllow: ReturnType<typeof spawnEnvAllow>;
+  try { envAllow = spawnEnvAllow(loadCotalConfig(workspaceRoot, isTrustedProject)); }
+  catch (e) {
+    if (!(e instanceof ProjectConfigTrustError) && !isCommandFailure(e)) throw e;
+    throw new EpEnvelopeError("failed-precondition", e.message, undefined, "not-executed");
+  }
   let catalog;
   try {
     catalog = await connector.commands.list({ cwd, resolvedBinaries: harness.binaries, envAllow });

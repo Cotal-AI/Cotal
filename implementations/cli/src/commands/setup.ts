@@ -6,6 +6,7 @@ import { parseCommandArgs, registry, token, writePrivateRecord, type ClientSetup
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
+  cmdSpawnSpec,
   codeSpan,
   isCommandFailure,
   isConnectRefusal,
@@ -49,7 +50,7 @@ import {
   type Report,
 } from "@cotal-ai/workspace";
 import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
-import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
+import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, validateAgentSkillsManifest, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
@@ -217,6 +218,15 @@ const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <conne
 /** What to do about a harness setup cannot set up. */
 const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
+function setupLauncher(): string {
+  const launcher = displayCmd();
+  if (process.platform !== "win32") return launcher;
+  if (launcher === "cotal" && resolveOnPath("cotal.cmd")) return "cotal.cmd";
+  if (launcher === "npx cotal-ai") return "npx.cmd -y cotal-ai";
+  if (launcher.startsWith("pnpm ") && resolveOnPath("pnpm.cmd")) return `pnpm.cmd${launcher.slice("pnpm".length)}`;
+  return launcher;
+}
+
 /** Input-only validation before connector seeding or preparation writes. */
 export function validateSetupArguments(args: ParsedArgs): void {
   const values = args.values as SetupValues;
@@ -274,7 +284,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   const inputs = interactive ? await askInputs(values, runtimes) : scriptedInputs(values, runtimes);
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
-  const plan = await planSetup(inputs, runtimes, values.start === true);
+  const plan = await planSetup(inputs, runtimes, values.start === true, presentation);
   await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
@@ -282,6 +292,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
  *  then reconcile `~/.agents/skills`. Does not seed personas, offer a global install, or write the
  *  onboarded stamp. */
 async function runSkillsOnly(): Promise<void> {
+  validateAgentSkillsManifest();
   await reconcileConnectorSkills();
   seedAgentSkills();
 }
@@ -300,7 +311,11 @@ function destinationOf(value: string): Destination {
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
-  if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
+  if (missing.length > 0) {
+    const form = v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM;
+    const remedy = v.json === true ? form : `${setupLauncher()}${form.slice("cotal".length)}`;
+    throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, remedy);
+  }
   const project = resolve(v.project!);
   const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
   if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
@@ -589,7 +604,7 @@ interface SetupPlan {
 /** Every check setup makes before it writes: the space name, the application, the preferences
  *  folder it saves the harness in, the space at the destination, and the NATS server if the
  *  invocation explicitly requests local startup. */
-async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
+async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean, presentation: Presentation): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
   if (problem) {
@@ -601,10 +616,11 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
+  if (candidate.launchRestriction) throw new CommandFailure("refused", "UNSUPPORTED", candidate.launchRestriction, { target });
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
-  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true, false, presentation);
   if (state === "started") {
     const registered = findMesh(inputs.space);
     const broker = registered?.origin === "up" && canonicalRoot(registered.root) === canonicalRoot(inputs.project)
@@ -646,6 +662,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
   if (opts.demo) checkDemoPersonaPaths(inputs);
+  validateAgentSkillsManifest();
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });
@@ -655,7 +672,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   let spaceState: SetupResult["spaceState"];
   if (plan.space.kind === "add") {
-    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive);
+    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive, opts.presentation, "--connection-file");
     if (added === undefined) return cancelled(opts.presentation, inputs.space);
     warnings.push(...added.warnings);
     written.push({ what: "space registration", path: meshFile(inputs.space) });
@@ -740,6 +757,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   const failed = actions.failed ?? null;
   const local = inputs.destination === "local" && spaceState !== "started";
+  const launcher = opts.presentation === "json" ? displayCmd() : setupLauncher();
   const startup: SetupStartup = { requested: opts.start, requestedManagerInstanceId: opts.managerInstanceId ?? null, state: "not-requested", stackAttempted: false, stack: null, agent: null, joinedAt: null, failure: null };
   const result: SetupResult = {
     kind: "setup",
@@ -754,7 +772,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     startup,
     next: candidate.missing.length > 0
       ? { command: `install or repair ${candidate.missing.join(", ")}, then run the same setup again`, cwd: inputs.project }
-      : local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
+      : local ? { command: `${launcher} up`, cwd: inputs.project } : { command: `${launcher} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
@@ -1070,14 +1088,15 @@ function isDir(path: string): boolean {
  *  failure we warn with the manual command and continue; setup never aborts over a PATH convenience. */
 export async function offerGlobalInstall(yes: boolean): Promise<void> {
   if ((!isNpx() && !isPnpmDlx()) || cotalOnPath()) return; // already have `cotal`, or not an ephemeral runner
-  const runnerCmd = isPnpmDlx() ? "pnpm dlx cotal-ai" : "npx cotal-ai";
+  const runnerCmd = setupLauncher();
+  const installCmd = `${process.platform === "win32" ? "npm.cmd" : "npm"} i -g cotal-ai`;
 
   if (!yes && process.stdin.isTTY && !inputDisabledByFlag()) {
     const go = abortIfCancel(
-      await p.confirm({ message: "Install `cotal` globally so you can just type `cotal`?", initialValue: true }),
+      await p.confirm({ message: "Install `cotal` globally?", initialValue: true }),
     );
     if (!go) {
-      p.log.info(`No problem - keep using ${dim(runnerCmd)}. Install later with ${dim("npm i -g cotal-ai")}.`);
+      p.log.info(`Keep using ${codeSpan(runnerCmd)}. Install later with ${codeSpan(installCmd)}.`);
       return;
     }
   }
@@ -1085,16 +1104,21 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
   const pkg = `cotal-ai@${runningVersion() ?? "latest"}`;
   const s = p.spinner();
   s.start("Installing cotal globally");
-  const r = withInstallUmask(() => spawnSync("npm", ["install", "-g", pkg], { encoding: "utf8" }));
-  if (r.status === 0) {
-    s.stop("Installed - you can now run `cotal`");
-  } else {
-    s.stop("Couldn't install globally");
-    const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n");
-    p.log.warn(
-      `${tail ? `${tail}\n\n` : ""}Install it yourself with ${dim("npm i -g cotal-ai")}, or keep using ${dim(runnerCmd)}.`,
-    );
+  let detail: string;
+  try {
+    const { file, args, windowsVerbatimArguments } = cmdSpawnSpec("npm", ["install", "-g", pkg]);
+    const r = withInstallUmask(() => spawnSync(file, args, { encoding: "utf8", windowsHide: true, windowsVerbatimArguments }));
+    if (r.status === 0) {
+      s.stop(`Installed ${codeSpan("cotal-ai")} globally. Run ${codeSpan(setupLauncher())}.`);
+      return;
+    }
+    detail = r.error?.message ?? (`${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n") ||
+      (r.signal ? `npm stopped with signal ${r.signal}` : `npm exited with status ${r.status}`));
+  } catch (error) {
+    detail = error instanceof Error ? error.message : String(error);
   }
+  s.stop("Couldn't install globally");
+  p.log.warn(`${detail}\n\nInstall it yourself with ${codeSpan(installCmd)}, or keep using ${codeSpan(runnerCmd)}.`);
 }
 
 /** The version of the running `cotal-ai` package (from the package.json next to the entry script),
@@ -1117,6 +1141,7 @@ export interface SetupConnectorCandidate {
   hint: string;
   missing: string[];
   unavailable: boolean;
+  launchRestriction?: string;
 }
 
 /** Every connector becomes a choice. Its provider owns setup readiness; the connector's launch
@@ -1129,6 +1154,8 @@ export async function setupConnectorCandidates(
   return Promise.all([...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(async (connector) => {
+      const launchRestriction = connector.launchUnavailable?.();
+      if (launchRestriction) return { connector, value: connector.name, label: connector.name, missing: [connector.name], unavailable: true, hint: launchRestriction, launchRestriction };
       const provider = await providerFor(connector);
       const available = provider?.available?.();
       const missing = available === undefined

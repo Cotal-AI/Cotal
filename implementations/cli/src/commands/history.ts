@@ -1,4 +1,4 @@
-import { CotalEndpoint, formatChatAge, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, parseSubject, partsToText, spacePrefix, chatSubject, chatSubjectPrefix, chatWildcard, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
 import {
   brokerAddressForDisplay,
@@ -205,13 +205,18 @@ function itemOf(msg: CotalMessage, where: { seq?: number; channel?: string }): H
   };
 }
 
+function historyGrepText(text: string): string {
+  // Greek capital sigma lowercases to final sigma at the end of a word.
+  return text.toLowerCase().replaceAll("ς", "σ");
+}
+
 /** The window filters: `--since` against the sequence or time, `--from` against the sender's name or
  *  id, `--grep` against the text. */
 function keep(item: HistoryItem, since: Since | undefined, from: string | undefined, grep: string | undefined): boolean {
   if (since?.kind === "seq" && (item.seq === null || item.seq <= since.seq)) return false;
   if (since?.kind === "time" && Date.parse(item.ts) <= since.ms) return false;
   if (from !== undefined && item.from.name !== from && item.from.id !== from) return false;
-  if (grep !== undefined && !item.text.toLowerCase().includes(grep.toLowerCase())) return false;
+  if (grep !== undefined && !historyGrepText(item.text).includes(historyGrepText(grep))) return false;
   return true;
 }
 
@@ -229,7 +234,7 @@ function credentialReader(conn: Connection): { lifecycleUid: string | undefined;
   const allow = credsClaims(conn.creds).nats?.pub?.allow ?? [];
   const create = `$JS.API.CONSUMER.CREATE.${chatStream(conn.space)}`;
   if (allow.some((row) => subjectMatches(row, create))) return undefined;
-  const actor = idFromCreds(conn.creds), filter = `${spacePrefix(conn.space)}.chat.*.*.`;
+  const actor = idFromCreds(conn.creds), filter = chatSubjectPrefix(conn.space, { owner: "*", actor: "*" });
   let lifecycleUid: string | undefined;
   const channels: string[] = [];
   for (const row of allow) {
@@ -593,7 +598,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
   };
   const prefix = spacePrefix(conn.space);
   const chatSubjects = new Set(channel !== undefined ? [chatSubject(conn.space, "*", "*", channel)]
-    : granted === undefined ? [`${prefix}.chat.>`] : granted.map((ch) => chatSubject(conn.space, "*", "*", ch)));
+    : granted === undefined ? [chatWildcard(conn.space)] : granted.map((ch) => chatSubject(conn.space, "*", "*", ch)));
   if (chatSubjects.size === 0)
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not follow channel history in ${conn.space}: its history grant is no channel`, { target, remedy: "use a credential that grants read access to the channel you want to follow" });
   let down = false;

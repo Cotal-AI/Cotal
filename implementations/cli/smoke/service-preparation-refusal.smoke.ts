@@ -227,7 +227,7 @@ check("service show lists the reference by name", shownText.status === 0 && /Env
 const envRemoved = run(["service", "remove", "envsvc", "--space", "b1", "--yes"]);
 check("rig: the definition is forgotten", envRemoved.status === 0, shown(envRemoved));
 const gone = run(["service", "show", "envsvc", "--space", "b1"]);
-check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service --space b1`", shown(gone));
+check("service show of a definition that is not saved is TARGET_NOT_FOUND, exit 2, naming where the saved ones are", gone.status === 2 && gone.envelope?.error?.code === "TARGET_NOT_FOUND" && gone.envelope.error.remedy === "see the saved definitions with `cotal service --space b1 --json`", shown(gone));
 
 // A readiness value that breaks the schema names the field and its rule, never the value, and its
 // Next says to correct readiness.
@@ -271,7 +271,7 @@ const member = run(["service", "add", "stack-manager", "--preset", "manager", "-
 check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
 const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
 check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
-  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: `cotal down --yes`, then `cotal space forget b1`"
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === `from ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
     && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same

@@ -31,6 +31,11 @@ const connector: Connector = { kind: "connector", name: "e2e-stub", requires: ["
   },
 }) };
 registry.register(connector);
+const openCodeStub: Connector = { ...connector, name: "opencode", buildLaunch(o) {
+  const spec = connector.buildLaunch(o);
+  return { ...spec, env: { ...spec.env, COTAL_E2E_META_MODEL: "local/gpt-6.2-sol" } };
+} };
+registry.register(openCodeStub);
 const root = join(dir, "workspace");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(root, ".cotal", "agents", "raw-seat.md"), "---\nname: raw-seat\nagent: e2e-stub\n---\n");
@@ -70,6 +75,19 @@ try {
   const started = await manager.startAgent({ name: "raw-seat", agent: "e2e-stub", model: "raw-pin", cwd: dir, events: false });
   assert.ok(started.ok, JSON.stringify(started));
   const iid = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
+  for (const [name, model] of [["observed-seat", undefined], ["pinned-seat", "local/launch-pin"]] as const) {
+    writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: opencode\n---\n`);
+    const seat = await manager.startAgent({ name, agent: "opencode", model, cwd: dir, events: false });
+    assert.ok(seat.ok, JSON.stringify(seat));
+    const plain = await cli(["status", name], "--plain");
+    check(`named status distinguishes ${model ? "a launch pin" : "the observed model"}`,
+      plain.code === 0 && (model
+        ? /Model: +local\/launch-pin - requested, not provider-confirmed/.test(plain.out) && !plain.out.includes("reported by OpenCode")
+        : /Model: +local\/gpt-6\.2-sol - reported by OpenCode/.test(plain.out) && /Variant: +high/.test(plain.out)), plain);
+    const json = await cli(["status", name]);
+    check("named status JSON keeps the recorded launch model and variant", json.code === 0
+      && JSON.parse(json.out).result.execution.model === (model ?? null) && JSON.parse(json.out).result.details.variant === null, json);
+  }
   const badPin = await cli(["status", "absent-seat", "--on", "manager"]);
   const error = JSON.parse(badPin.out).error;
   const retryCommand = error?.remedy?.match(/rerun it as `([^`]+)`/)?.[1];

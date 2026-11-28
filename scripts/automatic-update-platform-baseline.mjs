@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createServer } from 'node:http';
@@ -366,11 +366,20 @@ function npmCommand() {
   assert(existsSync(cli), `npm CLI missing: ${cli}; no shell fallback`);
   return [process.execPath, [cli]];
 }
+function localMatrixRoot() {
+  if (process.platform !== 'linux') return '/var/tmp/upgrade-matrix';
+  const uid = process.getuid();
+  const root = `/var/tmp/upgrade-matrix-${uid}`;
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(root);
+  assert(stat.isDirectory() && stat.uid === uid, 'private root must be a directory owned by the current account');
+  assert.equal(stat.mode & 0o777, 0o700, 'private root must be mode 700');
+  return root;
+}
 function safeRoot(output) {
-  const parent = hosted ? process.env.RUNNER_TEMP : '/var/tmp/upgrade-matrix';
-  assert(parent && (hosted || process.platform === 'linux'), 'local runs require Linux private homes');
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  if (!hosted) assert.equal(statSync(parent).mode & 0o777, 0o700, 'private root must be mode 700');
+  assert(hosted ? process.env.RUNNER_TEMP : process.platform === 'linux', 'local runs require Linux private homes');
+  const parent = hosted ? process.env.RUNNER_TEMP : localMatrixRoot();
+  if (hosted) mkdirSync(parent, { recursive: true, mode: 0o700 });
   const disk = statfsSync(parent);
   assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation');
   mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -398,6 +407,8 @@ export async function matrixCell(options) {
   const windowsPolicy = options['windows-policy-baseline'] === 'true';
   const expectedTarget = options['expected-target'];
   const foreignSnapshot = options['foreign-config-snapshot'] === 'true';
+  const interruptedSnapshot = options['interrupt-snapshot-copy'] === 'true';
+  if (interruptedSnapshot) assert(process.platform === 'linux' && layout === 'npm' && state === 'configured' && method === 'self', 'interrupted snapshot copy requires Linux configured npm self-update');
   const containerManager = options['container-manager'] === 'true';
   if (containerManager) assert(hosted && process.platform === 'linux' && state === 'configured', 'container Manager cell requires disposable hosted Linux configured state');
   if (foreignSnapshot) assert(state === 'recovery' && process.platform === 'linux', 'foreign snapshot cell requires Linux recovery state');
@@ -405,9 +416,9 @@ export async function matrixCell(options) {
   if (publishedLaunchd) assert(!options.candidate && macTransitionSource(source, expectedTarget, launchdProof), 'published launchd proof requires stable source >=0.164.6 below expected target transition');
   if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && macTransitionSource(source, expectedTarget, launchdProof))) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
-  const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
+  const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? localMatrixRoot(), 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stopped-daemon-before-update'] === 'true' ? 'stopped-daemon' : '', options['disabled-daemon-before-update'] === 'true' ? 'disabled-daemon' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['other-home-auth'] === 'true' ? 'other-home-auth' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
-  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
+  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}${interruptedSnapshot ? '-interrupted-snapshot-copy' : ''}`;
   const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
   const omit = exclusion({ layout, method, state });
@@ -1276,6 +1287,23 @@ export async function matrixCell(options) {
       : !['npm', 'installer'].includes(options['follow-on-action']) && method !== 'installer' && options['first-install'] !== 'true' && installedRoute.packageManagerRecordVersion === expectedPackageManagerVersion);
     check('CLI version is target', routeMatches, installedRoute.selectedCliVersion);
     const extensions = extensionsAfter.extensions;
+    if (interruptedSnapshot) {
+      assert.equal(installedRoute.selectedCliVersion, expectedVersion);
+      const retained = join(dirname(extensionsAfter.root), '.update-snapshot-KeepMe');
+      mkdirSync(retained, { mode: 0o700 });
+      const sentinel = join(retained, 'keep');
+      writeFileSync(sentinel, 'not created by the interrupted writer\n', { mode: 0o600 });
+      const fixture = resolve(import.meta.dirname, '../bin/smoke/execution-update-installed.smoke.ts');
+      const interrupted = ok(await call('interrupt selected updater snapshot copy', process.execPath, ['--import', import.meta.resolve('tsx'), fixture, '--interrupt-snapshot-copy', pkg, dirname(extensionsAfter.root), project]), 'snapshot interruption');
+      const snapshot = interrupted.stdout.trim();
+      assert.equal(dirname(snapshot), dirname(extensionsAfter.root));
+      assert(existsSync(snapshot));
+      const retry = await cotal('retry after interrupted snapshot copy', ['update', '--self']);
+      const reclaimed = !existsSync(snapshot);
+      const again = await cotal('retry the current CLI again', ['update', '--self']);
+      check('interrupted snapshot is reclaimed by the selected updater', retry.exit === 0 && reclaimed && again.exit === 0 && !existsSync(snapshot), { snapshot, reclaimed, retry: retry.exit, again: again.exit });
+      check('unrelated snapshot-shaped directory stays intact', existsSync(sentinel) && readFileSync(sentinel, 'utf8') === 'not created by the interrupted writer\n', retained);
+    }
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     const installedExtensions = extensions.map(entry => {

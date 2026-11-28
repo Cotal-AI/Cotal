@@ -60,8 +60,15 @@ npx cotal-ai setup --destination local --harness claude --project . --space main
 npx cotal-ai up --root . --space main --detach
 ```
 
+In Windows PowerShell or Command Prompt, use `npx.cmd` so PowerShell does not select the script shim. `-y` lets npm fetch Cotal without prompting.
+
+```powershell
+npx.cmd -y cotal-ai setup --destination local --harness claude --project . --space main --no-input
+npx.cmd -y cotal-ai up --root . --space main --detach
+```
+
 The first command prepares the current folder for the `main` space.
-The second starts that prepared project, even if another mesh root exists above it.
+Run the second command only after setup succeeds. It starts that prepared project, even if another mesh root exists above it.
 Replace `claude` with your connector's name.
 The application it needs must be installed and authenticated.
 
@@ -129,7 +136,7 @@ Its [startup instructions](run-a-mesh.mdx#start-the-local-stack) also cover unau
 For per-user sign-in and agent grants, follow [Identity](identity-and-auth.mdx#per-user-authentication).
 
 If you use `npx` without a global installation, interactive setup can offer to install `cotal-ai` globally.
-Declining keeps subsequent command hints in `npx cotal-ai` form.
+Declining keeps subsequent command hints in `npx cotal-ai` form (`npx.cmd -y cotal-ai` on Windows).
 The background services use their own resolved executable path.
 
 The browser dashboard ships with Cotal but needs a separate service definition and credential.

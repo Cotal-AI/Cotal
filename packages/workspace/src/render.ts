@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, oneLine } from "@cotal-ai/core";
+import { stackJournalPath } from "./auth-paths.js";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { brokerUrlKey, userCotalDir, homeCotalDir } from "./mesh-registry.js";
-import { shellPath } from "./protected-records.js";
+import { readLocalRecordSource } from "./local-record-source.js";
+import { brokerUrlKey, canonicalRoot, userCotalDir, homeCotalDir } from "./mesh-registry.js";
+import { decodeLocalJson, shellPath } from "./protected-records.js";
 import { codeSpan } from "./text-wrap.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import { SHOWN_VALUE_MAX } from "./output.js";
@@ -133,6 +135,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
           ? parts(`${message}, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(message, preparedRootRemedy(d.space, problem));
       }
+      if (d.firstStartServer !== undefined && d.space !== undefined && d.root !== undefined) {
+        const message = `"${d.space}" is prepared but not started`;
+        if (d.firstStartServer === null) return parts(message, "check the requested broker and select its registered space; this prepared project has no recorded broker");
+        const start = `cotal up --root ${shellPath(d.root)} --space${d.space.startsWith("-") ? "=" : " "}${shellPath(d.space)} --server ${shellPath(d.firstStartServer)}`;
+        return { message, remedy: `start it with ${codeSpan(start)}`, restartRoot: d.root };
+      }
       if (d.space !== undefined) return d.unsettled !== undefined
         ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
         : d.stopped !== undefined
@@ -169,6 +177,19 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
 /** The next step for a broker that took the connection and did not answer in time. */
 const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broker process is not stopped or overloaded and that the link to it is not too slow";
 
+/** Whether this project has a controller journal for the exact broker being diagnosed. */
+function isControllerBroker(t: MeshTarget): boolean {
+  if (t.origin !== "up") return false;
+  try {
+    const root = canonicalRoot(t.root);
+    const bytes = readLocalRecordSource(stackJournalPath(root), 64 * 1024, true);
+    if (bytes === undefined) return false;
+    const journal = decodeLocalJson(bytes) as { schemaVersion?: unknown; kind?: unknown; root?: unknown; space?: unknown; server?: unknown } | null;
+    return journal?.schemaVersion === 1 && journal.kind === "cotal-stack-controller" && journal.root === root &&
+      journal.space === t.space && typeof journal.server === "string" && brokerUrlKey(journal.server) === brokerUrlKey(t.server);
+  } catch { return false; }
+}
+
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
 function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number, heldBy?: string): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
@@ -177,9 +198,12 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
   const recordedAddress = t.recordedServer === undefined ? undefined : brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address";
   const recordedRetry = recordedAddress === undefined ? undefined : `check that address, or drop --server and retry with ${codeSpan(`--space ${shellPath(t.space)}`)} to reach its recorded broker at ${recordedAddress}`;
   switch (kind) {
-    case "non-nats-listener":
-      if (pid !== undefined) return parts(`the broker address ${server} is held by stopped process ${pid}, which is not a NATS server`, "check which program holds that address and free it before restarting the broker, or use another broker address");
-      return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, `stop the listener at ${server} and run \`cotal up\` in ${t.root}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
+    case "non-nats-listener": {
+      const controller = isControllerBroker(t);
+      const restart = `stop the listener at ${server} and run \`cotal up\` in ${t.root}`;
+      if (pid !== undefined) return parts(`the broker address ${server} is held by stopped process ${pid}, which is not a NATS server`, controller ? restart : "check which program holds that address and free it before restarting the broker, or use another broker address");
+      return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, controller ? restart : `${restart}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
+    }
     case "auth-unsupported":
       return parts(`the NATS server at ${server} does not have Cotal authentication enabled for the recorded static-auth space "${t.space}"`, "stop that server and start this space's authenticated broker, or select the correct broker with --server");
     case "jetstream-unsupported":

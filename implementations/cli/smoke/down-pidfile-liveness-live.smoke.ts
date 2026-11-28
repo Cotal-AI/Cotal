@@ -97,7 +97,14 @@ try {
   ok("legacy down refuses JSON without stopping anything and keeps confirmation in the retry",
     outputRefusal.status === 2 && outputRefusal.stderr === "" && outcome === "refused" && error?.code === "UNSUPPORTED"
     && retry !== undefined && alive(managerPid) && await portOpen(PORT), outputRefusal);
-  const stopped = cli(...retry!.split(" "));
+  const scoped = cli("down", "--space", SPACE, "--yes", "--json");
+  const scopedRetry = /^run `[^`]+ (down --yes)` from this root/.exec(JSON.parse(scoped.stdout).error?.remedy)?.[1];
+  ok("a confirmed scoped stop offers the same retry for the local startup registration", scoped.status === 2 && scopedRetry === retry, scoped);
+  const unconfirmed = cli("down", "--space", SPACE, "--json");
+  ok("a scoped stop without confirmation does not add it", unconfirmed.status === 2 && !JSON.parse(unconfirmed.stdout).error.remedy.includes("--yes"), unconfirmed);
+  const other = cli("down", "--space", `${SPACE}-other`, "--yes", "--json");
+  ok("a different space is never offered a confirmed local stop", other.status === 2 && !JSON.parse(other.stdout).error.remedy.includes("down --yes"), other);
+  const stopped = cli(...scopedRetry!.split(" "));
   const stoppedText = `${stopped.stdout ?? ""}${stopped.stderr ?? ""}`;
   ok("the advertised retry exits 0 without interactive input", stopped.status === 0, stoppedText);
   let gone = false;

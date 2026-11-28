@@ -3,15 +3,34 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
-import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { oneLine, processStartToken, recordUpdateDeferral, type OutputWarning } from "@cotal-ai/workspace";
 import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
 export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
+export const OFFLINE_CHECK_REMEDY = "Disable npm offline mode for this invocation and repeat update --check if you want a live registry check.";
+export const REGISTRY_CHECK_REMEDY = "Check registry access and repeat update --check.";
 
 type LatestVersionFailure = { ok: false; error: string; missingNpm?: true; offline?: true; npmResult?: CommandResult };
+
+export function latestVersionCheckWarning(latest: LatestVersionFailure): OutputWarning {
+  if (latest.missingNpm) return { code: "NPM_UNAVAILABLE", target: null, message: "npm is not on PATH. Update availability is unknown." };
+  if (latest.offline) return { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "npm is in offline mode. Update availability is unknown." };
+  return { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." };
+}
+
+export function latestVersionCheckRemedy(latest: { ok: true; version: string } | LatestVersionFailure, inventoryReadable: boolean): string {
+  if (!latest.ok && latest.missingNpm) return MISSING_NPM_REMEDY;
+  if (!latest.ok && latest.offline) {
+    return inventoryReadable
+      ? OFFLINE_CHECK_REMEDY
+      : "Disable npm offline mode for this invocation, check the unreadable inventory, and repeat update --check.";
+  }
+  if (inventoryReadable) return REGISTRY_CHECK_REMEDY;
+  return latest.ok ? "Check the unreadable inventory and repeat update --check." : "Check registry access or the unreadable inventory and repeat update --check.";
+}
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
@@ -40,9 +59,14 @@ function npmOfflineCacheMiss(result: CommandResult): boolean {
   catch { return false; }
 }
 
+export function reportConnectorAccessRestored(rt: UpdateRuntime, permissionsRestored: boolean, offline = false): void {
+  if (permissionsRestored) rt.out(`Restored owner access to the Cotal connector configuration${offline ? "; no installed packages were replaced." : "."}`);
+}
+
 export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean, permissionsRestored = false): Promise<number> {
   if (latest.missingNpm) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+    reportConnectorAccessRestored(rt, permissionsRestored);
     rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
     return 1;
   }
@@ -50,10 +74,11 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
     rt.onOfflineVersionCheckSkipped?.();
     if (promotionRecovered) rt.out("Completed an interrupted extension promotion.");
-    if (permissionsRestored) rt.out("Restored owner write permission on the Cotal connector configuration; no installed packages were replaced.");
+    reportConnectorAccessRestored(rt, permissionsRestored, true);
     rt.out(`${latest.error}. The latest-version check was skipped.`);
     return 0;
   }
+  reportConnectorAccessRestored(rt, permissionsRestored);
   if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
     rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
     return 1;

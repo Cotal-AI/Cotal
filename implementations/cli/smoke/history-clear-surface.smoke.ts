@@ -233,6 +233,48 @@ check("an invalid selective clear does not suggest confirmation", scopedClear.st
   && scopedClear.envelope?.error?.message.includes("history clear takes no channel") === true
   && !scopedClear.stdout.includes("--yes"), shown(scopedClear));
 
+for (const [args, typed, flag] of [
+  [["clear", "\u2014per-sender=42", "--dry-run", "--json"], "\u2014per-sender=42", "per-sender"],
+  [["clear", "\u2014per-sender", "--dry-run", "--json"], "\u2014per-sender", "per-sender"],
+  [["clear", "\u2013\u2013max-age=7d", "--space", "hcother", "--dry-run", "--json"], "\u2013\u2013max-age=7d", "max-age"],
+  [["\u2212\u2212dm-per-sender=10", "clear", "--space", "hcother", "--dry-run", "--json"], "\u2212\u2212dm-per-sender=10", "dm-per-sender"],
+] as const) {
+  const pasted = run(["history", ...args]);
+  const error = pasted.envelope?.error;
+  check(`history ${args.join(" ")} tells the caller to omit the pasted retention option`,
+    pasted.status === 1 && pasted.stderr === "" && pasted.envelope?.outcome === "refused"
+      && error?.code === "USAGE_INVALID"
+      && error.message === `${typed} starts with a typographic dash, so it is not an option`
+      && error.remedy === `omit --${flag} from \`history clear\` and keep the other arguments. Use it with \`history limit\` to change retention`
+      && !pasted.stdout.includes("type the option with hyphens"), shown(pasted));
+}
+const pastedText = run(["history", "clear", "\u2014per-sender=42", "--dry-run"]);
+check("stderr refusal for a pasted retention option on history clear points to omit and history limit",
+  pastedText.status === 1 && pastedText.stdout === ""
+    && pastedText.stderr.includes("omit --per-sender from `history clear` and keep the other arguments. Use it with `history limit` to change retention")
+    && !pastedText.stderr.includes("type the option with hyphens"), shown(pastedText));
+const retryWithoutRetention = run(["history", "clear", "--space", "hcother", "--dry-run", "--json"]);
+check("omitting the pasted retention option lets the dry-run clear preview succeed",
+  retryWithoutRetention.status === 0 && retryWithoutRetention.stderr === ""
+    && retryWithoutRetention.envelope?.outcome === "ok"
+    && retryWithoutRetention.envelope.result?.kind === "history-clear-preview"
+    && retryWithoutRetention.envelope.result.purged === false, shown(retryWithoutRetention));
+const pastedOnLimit = run(["history", "limit", "\u2014per-sender=42", "--json"]);
+check("history limit still suggests the hyphenated spelling for a pasted retention option",
+  pastedOnLimit.status === 1 && pastedOnLimit.stderr === ""
+    && pastedOnLimit.envelope?.error?.code === "USAGE_INVALID"
+    && pastedOnLimit.envelope.error.remedy === "type the option with hyphens: --per-sender=42", shown(pastedOnLimit));
+const pastedDmsOnClear = run(["history", "clear", "\u2014dms", "--dry-run", "--json"]);
+check("history clear still suggests the hyphenated spelling for an option it accepts",
+  pastedDmsOnClear.status === 1 && pastedDmsOnClear.stderr === ""
+    && pastedDmsOnClear.envelope?.error?.code === "USAGE_INVALID"
+    && pastedDmsOnClear.envelope.error.remedy === "type the option with hyphens: --dms", shown(pastedDmsOnClear));
+const credsWithTypographicDash = run(["history", "clear", "--creds", "\u2014per-sender=42", "--space", "hcother", "--dry-run", "--json"]);
+check("a typographic retention word passed as an option value still completes",
+  credsWithTypographicDash.status === 0 && credsWithTypographicDash.stderr === ""
+    && credsWithTypographicDash.envelope?.outcome === "ok"
+    && credsWithTypographicDash.envelope.result?.purged === false, shown(credsWithTypographicDash));
+
 const rootHelp = run(["history", "--help"]);
 const forceHelp = rootHelp.stdout.split("\n").find((line) => line.trimStart().startsWith("--force ")) ?? "";
 check("history help tells reads and previews to omit --force", rootHelp.status === 0 && forceHelp.includes("Omit it from reads and previews") && !forceHelp.includes("--yes"), shown(rootHelp));

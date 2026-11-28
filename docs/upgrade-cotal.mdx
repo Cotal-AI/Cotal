@@ -96,6 +96,7 @@ refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.16
 For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
 For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
 On Linux and macOS, when this Cotal home has neither a live daemon nor a recorded service, installation reconciliation does not contact a daemon at the shared endpoint. This applies to shell installer re-runs, `cotal update`, and `cotal update --self`.
+On Windows, `cotal update` and `cotal update --self` skip the shared daemon pipe when this Cotal home has no recorded service and the lifetime lock has no holder. An unlocked file left by a stopped daemon does not block updates. Both commands still check local Manager continuity.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning
@@ -120,11 +121,15 @@ selects the execution generation and binds to the installed package identity and
 The package manifest and original dependencies stay as npm or pnpm installed them. A manual
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
-On Linux and macOS, self-update refreshes an existing npm launcher when it can safely preserve its recorded Node path. If the launcher cannot be refreshed, the update keeps it unchanged.
+On Linux and macOS, self-update refreshes an existing npm launcher when it can safely preserve its recorded Node path. If that recorded Node is no longer on disk, the refresh records the supported Node that ran the update. If the launcher cannot be refreshed, the update keeps it unchanged.
 Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
-This also applies when npm is selected through Corepack or a compatible Node is available through Volta's `node` shim.
+Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
+If npm requires a different Node version, Cotal keeps looking for one that can run both.
+The search can also use Volta's `node` shim.
+If the `npm` shim on `PATH` comes from asdf, Cotal resolves the project's selected npm executable
+before leaving the project and runs it outside the project, including during connector reconciliation.
 If the `node` shim on `PATH` selects a compatible version from the current project, as with asdf,
 Cotal verifies that executable and runs npm with it outside the project, including during
 reconciliation after a release changes. If the project's selection cannot run npm, Cotal also
@@ -289,10 +294,22 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+On Linux, a running Manager whose launch path is missing does not block reconciliation when the
+kernel still identifies it with a separate npm installation. When the process evidence cannot
+separate the installations, the update keeps the continuity refusal and leaves the Manager alone.
 If reconciliation succeeds but the registry version cannot be read, `cotal update` succeeds and reports the latest version as unknown.
 Even when the CLI is already at the latest release, `cotal update --self` reinstalls an installed
 first-party extension whose entry file is missing, empty, or cannot load with its dependencies.
 It reports a failed reinstall instead of declaring the installation current.
+In npm offline mode, a manual `cotal update --self` skips the release check but can still repair
+damaged first-party extensions installed from npm at the running CLI's version, if npm has the
+packages cached. An unsuccessful offline repair names the affected extensions and still exits 0.
+On Linux and macOS, `cotal update --self` also removes abandoned extension staging copies
+from the selected connector configuration, even when the CLI is current. Both `cotal update`
+and `cotal update --self` check the previous connector configuration recorded by the selected
+update without removing its installed connectors. This includes staging copies renamed for
+promotion before the journal was written. Cleanup takes the extension writer lock and leaves
+staging alone while a writer is active or a promotion journal is present.
 A self-update inherits the extension state captured by the updating CLI, including added extensions
 and deliberate connector removals, even when that release has an older retained connector set.
 It reuses a matching retained copy or replaces an idle copy at the directory older releases expect.
@@ -393,6 +410,7 @@ Before replacing the global binary, `cotal update --self` checks the release's f
 package archives through npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
 The extension dependency check resolves Cotal peers at the selected release's exact version.
 Reconciliation links those peers to the installed CLI's copies.
+On Linux, `cotal update --self` checks the bundled extensions' peer links even when the CLI is at the latest version. It repairs links to a removed installation without reinstalling intact extensions.
 The command prints progress before release checks, the recovery snapshot, package installation,
 connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector reconciliation installs changed built-ins and first-party operator extensions into one
 private copy of the extension prefix. It checks every package before promoting the complete prefix.
@@ -529,6 +547,11 @@ is listening there. The updater leaves both spaces' data and registrations untou
 checks for conflicting registrations.
 
 ## Recover an interrupted update
+
+For a staged npm self-update interrupted while copying connector state, a retry can remove the
+unfinished copy. It checks the update and connector writer locks and leaves snapshots named by
+recovery records untouched. If the writer cannot be identified, the retry keeps the copy.
+Cleanup is silent, and a later self-update can retry a skipped copy if the writer evidence remains.
 
 If a recorded npm install child is still running, `cotal update --self` skips preliminary
 cleanup and can wait for the child to finish. Run the command again only if it stops and asks

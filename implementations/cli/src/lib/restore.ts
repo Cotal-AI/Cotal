@@ -27,6 +27,7 @@ import {
   codeSpan,
   cutController,
   getSpaceAuth,
+  maintenancePaths,
   markRestoreActive,
   settleTokenHandoff,
   markRestoreDegraded,
@@ -67,8 +68,11 @@ import {
   type RestoreManagerCommittedRecord,
   type RestoreReadyRecord,
   readStoreIdentity,
+  preparedSpaceAt,
+  retainedLegacyBroker,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
+import { controllerStackApplies } from "../commands/stack-up.js";
 import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
@@ -335,13 +339,17 @@ function contains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
-/** The refusal for a restore artifact that is, holds or sits inside the store the restore replaces
- *  or this root's maintenance folder, where it stages its attempt, or `undefined` when it is clear
- *  of both. `artifact` and `store` are real paths. */
+/** Refuse artifacts that overlap the preserved store or maintenance paths restore writes or sweeps.
+ *  `artifact` and `store` are real paths. */
 function artifactOverlapRefusal(root: string, artifact: string, store: string): CommandFailure | undefined {
+  const { maintenanceDir, versionDir, lock, reaper } = maintenancePaths(root);
+  const maintenance = realpathSync.native(maintenanceDir);
   for (const [path, what, why] of [
     [store, "the preserved store", " it would replace"],
-    [realpathSync.native(join(root, ".cotal", "maintenance")), "this root's maintenance folder", ", where it stages its attempt"],
+    [join(maintenance, "attempts"), "this root's maintenance attempt directory", ", where it stages its attempt"],
+    [join(maintenance, basename(versionDir)), "this root's maintenance journal directory", ""],
+    [join(maintenance, basename(lock)), "this root's maintenance lock path", ""],
+    [join(maintenance, basename(reaper)), "this root's maintenance lock recovery path", ""],
   ] as const) {
     if (!contains(path, artifact) && !contains(artifact, path)) continue;
     const relation = artifact === path ? "is" : contains(path, artifact) ? "is inside" : "holds";
@@ -500,16 +508,20 @@ const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because th
 const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
 /** The step that moves a restore attempt on from `state`. A committed or degraded attempt goes
- *  forward through bare `up`. Cleanup needs history consent only for data held in a retained store.
+ *  forward through bare `up`. A preview can carry an explicit discard flag without deleting data.
  *  `cleanupRoot` is the project to enter when an active restore was started from another root. */
-export function restoreNextStep(state: string, attemptId: string, journal?: Parameters<typeof restoreLeftOut>[0], cleanupRoot?: string, cmd = "cotal"): string {
+export function restoreNextStep(state: string, attemptId: string, journal?: Parameters<typeof restoreLeftOut>[0], { cleanupRoot, cmd = "cotal", previewDiscard = false }: { cleanupRoot?: string | undefined; cmd?: string; previewDiscard?: boolean } = {}): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${cmd} backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
   if (state === "active") {
     const leftOut = journal?.restore.previousSource ? restoreLeftOut(journal) : undefined;
-    const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
-    if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
+    const cleanup = `${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`;
+    if (leftOut || previewDiscard) {
+      const preview = codeSpan(`${cleanup} --dry-run${previewDiscard ? " --discard-history" : ""}`);
+      const history = leftOut ? `. Deleting the previous store requires --discard-history and removes the only copy of the ${leftOut} it left out.` : "";
+      return `the restore completed: preview cleanup with ${preview}${history}`;
+    }
     const note = journal?.restore.selection === "registry" ? ". Chat and DM history and workflow runs start empty after a registry-only restore." : "";
-    return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run${note}`;
+    return `the restore completed: retire its journal with ${codeSpan(`${cleanup} --yes`)}; preview it first with --dry-run${note}`;
   }
   return `recover forward with bare ${codeSpan(`${cmd} up`)} from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
@@ -625,10 +637,16 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
   // `down --preserve-state` only cuts a running stack, so a stack a plain `cotal down` stopped is
   // started first (#7330).
-  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal)
+  if (!journal) {
+    const prepared = preparedSpaceAt(root);
+    const remedy = prepared && !retainedLegacyBroker(root) && controllerStackApplies(root, prepared.space, {})
+      ? "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or restore in this release"
+      : "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again";
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "restore requires stable ready maintenance state, found none", { target: { root }, remedy });
+  }
+  const remedy = "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal)
     : "this root's maintenance attempt must finish first; check it with `cotal status`";
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal.state}`, { target: { root, state: journal.state }, remedy });
 }
 
 type RestoreLaunch = Pick<PreparedRestore, "root" | "targetPath" | "space" | "mode" | "server" | "host" | "runtime" | "maxFileStore">;
@@ -776,8 +794,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       sweepAttemptResidue(root);
       artifact = stageArtifact(artifactPath, stageParent);
     } catch (error) {
+      const denied = artifactReadRefusal(error, artifactPath, root);
+      if (denied) throw denied;
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw artifactReadRefusal(error, artifactPath, root) ?? new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
@@ -801,7 +821,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
         first_seq: snapshotState.first_seq,
         last_seq: snapshotState.last_seq,
       })) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} does not match its snapshot stream state`);
-      consumerConfigFromCheckpoint(journal.space, checkpoint);
+      consumerConfigFromCheckpoint(journal.space, checkpoint, artifact.manifest.mode === "open");
     }
     const authorityBeforeMutation = await authorityFingerprint(root, journal.space, journal.mode);
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
@@ -983,6 +1003,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
       serverNonce,
+      // An older attempt journal has no listenerSpawn. This one stays not-started until the spawn syncs started.
+      listenerSpawn: "not-started",
       // Durable evidence of consent, as the ordinary resume journals it: an operator asking later
       // why a seat resumed from a checkpoint past its horizon reads it from the journal.
       ...(staleConsent.length

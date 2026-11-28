@@ -47,9 +47,14 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 ## Required release set
 
+The separate Linux Corepack check runs the frozen release's own `cotal update --self` against a
+loopback registry with no newer version. The npm launcher's recorded Node can run Corepack but not
+the npm it selects. The update must reach the registry through a later Node on `PATH` twice and
+leave the Node running Cotal unchanged. The check uploads its own transcript.
+
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -60,6 +65,7 @@ product coordinates:
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
 | Linux paused record pointing to a real snapshot under another config home | 1 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
+| Linux npm upgrade followed by interruption during a connector snapshot copy and two self-update retries | 1 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
 | POSIX manual updater to a synthetic next version with the recorded user service disabled (`systemctl --user disable --now` on Linux, `launchctl disable` + `launchctl bootout` on macOS), staying stopped and reporting `service is disabled; not started` | 2 |
@@ -152,8 +158,11 @@ and lock observations independently of the updater's output. The macOS socket ob
 native `/var/folders` alias only when it resolves to the matching `/private/var/folders` parent,
 then checks ownership, the socket leaf and its recorded inode without following a leaf symlink.
 The launchd disabled observer accepts native boolean or `enabled`/`disabled` states for the selected
-unit. Unknown or duplicate entries remain errors. Missing, unreadable, timed-out or
-truncated observations remain explicit. Diagnostics never turn an update failure into a pass.
+unit. Unknown or duplicate entries remain errors. The after-update public `cotal daemon status --json`
+capture on macOS has a 15-second deadline to allow for slow CLI startup on a busy runner. Its
+artifact records the start and finish times. A timeout still fails the independent final-state check.
+Missing, unreadable, timed-out or truncated observations remain explicit. Diagnostics never turn an
+update failure into a pass.
 The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
 is a product failure, not a known refusal.
 The standalone cell starts with `up --detach` and records its
@@ -230,8 +239,10 @@ which installed source executes the first update attempt.
 
 Use Node >= 22.10. Native service and agent cells require a disposable hosted runner. On a persistent
 Linux host the harness refuses them and places other cells in private mode 700 homes under
-`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require 20 GiB free before
-installation or build. Do not run the container fixture on a workstation.
+`/var/tmp/upgrade-matrix-<uid>`, where `<uid>` is the account's numeric user ID. The account must
+own that directory and its mode must be 700. Without `--output` or `RUNNER_TEMP`, the harness writes
+evidence to `upgrade-evidence` under that directory. It never uses the operator's Cotal state.
+Require 20 GiB free before installation or build. Do not run the container fixture on a workstation.
 
 ```sh
 node scripts/automatic-update-platform-baseline.mjs --list linux

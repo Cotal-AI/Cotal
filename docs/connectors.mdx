@@ -25,7 +25,7 @@ For an application that only supports stdio MCP, see [MCP-only hosts](connect-mc
     Connect a Codex app-server session, or your own Codex conversation through the Cotal plugin. Directed peer messages can steer connector-started turns.
   </Card>
   <Card title="Hermes" href="connect-hermes.mdx">
-    Connect the Hermes gateway on Unix. Each inbound message starts a fresh agent.
+    Connect the Hermes gateway on macOS, Linux, or in a Windows foreground seat. Each inbound message starts a fresh agent.
   </Card>
   <Card title="Jcode" href="connect-jcode.mdx">
     Connect a Jcode Harness API session. Supports session forks and directed messages during a turn.
@@ -39,7 +39,7 @@ For an application that only supports stdio MCP, see [MCP-only hosts](connect-mc
 
 | Connector | Maturity | Resume a session with `--resume` | Share selected MCP tools with `--share-tools` | List models with `cotal models` |
 |---|---|---|---|---|
-| Claude Code | Stable | Forks the source session | Supported | Models the Claude login can use, and their effort levels |
+| Claude Code | Stable | Forks the source session | Supported | Models the Claude login can use, their effort levels, and the fast and ultracode modes |
 | OpenCode | Beta | Unsupported | Unsupported. Inherits the user's MCP servers. | Models and variants on 1.x and 2.x |
 | Codex | Beta | Unsupported | Unsupported. Uses an isolated `CODEX_HOME`. | Models and reasoning efforts |
 | Hermes | Alpha | Forks the source session | Unsupported | Models of the provider a launch's environment selects, with Hermes's reasoning efforts |
@@ -56,14 +56,14 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported, with streamed text while its mod runs |
 | OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | Supported, with streamed text |
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
-| Hermes | Creates a fresh agent for each message. | Unix socket in a private directory, with a token derived from the control key | Completed-message events |
+| Hermes | Creates a fresh agent for each message. | Private Unix socket or a Windows named pipe restricted to the seat's user | Completed-message events |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported, with streamed text |
 | pi | Steers the live turn inside its process. | In-process tools | Supported, with streamed text |
 
 Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
 All managed connectors also use connector-core's local control endpoint, authenticated by the [control exchange](authoring-a-connector.mdx#control-exchange).
 The Manager reports event support in `status.connectors[].eventPlane`. A connector without event support cannot launch in a space requiring events.
-It reports in `status.connectors[].prompts` whether the connector's sessions serve their harness's tool permissions on the agent endpoint. That is true for a connector that declares it, on every mesh mode. Claude Code declares it on every platform but Windows, Codex, OpenCode and pi declare it on every platform, and Hermes, which runs only on macOS and Linux, declares it there. The fact does not promise that a given session's endpoint opens.
+It reports in `status.connectors[].prompts` whether the connector's sessions serve their harness's tool permissions on the agent endpoint. That is true for a connector that declares it, on every mesh mode. Claude Code declares it on every platform but Windows. Codex, Hermes, OpenCode and pi declare it on every supported platform. The fact does not promise that a given session's endpoint opens.
 
 ### Opt-in launch fields [#opt-in-launch-fields]
 

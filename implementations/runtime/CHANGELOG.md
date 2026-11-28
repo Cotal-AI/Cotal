@@ -1,5 +1,87 @@
 # @cotal-ai/runtime
 
+## 0.183.1
+
+### Patch Changes
+
+- Updated dependencies [c049810]
+- Updated dependencies [99e5057]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/lang@0.183.1
+
+## 0.183.0
+
+### Patch Changes
+
+- 040b05d: Resuming an unknown hosted run now suggests the inventory command with the broker, credentials and output format the caller used, instead of dropping them.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [c3236a3]
+- Updated dependencies [335d8e9]
+- Updated dependencies [447e860]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [067ff29]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/lang@0.183.0
+
+## 0.182.1
+
+### Patch Changes
+
+- e0b4c97: When a hosted workflow resume is missing its run ID, the suggested run list keeps the original target and output format.
+- 82fd7c4: Commands such as `run plan`, `space show`, and `persona show` tell you to drop an unknown option when you have already supplied all their arguments.
+- Updated dependencies [8495df7]
+- Updated dependencies [8eead0e]
+- Updated dependencies [5117d48]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/lang@0.182.1
+
+## 0.182.0
+
+### Minor Changes
+
+- 0c9e27a: Messages carrying reserved stored-message headers are dropped, so send a fresh message without those headers instead of forwarding the stored delivery.
+
+### Patch Changes
+
+- be4c3bf: Read workflow journals directly with `cotal run show` on an open broker without a manager, unless the command explicitly selects a manager.
+- 609c84d: When a hosted workflow resume rejects a malformed run ID, its suggested list now looks up runs on the original target.
+- 89b3d2a: Keep the broker override and output format in the run list command suggested when a local checkpoint answer or amendment names a missing run.
+- 717b50c: When `cotal run resume --local` cannot find the run, it reports `TARGET_NOT_FOUND` and points to the local inventory for the same target.
+- 3f6cfef: The JSON workflow list on a broker-only open mesh reports that records were not checked and points to the direct read with `--local`.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [1d10f92]
+- Updated dependencies [7ef585e]
+- Updated dependencies [48b6414]
+- Updated dependencies [423aa24]
+- Updated dependencies [1f37adb]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [365e355]
+- Updated dependencies [dd426ff]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+- Updated dependencies [e6cd8f2]
+- Updated dependencies [6c10b18]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/lang@0.182.0
+
 ## 0.181.0
 
 ### Minor Changes

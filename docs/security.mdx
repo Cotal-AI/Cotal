@@ -43,17 +43,27 @@ The following guarantees combine broker enforcement with the required receiver c
 
 | Guarantee | Mechanism |
 | --- | --- |
-| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id`. |
+| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id` and messages with reserved stored-message headers. |
 | Space containment | NATS accounts isolate each space's subjects, streams, and KV buckets. |
 | Channel posting | The connection posts as itself and only to declared `allowPublish` channels. Posting is default-deny. |
 | Channel content reads | Live subscription grants follow `allowSubscribe`. History uses server-pinned single-channel consumers. |
-| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers prevent reads of other inboxes and other roles' queues. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
+| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers scope reads. On user-auth meshes, the callout checks principal-bound reply inbox names against the bearer. Legacy connections still use unbound nonces. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
 | Carried resume transcripts | Only the target manager instance's transfer reader can read its transfer bucket. The operator's writer is pinned to one transcript. Seats and peers have no transfer-bucket grant. |
 | Optional transport secrecy | `cotals://` requires TLS for the agent-to-broker hop. The broker still sees plaintext. |
 
 Channel content ACLs do not hide all stream metadata. An agent can enumerate retained CHAT subjects and counts, including channel names and sender IDs outside its read ACL. Channel names are also public in the registry. A role-bearing credential has equivalent TASK metadata access. Neither path grants message bodies or DM-stream metadata. [Stream metadata visibility](security-boundaries.mdx#metadata) gives the precise grants and deferred containment work.
 
 A carried Claude seat uses its own Claude home, so another seat's ordinary Claude listing does not expose the transcript. Same-uid filesystem access can still read that home by path. [Host filesystem access](security-boundaries.mdx#filesystem-access) explains the limit.
+
+## Stored-message headers [#stored-message-headers]
+
+The reference client drops deliveries and legacy control requests that carry `Nats-Stream`,
+`Nats-Subject`, `Nats-Sequence`, or `Nats-Time-Stamp`, even when the claimed sender matches the
+subject. This covers live subscriptions, delivery readers and writers, history, recall, join
+backfill, Lang waits, and the operator tap. Header matching ignores case and includes empty values.
+A storage read the client initiates, such as a roster lookup, can legitimately return these headers.
+This check complements broker publish permissions. On an open broker it does not authenticate
+an unmarked publication.
 
 ## Endpoint request origin [#endpoint-request-origin]
 
@@ -72,6 +82,8 @@ The deployment also has these limits.
 - A host compromise can expose signing authority. Narrow operator profiles reduce individual connection grants but do not protect a copied signer.
 - Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host. That authority covers the spawner's own call and the operator's agent files: a persona saved over the wire carries no launch options, and its channels and capabilities must be ones its definer holds. See [Defining one at runtime](agent-files.mdx#defining-one-at-runtime).
 - Spawn environment filtering does not confine files reachable through `HOME` or other supplied roots.
+- A project folder's `.cotal` may declare MCP server commands, `spawn.env` names and persona launch options only after `cotal trust` records that folder, or after `cotal setup`, `cotal space create` or `cotal up` made its `.cotal`. A file in a folder another account owns is refused. Trust follows the path: what the folder declares later is trusted, and so is a folder made again at that path. An untrusted project config can still set `modelPolicy` for a role. See [trusted project folders](config.mdx#trusted-project-folders).
+- Project trust does not cover a manifest's own launch options, prompt or working directory, or a persona file kept outside `.cotal/agents`, so a manifest or persona file you run from a folder you did not write can start commands.
 - Custodied PTY reap trusts the custody record and uses process-group membership for descendants. Same-uid record replacement and PID reuse remain risks.
 
 [Host boundaries and credential limits](security-boundaries.mdx) preserves the exact environment rules, TTLs, key rotation behavior, PTY signal checks, and same-uid caveats.

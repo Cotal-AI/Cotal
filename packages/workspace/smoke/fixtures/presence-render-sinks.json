@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1147,
+    "total": 1163,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 925
+    "non-render/control": 941
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -24,6 +24,13 @@
     }
   ],
   "entries": [
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "observedSeatModel(values, item)",
+      "class": "non-render/control",
+      "rationale": "Reads the model and variant for one principal and lifecycle. Neither value is a presence state or a work-progress claim."
+    },
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
@@ -564,6 +571,13 @@
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
+      "path": "implementations/cli/src/commands/update-windows-install.ts",
+      "kind": "derived-output",
+      "anchor": "process.exitCode = status ?? 1",
+      "class": "non-render/control",
+      "rationale": "The Windows npm wrapper propagates its child process exit code, not an agent's presence or work progress."
+    },
+    {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "ep={ep} target={detail} feed={mesh.feed} width={size.cols} heigh",
@@ -578,13 +592,13 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "      <NeedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
+      "anchor": "    <NeedsYou\n          waiting={mesh.signals.waiting}\n          boxWidth={siz",
       "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "eedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
+      "anchor": "dsYou\n          waiting={mesh.signals.waiting}\n          boxWidth={siz",
       "class": "non-render/control"
     },
     {
@@ -3272,7 +3286,7 @@
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "status-token",
-      "anchor": "    >\n      {status === \"working\" && <Orbit r={size / 2 +",
+      "anchor": "tle>}\n      {status === \"working\" && <Orbit r={size / 2 +",
       "class": "presence-only-glyph/count",
       "rationale": "A topology node's status dot, drawn as the avatars draw it, and a working node's ring and arc: presence glyphs that are aria-hidden and say nothing in text."
     },
@@ -5496,6 +5510,20 @@
     },
     {
       "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "`npm exited with status ${r.status}`",
+      "class": "non-render/control",
+      "rationale": "Setup's optional global install reports the npm child process exit status, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "derived-output",
+      "anchor": "`${detail}\\n\\nInstall it yourself with ${codeSpan(installCmd)}, or keep using ${codeSpan(runnerCmd)}.`",
+      "class": "non-render/control",
+      "rationale": "Setup's optional global install warning reports an npm failure and retry commands, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
       "kind": "status-token",
       "anchor": ".startup.state}`, tone: \"waiting\", mark: \"!\" }\n    : r.ha",
       "class": "non-render/control",
@@ -6552,6 +6580,20 @@
       "rationale": "Conversation identity discovery failure: the discovery document's HTTP status; not agent presence."
     },
     {
+      "path": "implementations/cli/src/lib/conversation-resume.ts",
+      "kind": "derived-output",
+      "anchor": "`the conversation resume exchange did not confirm its approval (HTTP ${response.status}); the saved identity was retained.${hint}`",
+      "class": "non-render/control",
+      "rationale": "The HTTP response status is the outcome of an authority check, not an agent's presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-resume.ts",
+      "kind": "derived-output",
+      "anchor": "` Wait at least ${seconds} seconds before trying again.`",
+      "class": "non-render/control",
+      "rationale": "The authority's retry delay advises when to repeat the probe and says nothing about an agent's work or presence."
+    },
+    {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
       "anchor": "ent, problem))}`, tone: \"waiting\" }\n    : s.preparedState",
@@ -6606,6 +6648,13 @@
       "anchor": "`the seed child exited with status ${r.status}`",
       "class": "non-render/control",
       "rationale": "Connector seed failure: the seed child's exit status; process state, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/seed/store.ts",
+      "kind": "derived-output",
+      "anchor": "`Warning: could not remove old seed-store generation at ${oneLine(genDir)} (${status}). The old copy was left in place.`",
+      "class": "non-render/control",
+      "rationale": "Seed-store cleanup warning: status is a filesystem removal error, not agent presence."
     },
     {
       "path": "implementations/cli/src/commands/backup-maintenance.ts",
@@ -6750,14 +6799,14 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{palette.active || newAgent ? <Box position=\"absolute\" width={size.cols} height={size.rows}\n        alignItems=\"center\" justifyContent=\"center\">\n        {newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}\n          applications={extensionNames(\"connector\")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}\n          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}\n          onClose={() => setNewAgent(false)}\n          onBack={() => { setNewAgent(false); setPalette({ active: true, query: \"\" }); }} />\n          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}\n            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}\n            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}\n            onNewAgent={() => { setPalette({ active: false, query: \"\" }); setNewAgent(true); }}\n            onCancel={() => setPalette({ active: false, query: \"\" })} />}\n      </Box> : null}",
+      "anchor": "{palette.active || newAgent ? <Box position=\"absolute\" width={size.cols} height={size.rows}\n        alignItems=\"center\" justifyContent=\"center\">\n        {newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}\n          applications={extensionNames(\"connector\")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}\n          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}\n          onClose={() => setNewAgent(false)}\n          onBack={() => { setNewAgent(false); setPalette({ active: true, query: \"\" }); }} />\n          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}\n            canControl={!!canControl} canBack={!!onBack} width={size.cols} readManaged={readPaletteAgents}\n            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}\n            onNewAgent={() => { setPalette({ active: false, query: \"\" }); setNewAgent(true); }}\n            onCancel={() => setPalette({ active: false, query: \"\" })} />}\n      </Box> : null}",
       "class": "non-render/control",
       "rationale": "Console overlay wiring: shows the palette or spawn form and hands the mesh snapshot to the component; the component's own text is classified at its sinks."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}\n          applications={extensionNames(\"connector\")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}\n          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}\n          onClose={() => setNewAgent(false)}\n          onBack={() => { setNewAgent(false); setPalette({ active: true, query: \"\" }); }} />\n          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}\n            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}\n            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}\n            onNewAgent={() => { setPalette({ active: false, query: \"\" }); setNewAgent(true); }}\n            onCancel={() => setPalette({ active: false, query: \"\" })} />}",
+      "anchor": "{newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}\n          applications={extensionNames(\"connector\")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}\n          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}\n          onClose={() => setNewAgent(false)}\n          onBack={() => { setNewAgent(false); setPalette({ active: true, query: \"\" }); }} />\n          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}\n            canControl={!!canControl} canBack={!!onBack} width={size.cols} readManaged={readPaletteAgents}\n            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}\n            onNewAgent={() => { setPalette({ active: false, query: \"\" }); setNewAgent(true); }}\n            onCancel={() => setPalette({ active: false, query: \"\" })} />}",
       "class": "non-render/control",
       "rationale": "Console overlay wiring: chooses the spawn form or the command palette and passes the mesh snapshot as a prop; no status text is rendered here."
     },
@@ -7649,7 +7698,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`",
+      "anchor": "` ${who} is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists. A new session with the same name does not receive it.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
@@ -8128,6 +8177,69 @@
       "anchor": "releaseMaintenanceLock(lock)",
       "class": "non-render/control",
       "rationale": "Preserve control flow: releases the maintenance lock; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "where` from cwd.\n  if (!npmEngine(resolved) && basename(dirname(res",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: checks whether the path from `asdf which npm` is already a direct npm or Corepack entry; `result.status` is the asdf child process exit code, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "e(resolved) && basename(dirname(resolved)) === \"shims\" &&\n      b",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: inspects the parent directory name of the resolved npm path to detect an asdf plugin shim; filesystem path control flow, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "asename(dirname(dirname(dirname(resolved)))) === \"plugins\") {\n   ",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: inspects the ancestor directory name of the resolved npm path to detect an asdf plugin shim; filesystem path control flow, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "here\", basename(dirname(dirname(resolved)))]);\n    if (timedOut(w",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: extracts the asdf plugin directory name to pass to `asdf where`; child process argv construction, not peer presence or rendered output."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "timedOut(where)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: checks whether `asdf where` timed out (`ETIMEDOUT`) so a transient timeout is not cached as a permanent negative; child process error handling, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "isAbsolute(installed)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: validates that `asdf where` stdout is an absolute directory path (`where.status` is the child exit code); path validation, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "resolve(installed)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: normalizes the `asdf where` install directory before joining `bin/npm`; filesystem path construction, not peer presence or rendered output."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "resolveOnPath(resolved, env)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: verifies that the unwrapped npm binary is executable before returning it for child process launch; executable lookup, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "d, env) === resolved && npmEngine(resolved) ? { resolved } : {};\n}\n",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: accepts `asdf which npm` / `asdf where` output only when `npmEngine` recognises it as npm or Corepack; executable identity check, not peer presence."
     }
   ]
 }

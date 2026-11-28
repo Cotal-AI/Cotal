@@ -20,12 +20,14 @@
  *  G. remove: commands leave the surface; the manifest empties.
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { recordMesh } from "@cotal-ai/workspace";
+import { promisify } from "node:util";
+import { hostPackageDir, recordMesh } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
@@ -56,8 +58,8 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTA
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = resolve(import.meta.dirname, "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = resolve(import.meta.dirname, "..", "cotal.ts");
-const cotal = (args: string[], timeout = 180_000) => {
-  const options = { encoding: "utf8" as const, env, cwd: sandbox, timeout };
+const cotal = (args: string[], { timeout = 180_000, extraEnv = {} }: { timeout?: number; extraEnv?: NodeJS.ProcessEnv } = {}) => {
+  const options = { encoding: "utf8" as const, env: { ...env, ...extraEnv }, cwd: sandbox, timeout };
   assertSmokeSandboxDown(sandboxAnchor, args, options);
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
@@ -142,13 +144,122 @@ const extDir = join(configDir, "cotal", "extensions");
 const manifestPath = join(extDir, "extensions.json");
 const installedIndex = join(extDir, "node_modules", "cotal-ext-fixture", "index.js");
 const installedPkg = join(extDir, "node_modules", "cotal-ext-fixture", "package.json");
+const goodFixture = fixture("local extension", GOOD, { name: "cotal-ext-fixture", main: "./index", bin: { "fixture-bin": "bin.js" } });
 
 // -- empty state ---------------------------------------------------------------------------------
 ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
 
+{
+  const core = "@cotal-ai/core";
+  const { version } = JSON.parse(readFileSync(join(hostPackageDir(core), "package.json"), "utf8")) as { version: string };
+  const name = "demo-wrong-peer";
+  const pkg = "cotal-wrong-peer-demo";
+  const marker = join(sandbox, "wrong-peer-imported");
+  const body = `import { writeFileSync } from "node:fs";
+import { registry } from "@cotal-ai/core";
+writeFileSync(${JSON.stringify(marker)}, "imported");
+registry.register({ kind: "command", name: ${JSON.stringify(name)}, summary: "Print a greeting", run() { console.log("peer ran"); } });`;
+  const incompatible = fixture(pkg, body, { peerDependencies: { [core]: ">=99.0.0" } });
+  const operand = `./${pkg}`;
+  const list = () => cotal(["ext", "list", "--json"]);
+  const inventory = list().stdout;
+  const wrong = cotal(["ext", "add", operand]);
+  ok("a cleanly importing package with an incompatible core range is refused",
+    wrong.status === 1 && wrong.stdout === "" && wrong.stderr.startsWith(`✗ ${pkg} declares ${core} ">=99.0.0"`)
+      && wrong.stderr.includes(`${core} ${version}`) && wrong.stderr.includes("`npm view cotal-ai versions --json`"), wrong);
+  ok("a fresh refusal does not create the extension root or expose or import the command",
+    !existsSync(extDir) && !existsSync(marker) && list().stdout === inventory && cotal([name]).status !== 0);
+  ok("a fresh refusal leaves no staging or rollback files",
+    readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
+
+  const compatible = fixture("cotal-ext-compatible-core", body, { peerDependencies: { [core]: version } });
+  const added = cotal(["ext", "add", compatible]);
+  ok("an exact compatible peer installs and its command runs",
+    added.status === 0 && added.stdout.includes("added cotal-ext-compatible-core@1.0.0") && cotal([name]).stdout.trim() === "peer ran", added);
+  const prior = list().stdout;
+  const files = ["package.json", "package-lock.json", "extensions.json"].map((file) => join(extDir, file));
+  const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const before = files.map(hash);
+  const inode = statSync(extDir).ino;
+  rmSync(marker);
+  const metadata = join(incompatible, "package.json");
+  const manifest = JSON.parse(readFileSync(metadata, "utf8"));
+  writeFileSync(metadata, JSON.stringify({ ...manifest, name: "cotal-ext-compatible-core", peerDependenciesMeta: { [core]: { optional: true } } }));
+  const retry = cotal(["ext", "add", operand]);
+  ok("an optional incompatible core is refused on re-add",
+    retry.status === 1 && retry.stdout === "" && retry.stderr.startsWith(`✗ cotal-ext-compatible-core declares ${core} ">=99.0.0"`)
+      && retry.stderr.includes(`${core} ${version}`) && retry.stderr.includes("`npm view cotal-ai versions --json`"), retry);
+  ok("the refused re-add preserves the live root, manifest and npm metadata and discards its stage",
+    statSync(extDir).ino === inode && files.every((file, i) => hash(file) === before[i]) && list().stdout === prior
+      && !existsSync(marker) && !existsSync(join(extDir, "node_modules", pkg))
+      && readdirSync(join(configDir, "cotal")).every((entry) => !entry.startsWith(".extensions.")));
+  const invalid = cotal(["ext", "add", fixture("cotal-ext-invalid-core", body, { peerDependencies: { [core]: "nightly" } })]);
+  ok("an unparseable core range is refused with its declaration",
+    invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes('"nightly", which is not a valid version range') && invalid.stderr.includes(version), invalid);
+  ok("the compatible install still removes", cotal(["ext", "remove", "cotal-ext-compatible-core"]).status === 0);
+}
+
+{
+  const pinned = "0.1.0";
+  const official = "@cotal-ai/tmux";
+  const thirdParty = "cotal-ext-registry-peer";
+  const command = "registry-peer";
+  const body = GOOD.replace('name: "hello-ext"', `name: "${command}"`);
+  const packages = [official, thirdParty].map((name, i) => {
+    const base = fixture(`registry-peer-${i}/package`, body, {
+      name, version: pinned, peerDependencies: { "@cotal-ai/core": pinned },
+    });
+    const archive = execFileSync("tar", ["-czf", "-", "-C", join(base, ".."), "package"]);
+    const meta = JSON.parse(readFileSync(join(base, "package.json"), "utf8"));
+    return { name, base, meta, archive, integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}` };
+  });
+  let origin: string;
+  const requests = new Set<string>();
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(req.url ?? "");
+    requests.add(path);
+    const index = packages.findIndex(({ name }, i) => path === `/${name}` || path === `/package-${i}.tgz`);
+    const pkg = packages[index];
+    if (!pkg) { res.writeHead(404).end(); return; }
+    if (path.endsWith(".tgz")) { res.end(pkg.archive); return; }
+    const dist = { tarball: `${origin}/package-${index}.tgz`, integrity: pkg.integrity };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ name: pkg.name, versions: { [pinned]: { ...pkg.meta, dist } } }));
+  });
+  try {
+    await new Promise<void>((ready, reject) => server.once("error", reject).listen(0, "127.0.0.1", ready));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("loopback registry has no TCP port");
+    origin = `http://127.0.0.1:${address.port}`;
+    const npmrc = join(sandbox, "peer-registry.npmrc");
+    writeFileSync(npmrc, `@cotal-ai:registry=${origin}\n`);
+    const addRegistry = (name: string) => promisify(execFile)(realNode, [tsxCli, binCotal, "ext", "add", `${name}@${pinned}`], {
+      cwd: sandbox, timeout: 180_000,
+      env: { ...env, npm_config_userconfig: npmrc, npm_config_registry: origin, npm_config_fetch_retries: "0" },
+    });
+    const added = await addRegistry(official);
+    const manifest = readFileSync(manifestPath, "utf8");
+    const pin = JSON.parse(manifest).extensions.find((entry: { pkg: string }) => entry.pkg === official);
+    const peer = join(extDir, "node_modules", official, "node_modules", "@cotal-ai", "core");
+    ok("an explicit older first-party registry pin installs and links the bundled core",
+      requests.has("/package-0.tgz") && added.stdout.includes(`added ${official}@${pinned}`)
+        && pin?.version === pinned && pin.provides.some((entry: { name: string }) => entry.name === command)
+        && realpathSync(peer) === realpathSync(hostPackageDir("@cotal-ai/core")), added);
+    const refused = await addRegistry(thirdParty).then(() => undefined, (error: { code?: number; stderr?: string }) => error);
+    ok("an incompatible third-party registry package is refused before replacing the inventory",
+      requests.has("/package-1.tgz") && refused?.code === 1 && refused.stderr?.includes(`${thirdParty} declares @cotal-ai/core "${pinned}"`) === true
+        && readFileSync(manifestPath, "utf8") === manifest, refused);
+    const local = cotal(["ext", "add", packages[0]!.base]);
+    ok("a local build is checked even when its name matches an official package",
+      local.status === 1 && local.stderr.includes(`${official} declares @cotal-ai/core "${pinned}"`)
+        && readFileSync(manifestPath, "utf8") === manifest, local);
+    ok("the pinned registry package still removes", cotal(["ext", "remove", official]).status === 0);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+}
+
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const goodFixture = fixture("cotal-ext-fixture", GOOD, { main: "./index", bin: { "fixture-bin": "bin.js" } });
   writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
   const r = cotal(["ext", "add", goodFixture]);
   ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
@@ -159,6 +270,24 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
   const run = cotal(["hello-ext"]);
   ok("a later command resolves the same npm main", run.status === 0 && run.stdout.trim() === "hello world", run);
+}
+
+{
+  const pkg = "cotal-ext-plural-kind";
+  const name = "hello-ext-typo";
+  const path = fixture(pkg, GOOD.replace('kind: "command"', 'kind: "commands"').replace('name: "hello-ext"', `name: "${name}"`));
+  const add = cotal(["ext", "add", path]);
+  ok("add reports a plural kind as a registry entry and explains how to register a command",
+    add.status === 0 && add.stdout.includes(`added ${pkg}@1.0.0`) && !add.stdout.includes(`provides: commands:${name}`)
+      && add.stdout.includes(`Registered commands:${name} in the registry only.`) && add.stdout.includes("Use kind `command`"), add);
+  const list = cotal(["ext", "list"]);
+  ok("list retains the extension and its original registry contribution",
+    list.status === 0 && list.stdout.includes(pkg) && list.stdout.includes(`commands:${name}`), list);
+  const help = cotal(["help"]);
+  const run = cotal([name]);
+  ok("a plural kind does not add a CLI command", help.status === 0 && !help.stdout.includes(name)
+    && run.status === 1 && run.stderr.includes(`unknown command: ${name}`) && run.stdout === "", run);
+  ok("the extension with the plural kind still removes cleanly", cotal(["ext", "remove", pkg]).status === 0);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
@@ -172,7 +301,17 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   ok("<TAB> offers cached flags WITHOUT importing", comp.status === 0 && /--shout/.test(comp.stdout), comp.stdout);
   const run = cotal(["hello-ext"]);
   ok("running the broken extension fails loud, naming it", run.status === 1 && /cotal-ext-fixture/.test(run.stderr) && /BOOM/.test(run.stderr), run.stderr.slice(0, 300));
-  writeFileSync(installedIndex, good);
+  if (process.platform !== "win32") {
+    const retry = /`(?:pnpm )?cotal (ext add [^`]+)`/.exec(run.stderr)?.[1];
+    ok("the import error prints a reinstall command", retry !== undefined, run.stderr);
+    // Use the smoke's launcher but let the shell parse the printed arguments unchanged.
+    const readded = spawnSync("sh", ["-c", `"$@" ${retry}`, "sh", realNode, tsxCli, binCotal], {
+      encoding: "utf8", env, cwd: sandbox, timeout: 180_000,
+    });
+    ok("the printed reinstall command accepts a path with spaces", readded.status === 0 && /added cotal-ext-fixture/.test(readded.stdout), readded.stderr);
+  } else {
+    writeFileSync(installedIndex, good);
+  }
 }
 
 // -- B2: a peer link left by another Cotal host is rebound before lazy import -----------------------
@@ -261,7 +400,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
 
 // -- C2: re-adding an installed extension is a clean refresh (manifest keeps ONE entry) ------------
 {
-  const r = cotal(["ext", "add", join(sandbox, "cotal-ext-fixture")]);
+  const r = cotal(["ext", "add", goodFixture]);
   ok("re-add of the same extension exits 0", r.status === 0, r.stderr.slice(-300));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("re-add keeps one manifest entry at the same pin", m.extensions.length === 1 && m.extensions[0].version === "1.0.0", m.extensions);
@@ -322,10 +461,29 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 0 && /already absent/.test(staleClaim.stdout) && !existsSync(mutationLock), staleClaim.stdout + staleClaim.stderr);
 
   mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
-  const unreadableStarted = Date.now();
-  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], 3_000);
-  const unreadableElapsed = Date.now() - unreadableStarted;
-  ok("an unreadable mutation lock fails loud instead of busy-spinning", unreadable.status === 1 && /unreadable/.test(unreadable.stderr) && unreadableElapsed < 3_000, unreadable.stderr + ` (${unreadableElapsed}ms)`);
+  // Observe the real lock read without including CLI startup in the assertion.
+  const probe = join(sandbox, "count-lock-reads.cjs");
+  const countFile = join(sandbox, "lock-read-count");
+  writeFileSync(probe, `
+const fs = require("node:fs");
+const read = fs.readFileSync;
+let reads = 0;
+fs.readFileSync = function (path, ...args) {
+  if (path === ${JSON.stringify(mutationLock)}) reads++;
+  return read.call(this, path, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+process.on("exit", () => {
+  if (reads > 0) fs.writeFileSync(${JSON.stringify(countFile)}, String(reads));
+});
+`);
+  const unreadable = cotal(["ext", "add", fixture("cotal-ext-unreadable-lock", GOOD.replace('name: "hello-ext"', 'name: "unreadable-lock"'))], {
+    timeout: 30_000,
+    extraEnv: { NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${JSON.stringify(probe)}`].filter(Boolean).join(" ") },
+  });
+  const lockReads = existsSync(countFile) ? readFileSync(countFile, "utf8") : "none recorded";
+  ok("an unreadable mutation lock fails loud instead of retrying", unreadable.status === 1 && unreadable.stderr.includes(`advisory lock path ${mutationLock} is unreadable`) && lockReads === "1",
+    { stderr: unreadable.stderr, error: unreadable.error?.message, lockReads });
   rmSync(mutationLock, { recursive: true, force: true });
 
   const priorManifest = readFileSync(manifestPath, "utf8");

@@ -2,15 +2,157 @@ import "../../implementations/cli/smoke/update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { acquireLock } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { holdLifetime } from "../daemon/lifetime.js";
+
+async function reclaimPreviousStages(prefix: string, entry: string, version: string, runUpdate: (...args: string[]) => Promise<string>): Promise<void> {
+  const key = createHash("sha256").update(entry).digest("hex");
+  const sets = join(prefix, "installs", key, "sets");
+  const selected = join(sets, version, "cotal");
+  const previous = join(sets, "0.0.0-test", "cotal");
+  const foreign = join(prefix, "installs", "f".repeat(64), "sets", "0.0.0-test", "cotal");
+  const outside = join(dirname(dirname(prefix)), "outside-config/cotal");
+  const linkAlias = join(dirname(dirname(prefix)), "config-alias/cotal");
+  const unprotectedAlias = join(dirname(dirname(prefix)), "unprotected-alias/cotal");
+  const outsideAlias = join(dirname(dirname(prefix)), "outside-alias/cotal");
+  for (const alias of [linkAlias, unprotectedAlias, outsideAlias]) mkdirSync(dirname(alias), { recursive: true, mode: 0o700 });
+  symlinkSync(prefix, linkAlias);
+  symlinkSync(prefix, unprotectedAlias);
+  chmodSync(dirname(unprotectedAlias), 0o777);
+  symlinkSync(outside, outsideAlias);
+  mkdirSync(selected, { recursive: true, mode: 0o700 });
+  renameSync(join(prefix, "seed"), join(selected, "seed"));
+  const ordinaryName = ".extensions.stage-Mn5678", stageName = ".extensions.stage-Kl1234.ready";
+  const plantStages = (root: string) => {
+    const ordinary = join(root, ordinaryName), ready = join(root, stageName);
+    mkdirSync(join(ordinary, "config/cotal/extensions"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(ordinary, "config/cotal/extensions/package.json"), "{}");
+    mkdirSync(ready, { recursive: true, mode: 0o755 });
+    writeFileSync(join(ready, "package.json"), "{}");
+    return { ordinary, ready };
+  };
+  for (const root of [previous, prefix, foreign, outside]) {
+    const path = join(root, "extensions");
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, "package.json"), "{}");
+    plantStages(root);
+  }
+  const collectPaths = (dir: string): string[] => [dir, ...readdirSync(dir).sort().flatMap(name => {
+    const child = join(dir, name);
+    return lstatSync(child).isDirectory() ? collectPaths(child) : [child];
+  })];
+  const outsidePaths = collectPaths(outside), foreignPaths = collectPaths(foreign);
+  const watchedPaths = [...outsidePaths, ...foreignPaths];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const resetTimes = () => {
+    for (const path of watchedPaths) if (!lstatSync(path).isSymbolicLink()) utimesSync(path, nowSec - 120, nowSec - 60);
+  };
+  resetTimes();
+  const statPaths = (paths: string[], includeDirAtime = true) => paths.map(path => {
+    const stat = lstatSync(path, { bigint: true });
+    return {
+      path, mode: stat.mode, uid: stat.uid, gid: stat.gid, size: stat.size, ino: stat.ino,
+      ...(includeDirAtime || !stat.isDirectory() ? { atimeNs: stat.atimeNs } : {}),
+      mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs,
+    };
+  });
+  const publishSnapshot = (snapshot: string) => {
+    const data = JSON.stringify({ v: 1, entry, version, root: selected, snapshot });
+    for (const path of [join(sets, "current.json"), join(sets, version, "selection.json")]) writeFileSync(path, data, { mode: 0o600 });
+  };
+  const publish = (root: string) => publishSnapshot(join(root, ".update-snapshot-Kl1234"));
+  const current = async () => assert.match(await runUpdate("--self"), /installed package closure is current\. No connector reconciliation was run\./);
+  try {
+    for (const [label, snapshot] of [
+      ["outside config", join(outside, ".update-snapshot-Kl1234")],
+      ["dotdot path", `${outside}/../../config/cotal/.update-snapshot-Kl1234`],
+      ["foreign installation set", join(foreign, ".update-snapshot-Kl1234")],
+      ["unprotected alias chain", join(unprotectedAlias, ".update-snapshot-Kl1234")],
+      ["alias to outside folder", join(outsideAlias, ".update-snapshot-Kl1234")],
+    ] as const) {
+      const beforeSelf = statPaths(watchedPaths);
+      publishSnapshot(snapshot);
+      await current();
+      assert.deepEqual(statPaths(watchedPaths), beforeSelf, `${label} (--self): nothing outside this installation is read, changed or removed`);
+      assert.equal(collectPaths(outside).length + collectPaths(foreign).length, watchedPaths.length, `${label} (--self): no entry created outside this installation`);
+      for (const root of [previous, prefix, foreign, outside]) {
+        assert.ok(existsSync(join(root, ordinaryName)) && existsSync(join(root, stageName)), `${label} (--self): nothing is reclaimed`);
+      }
+      const beforePlainOutside = statPaths(outsidePaths), beforePlainForeign = statPaths(foreignPaths, false);
+      await runUpdate();
+      assert.deepEqual(statPaths(outsidePaths), beforePlainOutside, `${label} (plain): nothing outside the config folder is read, changed or removed`);
+      assert.deepEqual(statPaths(foreignPaths, false), beforePlainForeign, `${label} (plain): nothing in another installation is read, changed or removed`);
+      assert.equal(collectPaths(outside).length + collectPaths(foreign).length, watchedPaths.length, `${label} (plain): no entry created outside this installation`);
+      resetTimes();
+      for (const root of [previous, prefix, foreign, outside]) {
+        assert.ok(existsSync(join(root, ordinaryName)) && existsSync(join(root, stageName)), `${label} (plain): nothing is reclaimed`);
+      }
+    }
+  } finally { chmodSync(dirname(unprotectedAlias), 0o700); }
+  const statLink = () => {
+    const stat = lstatSync(linkAlias, { bigint: true });
+    return { isLink: stat.isSymbolicLink(), target: readlinkSync(linkAlias), mode: stat.mode, uid: stat.uid, gid: stat.gid, ino: stat.ino, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+  };
+  const beforeAliasLink = statLink();
+  assert.equal(beforeAliasLink.isLink && beforeAliasLink.target === prefix, true);
+  const beforeAliasSelf = statPaths(watchedPaths);
+  publishSnapshot(join(linkAlias, ".update-snapshot-Kl1234"));
+  await current();
+  assert.ok(!existsSync(join(prefix, ordinaryName)) && !existsSync(join(prefix, stageName)), "protected config alias (--self): reclaims top-level legacy stages in the real config folder");
+  assert.equal(readFileSync(join(prefix, "extensions", "package.json"), "utf8"), "{}", "protected config alias (--self): keeps installed top-level extensions");
+  assert.deepEqual(statLink(), beforeAliasLink, "protected config alias (--self): leaves the symbolic link untouched");
+  assert.deepEqual(statPaths(watchedPaths), beforeAliasSelf, "protected config alias (--self): nothing outside the config folder is read, changed or removed");
+  assert.equal(collectPaths(outside).length + collectPaths(foreign).length, watchedPaths.length, "protected config alias (--self): no entry created outside this installation");
+  assert.ok(existsSync(join(previous, ordinaryName)) && existsSync(join(previous, stageName)), "protected config alias (--self): leaves unselected version sets untouched");
+  plantStages(prefix);
+  const beforeAliasPlainOutside = statPaths(outsidePaths), beforeAliasPlainForeign = statPaths(foreignPaths, false);
+  await runUpdate();
+  assert.ok(!existsSync(join(prefix, ordinaryName)) && !existsSync(join(prefix, stageName)), "protected config alias (plain): reclaims top-level legacy stages in the real config folder");
+  assert.equal(readFileSync(join(prefix, "extensions", "package.json"), "utf8"), "{}");
+  assert.deepEqual(statLink(), beforeAliasLink, "protected config alias (plain): leaves the symbolic link untouched");
+  assert.deepEqual(statPaths(outsidePaths), beforeAliasPlainOutside, "protected config alias (plain): nothing outside the config folder is read, changed or removed");
+  assert.deepEqual(statPaths(foreignPaths, false), beforeAliasPlainForeign, "protected config alias (plain): nothing in another installation is read, changed or removed");
+  assert.equal(collectPaths(outside).length + collectPaths(foreign).length, watchedPaths.length, "protected config alias (plain): no entry created outside this installation");
+  assert.ok(existsSync(join(previous, ordinaryName)) && existsSync(join(previous, stageName)), "protected config alias (plain): leaves unselected version sets untouched");
+  plantStages(prefix);
+  for (const root of [previous, prefix]) {
+    const ordinary = join(root, ordinaryName), ready = join(root, stageName);
+    assert.ok(existsSync(ordinary) && existsSync(ready), "cleanup does not guess an unselected source");
+    publish(root);
+    const writer = acquireLock(join(root, ".extensions.lock"), { label: "smoke previous extension writer" });
+    try {
+      await current();
+      assert.ok(existsSync(ordinary) && existsSync(ready), "cleanup leaves previous stages with a live writer");
+    } finally { writer.release(); }
+    const journal = join(root, ".extensions-promotion.json");
+    writeFileSync(journal, "{}", { mode: 0o600 });
+    await current();
+    assert.ok(existsSync(ordinary) && existsSync(ready), "cleanup leaves previous stages with a promotion journal");
+    rmSync(journal);
+    await current();
+    assert.ok(!existsSync(ordinary) && !existsSync(ready), "current self-update removes previous unpublished stages");
+    assert.equal(readFileSync(join(root, "extensions", "package.json"), "utf8"), "{}", "cleanup keeps the previous installed extensions");
+    assert.ok(existsSync(join(selected, "seed/stamp.json")), "cleanup keeps the selected seed inventory");
+    plantStages(root);
+    await runUpdate();
+    assert.ok(!existsSync(ordinary) && !existsSync(ready), "plain update also removes previous unpublished stages");
+    assert.equal(readFileSync(join(root, "extensions", "package.json"), "utf8"), "{}");
+  }
+  const selectedStages = plantStages(selected);
+  publish(selected);
+  await runUpdate();
+  assert.ok(existsSync(selectedStages.ordinary) && existsSync(selectedStages.ready), "previous-stage scan skips the active selected root");
+  rmSync(selectedStages.ordinary, { recursive: true, force: true });
+  rmSync(selectedStages.ready, { recursive: true, force: true });
+}
 
 if (process.platform !== "linux") {
   console.log("current installed closure fast path is Linux-only");
@@ -151,13 +293,57 @@ console.log('LEGACY_READS=' + legacyReads);
         return output;
       };
       try {
+        const cleanEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("COTAL_")));
+        const runUpdate = (home: string, ...args: string[]) => updateOther(home, { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "state"),
+          XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: join(home, "runtime"), TMPDIR: home }, ...args);
         // Keep the live Manager's launch entry unavailable, as during a concurrent npm replacement.
         renameSync(entry, `${entry}.reinstall`);
         try {
-          const output = await updateOther(otherHome, { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"),
-            XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(otherHome, "runtime"), TMPDIR: otherHome }, "--self");
-          assert.match(output, /installed package closure is current\. No connector reconciliation was run\./);
+          const currentUpdate = () => runUpdate(otherHome, "--self");
+          const prefix = join(config, "cotal");
+          const stage = join(prefix, ".extensions.stage-Ab1234");
+          const copied = join(stage, "config/cotal/extensions");
+          mkdirSync(copied, { recursive: true, mode: 0o700 });
+          writeFileSync(join(copied, "package.json"), "{}");
+          const ready = [join(prefix, ".extensions.stage-Ef9012.ready"), join(prefix, ".extensions.stage-Gh3456.ready")];
+          const outside = join(otherHome, "keep");
+          mkdirSync(outside, { mode: 0o700 });
+          writeFileSync(join(outside, "marker"), "keep");
+          for (const [index, path] of ready.entries()) {
+            const wrapper = join(path.slice(0, -".ready".length), "config/cotal/extensions");
+            mkdirSync(dirname(wrapper), { recursive: true, mode: 0o700 });
+            cpSync(copied, wrapper, { recursive: true });
+            chmodSync(wrapper, index === 0 ? 0o700 : 0o755);
+            renameSync(wrapper, path);
+            symlinkSync(outside, join(path, "external"));
+          }
+          const link = join(prefix, ".extensions.stage-Cd5678");
+          symlinkSync(join(prefix, "seed"), link);
+          symlinkSync(outside, `${link}.ready`);
+          const writable = join(prefix, ".extensions.stage-Ij7890.ready");
+          mkdirSync(writable);
+          chmodSync(writable, 0o777);
+          const writer = acquireLock(join(prefix, ".extensions.lock"), { label: "smoke extension writer" });
+          try {
+            assert.match(await currentUpdate(), /installed package closure is current\. No connector reconciliation was run\./);
+            assert.equal(readFileSync(join(copied, "package.json"), "utf8"), "{}");
+            for (const path of ready) assert.equal(readFileSync(join(path, "package.json"), "utf8"), "{}");
+          } finally { writer.release(); }
+          assert.match(await currentUpdate(), /installed package closure is current\. No connector reconciliation was run\./);
+          assert.ok(!existsSync(stage), "current self-update removes an unpublished stage once the writer is gone");
+          for (const path of ready) {
+            assert.ok(!existsSync(path), "current self-update removes unpublished ready copies");
+            assert.ok(!existsSync(path.slice(0, -".ready".length)), "current self-update removes empty stage wrappers");
+          }
+          assert.ok(existsSync(link) && existsSync(`${link}.ready`), "cleanup leaves similarly named links alone");
+          assert.ok(existsSync(writable), "cleanup leaves a directory other accounts can write alone");
+          assert.equal(readFileSync(join(outside, "marker"), "utf8"), "keep", "cleanup does not follow nested links");
+          assert.ok(existsSync(join(prefix, "seed/stamp.json")), "cleanup leaves the selected inventory alone");
         } finally { renameSync(`${entry}.reinstall`, entry); }
+        const retainedHome = join(root, "retained-home"), retainedConfig = join(retainedHome, "config");
+        seedCurrent(retainedConfig);
+        await reclaimPreviousStages(join(retainedConfig, "cotal"), realpathSync.native(join(other, "dist/cotal.js")), version,
+          (...args) => runUpdate(retainedHome, ...args));
 
         // The installer adds another prefix in the same home, while the selected stack still uses the old one.
         // No connectors are installed in this prefix. A missing stamp still requires reconciliation.

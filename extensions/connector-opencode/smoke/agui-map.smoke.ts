@@ -99,7 +99,8 @@ const R = await replay(true);
 {
   const parts = fixture.reduce((n, m) => n + m.parts.length, 0);
   const tools = fixture.reduce((n, m) => n + m.parts.filter((p) => p.type === "tool").length, 0);
-  c("fixture:every record in the session was offered to the mapper, each tool's call with it", R.records === parts + tools, { R: R.records, parts, tools });
+  const assistantHeaders = fixture.filter((m) => m.info.role === "assistant").length;
+  c("fixture:each assistant header and part reaches the mapper, each tool's call with it", R.records === parts + tools + assistantHeaders, { R: R.records, parts, tools, assistantHeaders });
   c("fixture:no frame violated the brackets", R.bracketError === null, R.bracketError);
   c("fixture:no run is left open at the end", R.brackets.runId === undefined, R.brackets.runId ?? null);
   const next = unitOf(R.mapper.map({

@@ -1,6 +1,6 @@
 import { EpEnvelopeError, loadCotalConfig, rejectionText, resolveAuthProvider, spawnEnvAllow } from "@cotal-ai/core";
 import type { Connector, ConnectorModelCatalog, ControlReply, EpCaller } from "@cotal-ai/core";
-import { agentAuthState, agentLifecycleSecretFilePaths, managerMachineId, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentAuthState, agentLifecycleSecretFilePaths, isTrustedProject, managerMachineId, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -119,7 +119,7 @@ export class StatusAndModels {
     // that cannot be read fails the read, as it refuses a spawn.
     let envAllow: readonly string[] | undefined;
     try {
-      envAllow = spawnEnvAllow(loadCotalConfig(this.config.workspaceRoot));
+      envAllow = spawnEnvAllow(loadCotalConfig(this.config.workspaceRoot, isTrustedProject));
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
@@ -129,7 +129,7 @@ export class StatusAndModels {
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
-        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries, ...(envAllow ? { envAllow } : {}) });
+        const catalog = await this.parts.harnessResolution.readCatalog(connector, harness.binaries, envAllow, refresh);
         return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
@@ -191,10 +191,10 @@ export class StatusAndModels {
   hostedSeatCount(): number { return this.agents.size; }
 
   /** Public local-seat facts for the owning machine daemon. No mesh or secret reads. */
-  hostedAgents(): { name: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
+  hostedAgents(): { name: string; id: string; lifecycleUid: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
     if (this.agents.size > 50) throw new Error("local agent inventory exceeds its bound");
     return [...this.agents.values()].map(a => ({
-      name: a.name, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
+      name: a.name, id: a.id, lifecycleUid: a.lifecycleUid, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
       cwd: a.launch.cwd, startedAt: new Date(a.startedAt).toISOString(), state: a.handle.status(),
     }));
   }

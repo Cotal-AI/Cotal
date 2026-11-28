@@ -28,7 +28,7 @@
  * the `ext` help.
  *
  * The `persona create` example runs as written against a fresh Cotal home; it lacked the
- * `--subscribe ""` a persona body needs. A usage refusal shows the help `--help` prints for the same
+ * `--subscribe=` a persona body needs. A usage refusal shows the help `--help` prints for the same
  * words, so a refused `persona create` shows its own help; it showed the `persona` help.
  *
  * A usage that declares several forms, one per line, as `linear` does, shows each form on its own
@@ -77,7 +77,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 // The locale decides the refusal's shape, so the host's is replaced with a UTF-8 one.
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !["FORCE_COLOR", "NO_COLOR", "LC_ALL", "LC_CTYPE"].includes(k)));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", LANG: "C.UTF-8" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", LANG: "C.UTF-8" };
 const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -375,13 +375,15 @@ if (process.platform !== "win32") {
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
   const rejected = JSON.parse(conflict.stdout);
   const copyDir = `${parent}/reviews-copy`;
-  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const retry = /cotal (endpoint init different --dir <new-directory>(?: --json)?)/.exec(rejected.error?.remedy ?? "");
+  if (!retry) throw new Error("endpoint init conflict omitted the alternate-directory command");
+  const copy = run(retry[1]!.split(" ").map((word) => word === "<new-directory>" ? copyDir : word), {}, cwd);
   const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
   check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
     conflict.status === 2 && conflict.stderr === "" && rejected.command === "endpoint init" && rejected.outcome === "refused"
     && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
-    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
-    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && retry?.[1]?.endsWith(" --json") && plainConflict.status === 2
+    && plainConflict.stderr.includes("cotal endpoint init different --dir <new-directory> --plain")
     && files.every((path, index) => readFileSync(path).equals(original[index]!))
     && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
     [conflict, plainConflict, copy, checked].map(shown));
@@ -989,7 +991,7 @@ for (const [args, usage, foreign] of [
   check(`${written} runs as written and saves a persona that reads no channels`, prepared.status === 0 && created.status === 0 && saved.status === 0 && JSON.stringify(JSON.parse(saved.stdout).result.definition.subscribe) === "[]", { prepared: shown(prepared), created: shown(created), saved: shown(saved) });
   const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
   check("persona create without --subscribe is refused with the persona create help, not the persona help",
-    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
+    usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe= for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
   if (process.platform !== "win32") {
     for (const [name, prompt, option] of [["short", "Review only", 0], ["long", "Review only", 1], ["dash", "-Review only", 0]] as const) {
       const refused = run(["persona", "create", name, `-p=${prompt}`, "--subscribe", ""], fresh, project);

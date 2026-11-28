@@ -45,6 +45,7 @@ const inventory = spaceBackupInventory(space);
 assert.equal(inventory.full.length, 12);
 assert.ok(inventory.backedUp.some((stream) => stream.name === eventPayloadStream(space) && stream.class === "messages"));
 assert.ok(!inventory.registry.includes(eventPayloadStream(space)));
+assert.deepEqual(canonicalBackupStreamConfig(space, chatStream(space)).subjects, ["cotal.backup_smoke.chat.>"]);
 assert.deepEqual(canonicalBackupStreamConfig(space, eventPayloadStream(space)), {
   ...canonicalBackupStreamConfig(space, chatStream(space)),
   name: eventPayloadStream(space),
@@ -150,6 +151,21 @@ const infos = [
 ];
 for (const info of infos) validatePersistentConsumer(space, info.stream_name, info);
 
+const openDm = consumer(dmStream(space), dmName,
+  dmDurableConfig(space, "local", "agent_1", uid, { inactiveThresholdMs: 600_000 }), 3);
+validatePersistentConsumer(space, dmStream(space), openDm, true);
+validatePersistentConsumer(space, dmStream(space), infos[2], true);
+assert.throws(() => validatePersistentConsumer(space, dmStream(space), openDm), /active unsupported setting inactive_threshold/);
+assert.throws(() => validatePersistentConsumer(space, dmStream(space), {
+  ...openDm, config: { ...openDm.config, inactive_threshold: 599_000_000_000 },
+}, true), /active unsupported setting inactive_threshold/);
+assert.throws(() => validatePersistentConsumer(space, dlvStream(space), {
+  ...infos[3], config: { ...infos[3].config, inactive_threshold: openDm.config.inactive_threshold },
+}, true), /active unsupported setting inactive_threshold/);
+assert.throws(() => validatePersistentConsumer(space, dmStream(space), {
+  ...openDm, config: { ...openDm.config, filter_subject: "unrelated.subject" },
+}, true), /noncanonical filter/);
+
 const byStream = Object.fromEntries(inventory.full.map((stream) => [stream, [] as ConsumerInfo[]]));
 for (const info of infos) byStream[info.stream_name].push(info);
 const statesByStream = Object.fromEntries(inventory.full.map((stream) => [stream, {
@@ -162,8 +178,14 @@ const statesByStream = Object.fromEntries(inventory.full.map((stream) => [stream
 const checkpoints = validatePersistentConsumerInventory(space, byStream, statesByStream);
 assert.equal(checkpoints.length, 5);
 const dmCheckpoint = checkpoints.find((checkpoint) => checkpoint.name.startsWith("dm_"))!;
-assert.equal(consumerConfigFromCheckpoint(space, dmCheckpoint).opt_start_seq, 4);
-assert.equal(consumerConfigFromCheckpoint(space, dmCheckpoint).deliver_policy, DeliverPolicy.StartSequence);
+const authDmConfig = consumerConfigFromCheckpoint(space, dmCheckpoint);
+assert.equal(authDmConfig.opt_start_seq, 4);
+assert.equal(authDmConfig.deliver_policy, DeliverPolicy.StartSequence);
+assert.equal(authDmConfig.inactive_threshold, undefined, "an authenticated DM checkpoint does not expire");
+assert.deepEqual(consumerConfigFromCheckpoint(space, dmCheckpoint, true), {
+  ...authDmConfig,
+  inactive_threshold: 600_000_000_000,
+}, "an open DM checkpoint keeps the same replay position and gets the stock expiry");
 const taskCheckpoint = checkpoints.find((checkpoint) => checkpoint.name === "svc_worker")!;
 assert.deepEqual(consumerConfigFromCheckpoint(space, taskCheckpoint), {
   ...taskDurableConfig(space, "worker"),

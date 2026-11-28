@@ -194,7 +194,18 @@ try {
   check("first enable with malformed JWKS starts no broker and leaves no IdP pin or project state", malformed.status === 2
     && field(malformed.out, "Code", "DEPENDENCY_UNAVAILABLE") && malformed.out.includes("did not serve usable JWKS")
     && !malformed.out.includes("Starting nats-server") && readdirSync(join(root, ".cotal")).length === 0, malformed.out);
-  const up = await cotal(["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE]);
+  const start = ["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE];
+  const open = await cotal(["up", "--open", "--no-manager", "--server", SERVER, "--space", SPACE]);
+  check("the original address hosts an open stack", open.status === 0, open.out);
+  const mismatch = await cotal(start);
+  check("a running stack refuses the auth change and keeps the original startup request", mismatch.status === 2 && field(mismatch.out, "Code", "LIFECYCLE_BLOCKED")
+    && mismatch.out.includes(root) && mismatch.out.includes("down --dry-run") && mismatch.out.includes("down --yes")
+    && mismatch.out.includes("retry the original startup command unchanged from its original folder"), mismatch.out);
+  const preview = await cotal(["down", "--dry-run"]);
+  check("reviewing the stop leaves the original listener up", (preview.status === 0 || preview.status === 4) && await isReachable(SERVER), preview.out);
+  const stopped = await cotal(["down", "--yes"]);
+  check("the reviewed stop closes the open listener", stopped.status === 0 && !await isReachable(SERVER), stopped.out);
+  const up = await cotal(start);
   check("up exits 0 on the same project with the corrected IdP", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
@@ -809,6 +820,12 @@ try {
     const up2 = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", server2], { cwd: root2, env });
     check("with no sign-in, up starts the other members and names cotal login first",
       up2.status === 4 && field(up2.out, "Native code", "AUTH_REQUIRED") && plain(up2.out).includes(`\nNext\n  cotal login --idp ${base}, then`), up2.out);
+    const scopedUp = ["up", "--root", root2, "--space", SPACE, "--seat-cap", "3", "--json"];
+    const partial = await cotal(scopedUp, { cwd: home2, env });
+    const retryUp = /then run `cotal ([^`]+)` again/.exec(partial.out)?.[1];
+    const copiedUp = retryUp === scopedUp.join(" ") ? await cotal(retryUp.split(" "), { cwd: home2, env }) : undefined;
+    check("the sign-in retry from another folder keeps the selected stack, manager seat cap and JSON receipt",
+      partial.status === 4 && copiedUp?.status === 4 && copiedUp.out.includes(`\"space\":\"${SPACE}\"`) && copiedUp.out.includes("AUTH_REQUIRED") && !existsSync(managerPid), partial.out);
     const refusedStart = await cotal(["manager", "start"], { cwd: root2, env });
     const refusedText = plain(refusedStart.out);
     check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",
@@ -860,13 +877,18 @@ try {
     const conflictError = (JSON.parse(conflictJson.out.split("\n").find((line) => line.startsWith("{")) ?? "null") as { error?: { code?: string; message?: string; remedy?: string } } | null)?.error;
     check("…and --json carries the same detail and remedy",
       conflictJson.status === 2 && conflictError?.code === "CONFLICT" && conflictError.message === modeConflict && conflictError.remedy === modeNext, conflictJson.out);
-    const teamFile = join(root2, "team.yaml");
+    const namedFile = "stopped team.yaml";
+    const teamFile = join(root2, namedFile);
     writeFileSync(teamFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${SPACE}\nbroker:\n  servers: ${server2}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
     const revokedBoot = await cotal(["team", "boot", teamFile], { cwd: root2, env });
     const revokedBootText = plain(revokedBoot.out);
     check("a team boot resuming it is refused AUTH_REQUIRED, exit 2, says nothing was started or written, and Next signs in at that IdP, then boots the team again",
       revokedBoot.status === 2 && field(revokedBoot.out, "Code", "AUTH_REQUIRED") && revokedBootText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; nothing was started or written") &&
-        !revokedBootText.includes("the manager was not attempted") && revokedBootText.includes(`cotal login --idp ${base}, then \`cotal team boot ${teamFile}\``), revokedBoot.out);
+        !revokedBootText.includes("the manager was not attempted") && revokedBootText.includes(`cotal login --idp ${base}, then `) && revokedBootText.includes(` team boot '${teamFile}'\``), revokedBoot.out);
+    const retryBoot = await cotal(["team", "boot", namedFile, "--json"], { cwd: root2, env });
+    const retryError = JSON.parse(retryBoot.out.split("\n").find((line) => line.startsWith("{")) ?? "null")?.error;
+    check("a stopped team's sign-in refusal keeps the quoted relative manifest and JSON output in its retry",
+      retryBoot.status === 2 && retryError?.code === "AUTH_REQUIRED" && retryError.remedy === `cotal login --idp ${base}, then \`cotal team boot '${namedFile}' --json\``, retryBoot.out);
     check("…before any effect: no broker answers and no manager runs", !(await isReachable(server2)) && !existsSync(managerPid), revokedBoot.out);
     const restarted = await cotal(["up"], { cwd: root2, env });
     check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
@@ -925,17 +947,21 @@ try {
     const rootTb = await prepare(TB);
     const tbSandbox = second.roots.at(-1)!.sandbox;
     const serverTb = `nats://127.0.0.1:${await pickFreePort()}`;
-    const tbFile = join(rootTb, "team.yaml");
+    const tbFile = join(rootTb, "first team.yaml");
     writeFileSync(tbFile, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${TB}\nbroker:\n  servers: ${serverTb}\n  auth: user\n  idp: ${base}\nchannels:\n  general:\n    description: The general channel.\n`);
-    const unprepared = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
-    check("a team boot of a root with no granted login is refused AUTH_REQUIRED, and Next grants the CLI with --full",
-      unprepared.status === 2 && field(unprepared.out, "Code", "AUTH_REQUIRED") && plain(unprepared.out).includes("then `cotal login`, then `cotal auth grant cli --sub <subject> --full`, then `cotal down`") && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
-    const tbUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--server", serverTb], { cwd: rootTb, env });
+    const unprepared = await cotal(["team", "boot", tbFile, "--json"], { cwd: root3, env });
+    const error = JSON.parse(unprepared.out.split("\n").find((line) => line.startsWith("{")) ?? "null")?.error;
+    const prep = ["up", "--root", rootTb, "--space", TB, "--server", serverTb, "--user-auth", "--idp", base, "--no-manager"];
+    check("a first team boot from another project names its own preparation, grant, stop and quoted manifest retry",
+      unprepared.status === 2 && error?.code === "AUTH_REQUIRED" && [prep.join(" "), `login --idp ${base}`, `auth grant cli --sub <subject> --full --space ${TB}`,
+        `down --space ${TB}`, `team boot '${tbFile}' --json`].every((step) => error.remedy.includes(`cotal ${step}\``)) &&
+        error.remedy.includes(`cd ${rootTb} && cotal down`) && !existsSync(join(rootTb, ".cotal", "stack-controller.json")), unprepared.out);
+    const tbUp = await cotal(prep, { cwd: root3, env });
     const { sub: tbSub } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const tbGrant = await cotal(["auth", "grant", "cli", "--sub", tbSub, "--full"], { cwd: rootTb, env });
     const tbDown = await cotal(["down", "--yes"], { cwd: rootTb, env, sandbox: tbSandbox });
     check("following it, up prepares the space, the grant it names succeeds, and down stops the stack",
-      tbUp.status === 4 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
+      tbUp.status === 0 && tbGrant.status === 0 && plain(tbGrant.out).includes("Actor grant stored") && tbDown.status === 0, { up: tbUp.out, grant: tbGrant.out, down: tbDown.out });
     idpTokenUnavailable = true;
     const unconfirmed = await cotal(["team", "boot", tbFile], { cwd: rootTb, env });
     idpTokenUnavailable = false;
@@ -1123,15 +1149,24 @@ try {
   check("the controller stack starts with user auth", stackUp.status === 0 || stackUp.status === 4, stackUp.out);
   const stackDown = await cotal(["down", "--yes"]);
   check("down --yes stops the controller stack", stackDown.status === 0, stackDown.out);
+  const restartFlags = ["--user-auth", "--idp"];
+  const restartCommands = ["cotal", "pnpm cotal"].map((cli) => `\`${cli} up ${restartFlags.join(" ")} <auth base URL>\``);
   const resetPreview = await cotal(["reset", "space", STACK, "--dry-run"]);
+  const restart = restartCommands.find((command) => plain(resetPreview.out).includes(command));
   check("reset space --dry-run names the IdP trust and the actor ledger, and what a later up needs",
-    resetPreview.status === 0 && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost. A later up needs `cotal up --user-auth --idp <auth base URL>`") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
+    resetPreview.status === 0 && restart !== undefined && plain(resetPreview.out).includes("Removes the IdP trust and the actor ledger of this user-auth space, so every actor grant is lost.") && !resetPreview.out.includes("a later up starts it with a new identity"), resetPreview.out);
   const reset = await cotal(["reset", "space", STACK, "--yes"]);
   check("…and its receipt names them the same way",
-    reset.status === 0 && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);
+    reset.status === 0 && restart !== undefined && plain(reset.out).includes(restart) && plain(reset.out).includes(`.cotal/auth/${spaceSegment(STACK)} (IdP trust and actor ledger)`) && plain(reset.out).includes("Removed the IdP trust and the actor ledger of this user-auth space") && !reset.out.includes("A later up creates a new local identity"), reset.out);
   const bareUp = await cotal(["up"]);
   check("a bare up then refuses and names --user-auth --idp, as the reset said",
-    bareUp.status === 1 && bareUp.out.includes("needs the IdP it trusts") && bareUp.out.includes("cotal up --user-auth --idp <auth base URL>"), bareUp.out);
+    bareUp.status === 1 && restart !== undefined && plain(bareUp.out).includes(restart) && bareUp.out.includes("needs the IdP it trusts"), bareUp.out);
+  const idpOnly = await cotal(["up", "--idp", base]);
+  check("adding only --idp still refuses before starting the broker",
+    idpOnly.status === 1 && idpOnly.out.includes("pair it with --user-auth") && !(await isReachable(SERVER)), idpOnly.out);
+  const restarted = await cotal(["up", ...restartFlags, base]);
+  check("the retry in the reset note starts the recorded user-auth broker and auth service",
+    (restarted.status === 0 || restarted.status === 4) && await isReachable(SERVER) && loadAuthServiceInfo(userAuthStateDir(root, STACK)) !== undefined, restarted.out);
 
   console.log(`\nUSER-AUTH LAUNCH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

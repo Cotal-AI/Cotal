@@ -1,5 +1,24 @@
 # @cotal-ai/acp
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+No changes in this release.
+
+## 0.182.1
+
+No changes in this release.
+
+## 0.182.0
+
+### Patch Changes
+
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- 2263884: Keep unrelated Zed agents unchanged when Cotal updates its own ACP launchers.
+
 ## 0.181.0
 
 ### Minor Changes

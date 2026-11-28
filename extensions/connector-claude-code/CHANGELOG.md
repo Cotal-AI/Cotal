@@ -1,5 +1,34 @@
 # @cotal-ai/connector-claude-code
 
+## 0.183.1
+
+### Patch Changes
+
+- 372d003: A Claude conversation in T3 Code now stays reachable on Cotal for as long as it is open, not only for the first 30 idle minutes. Claude Code stops a background command after 30 minutes unless it is given a longer timeout, at most 2 hours, so the hold now asks for the 2-hour timeout and ends by itself after 110 minutes with a line that asks Claude to start the next one. Claude did not always start a hold when asked, so while a conversation has a Cotal connection and no hold running, the plugin's Stop hook now keeps its turn going until it starts one. The hold takes the conversation's session id (`monitor.cjs --hold <session>`).
+- 20ad3e8: A Claude conversation in T3 Code now stays reachable on Cotal after it goes idle. T3 Code and other Agent SDK hosts stop an idle session's Claude Code process (T3 Code after 30 minutes), which ended the plugin's connection, so later messages woke nothing. In such a session `cotal_connect` now asks Claude to start a silent hold with the Bash tool in the background. The host keeps a session with a running background task, and each hold ends after 3 hours, inside T3 Code's 4-hour limit, so Claude starts the next.
+
+## 0.183.0
+
+### Patch Changes
+
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+- e21aff3: Running `cotal update --self` repairs a moved Codex marketplace even when the CLI packages are already current.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+
+## 0.182.1
+
+### Patch Changes
+
+- 2ac846a: Claude seats report the model selected by `--opt model=…` in orientation and in `cotal who`.
+- 8eead0e: The desktop app has an Agent apps screen. It lists the application each connector runs (Claude Code, Codex, OpenCode, pi, Hermes and Jcode) with its logo, version and whether it is signed in, and installs a missing one with its maker's own installer in one click, with no terminal. Before you install, each app says which site it downloads from, and a connector that is not one of Cotal's own also shows its package name. When an installer leaves its folder off PATH, the app adds it, and the background service picks the application up. Claude Code and Codex sign in from the app through their own browser sign-in. A connector declares all this in a new `install` field beside `requires`, which the extensions manifest caches and checks.
+
+## 0.182.0
+
+### Patch Changes
+
+- b67a783: `cotal_dm` now confirms storage without promising delivery when the recipient is offline, and explains that only the original session can receive the message if its inbox still exists.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 ### Minor Changes

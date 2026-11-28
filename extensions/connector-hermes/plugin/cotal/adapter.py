@@ -361,6 +361,10 @@ class CotalAdapter(BasePlatformAdapter):
         """A request from the sidecar (reader thread): ``interrupt``, ``usage`` or ``commands``,
         answered once it ran on the gateway loop."""
         request_id = str(frame.get("id") or "")
+        if os.name == "nt" and frame.get("t") == "shutdown":
+            if self._loop is not None and self.gateway_runner is not None:
+                asyncio.run_coroutine_threadsafe(self.gateway_runner.stop(), self._loop)
+            return
         work = {"interrupt": self._interrupt, "usage": self._usage, "commands": self._commands}.get(str(frame.get("t")))
         loop = self._loop
         if work is None or loop is None:

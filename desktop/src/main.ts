@@ -1,6 +1,7 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { renderAgents } from "./agents";
+import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
+import { AgentApps } from "./agent-apps";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -77,6 +78,16 @@ let stage: Stage = "welcome";
 let ready = false;
 let appVersion: string | undefined;
 let settingsOpen = false;
+let appsOpen = false;
+let appsOpener: HTMLElement | undefined;
+let appsLoadedAt = 0;
+const agentApps = new AgentApps({
+  platform: () => appPlatform,
+  announce: message => announce(message),
+  openUrl: url => void invoke("open_browser", { url }).catch(refusal),
+  openPanel: () => openApps(),
+  changed: () => { appsLoadedAt = Date.now(); renderSettings(); },
+});
 let updateStatus: UpdateStatus | undefined;
 let appUpdate: AppUpdate | undefined;
 let autoUpdates: boolean | undefined;
@@ -158,10 +169,12 @@ function renderSettings(): void {
   const configured = stage === "finished" && !setupActive;
   // Settings also opens before sign-in: the name, the service log and the version matter most when sign-in fails.
   el("open-settings").hidden = setupActive || loginActive;
-  text("open-settings", settingsOpen ? "Back" : "Settings");
-  el("settings-panel").hidden = !settingsOpen;
-  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen;
-  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen);
+  text("open-settings", settingsOpen || appsOpen ? "Back" : "Settings");
+  el("settings-panel").hidden = !settingsOpen || appsOpen;
+  el("apps-panel").hidden = !appsOpen;
+  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
+  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
+  renderApps();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
@@ -329,6 +342,8 @@ async function runAccountAction(): Promise<void> {
   }
 }
 let upgradeNeeded = false;
+let serviceUpdateWaiting = false;
+let nextServiceUpdate = 0;
 let busy = false;
 let rowOperation: { space: string; label: string } | undefined;
 let loginActive = false;
@@ -340,6 +355,8 @@ let customHost = false;
 let editing = false;
 let completedSetup = false;
 let observedReadySpaces: string[] = [];
+/** Why each space's hosted Manager is not answering, as the daemon reports it. */
+const managerReasons = new Map<string, string>();
 let poll: ReturnType<typeof setTimeout> | undefined;
 let watchReconnect: ReturnType<typeof setTimeout> | undefined;
 let windowHidden = false;
@@ -388,18 +405,25 @@ function notice(message: string, error = false): void {
   el("notice").classList.toggle("error", error);
   if (message) announce(message);
 }
+let agentActionProblem = false;
 function clearDetails(): void {
   problem = undefined;
   statusProblem = false;
+  agentActionProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
   el<HTMLDetailsElement>("details").open = false;
+}
+function showRefusalDetail(error: unknown): void {
+  const exact = error instanceof Error ? error.message : String(error);
+  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact);
+  el("details").hidden = false;
+  el<HTMLDetailsElement>("details").open = true;
 }
 /** `fromStatus` marks an error the background status check raised, which the next good check clears.
  *  Any other error stays until the person acts on it. */
 function refusal(error: unknown, fromStatus = false): void {
-  const exact = error instanceof Error ? error.message : String(error);
-  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact); el("details").hidden = false;
-  el<HTMLDetailsElement>("details").open = true;
+  agentActionProblem = false;
+  showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
   statusProblem = fromStatus;
   notice("", true);
@@ -493,7 +517,7 @@ function showStage(next: Stage, focus = false): void {
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
-  if (finished && !problem) el("details").hidden = true;
+  if (finished && !problem && !agentActionProblem) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
@@ -509,13 +533,14 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
+  el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
   if (recovery) {
-    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "preferences", "refresh"]) el(id).hidden = true;
+    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
@@ -541,10 +566,8 @@ function showStage(next: Stage, focus = false): void {
   }
   const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
   el("running-agents").hidden = !inventoryVisible;
-  const summaryVisible = inventoryVisible && el("running-agents").dataset.available === "true";
-  el("applications-summary").hidden = !summaryVisible;
-  el("applications-label").hidden = summaryVisible || addingSpace || !anyConnected || !el("connected-applications").children.length;
-  el("connected-applications").hidden = summaryVisible || addingSpace || !anyConnected;
+  el("apps-strip-wrap").hidden = !finished || addingSpace || computerAccount?.mode === "sign-in-required" || !(anyConnected || computerAccount?.hostSupport === "supported");
+  syncAppsChip();
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
@@ -558,7 +581,7 @@ function showStage(next: Stage, focus = false): void {
   el("choose-space").hidden = true;
   el("sync").hidden = addingSpace;
   if (finished && computerAccount?.mode === "sign-in-required") {
-    for (const id of ["retry-login", "sync", "another-space", "dashboard", "preferences"]) el(id).hidden = true;
+    for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
@@ -654,9 +677,10 @@ function sizeSpaceList(): void {
     rule.maxHeight = '108px';
     const actions = el("another-space");
     const overflow = actions.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
-    if (overflow > 0 && agentList.children.length) {
-      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / 36));
-      rule.maxHeight = `${rows * 36}px`;
+    if (overflow > 0 && agentList.firstElementChild) {
+      const rowHeight = parseFloat(getComputedStyle(agentList.firstElementChild).height);
+      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / rowHeight));
+      rule.maxHeight = `${rows * rowHeight}px`;
     }
   }
   const list = el("connected-spaces");
@@ -700,7 +724,7 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy, rowOperation]));
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -711,28 +735,33 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy || !!rowOperation; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
-    remove.addEventListener("click", () => void rowAction(space, restore));
+    const recovery = accountRow?.custodyRecovery;
+    const label = recovery ? "Use signed-in account" : restore ? "Add" : "Remove";
+    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", recovery ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
+    button.addEventListener("click", () => {
+      if (recovery && !window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
+      void rowAction(space, restore, recovery);
+    });
     if (rowOperation?.space === space) {
       row.setAttribute("aria-busy", "true");
       const waiting = document.createElement("small"); waiting.setAttribute("role", "status"); waiting.textContent = `${rowOperation.label}… Waiting for the background service.`; copy.append(waiting);
     }
-    row.append(copy, remove); return row;
+    row.append(copy, button); return row;
   }));
 }
-async function rowAction(space: string, restore: boolean): Promise<void> {
+async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }): Promise<void> {
   if (busy || rowOperation) return;
-  const operation = { space, label: `${restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
+  const operation = { space, label: `${recovery ? "Moving" : restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
   rowOperation = operation; refreshGeneration++; renderConnections();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       (async () => {
-        if (restore) {
-          await request({ op: "space-intent", space, enabled: true });
+        if (recovery || restore) {
+          await request(recovery ? { op: "space-recover", space, ...recovery } : { op: "space-intent", space, enabled: true });
           if (rowOperation !== operation) return;
           await refresh();
         } else await removeSpace(space, () => rowOperation === operation);
@@ -790,17 +819,6 @@ function updateCountdown(): void {
 el("copy-code").addEventListener("click", () => {
   void navigator.clipboard.writeText(el("approval-code").textContent ?? "").then(() => { text("copy-code", "Copied"); text("announcer", "Approval code copied."); }).catch(() => notice("The code could not be copied. Select the code and copy it manually.", true));
 });
-function showApplications(manager: unknown): void {
-  const names: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
-  const connectors = (manager as { connectors?: { agent?: string; state?: string }[] })?.connectors ?? [];
-  const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
-  const container = el("connected-applications");
-  const value = available.join("\n");
-  text("applications-summary", available.length ? `Applications: ${available.join(", ")}` : "");
-  if (container.dataset.applications === value) return;
-  container.dataset.applications = value;
-  container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
-}
 async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
   events.onmessage = (frame) => {
@@ -842,7 +860,75 @@ function state(value: string, space = selectedSpace()): void {
   else showStage(stage);
   if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
+const pendingAgentActions = new Map<string, AgentAction>();
+function renderAgentRows(status: Record<string, unknown>): void {
+  renderAgents(status, el("running-agents"), { pending: pendingAgentActions, act: (agent, op) => void actOnLocalAgent(agent, op) });
+}
+async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void> {
+  if (!agent.lifecycleUid) return;
+  const key = JSON.stringify([agent.space, agent.name, agent.lifecycleUid]);
+  if (pendingAgentActions.has(key)) return;
+  if (agentActionProblem) clearDetails();
+  pendingAgentActions.set(key, op);
+  if (serviceStatus) renderAgentRows(serviceStatus);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      request({ op, space: agent.space, lifecycleUid: agent.lifecycleUid }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(op === "agent-stop" ? "Stop did not finish within 30 seconds. Check whether the agent is still running before trying again." : "Opening the terminal did not finish within 30 seconds. Check your terminal before trying again.")), 30_000); }),
+    ]);
+    if (op === "agent-terminal") {
+      if (result.started !== true) throw new Error("The app did not confirm that it opened the terminal.");
+      notice(`Terminal opened for ${agent.name}.`);
+    }
+  } catch (error) {
+    agentActionProblem = true;
+    showRefusalDetail(error);
+    notice("", true);
+    showStage(stage);
+  }
+  finally {
+    if (timer) clearTimeout(timer);
+    pendingAgentActions.delete(key);
+    if (serviceStatus) renderAgentRows(serviceStatus);
+    if (op === "agent-stop") void refresh();
+  }
+}
 async function applyStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
+  await showStatus(status, current);
+  if (current()) updateService();
+}
+/** Agents running on this computer, named as the agent list names them, or undefined when the
+ *  service does not report them. */
+function runningAgentNames(): string[] | undefined {
+  try {
+    const inventory = agentInventory(serviceStatus ?? {});
+    return inventory.available && !inventory.unreadable.length ? inventory.agents.filter(agent => agent.state === "running").map(agent => `${shownAgentName(agent.name)} (${agent.application})`) : undefined;
+  } catch { return undefined; }
+}
+function runningAgents(): number | undefined { return runningAgentNames()?.length; }
+/** An updated app restarts the older background service into its own version, the daemon's idle
+ *  restart, only while no agent runs on this computer. While agents run it waits and says so. */
+function updateService(): void {
+  const running = runningAgents();
+  if (!upgradeNeeded || stage !== "finished" || running === undefined) {
+    if (serviceUpdateWaiting) { serviceUpdateWaiting = false; notice(""); }
+    return;
+  }
+  if (running > 0) { waitForAgents(runningAgentNames()!); return; }
+  if (busy || setupActive || loginActive || Date.now() < nextServiceUpdate) return;
+  serviceUpdateWaiting = false; notice("");
+  el<HTMLButtonElement>("connect").click();
+}
+function waitForAgents(names: readonly string[], count = names.length): void {
+  const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} more`] : names;
+  const list = shown.length ? `: ${new Intl.ListFormat("en", { type: "conjunction" }).format(shown)}` : "";
+  const message = `An update for the background service is waiting for ${count === 1 ? "1 agent" : `${count} agents`} on this computer to finish${list}. It installs by itself when ${count === 1 ? "it ends" : "they end"}.`;
+  // Announce a change, not every status check.
+  if (!serviceUpdateWaiting || el("notice").textContent !== message || el("notice").hidden) notice(message);
+  serviceUpdateWaiting = true;
+}
+async function showStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
   if (!current()) return;
   selectionPending = false;
   serviceStatus = status;
@@ -850,12 +936,15 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
-  renderAgents(status, el("running-agents"));
+  renderAgentRows(status);
+  if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0))) { appsLoadedAt = Date.now(); void agentApps.load(); }
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+  managerReasons.clear();
+  if (Array.isArray(status.managers)) for (const item of status.managers) if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
   const space = selectedSpace();
   computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   if (computerAccount?.hostSupport === "supported") {
@@ -865,7 +954,7 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
       connections.set(row.space, row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
     }
     const manager = Array.isArray(status.managers) ? status.managers.find(item => item.space === space) : undefined;
-    if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); }
+    if (launchReady(manager)) { instances.set(space, manager.instanceId); }
     else instances.delete(space);
     connection = { space, state: connections.get(space) ?? "ready" };
     if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
@@ -886,7 +975,7 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   }
   if (space) {
     const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
-    if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); state("launch-ready", space); buttons(); return; }
+    if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
     instances.delete(space);
     const service = await request({ op: "service-status", space });
     if (!current()) return;
@@ -953,7 +1042,7 @@ function startStatusWatch(): void {
     }
     if (!busy && !loginActive && !setupActive) {
       ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
-      if (!(problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING")) {
+      if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
       buttons();
@@ -973,7 +1062,8 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
-    if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
+    // An error from an action stays until the person acts on it; a background check never replaces it.
+    if (problem && !statusProblem) { buttons(); return; }
     if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
@@ -1107,7 +1197,7 @@ el("connect").addEventListener("click", () => void action(async () => {
     const result = await request({ op: "setup", space, idp });
     if (result.launchReady !== true || !launchReady(result.manager)) throw new Error("Setup did not confirm that this computer can launch agent applications.");
     applicationRefusals.delete(space); upgradeNeeded = false;
-    instances.set(space, (result.manager as { instanceId: string }).instanceId); showApplications(result.manager);
+    instances.set(space, (result.manager as { instanceId: string }).instanceId);
     progress = progressNames.map(() => "done"); renderProgress();
     completedSetup = true; addingSpace = false; choosingSpace = false; listOpened = true;
     state("launch-ready", space); notice(""); showStage("finished", true);
@@ -1115,6 +1205,14 @@ el("connect").addEventListener("click", () => void action(async () => {
     const failed = progress.indexOf("failed");
     const active = progress.indexOf("running");
     if (failed < 0) progress[active < 0 ? 4 : active] = "failed"; renderProgress();
+    if (upgradeNeeded && error instanceof DaemonRefusal && (error.native === "SEATS_ACTIVE" || error.code === "SEATS_ACTIVE")) {
+      // An agent started after the last check. Keep waiting for it rather than taking over the window.
+      nextServiceUpdate = Date.now() + 600_000;
+      progress = progressNames.map(() => "waiting"); renderProgress();
+      setupActive = false; state("launch-ready", space); showStage("finished");
+      waitForAgents(runningAgentNames() ?? [], Math.max(1, Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? runningAgents() ?? 1)));
+      return;
+    }
     if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") { applicationRefusals.add(space); state("no-application", space); }
     else if (error instanceof DaemonRefusal && (error.code === "APPROVAL_PENDING" || error.native === "APPROVAL_PENDING")) {
       addingSpace = false; choosingSpace = false; listOpened = true; problem = undefined; state("approval-pending", space); showStage("finished"); return;
@@ -1152,7 +1250,7 @@ async function readServiceLog(): Promise<void> {
     const result = await request({ op: "log" });
     if (typeof result.text !== "string") throw new Error("The background service log reply is unsupported.");
     text("service-log-text", result.text);
-    text("service-log-status", !result.text ? "No background service log has been recorded." : result.truncated ? "Showing the most recent 8 KB." : "Recent background service output.");
+    text("service-log-status", !result.text ? "No background service log has been recorded." : result.truncated ? "Showing recent output. Older lines were omitted." : "Recent background service output.");
   } catch (error) {
     text("service-log-text", "");
     text("service-log-status", error instanceof Error ? error.message : String(error));
@@ -1173,6 +1271,26 @@ el("connection-status").addEventListener("click", () => {
     (row ?? el("connection-title")).scrollIntoView({ block: "nearest" });
   }
 });
+/** The compact Agent apps button shows where the callout could, once an app is ready. */
+function syncAppsChip(): void { el("apps-chip").hidden = el("apps-strip-wrap").hidden || agentApps.readyCount === 0; }
+function renderApps(): void {
+  agentApps.renderPanel(el("app-list"), el("apps-message"), el<HTMLButtonElement>("apps-refresh"));
+  agentApps.renderStrip(el("apps-strip"), el<HTMLButtonElement>("apps-chip"));
+  syncAppsChip();
+  // With no app ready, installing one is the step that matters, so the dashboard button steps back.
+  el("dashboard").classList.toggle("primary", !agentApps.apps || agentApps.readyCount > 0);
+}
+/** The Agent apps screen opens from the Ready screen, and Back returns focus to the control that opened it. */
+function openApps(): void {
+  if (loginActive || setupActive) return;
+  appsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  appsOpen = true; renderSettings(); el("apps-title").focus();
+  if (!agentApps.busy) void agentApps.load();
+}
+function closeApps(): void {
+  appsOpen = false; renderSettings();
+  (appsOpener?.isConnected && appsOpener.getClientRects().length ? appsOpener : el("apps-chip").hidden ? el("connection-title") : el("apps-chip")).focus();
+}
 function openSettings(): void {
   if (busy || loginActive) return;
   editing = false; addingSpace = false; choosingSpace = false;
@@ -1218,7 +1336,12 @@ el("update-preference").addEventListener("change", () => {
 el("update-download").addEventListener("click", () => void openInstaller());
 el("setup-installer").addEventListener("click", event => { event.preventDefault(); void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal); });
 el("settings-download").addEventListener("click", () => void openInstaller());
-el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("apps-back").addEventListener("click", closeApps);
+el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
+el("recover-apps").addEventListener("click", () => openApps());
+el("apps-chip").addEventListener("click", () => openApps());
+window.addEventListener("focus", () => { if (isTauri() && agentApps.apps && !agentApps.busy && Date.now() - appsLoadedAt > 30_000) void agentApps.load(); });
+el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));

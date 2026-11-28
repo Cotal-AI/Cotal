@@ -1,5 +1,46 @@
 # @cotal-ai/connector-core
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+### Patch Changes
+
+- 6813caf: Qualify the `cotal ps` recovery guidance for `--no-manager` controller stacks when `--max-payload` is below the manager's 263168-byte minimum.
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- 3cceeab: Name the tools and arguments in `cotal_persona` results instead of spelling out their call syntax.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- e08738d: A refused model-pin audit says the caller may not read the helper's model pin, without the broker's raw permission denial.
+- a7b8614: Point Windows readers to setup commands that work in Windows PowerShell and Command Prompt.
+
+## 0.182.1
+
+### Patch Changes
+
+- 938d757: The `set-model` policy refusal and configuration read warning now refer to the Cotal configuration without implying that you should run a command.
+- daf0755: The Claude and Codex guides show how to create the named personas before launching them in the background.
+- a5adbcd: MCP connections now choose the next free suffixed name even when the requested name is already at the length limit.
+- cefeea9: When `cotal_wait` times out with quiet channel messages buffered, it tells you to read them with `cotal_inbox`.
+- f017c32: Show how to preserve Unicode when piping text into `cotal send --stdin` from Windows PowerShell 5.1.
+
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+
+### Patch Changes
+
+- 99ba945: `cotal_dm` now explains a DM the broker is too small for. It used to pass on the client's bare `'payload' max_payload size exceeded`; it now gives the broker's message limit in bytes, says nothing was sent, and tells the sender to shorten the message or split it across several DMs. A publish whose acknowledgement times out is still reported as an unknown send outcome.
+- b67a783: `cotal_dm` now confirms storage without promising delivery when the recipient is offline, and explains that only the original session can receive the message if its inbox still exists.
+- b87866b: The OpenCode guide shows how to create the researcher persona before launching it in the background.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+- d2e0213: Report how many unread channel posts the MCP inbox omitted when its local buffer filled, and explain how to recover retained posts from channel history.
+- 83db958: The Windows docs show how to install, verify, and remove Cotal without changing PowerShell execution policy and how to prepare a project from PowerShell or Command Prompt.
+
 ## 0.181.0
 
 ### Minor Changes

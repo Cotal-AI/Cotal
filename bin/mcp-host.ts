@@ -35,7 +35,7 @@ export function createMcpHost(space?: string): GatewayHost & { closeAll(): Promi
     return next;
   };
   const plumbing = (args: string[]): Promise<IdentityReply> => new Promise((resolve, reject) => {
-    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { timeout: 60_000 }, (_error, stdout) => {
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { timeout: 60_000, windowsHide: true }, (_error, stdout) => {
       try { resolve(JSON.parse(stdout) as IdentityReply); }
       catch { reject(new Error("the CLI returned no identity result; any recovery record was retained")); }
     });

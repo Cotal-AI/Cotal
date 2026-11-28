@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -51,7 +51,7 @@ const preview = (args: string[]): { status: number | null; envelope: Envelope } 
 };
 
 try {
-  writeFileSync(join(root, "project", "sample.md"), "---\nname: sample\nrole: reviewer\n---\nReview this.\n");
+  writeFileSync(join(root, "project", "sample.md"), "---\nname: sample\nrole: reviewer\nsubscribe: [general]\nallowSubscribe: [general]\n---\nReview this.\n");
   const listener = createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
   const port = (listener.address() as { port: number }).port;
@@ -79,11 +79,18 @@ try {
   check.match(bad.envelope.error?.message ?? "", /A manager's name or host is taken only on a user-auth mesh/);
   const roster = `\`cotal ps --space samplemesh --server ${server}\``;
   check.ok(bad.envelope.error?.remedy?.includes(`${roster} prints each manager's instance id`));
+  const ps = ["ps", "--space", "samplemesh", "--server", server];
+  const jsonRoster = `\`cotal ps --json --space samplemesh --server ${server}\``;
   for (const pin of ["", "local.sample", "not-a-pin"]) {
-    const read = preview(["ps", "--space", "samplemesh", "--server", server, "--on", pin, "--json"]);
+    const read = preview([...ps, "--on", pin, "--json"]);
     check.equal(read.status, 1);
-    check.ok(read.envelope.error?.message?.includes(roster));
+    const message = read.envelope.error?.message;
+    check.ok(message?.includes(jsonRoster), message);
   }
+  const textRead = cli([...ps, "--on", ""]);
+  check.equal(textRead.status, 1, textRead.stderr);
+  check.ok(["cotal", "pnpm cotal"].some((launcher) =>
+    textRead.stderr.includes(`\`${launcher} ps --space samplemesh --server ${server}\``)), textRead.stderr);
 
   const empty = preview([...base, "--on", ""]);
   check.equal(empty.status, 1, JSON.stringify(empty.envelope));
@@ -121,6 +128,16 @@ try {
   check.deepEqual([foreground.status, foreground.envelope.result?.kind,
     foreground.envelope.result?.allocated, foreground.envelope.result?.launched], [0, "direct-launch-preview", false, false]);
 
+  for (const flag of ["--subscribe", "--allow-subscribe"]) {
+    const direct = preview([...file, flag, "updates"]);
+    check.deepEqual([direct.status, direct.envelope.error?.code], [1, "USAGE_INVALID"]);
+    check.match(direct.envelope.error?.message ?? "", /not within allowSubscribe/);
+    const managed = preview([...base, flag, "updates"]);
+    check.deepEqual([managed.status, managed.envelope.result?.kind], [0, "managed-launch-preview"]);
+  }
+  const emptySubscription = preview([...file, "--subscribe", ""]);
+  check.deepEqual([emptySubscription.status, emptySubscription.envelope.result?.launched], [0, false]);
+
   for (const [selectors, placement] of [
     [[], "direct"], [["--foreground"], "direct"],
     [["--detach"], "managed"], [["--on", pin], "managed"], [["--detach", "--on", pin], "managed"],
@@ -133,6 +150,25 @@ try {
       const refused = preview([...file, ...selectors, "--foreground"]);
       check.deepEqual([refused.status, refused.envelope.error?.code], [1, "USAGE_INVALID"], selectors.join(" "));
     }
+  }
+
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const dir = join(realpathSync(root), "search permission");
+    mkdirSync(dir, { mode: 0o600 });
+    try {
+      const refused = preview([...file, "--cwd", dir]);
+      check.equal(refused.status, 2);
+      check.equal(refused.envelope.error?.code, "PERMISSION_DENIED");
+      check.deepEqual(refused.envelope.target, { space: "samplemesh", path: dir });
+      const launch = cli(["spawn", "--foreground", "--harness", "missing-fixture-app", "--space", "samplemesh", "--cwd", dir]);
+      check.equal(launch.status, 2);
+      check.match(launch.stderr, /PERMISSION_DENIED/);
+      chmodSync(dir, 0o100);
+      const allowed = preview([...file, "--cwd", dir]);
+      check.equal(allowed.status, 0);
+      check.equal(allowed.envelope.result?.cwd, dir);
+      check.equal(allowed.envelope.result?.launched, false);
+    } finally { chmodSync(dir, 0o700); }
   }
 
   await killAndAwaitExit(broker);

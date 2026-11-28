@@ -36,12 +36,17 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 
+When a single manager returns an empty list, Next checks the local default harness before offering
+`cotal spawn`. If a required executable is missing, Next names it and links to its installation guide.
+
 ### Control credentials
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
 in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
 If `stop`, `attach`, `input` or named `status` refuses an empty pin or a roster principal ID, look up
 the manager in the space and on the broker you selected. The refusal identifies that roster.
+When `stop` or `input` cannot find a named agent, its suggested roster keeps your space, broker,
+explicit manager pin and requested output format.
 
 Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
 and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach
@@ -51,7 +56,12 @@ to put in the attach retry. When you name the agent and mistype the manager ID, 
 also keeps `--no-reconnect`.
 
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
-runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
+runs, so there are no managed agents to list. Bare `cotal up` adds the manager when the running
+broker's `--max-payload` is at least 263168 bytes. If the running broker's limit is below 263168
+bytes, the limit is fixed while the broker runs: `ps` directs you to stop and restart the stack, and
+bare `cotal up` refuses `USAGE_INVALID` without starting a manager. Stop the stack with
+`cotal down --yes` and restart it from the project root with a higher limit, such as
+`cotal up --max-payload 1048576`, as the [startup reference](cli-startup.mdx#up) describes. A `manager` preset
 service started at the root answers instead, and `status` names it on its Manager row. Bare `up`
 then refuses `LIFECYCLE_BLOCKED`, exit 2, naming that service and the
 `cotal svc stop <name> --instance <id> --space <space> --yes` that stops it; once it is stopped,
@@ -417,8 +427,12 @@ A refusal that could still pass, such as a manager at its session ceiling, is re
 manager's own words while the loop keeps trying, once per refusal rather than once per attempt.
 Pressing the detach key ends the view with `Detached`. A remote terminal-session end, including
 process exit or manager shutdown, prints `Attach session ended`. Neither report claims the agent
-is still running or that its cleanup completed. Use `cotal ps` to check its current state.
-`--no-reconnect` restores the single-session behaviour.
+is still running or that its cleanup completed. The session-end report suggests `cotal ps` with the
+same explicit space and broker options. If the broker address cannot be printed safely, the report
+asks you to reuse the original options instead of printing the address.
+`--no-reconnect` restores the single-session behaviour. If the broker closes a user-auth terminal
+connection with an authorization error before an end frame arrives, `attach` reports that the
+connection ended, includes the broker error, and exits non-zero.
 If the auth service refuses access to the selected manager before the first session, `attach`
 reports `PERMISSION_DENIED` and exits 2 without opening a terminal session.
 

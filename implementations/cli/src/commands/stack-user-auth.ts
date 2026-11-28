@@ -16,9 +16,10 @@
  *    reported as incomplete until the provider's readiness for the exact child process answers. */
 import { resolveAuthProvider, type AuthPrepared } from "@cotal-ai/core";
 import {
-  CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, findMesh, hasUserAuthState, userAuthStateDir,
-  workspaceSecretStore, type UserAuthInfo,
+  CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, codeSpan, findMesh, hasUserAuthState, userAuthStateDir,
+  workspaceSecretStore, type Presentation, type UserAuthInfo,
 } from "@cotal-ai/workspace";
+import { displayCmd } from "../lib/self-exec.js";
 import { serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 
 /** The prepared material a user stack's broker preparation returns. Private to this process. */
@@ -39,7 +40,7 @@ export function assertUserStackTransport(server: string, tlsRequired: boolean): 
  *  `preflightServer`. A provider without that hook refuses: no check is skipped silently. The
  *  provider's `prepareServer` repeats these checks authoritatively later, so a race is still
  *  caught there and its effects are reported, never rolled back. */
-export async function preflightUserStack(root: string, space: string, idpUrl: string | undefined): Promise<void> {
+export async function preflightUserStack(root: string, space: string, idpUrl: string | undefined, implicitUp?: Presentation): Promise<void> {
   let provider;
   try { provider = resolveAuthProvider(); }
   catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no single auth provider is installed, so a user-auth stack cannot be prepared; no stack was prepared", { target: { root, space }, native: { code: "AUTH_PROVIDER", outcome: "refused", detail: (error as Error).message } }); }
@@ -50,7 +51,9 @@ export async function preflightUserStack(root: string, space: string, idpUrl: st
   catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the auth provider's read-only preflight did not answer; no stack was prepared", { target: { root, space }, native: { code: "AUTH_PREFLIGHT", outcome: "refused" } }); }
   if (verdict.ok) return;
   const code = verdict.reason === "required" || verdict.reason === "invalid" ? "USAGE_INVALID" : verdict.reason === "conflict" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE";
-  const remedy = verdict.reason === "required" ? "cotal up --user-auth --idp <auth base URL>"
+  const remedy = verdict.reason === "required" ? (implicitUp
+    ? `add \`--user-auth --idp <auth base URL>\` to the original command. For a bare start from the stack's project folder, run ${codeSpan(`${implicitUp === "json" ? "cotal" : displayCmd()} up --user-auth --idp <auth base URL>`)}.`
+    : "add `--idp <auth base URL>` to the original user-auth start. For a manifest, set `broker.idp` in the same file and retry the original command.")
     : verdict.reason === "conflict" ? "if you passed `--idp`, retry the same start without `--idp` to use the pinned IdP. For a direct user-auth start, keep `--user-auth` and the other startup options. If the IdP comes from a manifest, make `broker.idp` match the pin. Changing the pin is a deliberate migration."
       : verdict.reason === "invalid" ? "pass an https IdP auth base URL, or http on a loopback IP, without credentials, a query or a fragment"
         : "check --idp <auth base URL>; it must serve <base>/jwks";
@@ -102,7 +105,8 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
  *  Any other failure of that check, such as an IdP that does not answer, is left to the launch,
  *  which reports it as before. Runs before a definition is saved, a running manager stopped or a
  *  child launched. `undone` is what a refusal says was not done, as {@link userLoginRequired} takes it. */
-export async function assertManagerLogin(root: string, space: string, then: string, undone = MANAGER_NOT_ATTEMPTED): Promise<void> {
+export async function assertManagerLogin(root: string, space: string, then: string | (() => string), undone = MANAGER_NOT_ATTEMPTED): Promise<void> {
+  const retry = () => typeof then === "string" ? then : then();
   const registered = findMesh(space)?.userAuth;
   // The IdP the remedy names. A stopped stack, such as one a team boot resumes, has no registration,
   // so the hosting folder's own pin comes first.
@@ -110,7 +114,7 @@ export async function assertManagerLogin(root: string, space: string, then: stri
   if (registered?.remote !== true) {
     if (!hasUserAuthState(root, space, { readOnly: true })) return;
     const login = await userLoginState(root, space);
-    if (login.state !== "ready") throw userLoginRequired(space, login, then, undone);
+    if (login.state !== "ready") throw userLoginRequired(space, login, retry(), undone);
     idpUrl = login.idpUrl ?? idpUrl;
   }
   const provider = resolveAuthProvider();
@@ -118,7 +122,7 @@ export async function assertManagerLogin(root: string, space: string, then: stri
   let answer: "confirmed" | "signed-out" | "rejected";
   try { answer = await provider.confirmLogin({ dir: userAuthStateDir(root, space, { readOnly: true }), space }); }
   catch { return; }
-  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl }, then, undone);
+  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl }, retry(), undone);
 }
 
 /** The provisional registry metadata: the prepared trust pins only. No endpoint is copied from a

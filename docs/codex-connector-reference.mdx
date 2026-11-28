@@ -87,8 +87,9 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   of **whichever process builds the launch**, so set it in the right place:
   - foreground `cotal spawn`: your own shell, per spawn;
   - detached (`-d`): the **manager's** environment, because the manager builds the launch. Set it
-    where you start the manager (`COTAL_CODEX_TUI=0 cotal up`) and it applies to every codex agent
-    that manager supervises. Exporting it in the shell that runs `cotal spawn -d` does nothing.
+    when you start the stack (`COTAL_CODEX_TUI=0 cotal up --detach`). It applies to new Codex seats
+    that manager launches. Changing the value requires restarting the manager. Setting it in the
+    shell that runs `cotal spawn -d` does not affect the launch.
 
   A detached agent gets the manager's pty, which *is* a terminal, so the default there is the TUI,
   which is what `cotal attach` streams.
@@ -152,13 +153,14 @@ so the agent offers no `command` target, and a `command` for one is `unimplement
 ## Model reporting
 
 ```bash
-cotal models --harness codex             # ids + reasoning-effort variants, via app-server model/list
-cotal spawn --agent codex --model gpt-5.6-sol --variant high
+cotal models --harness codex             # ids, reasoning efforts and modes, via app-server model/list
+cotal spawn --agent codex --model gpt-5.6-sol --variant high --mode fast=false
 ```
 
-The **variant** is Codex's reasoning effort (`minimal` | `low` | `medium` | `high` | `xhigh`).
-At launch, like the `codex` CLI itself, the connector does not validate model ids or efforts
-locally. An unknown value fails at request time, server-side.
+The **variant** is Codex's reasoning effort, from the efforts `model/list` names for each model.
+The `fast` mode is Codex's Fast service tier, listed on each model that offers it. The catalog row
+carries Codex's description, the default model, the default effort, and the tier Codex runs by
+default. A launch is refused an effort or mode the row does not list.
 
 The catalog comes from a short-lived `codex app-server`, the binary a launch runs:
 `COTAL_CODEX_BIN` when you set it, otherwise the absolute path the manager resolved when Codex became available.

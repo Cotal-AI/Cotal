@@ -17,7 +17,7 @@ import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, pre
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, eventPayloadStream, rotateSystemAccount, spaceBackupInventory, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, claimMaintenanceReady, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordMaintenanceClaimResources, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, claimMaintenanceReady, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordMaintenanceClaimResources, recordPreparedSpace, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -64,6 +64,26 @@ async function checkUnreadableRestore(root: string, directory: string, file: str
     assert.deepEqual(readdirSync(join(root, ".cotal", "maintenance", "attempts")), [], "a denied restore leaves no partial stage");
   } finally {
     chmodSync(path, 0o600);
+  }
+}
+
+async function checkDeniedRestoreFolder(root: string, directory: string): Promise<void> {
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal), originalMode = statSync(directory).mode & 0o777;
+  for (const mode of [0o100, 0o400]) {
+    chmodSync(directory, mode);
+    try {
+      await assert.rejects(prepareRestore(root, { restore: directory }), (error: unknown) => {
+        if (!isCommandFailure(error)) return false;
+        assert.equal(error.outcome, "refused");
+        assert.equal(error.code, "PERMISSION_DENIED");
+        assert.deepEqual(error.target, { directory, root });
+        assert.match(error.native?.code ?? "", /^(EACCES|EPERM)$/);
+        return true;
+      });
+      assert.deepEqual(readFileSync(journal), before);
+      assert.deepEqual(readdirSync(join(root, ".cotal", "maintenance", "attempts")), []);
+    } finally { chmodSync(directory, originalMode); }
   }
 }
 
@@ -177,7 +197,22 @@ try {
   const stagingParent = join(root, "staging");
   mkdirSync(stagingParent, { mode: 0o700 });
   if (process.geteuid && process.geteuid() !== 0) {
-    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(realpathSync(destination), file, stagingParent);
+    const directory = realpathSync(destination);
+    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(directory, file, stagingParent);
+    const originalMode = statSync(directory).mode & 0o777;
+    for (const mode of [0o400, 0o100]) {
+      chmodSync(directory, mode);
+      try {
+        for (const verb of ["inspect", "verify"])
+          assert.throws(() => backupRead({ positionals: [verb, directory], values: {}, raw: [] }), (error: unknown) => {
+            if (!isCommandFailure(error)) return false;
+            assert.deepEqual(error.target, { directory });
+            return error.code === "PERMISSION_DENIED" && /^(EACCES|EPERM)$/.test(error.native?.code ?? "") &&
+              error.remedy?.includes("read and search access") === true;
+          });
+      } finally { chmodSync(directory, originalMode); }
+    }
+    assert.equal(inspectBackupArtifact(directory, true).integrity, "matched-declared-sizes-and-sha256");
   }
   const staged = stageArtifact(destination, stagingParent);
   assert.deepEqual(readFileSync(join(staged.directory, "stream-a.snap")), Buffer.from([1, 2, 3]));
@@ -541,6 +576,17 @@ try {
       "a create with no preserved cut on a stopped stack says so and names the start before the preserve",
     );
     assert.equal(existsSync(join(createRoot, ".cotal", "maintenance")), false, "that refusal created no maintenance state");
+    const preparedRoot = join(root, "prepared-restore-root");
+    mkdirSync(join(preparedRoot, ".cotal"), { recursive: true });
+    recordPreparedSpace({ space: "prepared-restore", root: realpathSync(preparedRoot), ts: new Date().toISOString() });
+    process.chdir(preparedRoot);
+    await assert.rejects(
+      backup({ positionals: ["restore", destination], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message === "restore requires stable ready maintenance state, found none" && error.remedy === "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or restore in this release",
+      "backup restore on a prepared controller root points to space show instead of down --preserve-state",
+    );
+    assert.equal(existsSync(join(preparedRoot, ".cotal", "maintenance")), false, "prepared-root restore refusal created no maintenance state");
+    process.chdir(createRoot);
     const createStore = join(createRoot, ".cotal", "nats");
     mkdirSync(createStore, { recursive: true });
     const createLock = acquireMaintenanceLock(createRoot);
@@ -578,6 +624,22 @@ try {
       (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("maintenance state is cut-intent") && (error.target as { space?: string }).space === "create",
       "a create on an unfinished cut names its state and space",
     );
+    const retryLock = acquireMaintenanceLock(createRoot);
+    try {
+      for (const [artifact, store, quote] of [
+        [join(createRoot, "backup\u2019 destination"), undefined, "\u2019"],
+        [join(createRoot, "backup destination"), join(createRoot, "store\u201C path"), "\u201C"],
+      ] as const) {
+        await assert.rejects(
+          backup({ positionals: ["create", artifact], values: { json: true, ...(store ? { "store-dir": store } : {}) }, raw: [] }),
+          (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" &&
+            (process.platform === "win32"
+              ? error.remedy?.includes("rerun your original backup command from the same folder") === true && !error.remedy.includes(quote) && !error.remedy.includes("backup create")
+              : error.remedy?.includes("`cotal backup create ") === true && error.remedy.includes(quote)),
+          `a retry with ${quote} offers a command only when the shell preserves that path`,
+        );
+      }
+    } finally { releaseMaintenanceLock(retryLock); }
     // A recover or cleanup refusal shows the id format and why it found nothing to act on.
     await assert.rejects(
       backup({ positionals: ["recover", "00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
@@ -637,6 +699,7 @@ try {
       if (process.geteuid && process.geteuid() !== 0) {
         await checkUnreadableRestore(realpathSync(cleanRoot), realpathSync(destination), snapshot.path);
         await checkUnreadableManifest(realpathSync(cleanRoot), realpathSync(destination));
+        await checkDeniedRestoreFolder(realpathSync(cleanRoot), realpathSync(destination));
       }
       checkLinkedInterruptedBackup(cleanRoot);
     } finally { process.chdir(previousCwd); }

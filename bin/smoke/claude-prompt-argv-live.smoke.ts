@@ -8,7 +8,8 @@
  * a user does: `cotal ext seed`, `cotal up --open --detach`, then `cotal spawn --agent claude` in the
  * foreground and through the stack's manager, against a `claude` found by name on PATH. That
  * `claude` is a recorder the suite writes, so each cell reads the argv the connector really handed
- * the harness. What the real `claude` does with that argv is measured by hand, not here.
+ * the harness. For the model and effort cases it starts the shipped MCP server so the seats join
+ * before the suite checks the roster and inventory. No Claude login or model call is needed.
  *
  * A plain prompt and a prompt with a `-` inside it are the controls: they must arrive unchanged
  * apart from the leading space, and a plain resume id must reach `claude` as the value of `--resume`.
@@ -35,11 +36,36 @@ const shim = join(scratch, "shim");
 const argvLog = join(scratch, "claude-argv.jsonl");
 mkdirSync(home, { recursive: true });
 mkdirSync(shim, { recursive: true });
-// The `claude` the connector finds on PATH. It records its argv and exits, so a launch that got
-// this far shows exactly what the harness would have parsed.
+// The `claude` the connector finds on PATH. Only the inventory cases need a live seat. A managed
+// spawn that names a variant reads claude's model catalog first, so the shim answers that read with
+// one model and records no launch for it.
 writeFileSync(
   join(shim, "claude"),
-  `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+  `#!${process.execPath}
+const argv = process.argv.slice(2);
+if (argv.includes("--input-format")) {
+  const answers = {
+    initialize: { account: { tokenSource: "claude.ai" }, models: [{ value: "opus", displayName: "Opus", supportedEffortLevels: ["low", "medium", "high"] }] },
+    get_settings: { applied: { model: "opus", effort: "high", ultracode: false, ultracodeAvailable: false } },
+  };
+  require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+    const { request_id, request } = JSON.parse(line);
+    console.log(JSON.stringify({ type: "control_response", response: { request_id, subtype: "success", response: answers[request.subtype] ?? {} } }));
+  });
+  return;
+}
+require("node:fs").appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(argv) + "\\n");
+if (process.env.COTAL_NAME?.startsWith("effort-") || process.env.COTAL_NAME === "model-override") {
+  console.log("WARNING: Loading development channels");
+  process.stdin.once("data", () => {
+    const { command, args } = JSON.parse(argv[argv.indexOf("--mcp-config") + 1]).mcpServers.cotal;
+    console.log("messages from server:cotal inject directly in this session");
+    console.log("(shift+tab to cycle)");
+    const seat = require("node:child_process").spawn(command, args, { stdio: ["pipe", "ignore", "inherit"] });
+    seat.once("exit", (code) => process.exit(code ?? 1));
+  });
+}
+`,
 );
 chmodSync(join(shim, "claude"), 0o755);
 
@@ -201,11 +227,55 @@ try {
     check("...and the refusal names the rule", r.out.includes("a session id cannot start with '-'"), r.out);
   }
   checkLocalPersonaLaunches(server);
+  checkManagedEffortInventory();
+  checkManagedModelRoster();
 } finally {
   if (up) {
-    const down = cotal(root, anchor, "down", "--yes");
+    const down = cotal(root, anchor, "down", "--yes", "--with-agents");
     check("down stops the stack", down.status === 0, down.out);
   }
   rmSync(scratch, { recursive: true, force: true });
 }
 finish();
+
+function checkManagedEffortInventory(): void {
+  const run = (...args: string[]) => cotal(root, anchor, ...args, "--json");
+  const read = <T>(output: ReturnType<typeof run>): T | undefined => {
+    const line = output.out.split("\n").find((l) => l.startsWith('{"schemaVersion"'));
+    return line ? (JSON.parse(line) as { result?: T }).result : undefined;
+  };
+  for (const override of [true, false]) {
+    const name = override ? "effort-override" : "effort-variant";
+    const options = override ? ["--opt", "effort=low"] : [];
+    const spawned = run("spawn", "probe", "--detach", "--no-events", "--harness", "claude", "--name", name,
+      "--cwd", seatDir, "--model", "opus", "--variant", "high", ...options);
+    check(`${name} joins the mesh`, spawned.status === 0 && read<{ readiness?: string }>(spawned)?.readiness === "joined", spawned);
+    const argv = launches().find((args) => args.includes("--model")) ?? [];
+    const efforts = argv.flatMap((arg, i) => arg === "--effort" ? [argv[i + 1]] : []);
+    check(`${name} passes only its selected effort to Claude`, efforts.length === 1 && efforts[0] === (override ? "low" : "high"), argv);
+
+    const ps = run("ps");
+    const row = read<{ items: { name: string; model?: string; variant?: string }[] }>(ps)?.items.find((item) => item.name === name);
+    check(`${name} has the expected model and variant in ps`, ps.status === 0 && row?.model === "opus" &&
+      (override ? !Object.hasOwn(row, "variant") : row.variant === "high"), ps);
+    const status = run("status", name);
+    const result = read<{ execution?: { model?: string }; details?: { variant?: string | null } }>(status);
+    check(`${name} has the expected model and variant in named status`, status.status === 0 && result?.execution?.model === "opus" &&
+      result.details?.variant === (override ? null : "high"), status);
+  }
+}
+
+function checkManagedModelRoster(): void {
+  const name = "model-override";
+  const model = "gpt-6.2-sol";
+  const spawned = cotal(root, anchor, "spawn", "probe", "--detach", "--no-events", "--harness", "claude",
+    "--name", name, "--cwd", seatDir, "--model", "claude-opus-5-5", "--opt", `model=${model}`);
+  check("a Claude seat with conflicting model flags joins", spawned.status === 0, spawned);
+  const models = launches().flatMap((args) => args.flatMap((arg, i) => arg === "--model" ? [args[i + 1]] : []));
+  check("the managed launch passes only the native model to Claude", models.length === 1 && models[0] === model, models);
+  const who = cotal(root, anchor, "who", "--json");
+  const line = who.out.split("\n").find((l) => l.startsWith('{"schemaVersion"'));
+  const report = line ? JSON.parse(line) as { result?: { items: { name: string; model?: string; managed: boolean }[] } } : undefined;
+  const row = report?.result?.items.find((item) => item.name === name);
+  check("the live roster reports the native model for the managed seat", who.status === 0 && row?.managed === true && row.model === model, who);
+}

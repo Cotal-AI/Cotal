@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
 import {
-  CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
+  CommandFailure, acquireMaintenanceLock, brokerAddressForDisplay, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
   shellPath, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
 } from "@cotal-ai/workspace";
 import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -21,6 +21,7 @@ import { assertManagerLogin, assertUserStackTransport, preflightUserStack, userL
 import { controllerStackNative, holdForegroundStack, prepareFreshTeamBoot, prepareResumeTeamBoot, recheckFreshTeamBoot, type FreshTeamBootPlan } from "./up.js";
 import { recheckStackResume, stackResumeEligibility, type StackResumeBinding } from "../lib/stack-resume.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { authModeText } from "../lib/team-text.js";
 
 export interface ControllerTeamBootRequest {
@@ -29,6 +30,7 @@ export interface ControllerTeamBootRequest {
   transport: BrokerTransport;
   foreground: boolean;
   presentation: "rich" | "json" | "plain";
+  retry: () => string;
 }
 
 /** The controller boot's receipt. Evidence fields are the members' own controller receipts; the
@@ -79,7 +81,7 @@ function bootView(data: ControllerTeamBootResult, journal: StackJournal): Report
     { title: "Fresh team boot started", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Deployment", data.deploymentId], ["Root", data.root], ["Broker", data.server], ["Manifest", data.manifestPath], ["Auth mode", authModeText(data.mode)], ["Runtime request", data.runtime], ["Launch spec", data.launchSpec ? `${data.launchSpec.path} (sha256 ${data.launchSpec.sha256.slice(0, 12)}…)` : "not written"], ["Launch summary", data.summaryRecorded ? "recorded" : "not recorded"], ["Lifetime", data.foreground ? "this terminal" : "background"], ["Agent readiness", "not checked"]] }, { kind: "lines", lines: ["The stack's own manager member was started with this exact pinned launch spec. Manager readiness proves the manager, not that each requested agent joined. The launch summary is not stop authority; stop the stack with `cotal down`."] }] },
     ...members.sections,
     { title: "Requested topology", blocks: [data.requestedAgents.length ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "application", label: "Application" }, { key: "role", label: "Role" }], rows: data.requestedAgents.slice(0, 100).map((agent) => ({ ...agent, role: agent.role ?? "none" })) } : { kind: "lines", lines: ["No agents requested."] }, { kind: "lines", lines: data.declaredChannels.length ? data.declaredChannels.slice(0, 100).map((name) => `declared #${name}`) : ["No channels declared."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${data.space}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cotal down --space ${data.space} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${data.space}`, description: "Read this local launch summary" }, { command: `cotal ps --space ${data.space}`, description: "List the agents the manager reports" }, { command: `cd ${shellPath(data.root)} && ${displayCmd({ fromAnyFolder: true })} down --space ${shellWord(data.space)} --dry-run`, description: "Preview the guarded whole-stack stop" }] }] },
   ] };
 }
 
@@ -91,7 +93,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   const recorded = readStackJournal(process.cwd())?.journal;
   let binding: StackResumeBinding | undefined;
   let plan: FreshTeamBootPlan;
-  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
+  if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport, retry: request.retry });
   else {
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
     // it lacks. This manifest may already own cards on the running stack.
@@ -116,9 +118,16 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     // could start everything except the team and leave its intent unsettled, so it refuses here
     // before any effect. A fresh root cannot hold a login grant before its first enable, so its
     // refusal names the whole native preparation path rather than login alone.
-    if (!binding && (await userLoginState(plan.root, plan.space)).state !== "ready")
-      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space }, remedy: `cotal up --user-auth --idp <auth base URL>, then \`cotal login\`, then \`cotal auth grant cli --sub <subject> --full\`, then \`cotal down\`, then \`cotal team boot ${request.file}\`` });
-    await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
+    if (!binding && (await userLoginState(plan.root, plan.space)).state !== "ready") {
+      const space = shellWord(plan.space), root = shellPath(plan.root);
+      const server = brokerAddressForDisplay(plan.server) === plan.server ? shellWord(plan.server) : "<manifest broker address>";
+      const idp = plan.idp ? ` --idp ${shellWord(plan.idp)}` : "";
+      const prepare = `cotal up --root ${root} --space ${space} --server ${server}${plan.host ? ` --host ${shellWord(plan.host)}` : ""} --user-auth${idp} --no-manager`;
+      const login = `cotal login${idp || " --idp <pinned auth base URL>"}`;
+      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space },
+        remedy: `prepare with ${codeSpan(prepare)}, then ${codeSpan(login)}. Have the space owner run ${codeSpan(`cotal auth grant cli --sub <subject> --full --space ${space}`)}. Stop the prepared stack with ${codeSpan(`cd ${root} && cotal down --space ${space}`)}, then retry from the original folder with ${request.retry()}` });
+    }
+    await assertManagerLogin(plan.root, plan.space, request.retry, "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
   const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });

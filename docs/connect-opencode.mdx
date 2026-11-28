@@ -39,7 +39,18 @@ cotal spawn --harness opencode
 ```
 
 A bare spawn runs OpenCode in this terminal. `--on <instance>` selects a manager and attaches when its runtime streams a terminal.
-To launch a `researcher` persona without opening its terminal, add `--detach`:
+Setup creates `.cotal/agents/default.md`, not a `researcher` persona.
+Before running the detached example, create `.cotal/agents/researcher.md` in the manager's project folder with these contents:
+
+```markdown
+---
+name: researcher
+role: research
+---
+You research questions and summarize your findings.
+```
+
+From another terminal in the project folder, launch the persona without opening its terminal:
 
 ```bash
 cotal spawn researcher --harness opencode --detach
@@ -48,7 +59,7 @@ cotal attach researcher
 ```
 
 For direct execution, add `--foreground` instead of `--detach`.
-To select a persona file, use `--file ./researcher.md`.
+To select that persona file, use `--file ./.cotal/agents/researcher.md`.
 You can also set `agent: opencode` in an [agent file](agent-files.mdx) or a [team manifest](manifest.mdx).
 See [Launch agents](launch-agents.mdx) for persona selection and terminal controls.
 

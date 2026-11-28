@@ -21,7 +21,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
+import { assertValidName, conversationSelection, MAX_NAME_LENGTH, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import { connectionNotReadyWarning } from "./tool-specs-inbox.js";
@@ -48,7 +48,7 @@ const SPACE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
  *  `space`, when the host knows which mesh this approval would join, is named in the pending result. */
 export class ApprovalRequired extends Error {
   readonly space?: string;
-  constructor(readonly pending: ConversationPending, space?: string) {
+  constructor(readonly pending: ConversationPending, space?: string, readonly reason?: string) {
     super("the person must approve this connection's permissions");
     this.name = "ApprovalRequired";
     this.space = space !== undefined && SPACE_NAME.test(space) ? space : undefined;
@@ -272,7 +272,12 @@ export interface GatewayWake {
 
 /** The names `cotal_connect` tries for `base`, in order. */
 export function gatewayNames(base: string, attempts = GATEWAY_NAME_ATTEMPTS): string[] {
-  return [base, ...Array.from({ length: attempts - 1 }, (_, i) => `${base}_${i + 2}`)];
+  return [base, ...Array.from({ length: attempts - 1 }, (_, i) => {
+    const suffix = `_${i + 2}`;
+    // A cut through a surrogate pair leaves its high surrogate at the end of the prefix.
+    const prefix = base.slice(0, MAX_NAME_LENGTH - suffix.length).replace(/[\uD800-\uDBFF]$/, "");
+    return `${prefix}${suffix}`;
+  })];
 }
 
 const CONNECTION_REQUIRED =
@@ -594,6 +599,7 @@ export function registerCotalGatewayTools(
                 ? `This call waited and the person has not decided. Call cotal_connect again with name ${JSON.stringify(candidate)}${resume} and the same requested permissions to keep waiting. That call does not start another request.`
                 : `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
               const message = `Permission approval required. This conversation is not connected.\n` +
+                (e.reason ? `${e.reason}\n` : "") +
                 (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
                 `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
                 `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
@@ -709,6 +715,11 @@ export function registerCotalGatewayTools(
           const span = `${limit} second${limit === 1 ? "" : "s"}`;
           // A wait that could not hear from the broker only knows the local buffer, as cotal_inbox says.
           const notReady = connectionNotReadyWarning(c.agent);
+          if (c.agent.inboxCount("pull-only") > 0) {
+            return toContent({
+              text: `${notReady ? `${notReady}\n\n` : ""}No message woke this wait in ${span}. Buffered messages are waiting. Call cotal_inbox to read them.`,
+            });
+          }
           return toContent({
             text: notReady
               ? `${notReady}\n\nNothing new reached the local buffer in ${span}. Call cotal_wait again to keep listening.`

@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { tokenAuthenticator } from "@nats-io/transport-node";
 import { idFromCreds } from "./identity.js";
 import { nativeCredsAuthenticator } from "./creds-authenticator.js";
+import { decodeBearerPrincipal } from "./endpoint-dial.js";
+import { userInboxConnId } from "./subject-grammar.js";
 
 /** Auth material for a STANDALONE helper connection: a static/raw creds file, OR the user-mode
  *  pair (a view bearer + the deny-all sentinel creds) — exactly what the endpoint's user mode
@@ -39,9 +40,8 @@ export interface StandaloneAuth {
  *  (Permissions Violation), hanging every `jetstreamManager`/`streams.*` request.
  *
  *  USER MODE (`bearer` + `sentinelCreds`) mirrors the endpoint's callout-shaped connect: the
- *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and a
- *  client-chosen inbox NONCE goes out as the connect `name` — the callout scopes `_INBOX_<nonce>.>`
- *  from it (the client cannot know its nkey pre-connect). Open mode (no auth) connects bare. */
+ *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and
+ *  the principal-bound inbox name goes out as the connect `name`. Open mode connects bare. */
 export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unknown> {
   // The `= {}` default is deliberately GONE. It was the omission hole: it let a caller build
   // connect options without ever naming a transport, and the result silently connected non-strict.
@@ -63,10 +63,11 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
     if (!auth.sentinelCreds)
       throw new Error("user-mode standalone connect requires sentinelCreds alongside the bearer");
     if (auth.creds) throw new Error("standalone connect takes creds OR bearer+sentinelCreds, never both");
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const { owner, actor } = decodeBearerPrincipal(auth.bearer);
+    const connId = userInboxConnId(owner, actor);
     return {
-      name: nonce,
-      inboxPrefix: `_INBOX_${nonce}`,
+      name: connId,
+      inboxPrefix: `_INBOX_${connId}`,
       authenticator: [nativeCredsAuthenticator(auth.sentinelCreds), tokenAuthenticator(auth.bearer)],
       ...tlsOpt,
     };

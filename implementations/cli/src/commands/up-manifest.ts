@@ -60,10 +60,10 @@ export interface FreshTeamBootPlan {
 /** The fresh boot's read-only preparation, shared by the controller team boot. It runs the same
  *  manifest load, override, mode agreement, ownership, bind, runtime, reachability and connector
  *  refusals as the retained `upManifest` fresh path, in the same order, and writes nothing. */
-export async function prepareFreshTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; server?: string; host?: string; runtime?: string; open?: boolean; userAuth?: boolean; idp?: string; maxSessions?: number }): Promise<FreshTeamBootPlan> {
+export async function prepareFreshTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; retry: () => string; server?: string; host?: string; runtime?: string; open?: boolean; userAuth?: boolean; idp?: string; maxSessions?: number }): Promise<FreshTeamBootPlan> {
   const flags: UpManifestFlags = { ...opts, dryRun: false, freshTeamBoot: true };
   let prepared: PreparedManifest;
-  try { prepared = loadManifest(resolve(file)); }
+  try { prepared = loadManifest(resolve(file), undefined, true); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } }); }
   if (opts.space !== prepared.manifest.space)
     throw new CommandFailure("refused", "CONFLICT", "the fresh boot manifest no longer names the selected space; no broker was started", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
@@ -86,8 +86,15 @@ export async function prepareFreshTeamBoot(file: string, opts: { space: string; 
   const runtime = m.runtime ?? "pty";
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
     throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; no channel metadata or broker was written", { target: { space: m.space }, remedy: "use static/user authentication for durable delivery, or declare live delivery for an open mesh" });
-  const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
-  if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) } });
+  const otherSpaces = loadMeshes().filter((row) => row.space !== m.space && row.server === server).map((row) => row.space);
+  if (otherSpaces.length) {
+    const address = brokerAddressForDisplay(server) ?? "not displayable";
+    const names = otherSpaces.map((name) => `"${oneLine(name)}"`).join(", ");
+    throw new CommandFailure("refused", "CONFLICT", `the broker address ${address} is already recorded for ${otherSpaces.length === 1 ? "local space" : "local spaces"} ${names}. No broker was started.`, {
+      target: { space: m.space, server: address, otherSpaces },
+      remedy: `choose a free port in the manifest's \`broker.servers\`, then retry with ${opts.retry()} from the same folder`,
+    });
+  }
   assertFreshTeamBootOwnership(cotalRoot(), m.space, mode);
   await assertFreshTeamBindAvailable(server, host, m.space);
   try { await preflightRuntime(runtime); }
@@ -109,7 +116,7 @@ const RESUME_MODE = { open: { words: "open", field: "false" }, auth: { words: "s
  *  equal the recorded host. Writes nothing. */
 export async function prepareResumeTeamBoot(file: string, opts: { space: string; transport: BrokerTransport; recorded: { server: string; mode: "open" | "auth" | "user"; host?: string } }): Promise<FreshTeamBootPlan> {
   let prepared: PreparedManifest;
-  try { prepared = loadManifest(resolve(file)); }
+  try { prepared = loadManifest(resolve(file), undefined, true); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest changed or could not be resolved before startup; nothing was resumed", { target: { path: resolve(file), space: opts.space } }); }
   if (opts.space !== prepared.manifest.space)
     throw new CommandFailure("refused", "CONFLICT", "the team manifest no longer names the selected space; nothing was resumed", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
@@ -198,7 +205,7 @@ export function manifestFileRefusal(e: unknown, path: string): CommandFailure {
 export async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   let prepared: PreparedManifest;
   try {
-    prepared = loadManifest(resolve(file), opts.logFile);
+    prepared = loadManifest(resolve(file), opts.logFile, opts.dryRun ? "preview" : true);
   } catch (e) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } });
     failManifest(e);
@@ -316,8 +323,7 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
     }
     if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
     console.log(renderUpPlan(eff, server));
-    // The omission is part of the plan (#1417): a dry run that lists a manager the real boot
-    // will not start is the exact "green-lit a launch the applying command refuses" failure.
+    // The plan names when the applying command omits the manager.
     if (effectiveNoManager)
       console.log(c.dim("  no manager will start on this host (--no-manager): broker, channels and, in auth mode, the delivery daemon come up, and no agents launch from here"));
     return;

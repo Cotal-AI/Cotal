@@ -24,7 +24,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { applyInstall, installedDaemonIdentity, installedServicePath, planUninstall, planInstalledPathRefresh, preflightInstalledDaemon, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -48,7 +48,7 @@ export interface SetupResult {
   readonly registration?: RegisterResult;
 }
 
-interface InstallOptions {
+export interface InstallOptions {
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
@@ -132,7 +132,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
   let outcome: string, detail: string;
   if (unit !== undefined) {
     outcome = "already-installed";
-    detail = `${unit} is already installed; it was left as it is`;
+    detail = `${unit} is already installed`;
   } else {
     // Nothing is recorded, so this would install. A daemon that is already answering was started
     // some other way, by hand or by a container entrypoint, and installing now would start a
@@ -205,9 +205,32 @@ async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Pr
   finally { release(); }
 }
 
+/** After the app installs an application into `dirs`, or when it checks again: refresh the installed
+ *  service as setup does when it cannot find the application yet. That is when a systemd or launchd
+ *  service's pinned PATH lacks one of `dirs`, when the Windows task started before PATH had them
+ *  (`before`, the account PATH it read), or when a hosted Manager reports a missing executable that
+ *  PATH now finds. Running seats refuse the refresh with LIFECYCLE_BLOCKED and change nothing. */
+export async function refreshServiceForApplication(opts: InstallOptions, dirs: readonly string[], before?: string): Promise<"none" | "unchanged" | "refreshed"> {
+  if (!preflightInstalledDaemon(opts.paths, opts.daemonHome)) return "none";
+  // Windows compares folders without regard to case; macOS and Linux paths keep theirs.
+  const key = (dir: string) => { const trimmed = dir.replace(/[\\/]+$/, ""); return process.platform === "win32" ? trimmed.toLowerCase() : trimmed; };
+  const servicePath = installedServicePath(opts.paths, opts.daemonHome) ?? before;
+  const entries = servicePath?.split(process.platform === "win32" ? ";" : ":").map(key);
+  const pathLacks = entries !== undefined && !dirs.every(dir => entries.includes(key(dir)));
+  const status = pathLacks ? undefined : await queryDaemon(opts).catch(() => undefined);
+  if (!pathLacks && !(status?.ok && status.result.managers?.some(hasNewApplications))) return "unchanged";
+  return await refreshApplications(opts, []) ? "refreshed" : "unchanged";
+}
+
 async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
-  if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run setup from ${installation.installed}` });
+  // A Windows task pins no PATH: restarted unchanged, its daemon reads the current user PATH, whichever
+  // installation registered it, and keeps the version it runs. A unit or LaunchAgent is rewritten, which
+  // only its own installation does. The message names no command line; the terminal remedy still does.
+  if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}` });
+  const { version: _version, ...unversioned } = opts;
+  const expected: InstallOptions = installation.same ? opts : unversioned;
+  const unit = process.platform === "win32" ? "" : planUninstall(opts.paths, opts.daemonHome).unit;
   const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
   if (!refresh && process.platform !== "win32") return false;
   opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s", { step: "manager", outcome: "running", detail: "waiting for hosted Managers to confirm readiness and an idle restart fence" });
@@ -217,17 +240,21 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
     throw error;
   }
   try {
-    refresh?.();
-    await restartInstalled(opts.paths, opts.daemonHome, true, opts.version, restartProgress(opts));
+    if (refresh) {
+      const updating = `updating ${unit} pinned PATH`;
+      opts.report(`service: ${updating}`, { step: "install", outcome: "running", detail: updating });
+      refresh();
+    }
+    await restartInstalled(opts.paths, opts.daemonHome, true, expected.version, restartProgress(opts));
   } catch (error) {
     try { if (process.platform !== "win32") await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
     catch { /* Preserve the installation or native service failure. */ }
     throw error;
   }
-  const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : "refreshed the pinned PATH from this invocation, keeping existing directories";
+  const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : `restarted ${unit} with the updated PATH`;
   steps.push({ step: "install", outcome: "path-refreshed", detail });
   opts.report(`service: ${detail}`, steps.at(-1));
-  await waitForDaemon(opts, 60);
+  await waitForDaemon(expected, 60);
   return true;
 }
 

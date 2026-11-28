@@ -1,5 +1,5 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MANAGER_START_PAYLOAD_FLOOR, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
@@ -25,7 +25,7 @@ import {
 import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
-import { tlsIntent } from "./broker-url.js";
+import { firstStartServer, tlsIntent } from "./broker-url.js";
 import { spaceFromKey } from "./auth-paths.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 
@@ -109,7 +109,9 @@ export interface ResolveFlags {
    * preflight can name its root. Callers that do not sweep omit this; TAB completion must.
    */
   offline?: readonly string[];
-  /** Broker inventory evidence used only by the unflagged registry fallback. */
+  /** Report that folder precedence is unverified when the command does not probe brokers. */
+  reportUnverifiedFolderPrecedence?: boolean;
+  /** Broker inventory evidence for automatic target selection. */
   openInventory?: { served: readonly string[]; unserved: readonly string[] };
 }
 
@@ -175,6 +177,8 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` in a folder whose stack journal another folder recorded: the next step that
    *  `up` and `down` name there too, from {@link stackElsewhereRemedy}. */
   stackRemedy?: string;
+  /** Explicit broker on a never-started target: a local startup address, or null when no local start can be suggested. */
+  firstStartServer?: string | null;
   /** For `not-started` on a prepared space: no project directory is available at its root. */
   rootMissing?: boolean;
   /** Why the recorded project directory is unavailable. */
@@ -441,7 +445,7 @@ export function isGenuineSpace(root: string): boolean {
 /** Refuses `space` when it is prepared and not started, before anything dials the address it would
  *  have: another broker may answer there. Run from `cwd` in the folder its missing root was moved to,
  *  whose stack journal names that root, it names the next step `up` and `down` name there. */
-function notStarted(space: string, cwd?: string): void {
+function notStarted(space: string, cwd?: string, server?: string): void {
   const prepared = findPreparedSpace(space);
   if (!prepared) return;
   const rootProblem = projectRootProblem(prepared.root);
@@ -453,7 +457,9 @@ function notStarted(space: string, cwd?: string): void {
   const lifecycle = preparedLifecycle(prepared.root, space);
   if (lifecycle.state === "unsettled") throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${lifecycle.unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled: lifecycle.unsettled, ...(lifecycle.stopped ? { stopped: lifecycle.stopped } : {}) });
   if (lifecycle.state === "stopped") throw new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${lifecycle.lastOperation}`, { space, root: prepared.root, stopped: lifecycle.stopped });
-  throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+  throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root,
+    ...(server === undefined ? {} : { firstStartServer: firstStartServer(server) ?? null }),
+  });
 }
 
 /** What the root a space was prepared in records about its stack, as a command that targets it
@@ -704,9 +710,13 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
     const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown; operation?: unknown; recovery?: { home?: unknown } } | null;
     if (!journal) return {};
     const elsewhere = typeof journal.root === "string" && journal.root !== canonicalRoot(root) ? journal.root : undefined;
-    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}),
+    const missing = stackRunsUnderOtherHome(root, journal), home = homeCotalDir(), recordedHome = journal.recovery?.home;
+    const missingRemedy = !missing || typeof recordedHome !== "string" ? undefined : recordedHome !== resolve(home)
+      ? `run the command from this folder with COTAL_HOME=${shellPath(recordedHome)}`
+      : elsewhere === undefined ? "run `cotal down --dry-run` in this project to inspect the pinned members, then `cotal down --yes` if the preview confirms they can be stopped" : undefined;
+    return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(missing ? { home } : {}),
       ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members, journal.operation) } : {}),
-      ...(stackRunsUnderOtherHome(root, journal) && typeof journal.recovery?.home === "string" ? { stackRemedy: `run the command from this folder with COTAL_HOME=${shellPath(journal.recovery.home)}` } : {}) };
+      ...(missingRemedy === undefined ? {} : { stackRemedy: missingRemedy }) };
   } catch {
     return {};
   }
@@ -896,7 +906,7 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * A root with several running spaces, none of them the selection, keeps the selection and says so
  * before the command acts, with the `--space` that targets one of them instead.
  */
-function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
+function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>, flags: Pick<ResolveFlags, "openInventory" | "reportUnverifiedFolderPrecedence"> = {}): boolean {
   const folder = folderSpaces(cwd, meshes);
   if (source === "explicit") {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
@@ -907,7 +917,8 @@ function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSe
     return true;
   }
   if (!folder || folder.registered.includes(current) || folder.prepared === current) return true;
-  const running = folder.registered.filter((space) => !offline.has(space));
+  const registered = folder.registered.filter((space) => !flags.openInventory?.unserved.includes(space));
+  const running = registered.filter((space) => !offline.has(space));
   if (running.length === 0) {
     if (recordsRunElsewhere(folder)) return false;
     const unfinished = unfinishedStackSpace(folder.root);
@@ -915,8 +926,17 @@ function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSe
       noteFolderSpace(unfinished, current);
       return false;
     }
-    noteFolderSpaceHeld(folder, current);
+    noteFolderSpaceHeld({ ...folder, registered }, current);
     return true;
+  }
+  if (flags.reportUnverifiedFolderPrecedence) {
+    const space = running.length === 1 ? running[0]! : current;
+    const message = "This report uses local records. It cannot check whether this folder takes precedence over the automatically selected space. Name a space with `--space` to choose it explicitly.";
+    recordOperationSpaceNote(space, message);
+    recordOperationWarning(running.length === 1
+      ? { code: "BROKER_NOT_PROBED", target: { space }, message }
+      : { code: "SELECTION_NOT_FOLDER_SPACE", target: { space, folderSpaces: running, root: folder.root }, message }, { echo: false });
+    return running.length !== 1;
   }
   if (running.length === 1) {
     noteFolderSpace(running[0]!, current);
@@ -1150,7 +1170,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   if (flags.space) {
     const m = findMesh(flags.space);
     if (!m) {
-      notStarted(flags.space, cwd);
+      notStarted(flags.space, cwd, flags.server);
       const root = findCotalRoot(cwd);
       if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
@@ -1235,7 +1255,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const selection = readCurrentSelection();
   const meshes = loadMeshes();
-  if (selection && selectionTargetsHere(cwd, selection, meshes, offline)) {
+  if (selection && selectionTargetsHere(cwd, selection, meshes, offline, flags)) {
     const current = selection.space;
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
@@ -1275,7 +1295,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // to `DEFAULT_SERVER` below, silently. `mesh-registry.ts` states the rule on `meshesForRoot`:
     // "a raw `===` silently misses". This is the same rule, one predicate, not a second spelling.
     // An adopted selection yields to the one registration here that the liveness sweep kept.
-    const recorded = registrationAt(root, meshes, selection?.source === "adopted" ? offline : undefined);
+    const recorded = registrationAt(root, meshes, selection?.source === "adopted"
+      ? new Set([...offline, ...(flags.openInventory?.unserved ?? [])]) : undefined);
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
     // A root whose own stack recorded a broker is not given the default address: with no
     // registration that stack is not running here, and the default port may hold another mesh. The

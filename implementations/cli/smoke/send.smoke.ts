@@ -62,7 +62,7 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { execWords } from "../src/lib/exec-words.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 122;
+const EXPECTED = process.platform === "win32" ? 122 : 124;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -88,7 +88,7 @@ const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { std
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
 const cli = fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url));
-const tsx = fileURLToPath(import.meta.resolve("tsx"));
+const tsx = import.meta.resolve("tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-send-home-"));
 const releaseHome = teardownPathOnSignal(home);
@@ -111,6 +111,7 @@ const isolatedEnv: NodeJS.ProcessEnv = {
   HOME: home,
   USERPROFILE: home,
   TMPDIR: tmp,
+  ...(process.platform === "win32" ? { APPDATA: home, LOCALAPPDATA: home, TEMP: tmp, TMP: tmp } : {}),
   COTAL_HOME: join(home, ".cotal"),
   XDG_CONFIG_HOME: xdg,
   COTAL_SKIP_CONNECTOR_SEED: "1",
@@ -294,10 +295,11 @@ try {
   // A reply names the message it answers on a direct or channel send; a role send has no such field.
   const answered = `answered-${randomUUID().slice(0, 6)}`;
   const replyTexts = { dm: `reply-u-${randomUUID().slice(0, 6)}`, msg: `reply-m-${randomUUID().slice(0, 6)}`, ask: `reply-a-${randomUUID().slice(0, 6)}` };
-  const [dmReply, msgReply, askReply] = await Promise.all([
+  const [dmReply, msgReply, askReply, askWithoutBody] = await Promise.all([
     run(["send", "-t", "bob", replyTexts.dm, "--reply-to", answered, "--json"]),
     run(["send", "-c", "general", replyTexts.msg, "--reply-to", answered, "--json"]),
     run(["send", "-r", "reviewer", replyTexts.ask, "--reply-to", answered, "--json"]),
+    run(["send", "--role", "reviewer", "--reply-to", answered, "--json"]),
   ]);
   await wait(700);
   const replied = (reply: typeof dmReply, route: string, text: string) =>
@@ -305,8 +307,16 @@ try {
       got.some((m) => m.route === route && m.text === text && m.replyTo === answered);
   check("`cotal send -t` and `cotal send -c` with --reply-to store the reply relation and report it in the receipt",
     replied(dmReply, "DM", replyTexts.dm) && replied(msgReply, "#general", replyTexts.msg), { dmReply, msgReply });
-  check("`cotal send -r` with --reply-to is USAGE_INVALID, exit 1, naming --to and --channel, and nothing is sent",
-    askReply.code === 1 && askReply.stdout.includes('"code":"USAGE_INVALID"') && askReply.stdout.includes("requires --to or --channel") && !got.some((m) => m.text === replyTexts.ask), askReply);
+  check("`cotal send -r` refuses --reply-to with or without a body and explains how to fix the destination or option",
+    [askReply, askWithoutBody].every((reply) => {
+      const error = (JSON.parse(reply.stdout) as { error?: { code: string; message: string; remedy?: string } }).error;
+      return reply.code === 1 && error?.code === "USAGE_INVALID" && error.message === "role sends do not take --reply-to"
+        && error.remedy?.includes("remove --reply-to and its value") && error.remedy.includes("--to or --channel")
+        && !error.remedy.includes("cotal send");
+    }) && !got.some((m) => m.text === replyTexts.ask), { askReply, askWithoutBody });
+  const correctedAsk = await run(["send", "-r", "reviewer", replyTexts.ask, "--json"]);
+  check("the corrected role send stores the task and keeps the JSON receipt",
+    correctedAsk.code === 0 && JSON.parse(correctedAsk.stdout).result.stored === true, correctedAsk);
 
   check(
     "the consumer count reads bob's own presence and channel-registry watches",
@@ -634,6 +644,29 @@ try {
   });
   check("`cotal send --stdin` waits for a writer that pauses, then stores the message",
     late.code === 0 && late.stdout.includes('"outcome":"ok"') && late.stdout.includes('"bodySource":"stdin"'), late);
+  const guide = readFileSync(new URL("../../../docs/cli-messaging.mdx", import.meta.url), "utf8");
+  const example = guide.match(/^```powershell\r?\n([^`]*?\$text \| cotal send -c updates --stdin)\r?\n```/m)?.[1];
+  const unicode = "café ✓ → ┌ 🙂\r\n";
+  const sendUtf8 = async (): ReturnType<typeof run> => {
+    if (process.platform !== "win32") return piped(["send", "-c", "updates", "--stdin", "--json"], (stdin) => stdin.end(unicode));
+    writeFileSync(join(operatorShell, "cotal.cmd"), `@"${process.execPath}" --import "${tsx}" "${cli}" %*\r\n`);
+    const script = `$env:Path = "$PWD;$env:Path"
+$root = cotal ext root
+if ($LASTEXITCODE -ne 0 -or -not "$root".StartsWith($env:XDG_CONFIG_HOME + '\\')) { exit 1 }
+$text = 'caf' + [char]0x00E9 + ' ' + [char]0x2713 + ' ' + [char]0x2192 + ' ' + [char]0x250C + ' ' + [char]::ConvertFromUtf32(0x1F642)
+${example}
+exit $LASTEXITCODE`;
+    const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    return new Promise((resolve) => execFile(powershell,
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { cwd: operatorShell, env: isolatedEnv, windowsHide: true, timeout: 30_000 },
+      (err, stdout, stderr) => resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr })));
+  };
+  const utf8Send = example ? await sendUtf8() : undefined;
+  const utf8History = await run(["history", "updates", "--json"]);
+  check("the documented UTF-8 stdin send preserves Unicode and CRLF in retained history",
+    utf8Send?.code === 0 && utf8History.code === 0 && JSON.parse(utf8History.stdout).result.items[0]?.text === unicode,
+    { utf8Send, utf8History });
   const endless = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
     const chunk = "z".repeat(64 * 1024);
     const more = () => { while (!stdin.destroyed && stdin.write(chunk)); };

@@ -1,5 +1,77 @@
 # @cotal-ai/workspace
 
+## 0.183.1
+
+### Patch Changes
+
+- c049810: Report remaining resumable conversation approvals of the previous account when `cotal login` switches accounts at the same provider.
+- Updated dependencies [99e5057]
+  - @cotal-ai/core@0.183.1
+
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- c3236a3: A stack journal this account owns but other accounts can read, as a restored project backup leaves it, refuses `doctor auth` and `ps` with the `chmod 600` command that makes it private again; a journal owned by another account names the owner it must be restored with.
+- 447e860: Reclaim abandoned extension staging copies from the previous connector configuration without removing its installed connectors.
+- 6930623: Resume a signed-in native conversation on the same computer without asking for approval again when the space still accepts its original approval.
+- 0c10988: Self-update restores missing owner read or folder search permissions on a verified, owned extensions manifest path and continues.
+- 067ff29: Report an unreadable or invalid extension inventory as the existing permission or corrupt-manifest refusal, without changing the file.
+- 06629ca: Cotal can update when an extension has no recorded install spec, keeping verified packages and repairing packages that need it.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [335d8e9]
+  - @cotal-ai/core@0.183.0
+
+## 0.182.1
+
+### Patch Changes
+
+- 8495df7: Show the Codex thread's reported model in named status when no model was requested through Cotal.
+- 8eead0e: The desktop app has an Agent apps screen. It lists the application each connector runs (Claude Code, Codex, OpenCode, pi, Hermes and Jcode) with its logo, version and whether it is signed in, and installs a missing one with its maker's own installer in one click, with no terminal. Before you install, each app says which site it downloads from, and a connector that is not one of Cotal's own also shows its package name. When an installer leaves its folder off PATH, the app adds it, and the background service picks the application up. Claude Code and Codex sign in from the app through their own browser sign-in. A connector declares all this in a new `install` field beside `requires`, which the extensions manifest caches and checks.
+- 5117d48: When a stack loses its Cotal home records, status and ps point to the stop preview, and component status distinguishes a running broker from a service it cannot check.
+- 2af983b: The console removes a deleted channel's posts from the aggregate feed without hiding posts from other channels.
+- c27ddc1: Select the matching Node import from nested conditional exports when installing and loading extensions.
+- 8a9ffeb: An unchecked project registration does not override the automatically selected space when its broker does not serve it.
+- Updated dependencies [8eead0e]
+- Updated dependencies [287b874]
+  - @cotal-ai/core@0.182.1
+
+## 0.182.0
+
+### Patch Changes
+
+- ecd506f: Clear purged chat messages from the console that ran the purge, without closing configured channel tabs.
+- 1d10f92: Make short-option corrections and daemon recovery commands copyable in Windows PowerShell and Command Prompt.
+- 7ef585e: When `cotal join` rejects a credential from another space, its replacement command includes a read grant for the requested channel without adding publish access.
+- 48b6414: Load installed extensions even when the manifest lacks an install spec, and name the package to remove if it needs recovery.
+- 1f37adb: OpenCode seats launched without a model pin report the model they use after a mesh-delivered prompt in `cotal who` and plain `cotal status`.
+- b670c41: Keep the extension inventory in place when permissions prevent reading it. The version report points to restoring read access, and connector repair and reset refuse to quarantine the file.
+- c9a8881: Keep evicting ended user-auth terminal connections when only callout replicas are running, limit delays from slow evictions, and explain when a one-shot terminal connection closes on a broker authorization error.
+- 365e355: Quote local extension paths in reinstall commands so you can paste them into a POSIX shell even when the path contains spaces.
+- dd426ff: When a non-NATS listener holds a controller stack’s recorded broker address, `cotal status` and `cotal ps` tell you to free that address and restart the stack there.
+- f5b2a30: Install and load extensions that use Node's shorthand for conditional root exports without requiring a `main` field or an `index.js` file.
+- e6cd8f2: Explain when `cotal whoami` cannot verify whether a project space overrides the automatically selected space.
+- 6c10b18: Fix Windows npm self-updates so they can update a stopped local space, replace the invoked installation, and finish or retry safely after an interrupt or a temporary file lock.
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [423aa24]
+- Updated dependencies [30b474d]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+  - @cotal-ai/core@0.182.0
+
 ## 0.181.0
 
 ### Patch Changes

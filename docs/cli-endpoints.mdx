@@ -109,6 +109,14 @@ pinned issuer to exchange a fresh IdP proof and reports the current grant return
 bearer. It does not refresh the remote space catalog or connect to the broker. A one-shot command
 has no mesh session, so there is no unread count or connection state to report.
 
+If `--server` matches several registered spaces, `whoami` refuses with `TARGET_AMBIGUOUS` (exit 2).
+The remedy gives a command for each space with the same broker and output flags when the address can
+be printed unchanged. Run one to read that identity without changing the saved selection.
+
+When a folder's registrations compete with an automatically adopted selection, `whoami` reports
+an identity from local records and notes that it cannot check which space a live command would
+target. Pass `--space <name>` to choose the space explicitly.
+
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
 | Open | `open` | Everything; the broker authenticates nothing |
@@ -259,7 +267,8 @@ cotal endpoint check <contract-file> [--json|--plain]
 the supplied name. Use `--dir` to choose another one. `init` creates missing directories with
 mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
 Retry with `--dir` set to a real directory path. If a scaffold file already exists, `init` leaves it
-unchanged and suggests `--dir <new-directory>` with the same endpoint name. The receipt lists the
+unchanged. Its retry keeps the endpoint name and output format. Replace `<new-directory>` with
+an unused directory. The receipt lists the
 paths created. A partial write leaves those paths in place for review.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
@@ -290,7 +299,8 @@ in the path, use shell completion to enter the directory and run the suggested c
 `check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
-endpoint. Authoring takes no space, broker, caller or invocation flags.
+endpoint. Authoring takes no space, broker, caller or invocation flags. If `check` refuses a bare
+`--server`, omit it and keep the contract path. No broker address is needed.
 
 With `--json`, the receipt's `command` is `endpoint init` or `endpoint check`, including when
 the operation is refused.
@@ -565,6 +575,7 @@ existing native caller and digest-verified contracts. `ref:<name>` requires a sa
 references first, then uses the native class only when no reference exists. An unreadable or
 invalid reference refuses instead of selecting another target.
 If several spaces match, `endpoint describe` names them and shows how to retry with `--space`.
+Each retry keeps the original options and endpoint target, including a target after `--`.
 If the requested space is not registered, the refusal names it and points to `cotal space`.
 
 A selected reference is disclosed on stderr and in `result.resolution`, with its revision and
@@ -669,6 +680,10 @@ Unknown and partial results use waiting treatment, not a healthy completion mark
 keeps the same state words without ANSI. The JSON envelope stays on stdout; diagnostics stay on
 stderr. Raw argument objects and arbitrary native detail payloads are not copied into the human
 report. Confirmed history purge acknowledgements remain visible when a later stream fails.
+
+For a pre-execution refusal, the human report shows the responder's reason when available, and
+`--json` carries it in `error.message`. The CLI redacts recognized credential forms, owner IDs and
+request IDs from the reason. The request and responder attribution stay in their usual fields.
 
 
 ## Endpoint class scatters [#endpoint-class-scatters]

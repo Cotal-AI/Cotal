@@ -15,6 +15,7 @@ import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
 import { protectedResolvedDirectory } from "./protected-records.js";
 import { CommandFailure } from "./output.js";
+import { restoreManifestAccess } from "./manifest-access.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -389,22 +390,50 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
 
 /** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */
 export function connectorConfigDir(): string {
+  return selectedConnectorConfig();
+}
+
+function selectedConnectorConfig(prepare?: (path: string) => void): string {
   const id = identity();
-  return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+  if (id) prepare?.(id.path);
+  return id ? currentConfig(id, prepare) ?? updateSnapshot(id) ?? previousConfig(id, prepare) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+}
+
+/** Restore access only to the selected manifest, either before traversal or after a denied read. */
+export function restoreConnectorManifestAccessForUpdate(search: boolean): boolean {
+  return restoreManifestAccess(resolve(globalConfigDir()), selectedConnectorConfig, search);
 }
 
 /**
- * Restore write access without following managed links or touching another installation.
+ * The selected update's validated rollback source for this installation. `snapshotConfig` accepts
+ * only the top-level connector config folder or a private version folder beside the selected set.
+ */
+export function previousUpdateConnectorConfig(): string | undefined {
+  const id = identity();
+  if (!id || readUpdateRecovery()) return;
+  const selected = readLineage(dirname(id.path));
+  if (selected?.entry !== id.entry || selected.version !== id.version || typeof selected.snapshot !== "string") return;
+  const current = currentConfig(id);
+  if (!current || current !== selectedRoot(selected.root, id.path, selectionDiffers)) return;
+  const previous = snapshotConfig(selected.snapshot, undefined, id.path);
+  if (!previous || sameConfigPath(previous, current)) return;
+  return previous;
+}
+
+/**
+ * Restore owner access without following managed links or touching another installation.
  * Report completed repairs and recovery, even if a later check refuses. `onModeChange` reports
  * only the restored directory permissions.
  */
 export function prepareConnectorConfigForUpdate(onChange?: () => void, onModeChange?: () => void): void {
   const config = resolve(globalConfigDir());
   const what = "the Cotal connector configuration";
+  let changed = false;
+  const noteChange = (): void => { changed = true; onChange?.(); };
   const refuse = (path: string, reason: string): never => {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} at ${path} ${reason}. No CLI update was staged.`, {
-      target: { path }, native: { outcome: "not-executed" },
-      remedy: "Make the named directory a real directory owned and writable by your account, then run `cotal update --self` again.",
+      target: { path }, ...(changed ? {} : { native: { outcome: "not-executed" } }),
+      remedy: "Make the named directory a real directory owned and writable by your account, with owner read and search access, then run `cotal update --self` again.",
     });
   };
   const writable = (path: string, mode: number): void => {
@@ -419,12 +448,12 @@ export function prepareConnectorConfigForUpdate(onChange?: () => void, onModeCha
     const stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat) return false;
     if (!stat.isDirectory() || stat.uid !== process.getuid?.()) refuse(path, "is not a real directory owned by this account");
-    const mode = (stat.mode & 0o7755) | 0o200;
+    const mode = (stat.mode & 0o7755) | 0o700;
     if (mode !== (stat.mode & 0o7777)) {
       try { chmodSync(path, mode); }
-      catch { refuse(path, "could not be made writable by this account"); }
-      onChange?.();
-      onModeChange?.();
+      catch { refuse(path, "cannot be accessed for updates by this account"); }
+      noteChange();
+      if ((stat.mode & 0o700) !== 0o700) onModeChange?.();
     }
     writable(path, constants.R_OK | constants.W_OK | constants.X_OK);
     return true;
@@ -444,9 +473,10 @@ export function prepareConnectorConfigForUpdate(onChange?: () => void, onModeCha
   };
   const id = identity();
   if (id) {
+    repairPath(dirname(id.path));
     rejectLinkedSet(id, () => refuse(id.path, "is not a real directory owned by this account"));
     repairPath(id.path);
-    recoverRetiredCanonical(id.path, onChange);
+    recoverRetiredCanonical(id.path, noteChange);
   }
   const current = id && currentConfig(id, repairPath);
   // A bound downgrade inherits its snapshot into a new root, never the existing generation.

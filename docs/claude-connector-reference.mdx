@@ -38,7 +38,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   a managed launch's same-named entry replaces it. A carried seat's private home declares it itself.
   A managed launch with no declaration refuses instead of starting a seat that cannot wake. On a
   daemon-connected computer, use `cotal daemon setup --space <space>` to retry registration.
-  `cotal status` reports the entry under `Claude wake channel`.
+  `cotal status --wide` reports the entry under **Claude wake channel** in **This machine**.
 
 - `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
   space, so a prompt that names a Claude command or starts with `-` still arrives as the turn. An
@@ -128,7 +128,8 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   input screen, or answered the prompt without the notice, fails its spawn and is stopped. The PTY runtimes read the child's screen, and the tmux, cmux, Orca
   and Herdr runtimes read the pane's screen. If neither the prompt nor the input screen appears
   within 15 seconds, the seat ends with a bounded error naming the unmatched prompt instead of
-  hanging silently or answering another dialog. Claude's first-run screens, the text style picker and
+  hanging silently or answering another dialog. The PTY runtimes include a short excerpt from the
+  last visible screen, or say that no text was visible. Claude's first-run screens, the text style picker and
   the login method choice, and its Bypass Permissions warning are screens Cotal never answers. When
   the bound ends on one of them, the error names it and the step that clears it, such as running
   `claude` once in a terminal as that user to finish setup and log in. The PTY runtime writes that error to the seat's output and
@@ -347,10 +348,27 @@ Only a matching terminal answer lets the client remove an unissued request and s
 An older unversioned cap sentence can explain the limit but cannot release recovery state.
 Already-issued identities keep their lifecycle record even if a later response claims a cap refusal.
 Retiring a request that is still pending drops it, and no identity is issued for it. An identity
-issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
-`cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
-conversations stay connected. A disconnect waits at most 3 seconds for the conversation's event
-plane to finish publishing, then stops the connection. Events it did not publish stay in the
+issued before connection approval keeps working, and its recovery stays exact.
+If the signed-in space supports conversation approval resume, `cotal_connect` with the same native
+conversation, name, space and requested permissions can reuse the approved identity after the server
+exits. Use the new `connection_id` the tool returns. The connector keeps an owner-private proof on
+this computer. The connector requires an unexpired local sign-in for the account that requested the
+approval. The authority checks that the approval is still valid each time the conversation resumes.
+The stock connector will not use a copied proof in a
+different conversation or on a different computer. With the default layout, a copy of the Cotal home
+includes both the proof and the device key. Anyone who also has the original computer's public OS
+machine identity can derive the actor credential and use the ordinary exchange while its grant is
+live. Protect backups of the Cotal home as credentials.
+If the authority refuses to resume, the connector explains why and starts a fresh approval request.
+If the authority cannot be reached, the connector keeps the saved proof for a later retry.
+
+An approval can last until you disconnect, sign out or revoke the identity. Disconnect conversations
+you no longer use with `cotal_disconnect`, or revoke the identity on the space's agent management
+page. Sign-out attempts to retire the signed-out account's resumable conversations and reports any it
+could not confirm. `cotal meshes rm` and `cotal space forget` remove local registrations, not the
+resumable identities at their authorities. Other conversations stay connected when you disconnect one. On spaces without approval resume,
+session end or server exit also retires the identity. A disconnect waits at most 3 seconds for the
+conversation's event plane to finish publishing, then stops the connection. Events it did not publish stay in the
 transcript. When the mesh reports retirement pending or does not confirm it, the
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
 unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
@@ -776,11 +794,14 @@ commands from a mod until that person sends input, so a command then ends `refus
 stop ends the same way with `dropped by a local Stop`. An organization's mod cannot run a command a
 person's mod registered, and Claude refuses that run too.
 
-`interrupt` stops the main turn with the mod's turn abort, then stops each tool the abort moved to
-the background, such as a running Bash command. It answers `interrupted`, or `idle` when no turn ran.
-When Claude refuses to stop such a tool, it still answers `interrupted`, and the seat's log says
-`a tool is still running`. Claude fires no hook when a mod stops a turn, so the connector ends the
-turn itself: presence reads idle and the next queued command can start. The mod has 10 s to answer.
+`interrupt` stops the main turn with the mod's turn abort, then stops each tool that a turn abort
+moved to the background, such as a running Bash command. This holds when a prompt arrived during the
+turn and was still queued: Claude appends it after the abort, and the connector still finds the
+tool. Tools left running by an earlier chain of turns that already ended are not touched. It answers
+`interrupted`, or `idle` when no turn ran. When Claude refuses to stop such a tool, it still answers
+`interrupted`, and the seat's log says `a tool is still running`. Claude fires no hook when a mod
+stops a turn, so the connector ends the turn itself: presence reads idle and the next queued command
+can start. The mod has 10 s to answer.
 
 `turn` hands the owner's words to the mod, which submits them with `$.prompt.submit` as the person's
 own, so the model reads them without a plugin frame. The transcript records them under the plugin's
@@ -850,9 +871,9 @@ results publish by default on a separately authorized payload rail (below). A tu
 started opens a run without republishing that message. Native wake and inline prompts attributed
 to the Cotal plugin follow the same rule, including when they arrive during an open run.
 Reasoning is off by default. A launch with `reasoningEvents` publishes it as `REASONING_*` events,
-and passes `--settings '{"showThinkingSummaries":true}'`: without that setting Claude records each
-thinking block with empty text, and an empty block publishes nothing. Such a launch refuses a
-`settings` launch option. Programs can read these events directly. The launcher
+and sets `showThinkingSummaries: true` in the launch's one `--settings` flag, beside any modes:
+without that setting Claude records each thinking block with empty text, and an empty block
+publishes nothing. Such a launch refuses a `settings` launch option. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
@@ -1177,8 +1198,10 @@ original is untouched.
   when your `COTAL_DEFAULT_AGENT` names another connector. A re-run of the same bytes
   sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
   private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
-  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
-  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  lists or finds. The manager removes this home when the seat stops. If it cannot remove the home,
+  it logs the path and the error and continues retiring the seat so its name can be reused.
+  When Claude starts the fork, the seat records the SHA-256 of the transcript it read from its own
+  project. The manager stops a seat
   whose record names other bytes than the carried ones, or that records none within the join
   timeout after it joins, an uncertain launch included, and otherwise shows that record as the
   seat's provenance. `cotal attach` to such a seat names its source after the seat

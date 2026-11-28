@@ -118,9 +118,85 @@ function assertAttemptsDestinationRefusal(root: string, run: (...args: string[])
   assert.equal(envelope.error.message, message);
   assert.equal(envelope.error.remedy, remedy);
   assert.deepEqual(envelope.target, { directory: destination, attemptId: null, priorClaimAttemptId: null });
+  const nested = join(attempts, "missing-parent", "backup");
+  const missing = run("backup", "create", nested, "--json");
+  const refusal = JSON.parse(missing.stdout);
+  assert.equal(missing.status, 1);
+  assert.equal(refusal.error.code, "USAGE_INVALID");
+  assert.equal(refusal.error.remedy, remedy);
+  assert.deepEqual(refusal.target, { directory: nested, attemptId: null, priorClaimAttemptId: null });
+  assert.equal(existsSync(join(attempts, "missing-parent")), false);
   assert.deepEqual(readFileSync(journal), journalBefore);
   assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
   assert.equal(existsSync(destination), false);
+  assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
+}
+
+function assertReservedMaintenanceDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const maintenance = join(root, ".cotal", "maintenance");
+  const journalDir = join(maintenance, "v1");
+  const lock = join(maintenance, "lock.json");
+  const reaper = join(maintenance, "lock-reaper.json");
+  const journal = join(journalDir, "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const cases = [
+    [".cotal/maintenance/v1/private-artifact", `is inside this root's maintenance journal directory ${journalDir}`, journalDir],
+    [".cotal/maintenance/lock.json", "is this root's maintenance lock path", lock],
+    [".cotal/maintenance/lock.json/nested", `is inside this root's maintenance lock path ${lock}`, lock],
+    [".cotal/maintenance/lock-reaper.json", "is this root's maintenance lock recovery path", reaper],
+  ] as const;
+  for (const [relativePath, relation, reserved] of cases) {
+    const destination = resolve(root, relativePath);
+    const message = `the backup destination ${destination} ${relation}; nothing was written`;
+    const remedy = `name a destination outside ${reserved}`;
+    const plain = run("backup", "create", relativePath, "--only", "registry", "--plain");
+    assert.equal(plain.status, 1, plain.stderr);
+    assert.match(plain.stderr, /Code:\s+USAGE_INVALID/);
+    assert.ok(plain.stderr.includes(message) && plain.stderr.includes(remedy), plain.stderr);
+    const json = run("backup", "create", relativePath, "--json");
+    assert.equal(json.status, 1, `${json.stdout}${json.stderr}`);
+    const envelope = JSON.parse(json.stdout);
+    assert.equal(envelope.outcome, "refused");
+    assert.equal(envelope.error.code, "USAGE_INVALID");
+    assert.equal(envelope.error.message, message);
+    assert.equal(envelope.error.remedy, remedy);
+    assert.deepEqual(envelope.target, { directory: destination, overlaps: reserved });
+    assert.equal(existsSync(destination), false);
+  }
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(lock), false);
+  assert.equal(existsSync(reaper), false);
+}
+
+function assertMissingCleanupDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const auth = join(root, ".cotal", "auth");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const controlLink = join(root, "control-link");
+  assert.equal(existsSync(auth), false, "the unprepared open space has no auth folder");
+  symlinkSync(join(root, ".cotal"), controlLink, "junction");
+  for (const [path, flag] of [[".cotal/auth/new", "--plain"], [join(controlLink, "auth", "nested", "new"), "--json"]] as const) {
+    const result = run("backup", "create", path, flag);
+    const output = result.stdout + result.stderr;
+    assert.equal(result.status, 1, output);
+    const remedy = `name a destination outside ${auth}`;
+    if (flag === "--json") {
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.error.code, "USAGE_INVALID");
+      assert.equal(envelope.error.remedy, remedy);
+      assert.deepEqual(envelope.target, { directory: path, removedBy: auth });
+    } else {
+      assert.match(output, /Code:\s+USAGE_INVALID/);
+      assert.ok(output.includes(remedy), output);
+    }
+    assert.doesNotMatch(output, /create that folder first/);
+  }
+  assert.equal(existsSync(auth), false);
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
   assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
 }
 
@@ -253,6 +329,7 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
     assert.equal(created.target?.missing, "folder", "it says the folder is missing");
     assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
+    assertMissingCleanupDestinationRefusal(root, run);
     if (process.platform !== "win32") {
       const notFolder = join(root, "parent-file"), loop = join(root, "loop-a");
       writeFileSync(notFolder, "owned fixture");
@@ -260,6 +337,17 @@ async function backupStageFaultScenario(): Promise<void> {
       symlinkSync("loop-a", join(root, "loop-b"));
       const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const prior = createHash("sha256").update(readFileSync(journal)).digest("hex");
+      const dangling = join(root, "dangling-parent");
+      symlinkSync("missing-storage", dangling);
+      for (const destination of [join(dangling, "backup"), join(dangling, "nested", "backup")]) {
+        const refused = run("backup", "create", destination, "--json");
+        const reply = JSON.parse(refused.stdout);
+        assert.equal(refused.status, 2);
+        assert.equal(reply.error.code, "TARGET_NOT_FOUND");
+        assert.equal(reply.target.link, dangling);
+        assert.match(reply.error.remedy, /repair the linked folder/);
+        assert.equal(createHash("sha256").update(readFileSync(journal)).digest("hex"), prior);
+      }
       for (const [destination, code] of [[join(notFolder, "backup"), "ENOTDIR"], [join(loop, "backup"), "ELOOP"]] as const) {
         const refused = run("backup", "create", destination, "--json");
         const reply = JSON.parse(refused.stdout) as { error?: { code?: string; message?: string; cause?: { code?: string } }; target?: { directory?: string; folder?: string } };
@@ -322,6 +410,7 @@ async function backupStageFaultScenario(): Promise<void> {
     const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
     assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
     assertAttemptsDestinationRefusal(root, run);
+    assertReservedMaintenanceDestinationRefusal(root, run);
     // So is one inside the space's material folder, which `clean all` removes with whatever it
     // holds, named directly or through a link outside `.cotal`.
     const material = readdirSync(join(root, ".cotal")).find((entry) => entry.startsWith("space."));
@@ -381,7 +470,7 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
       if (!noSpace) {
-        assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
+        assert.match(faulted.stderr, new RegExp(`then run \`(?:pnpm )?cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
         assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       }
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
@@ -394,9 +483,9 @@ async function backupStageFaultScenario(): Promise<void> {
       if (noSpace) {
         assert.equal(faulted.status, 5, `disk-full failure exits 5\n${faulted.stderr}`);
         const next = faulted.stderr.split("\nNext\n")[1] ?? "";
-        const retry = /then run (`{2,})(cotal backup create .+?)\1 again/.exec(next)?.[2];
+        const retry = /then run (`{2,})((?:pnpm )?cotal backup create .+?)\1 again/.exec(next)?.[2];
         assert.ok(retry, `Next gives a copyable retry after freeing space\n${faulted.stderr}`);
-        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }\n${retry}`], {
+        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }; pnpm() { "$@"; }\n${retry}`], {
           cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
         }));
         must("verify at the original disk-full destination", run("backup", "verify", destination));

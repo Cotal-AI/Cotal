@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
 import { homedir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -97,12 +97,23 @@ export function downComplete(argv: string[]): CompletionResult {
   return serviceComplete(["stop", ...(argv.length ? argv : [""])]);
 }
 
+/** The stop to run in the project a `.cotal` link names. A relative store path is pinned to this
+ *  invocation, because the retry runs in another folder. */
+function linkedDownRetry(values: ParsedArgs["values"]): string {
+  const requested = values as { file?: string; run?: string; space?: string; instance?: string; "store-dir"?: string; "session-store"?: string[]; "abandon-stop"?: string; "abandon-launch"?: string; "dry-run"?: boolean; yes?: boolean; "with-agents"?: boolean; "preserve-state"?: boolean; json?: boolean; plain?: boolean };
+  const word = (flag: string, value: string | undefined): string => value === undefined ? "" : ` --${flag}${value.startsWith("-") ? "=" : " "}${shellWord(flag === "store-dir" || flag === "session-store" || flag === "file" ? resolve(value) : value)}`;
+  const stores = (requested["session-store"] ?? []).map((path) => word("session-store", path)).join("");
+  const flags = ["dry-run", "yes", "with-agents", "preserve-state", "json", "plain"].filter((flag) => requested[flag as keyof typeof requested] === true).map((flag) => ` --${flag}`).join("");
+  return `cotal down${word("file", requested.file)}${word("run", requested.run)}${word("space", requested.space)}${word("instance", requested.instance)}${word("store-dir", requested["store-dir"])}${stores}${word("abandon-stop", requested["abandon-stop"])}${word("abandon-launch", requested["abandon-launch"])}${flags}`;
+}
+
 function namedStopArguments(args: ParsedArgs): ParsedArgs {
   return { ...args, positionals: ["stop", args.positionals[0]!] };
 }
 
-function refuseLegacySpaceMismatch({ space, ...flags }: ParsedArgs["values"]): void {
-  if (typeof space !== "string" || !bareStop(flags) || flags["with-agents"] !== undefined) return;
+/** Refuse a known mismatch. Only a matching local startup record can carry confirmation to a root-scoped retry. */
+function checkLegacyStopSpace({ space, ...flags }: ParsedArgs["values"]): boolean {
+  if (typeof space !== "string" || !bareStop(flags) || flags["with-agents"] !== undefined) return false;
   let current: string | undefined, project: string | undefined;
   let source = "prepared";
   try {
@@ -122,6 +133,7 @@ function refuseLegacySpaceMismatch({ space, ...flags }: ParsedArgs["values"]): v
       remedy: project === undefined ? `locate the project root for space ${JSON.stringify(space)} before retrying` : `retry from the project root for space ${JSON.stringify(space)} at ${oneLine(project)}`,
     });
   }
+  return source === "recorded" && current === space;
 }
 
 /** Named stops use only the owned-service controller. Multiple definitions require complete
@@ -144,7 +156,7 @@ export function validateDownArguments(args: ParsedArgs): void {
     return;
   }
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
-  const linked = linkedCotalRefusal("down");
+  const linked = linkedCotalRefusal("down", undefined, () => linkedDownRetry(args.values));
   if (linked) throw linked;
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
   if (goneRootDown(args.values)) return validateGoneRootDownArguments(args.values);
@@ -185,14 +197,14 @@ export function validateDownArguments(args: ParsedArgs): void {
         remedy: `run ${codeSpan(retry)} from this root`,
       });
     }
-    refuseLegacySpaceMismatch(args.values);
+    const sameSpace = checkLegacyStopSpace(args.values);
     if (args.values.file !== undefined || args.values.run !== undefined) {
       const preview = args.values["dry-run"] === true;
       throw new CommandFailure("refused", "UNSUPPORTED", `a legacy deployment ${preview ? "preview" : "teardown"} does not support --json or --plain`, {
         remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep ${preview ? "--dry-run and " : ""}the same deployment selection`, selfContained: true,
       });
     }
-    const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
+    const retry = bareStop(args.values) || sameSpace ? sameDown(args.values) : `${displayCmd()} down`;
     throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run ${codeSpan(retry)} from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
 }
@@ -304,7 +316,7 @@ function previewWholeStack(args: ParsedArgs): void {
 
 /** Read the manifest before previewing a recorded stack without an additive ledger. */
 function validatePreviewManifest(file: string): void {
-  try { loadManifest(file); }
+  try { loadManifest(file, undefined, "preview"); }
   catch (error) {
     throw manifestPathFailure(error, { file }) ?? new CommandFailure("refused", "SCHEMA_INVALID", `cannot read ${file}: ${(error as Error).message}`, { target: { file } });
   }
@@ -655,11 +667,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     return;
   }
   if (values.space) {
-    refuseLegacySpaceMismatch(args.values);
+    const sameSpace = checkLegacyStopSpace(args.values);
     refuseSpaceElsewhere(cotalRoot(), values.space, args.values);
     throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
       target: { root: cotalRoot(), space: values.space },
-      remedy: "run `cotal down` without --space from the stack's root; to stop one saved service, run `cotal service stop <service-name> --space <space>`",
+      remedy: `run ${codeSpan(sameSpace ? sameDown(args.values) : `${displayCmd()} down`)} without --space from the stack's root; to stop one saved service, run \`cotal service stop <service-name> --space <space>\``,
     });
   }
   const guarded = guardLegacyBareDown();

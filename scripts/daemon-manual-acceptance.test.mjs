@@ -1,21 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { runDiagnosticCommand } from './automatic-update-platform-baseline.mjs';
 import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 
-async function fixture(t, { platform = 'linux', status = {}, recovery, lock } = {}) {
+async function fixture(t, { platform = 'linux', status = {}, statusDelayMs = 0, recovery, lock } = {}) {
   const priorSystemRoot = process.env.SystemRoot;
   if (platform === 'win32') process.env.SystemRoot = 'C:\\Windows';
   t.after(() => { if (priorSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = priorSystemRoot; });
   assert.equal(process.platform, 'linux', 'these filesystem fixtures require the Linux host');
-  mkdirSync('/var/tmp/upgrade-matrix', { recursive: true, mode: 0o700 });
-  const home = mkdtempSync('/var/tmp/upgrade-matrix/manual-');
+  const home = mkdtempSync(join(tmpdir(), 'manual-'));
   const dirs = Object.fromEntries(['output', 'cotalHome', 'daemonHome', 'config', 'pkg', 'globalRoot', 'tmp'].map(key => [key, join(home, key)]));
   for (const directory of Object.values(dirs)) mkdirSync(directory, { mode: 0o700 });
   const children = new Set();
@@ -35,13 +36,8 @@ async function fixture(t, { platform = 'linux', status = {}, recovery, lock } = 
   write(join(dirs.daemonHome, 'daemon.lock'), { pid: process.pid, start, socket: { path: join(home, 'daemon.sock'), dev: socket.dev, ino: socket.ino } });
   if (recovery !== undefined) write(join(dirs.cotalHome, 'update-recovery.json'), recovery);
   if (lock) write(join(dirs.globalRoot, '.cotal-update.lock'), lock === 'live' ? { pid: process.pid, start } : lock);
-  const child = (value, bounds, exit = 0) => new Promise(resolve => {
-    const proc = execFile(process.execPath, ['-e', `console.log(${JSON.stringify(JSON.stringify(value))});process.exitCode=${exit}`], { cwd: home, env: { PATH: '/usr/bin:/bin', HOME: home, USERPROFILE: home, COTAL_HOME: dirs.cotalHome, XDG_CONFIG_HOME: dirs.config, TMPDIR: dirs.tmp, TMP: dirs.tmp, TEMP: dirs.tmp }, timeout: bounds.timeoutMs, maxBuffer: bounds.maxBuffer, encoding: 'utf8', killSignal: 'SIGKILL' }, (error, stdout, stderr) => {
-      children.delete(proc);
-      resolve({ exit: error ? error.code : 0, stdout, stderr });
-    });
-    children.add(proc);
-  });
+  const statusJson = JSON.stringify({ result: { state: 'ready', pid: process.pid, version: '1.2.3', ...status } });
+  const statusProgram = `setTimeout(() => { console.log(${JSON.stringify(statusJson)}); process.exitCode = ${status.dead ? 1 : 0}; }, ${statusDelayMs});`;
   const diagnostics = await captureDaemonDiagnostics({ ...dirs, home, platform, id: 'manual', stage: 'after-update', startedAt: new Date().toISOString(), plan: { globalRoot: dirs.globalRoot, unit: platform === 'darwin' ? 'ai.cotal.daemon' : platform === 'win32' ? 'cotal-daemon-S-1-5-21-1234' : 'cotal-daemon.service' },
     run: (file, args, bounds) => {
       const stdout = file === 'systemctl' ? `LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\nMainPID=${process.pid}\n`
@@ -51,7 +47,10 @@ async function fixture(t, { platform = 'linux', status = {}, recovery, lock } = 
         const proc = execFile(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(stdout)})`], { cwd: home, env: { PATH: '/usr/bin:/bin', HOME: home, COTAL_HOME: dirs.cotalHome, XDG_CONFIG_HOME: dirs.config, TMPDIR: dirs.tmp }, timeout: bounds.timeoutMs, maxBuffer: bounds.maxBuffer, encoding: 'utf8' }, (error, stdout, stderr) => { children.delete(proc); resolve({ exit: error ? error.code : 0, stdout, stderr }); });
         children.add(proc);
       });
-    }, daemonStatus: bounds => child({ result: { state: 'ready', pid: process.pid, version: '1.2.3', ...status } }, bounds, status.dead ? 1 : 0) });
+    }, daemonStatus: bounds => runDiagnosticCommand(process.execPath, ['-e', statusProgram], {
+      cwd: home, env: { PATH: '/usr/bin:/bin', HOME: home, USERPROFILE: home, COTAL_HOME: dirs.cotalHome, XDG_CONFIG_HOME: dirs.config, TMPDIR: dirs.tmp, TMP: dirs.tmp, TEMP: dirs.tmp },
+      timeoutMs: bounds.timeoutMs, maxBytes: bounds.maxBuffer,
+    }) });
   const args = { diagnostics, output: dirs.output, target: '1.2.3', platform };
   return { args, diagnostics, dirs, evaluate: () => evaluateManualDaemonState(args) };
 }
@@ -141,6 +140,30 @@ test('Windows pipe limitation is explicit and public peer still required', async
 test('Darwin archived socket generation matches public peer lifetime owner', async t => {
   const f = await fixture(t, { platform: 'darwin' });
   assert.equal(f.evaluate().passed, true, JSON.stringify(f.evaluate()));
+});
+
+test('Darwin after-update proof accepts a status child that takes more than five seconds', async t => {
+  const f = await fixture(t, { platform: 'darwin', statusDelayMs: 6000 });
+  const row = f.diagnostics.observations.find(row => row.kind === 'daemon-status');
+  assert.equal(row.state, 'observed');
+  const capture = JSON.parse(readFileSync(join(f.dirs.output, row.artifact), 'utf8'));
+  assert.equal(capture.timedOut, false);
+  assert(Date.parse(capture.finishedAt) - Date.parse(capture.startedAt) >= 6000);
+  assert.equal(f.evaluate().passed, true, JSON.stringify(f.evaluate()));
+});
+
+test('Darwin after-update proof still fails when the status child misses the extended deadline', async t => {
+  const f = await fixture(t, { platform: 'darwin', statusDelayMs: 60000 });
+  const row = f.diagnostics.observations.find(row => row.kind === 'daemon-status');
+  assert.equal(row.state, 'timeout');
+  const capture = JSON.parse(readFileSync(join(f.dirs.output, row.artifact), 'utf8'));
+  assert.equal(capture.timedOut, true);
+  assert.equal(capture.signal, 'SIGKILL');
+  assert.equal(capture.exit, null);
+  assert(Date.parse(capture.finishedAt) - Date.parse(capture.startedAt) >= 15000);
+  const verdict = f.evaluate();
+  assert.equal(verdict.passed, false);
+  assert.equal(verdict.checks.find(check => check.name === 'public daemon status').passed, false);
 });
 
 test('staged route acceptance binds selectedCliVersion to target and packageManagerRecordVersion to expected npm record', async t => {

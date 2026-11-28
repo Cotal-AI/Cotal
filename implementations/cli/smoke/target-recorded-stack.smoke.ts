@@ -51,7 +51,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
@@ -361,17 +361,49 @@ mkdirSync(linked);
 symlinkSync(linkTarget, linkPath);
 sandbox(home);
 const linkedUp = run(["up", "--json"], linked), linkedDown = runLinkedDown(["down", "--yes", "--json"], linked);
-const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
+const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: string, here: string, retry: string = command) => r.status === 2 && r.envelope?.error?.code === "CONFLICT"
   && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
-  && r.envelope.error.remedy === `run \`cotal ${command}\` from ${root}, whose .cotal this links to, or ${here}`;
+  && r.envelope.error.remedy === `run \`cotal ${retry}\` from ${root}, whose .cotal this links to, or ${here}`;
 check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link, where it leads and that project",
   linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``), shown(linkedUp));
 check("down --yes --json there refuses the same way, with no stack trace",
-  linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
+  linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again", "down --yes --json") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
+{
+  const store = join(linked, "custom 'store'");
+  const requested = runLinkedDown(["down", "--dry-run", "--store-dir", "custom 'store'"], linked);
+  const next = /Next\n  run `([^`]+)` from (.*), whose \.cotal this links to, or /.exec(requested.stderr);
+  check("down --dry-run --store-dir there keeps the preview and prints the store as an absolute path",
+    requested.status === 2 && /Code:\s+CONFLICT/.test(requested.stderr) && next?.[2] === root && next[1]?.endsWith(` down --store-dir '${store.replaceAll("'", `'\\''`)}' --dry-run`) === true && readlinkSync(linkPath) === linkTarget && !existsSync(store), shown(requested));
+}
 const linkedStatus = run(["status", "--json"], linked);
 const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
 check("status there warns once that it did not read the attempt inventories through the link, with the next step",
   linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``)), shown(linkedStatus));
+{
+  const defaultStore = join(linkTarget, "nats"), customStore = join(linked, "custom 'store'");
+  const retry = (result: ReturnType<typeof run>) => /Next\n  run `([^`]+)` from (.*), whose \.cotal this links to, or /.exec(result.stderr);
+  for (const [store, flags] of [[defaultStore, []], [customStore, ["--store-dir", "custom 'store'", "--force"]]] as const) {
+    const data = join(store, "jetstream");
+    mkdirSync(data, { recursive: true });
+    const refused = run(["clean", "store", "--dry-run", ...flags], linked);
+    const next = retry(refused);
+    check("linked clean preview refuses without changing the link or store and names the owning project",
+      refused.status === 2 && /Code:\s+CONFLICT/.test(refused.stderr) && next?.[2] === root && readlinkSync(linkPath) === linkTarget && existsSync(data), shown(refused));
+    const command = next?.[1];
+    const mode = flags.length ? " --dry-run --force" : " --dry-run";
+    if (!command?.endsWith(mode)) {
+      check("the printed retry keeps the requested preview and force flags", false, shown(refused));
+      continue;
+    }
+    const preview = spawnSync("sh", ["-c", 'node=$1; cli=$2; cotal() { "$node" "$cli" "$@"; }; pnpm() { "$@"; }; eval "$3"', "sh", process.execPath, BIN, command], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+    check("the printed retry previews the requested store in the owning project without removing anything",
+      preview.status === 0 && preview.stdout.includes(`would remove ${flags.length ? customStore : ".cotal/nats"} (JetStream store:`) && preview.stdout.includes("dry run - nothing was removed") && existsSync(data), preview.stdout + preview.stderr);
+  }
+  const restore = run(["clean", "restore-fallback", "--attempt=-example", "--force", "--discard-history"], linked);
+  check("linked restore cleanup keeps the attempt and force options in the retry",
+    restore.status === 2 && retry(restore)?.[1]?.endsWith(" clean restore-fallback --attempt=-example --force --discard-history") === true, shown(restore));
+  rmSync(defaultStore, { recursive: true });
+}
 rmSync(linked, { recursive: true, force: true });
 // The project's .cotal moved to another folder and linked back. Through the link each folder seems to
 // hold the journal, so both used to name the other. Both now name moving the records back.

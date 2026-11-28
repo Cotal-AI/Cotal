@@ -3,17 +3,68 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { runNpm, runNpmAsync } from "../src/commands/update-process.js";
 
-// Exercise the real POSIX installer main/launcher/PATH/next-step path. Only runtime discovery
-// and npm installation are fixtures; this suite does not qualify a downloaded package.
+const output = (result: ReturnType<typeof spawnSync>): string => `${result.stdout ?? ""}${result.stderr ?? ""}`;
+
+function checkWindowsNpmInstall(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-npm-"));
+  try {
+    const prefix = join(root, "npm bin");
+    const fixture = join(root, "package");
+    mkdirSync(prefix);
+    mkdirSync(fixture);
+    const binRoot = resolve(import.meta.dirname, "../../../bin");
+    const { bin, engines, scripts } = JSON.parse(readFileSync(join(binRoot, "package.json"), "utf8"));
+    const postinstall = scripts.postinstall.replace(/^node /, "");
+    writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin, engines, scripts: { postinstall: scripts.postinstall } }));
+    mkdirSync(join(fixture, "scripts"));
+    mkdirSync(join(fixture, "dist"));
+    copyFileSync(join(binRoot, postinstall), join(fixture, postinstall));
+    writeFileSync(join(fixture, bin.cotal), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n');
+
+    const docs = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
+    const windows = docs.split("### Install on Windows")[1]?.split("### ")[0];
+    const install = windows?.match(/```text\n(npm\.cmd install -g --prefix \. )cotal-ai\n```/)?.[1];
+    assert(install, "the Windows install guide selects the current folder as the short npm prefix");
+
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("COTAL_")) delete env[key];
+    Object.assign(env, { PATH: `${prefix}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+      COTAL_TEST_NPM_PREFIX: prefix, COTAL_TEST_LAUNCH_CWD: root,
+      npm_config_userconfig: join(root, "user.npmrc"), npm_config_globalconfig: join(root, "global.npmrc"),
+      npm_config_cache: join(root, "cache"), npm_config_prefix: join(root, "unused-prefix") });
+    const shell = "powershell.exe";
+    const shellArgs = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"];
+    // Set the directory in the shell so npm.cmd receives a drive path rather than an extended path.
+    const run = (command: string, cwd = "COTAL_TEST_NPM_PREFIX") => spawnSync(shell, [...shellArgs,
+      `Set-Location -LiteralPath $env:${cwd}; ${command}`], { env, encoding: "utf8", timeout: 60_000 });
+    const packed = run("npm.cmd pack ../package --offline --silent; exit $LASTEXITCODE");
+    assert.equal(packed.status, 0, output(packed));
+    const archive = packed.stdout.trim();
+    assert.equal(archive, "cotal-ai-0.0.0.tgz");
+    const installed = run(`${install}./${archive} --offline --no-audit --no-fund; exit $LASTEXITCODE`);
+    assert.equal(installed.status, 0, output(installed));
+    const native = run("cotal --version; exit $LASTEXITCODE", "COTAL_TEST_LAUNCH_CWD");
+    assert.equal(native.status, 0, output(native));
+    assert.equal(native.stdout.trim(), "cotal-ai 0.0.0");
+    const batch = run("cmd.exe /d /c 'cotal --version'; exit $LASTEXITCODE", "COTAL_TEST_LAUNCH_CWD");
+    assert.equal(batch.status, 0, output(batch));
+    assert.equal(batch.stdout.trim(), "cotal-ai 0.0.0");
+    console.log("INSTALLER SELECTION: documented Windows npm install and native launchers passed");
+    emitSentinel({ passed: 7, failed: 0 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// Exercise the real installer/launcher/PATH steps with local package fixtures.
 if (process.platform === "win32") {
-  console.log("INSTALLER SELECTION: excluded on Windows; install.sh is POSIX-only");
-  emitSentinel({ passed: 0, failed: 0 });
+  checkWindowsNpmInstall();
   process.exit(0);
 }
+const { runNpm, runNpmAsync } = await import("../src/commands/update-process.js");
 const root = mkdtempSync(join(tmpdir(), "cotal-installer-selection-"));
 const installer = readFileSync(resolve(import.meta.dirname, "../../../install.sh"), "utf8");
 const entry = '{ main "$@"; exit $?; }';
@@ -69,7 +120,6 @@ function fixture(label: string) {
   const env = { HOME: home, SHELL: "/bin/bash", CI: "1", NO_COLOR: "1", FIXTURE_NODE: process.execPath, FIXTURE_OLD_MARKER: marker, FIXTURE_VERSION_FILE: join(home, "version"), FIXTURE_UPDATE_ARGS: join(home, "updates") };
   return { home, oldBin, newBin, marker, env };
 }
-const output = (result: ReturnType<typeof spawnSync>): string => `${result.stdout ?? ""}${result.stderr ?? ""}`;
 let passed = false;
 try {
   // Execute the documented npm prefix/PATH commands with real npm and an offline package.
@@ -166,20 +216,65 @@ fi
   assert.equal(readlinkSync(npmLauncher), npmLink);
   assert.equal(readFileSync(npmLauncher, "utf8"), launcherText, "refresh writes the same launcher as a fresh install");
   const wrapper = realpathSync(npmLauncher);
-  for (const [contents, mode] of [
-    [oldLauncher, 0o775],
-    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755],
-    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755],
+  for (const [contents, mode, kept] of [
+    [oldLauncher, 0o775, true],
+    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755, true],
+    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755, false],
   ] as const) {
     writeFileSync(wrapper, contents);
     chmodSync(wrapper, mode);
     const skipped = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
     assert.equal(skipped.status, 0, output(skipped));
-    assert.equal(readFileSync(wrapper, "utf8"), contents);
+    if (kept) assert.equal(readFileSync(wrapper, "utf8"), contents);
+    else {
+      const repinned = readFileSync(wrapper, "utf8");
+      assert.notEqual(repinned, contents, "a missing recorded Node is replaced by the Node running the refresh");
+      assert.match(repinned, new RegExp(`^  node='${realpathSync(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'$`, "m"));
+      assert.equal(readlinkSync(npmLauncher), npmLink, "replacing a missing Node keeps the npm bin link");
+    }
     const version = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(process.execPath) }, encoding: "utf8", timeout: 10_000 });
     assert.equal(version.status, 0, output(version));
     assert.equal(version.stdout.trim(), "cotal-ai 0.0.0");
+    if (!kept) {
+      const offPath = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+      assert.equal(offPath.status, 0, output(offPath));
+      assert.equal(offPath.stdout.trim(), "cotal-ai 0.0.0");
+    }
   }
+  writeFileSync(wrapper, launcherText);
+  const refreshingNode = realpathSync(process.execPath);
+  const recordedNode = join(root, "recorded-node", "bin", "node");
+  mkdirSync(dirname(recordedNode), { recursive: true });
+  copyFileSync(process.execPath, recordedNode);
+  chmodSync(recordedNode, 0o755);
+  assert.notEqual(realpathSync(recordedNode), refreshingNode);
+  const recordedPin = launcherText
+    .replaceAll(`'${refreshingNode}'`, `'${recordedNode}'`)
+    .replaceAll(`'${dirname(refreshingNode)}'`, `'${dirname(recordedNode)}'`);
+  assert.notEqual(recordedPin, launcherText);
+  writeFileSync(wrapper, recordedPin);
+  chmodSync(wrapper, 0o755);
+  const keptRecorded = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(keptRecorded.status, 0, output(keptRecorded));
+  assert.equal(readFileSync(wrapper, "utf8"), recordedPin, "a recorded Node that still exists stays pinned when refresh runs under a different Node");
+  const dangling = join(root, "dangling-node");
+  symlinkSync(join(npmHome, "gone-node"), dangling);
+  assert.equal(existsSync(dangling), false);
+  const danglingPin = launcherText.replace(/^  node='.*'$/m, `  node='${dangling}'`);
+  writeFileSync(wrapper, danglingPin);
+  chmodSync(wrapper, 0o755);
+  const replacedDangling = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(replacedDangling.status, 0, output(replacedDangling));
+  assert.match(readFileSync(wrapper, "utf8"), new RegExp(`^  node='${refreshingNode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'$`, "m"), "a dangling recorded Node is replaced by the Node running the refresh");
+  const danglingLaunch = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+  assert.equal(danglingLaunch.status, 0, output(danglingLaunch));
+  assert.equal(danglingLaunch.stdout.trim(), "cotal-ai 0.0.0");
+  const relativePin = launcherText.replace(/^  node='.*'$/m, "  node='node'");
+  writeFileSync(wrapper, relativePin);
+  chmodSync(wrapper, 0o755);
+  const keptRelative = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(keptRelative.status, 0, output(keptRelative));
+  assert.equal(readFileSync(wrapper, "utf8"), relativePin, "a recorded path that is not absolute is left unchanged");
   writeFileSync(wrapper, launcherText);
   const npmTools = mkdirSync(join(npmHome, "npm-tools"), { recursive: true })!;
   const projectNpm = join(npmTools, "npm");

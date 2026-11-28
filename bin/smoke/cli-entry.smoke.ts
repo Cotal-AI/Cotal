@@ -55,6 +55,7 @@ if (!existsSync(BIN)) {
 }
 
 const { check, finish } = createSuite();
+process.env.DO_NOT_TRACK = "1";
 
 // A supervising seat's COTAL_* (COTAL_SKIP_CONNECTOR_SEED above all) would suppress the seed under
 // test, so the host's are scrubbed and checkout seeding is opted in deliberately.
@@ -448,8 +449,10 @@ const envelopes = (r: Run) => {
   const damagedText = versionRun(["version"]);
   check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
     && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
-    && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
-    && damagedText.status === 1 && damagedText.stderr.includes("cotal ext seed --repair")
+    && damagedReport.error?.remedy === "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory"
+    && damagedText.status === 4 && damagedText.stdout.split("\n")[0] === `cotal-ai ${env?.result?.version}`
+    && damagedText.stdout.includes("run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory")
+    && damagedText.stderr.includes(`corrupt extensions manifest ${manifest}: no "extensions" array`)
     && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
   check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);
@@ -663,6 +666,15 @@ const envelopes = (r: Run) => {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
   }
+  for (const flags of [[], ["--foreground"], ["--runtime", "pty"]]) {
+    const raw = cotal(["spawn", ...flags, "--creds", "unused.creds", "--json"], undefined, noSeed);
+    const remedy = JSON.parse(raw.stdout).error?.remedy;
+    check("the managed alternative to a raw credential requires the registered caller as well as managed mode",
+      raw.status === 1 && remedy?.includes(`or omit --creds, use a registered --space you can access, and ${flags.includes("--foreground") ? "replace --foreground with -d" : "add -d"}`) && !remedy.includes("unused.creds"), shown(raw));
+  }
+  const pipedRuntime = cotal(["spawn", "--runtime", "pty"], undefined, noSeed);
+  check("a runtime request without a terminal offers detach, not a pin that would attach",
+    pipedRuntime.status === 1 && pipedRuntime.stderr.includes("add -d (with --on <instance> to select a manager)") && !pipedRuntime.stderr.includes("-d or --on"), shown(pipedRuntime));
   const foregroundJson = cotal(["spawn", "--foreground", "--json"], undefined, noSeed);
   const foregroundReceipt = JSON.parse(foregroundJson.stdout);
   check("foreground spawn keeps its mode and offers two compatible ways past --json",

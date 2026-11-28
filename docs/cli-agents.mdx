@@ -80,6 +80,9 @@ passed to `--file` is refused with that command. An invalid persona file is refu
 Foreground spawn and its preview refuse an unreadable persona file with `PERMISSION_DENIED` (exit 2).
 On POSIX, if you own the regular file and it lacks owner read permission, the refusal suggests
 `chmod u+r <path>` and a retry. The CLI does not change the file's permissions.
+If an explicit persona path runs through a file where a directory is needed, foreground spawn and
+its preview name the blocking component. The launch exits 1 and the preview refuses with
+`TARGET_NOT_FOUND` (exit 2). Pass the correct persona file path with `--file`.
 If a named persona is a symbolic link with a missing target, both commands name the link and its target.
 Restore the target, or move the link aside and put a regular persona file in its place.
 A persona path with a symbolic-link loop also refuses with `SCHEMA_INVALID`, naming the path.
@@ -223,14 +226,15 @@ there it runs the enrollment consumer above without redeeming anything. See
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
 | `--server <url>` | registry entry | Broker URL override |
-| `--creds <path>` | none | Retained flag for managed launches with `-d` or `--on`. Raw credentials alone cannot provide supported off-registry Manager control authority; an endpoint-caller triple is required. Refused for a spawn in this terminal and from a managed seat's own shell |
+| `--creds <path>` | none | Retained flag for managed launches with `-d` or `--on`. A raw credential file cannot authorize a managed launch. Omit it and name a registered space you can access; switching to detached mode alone does not change the caller. Refused for a spawn in this terminal and from a managed seat's own shell |
 | `--name <n>`, `-n` | persona's `name:` | Presence-name override (does not choose the persona). Uses 1 to 128 letters, digits, `_` and `-`, starting with a letter, digit or `_` (up to 64 without `-` in user mode) |
 | `--file <persona-file>`, `-f` | none | Persona file to launch, on the execution host. A value with no path separator that does not end in `.md` is read as `./<value>`. Refused together with a positional persona, and when the file is a Mesh manifest |
 | `--harness <connector>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). `--agent` is the legacy spelling; giving both is refused |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers, Claude effort levels or pi thinking levels) |
-| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. On a spawn in this terminal, a path that does not exist or is not a directory is refused with `TARGET_UNAVAILABLE` before provisioning. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
+| `--mode <id=value>` | the application's default | A model mode, repeatable: `true` or `false` for a toggle, or an option id for a choice. Refused on a connector that does not support modes |
+| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. A foreground spawn and its preview refuse a missing path or a file with `TARGET_UNAVAILABLE`. If the account cannot enter the directory, they refuse with `PERMISSION_DENIED` before provisioning. The account does not need permission to list the directory. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.mdx)). The manager records the source session id, and `ps --wide` shows it. On a managed launch with `--on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.mdx#resume-a-session)); carrying one needs `--on` |
@@ -243,7 +247,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--detach`, `-d` | off | Launch through a manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
 | `--foreground` | on without `-d` or `--on` | Run the application in this terminal, as a spawn without `-d` or `--on` does; kept for scripts. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
 | `--on <instance>` | none | Launch through one manager instance and attach to the agent, or with `-d` return once it joins. Takes the instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](cli-agent-control.mdx#managed-seats) takes them. Refused with `--foreground` and when empty. On a static or open mesh an id that names no running manager is refused `TARGET_NOT_FOUND` before anything is sent, naming the managers that run, or `TARGET_UNAVAILABLE` as an unpinned launch is when none runs. A pinned manager that does not answer is refused `TARGET_UNAVAILABLE`, exit 2, after the reply deadline, because the launch was never sent |
-| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). It needs `-d` or `--on`. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. `auto` is refused `USAGE_INVALID` before anything is sent. Which host checks any other name is described below this table. Other seats on that manager keep the runtime they already have |
+| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). Use `-d` without an interactive terminal; `--on` alone requests attachment. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. `auto` is refused `USAGE_INVALID` before anything is sent. Which host checks any other name is described below this table. Other seats on that manager keep the runtime they already have |
 | `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, with `-d` or `--on`, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
 | `--live-only` | off | A spawn in this terminal only: skip the durable backstop |
 | `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A spawn in this terminal on a static mesh only, one or the other: when the seat's issued credential ends. Without either it has no expiry. It is never renewed, and it is retired when the seat leaves cleanly. Refused with `-d` or `--on`, whose manager renews its own seats, and on a user-auth or open mesh |
@@ -261,6 +265,15 @@ native options without creating launch files or checking its binary or login. Ot
 reports connector arguments as not checked.
 When the connector does not support variants, a direct preview or launch that refuses the variant
 names what to remove: the `--variant` option, the `variant:` field in the persona file, or both.
+A launch with a variant or a mode is refused with `USAGE_INVALID` before provisioning unless the
+connector's model catalog lists it for the model, or for the catalog's default model when no
+`--model` is given. The refusal names the values the catalog lists. A mode the catalog marks
+unavailable for your account is refused when the launch turns it on, and the refusal gives the
+reason. Turning it off, `false` or the choice's default, launches. A spawn in
+this terminal reads the catalog from the application for that check, and only after the connector's
+own launch check accepts the variant, so a level the connector rejects gets the preview's refusal and
+starts nothing.
+A managed launch is checked by its manager, against the catalog it read last.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch. On an open or static space, a managed
 preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
@@ -329,7 +342,7 @@ line names `--file <persona.md>` for a persona file elsewhere. A missing `defaul
 names the command that writes one: `cotal up` in the root of a space this machine started, or
 `cotal persona create default --file <persona.md>` for any other space. The file must name the
 persona `default`. Add `--space <name>` if the target space is not selected. If you use `--prompt`
-or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe ""` for no channels).
+or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe=` for no channels).
 For an ordinary launch in this terminal, a missing catalog default is written from the shipped
 template when the persona is omitted or named as `default`. The preview uses that template and
 reports the planned write without creating the file. If `default.md` is a symbolic link to a
@@ -488,8 +501,11 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--json` / `-j` | off | One JSON document: `result.items` holds each catalog as returned; the requested manager ID, answering ID and answering epoch are separate, and `result.notAskedManagerInstanceIds` lists the live managers an unpinned read did not ask, or is `null` when no registry was read |
 | `--plain` | off | The same report without color |
 
-Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. Authenticated meshes must be registered. Run `cotal models` from
+Asks the selected manager for each application's model catalog for connectors that expose one: model
+ids, their variants and modes, each model's default variant, and the model the application runs by
+default, marked `(default)`. A mode reads as `--mode` takes it, such as `fast=true|false (default false)`.
+A mode the account cannot use reads as `fast (unavailable: <reason>)`, with the reason the application gave.
+The manager keeps what it reads and checks later launches against it. Authenticated meshes must be registered. Run `cotal models` from
 the mesh's project folder or name the registered space with `--space`. `models` does not accept
 raw credential files (`--creds`).
 An empty or whitespace-only `--harness` or `-H` refuses with
@@ -497,7 +513,8 @@ An empty or whitespace-only `--harness` or `-H` refuses with
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Hermes asks the connector's pinned Hermes which provider a launch's environment selects, and lists
 that provider's models.
-Claude Code lists the models its login can use, with their effort levels as variants, and pi lists
+Claude Code lists the models its login can use, with their effort levels as variants and its `fast` and
+`ultracode` modes, and pi lists
 the models of providers it holds credentials for, with their thinking levels as variants. Jcode lists
 the models `jcode model list` reports with an available route, without variants.
 A connector without a catalog says so with `supported: false`, and one whose install has no
@@ -518,11 +535,12 @@ A manager lists a catalog row for every
 application its install names, so an empty list says the answering manager has no agent
 application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
-a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
-printed it. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
+a result with `cotal spawn --model <id> --variant <v> --mode <mode>=<value>`, where `<id>` is the
+model id as the catalog printed it. A launch is refused a variant or mode its model's row does not
+list. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
 separately reported provider. OpenCode ids are `provider/model`, and pi ids are `provider/id`.
-Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is selected by the
-operator's Jcode config and a prefixed id is refused at launch with the bare form named.
+For Jcode, keep any slash that is part of the listed ID. Do not prepend a provider name, because
+Jcode's configuration selects the provider.
 
 
 ## persona [#persona]
@@ -559,9 +577,11 @@ Persona names for create, edit and remove use letters, digits, `_` and `-`, up t
 A local `persona show` takes the exact filename stem from the catalog, including punctuation,
 Unicode and spaces. It refuses paths, control characters and blank stems.
 The local listing marks a file with an empty or whitespace-only stem as an invalid selector.
-Rename that file or pass its path to `cotal spawn --file <persona.md>`.
-The local listing also marks a stem containing a literal backslash as an invalid selector and
-shows how to launch the file with `cotal spawn --file`. This warning does not change the list exit status.
+Rename that file or, if its path has no control characters, pass it to `cotal spawn --file <persona.md>`.
+The local listing also marks stems that contain control characters, such as tabs, or a literal
+backslash as invalid selectors. Rename a file with control characters to open it with `cotal persona show`.
+For a backslash, the listing shows how to launch the file with `cotal spawn --file` if its path
+has no control characters. These warnings do not change the list exit status.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.
@@ -595,8 +615,8 @@ such as a missing frontmatter block, the renamed `channels` key or a `subscribe`
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.
 They cannot be combined with
 `--role`, `--model`, `--harness`, `--subscribe`, `--allow-subscribe` or `--allow-publish`. Body
-input requires an explicit `--subscribe` declaration, including `--subscribe ""` for no channels,
-and accepts `--role`, `--model` and `--harness`. `--allow-subscribe` sets the channels the persona
+input requires an explicit `--subscribe` declaration and accepts `--role`, `--model` and `--harness`.
+Use `--subscribe=` for no channels. `--allow-subscribe` sets the channels the persona
 may read, and an omitted or empty one reads as the `--subscribe` set. `--allow-publish` sets the
 channels it may post to, and without it the persona posts nowhere. Both take a comma list, as the
 [agent file](agent-files.mdx) fields `allowSubscribe` and `allowPublish` do. Both refuse control
@@ -670,8 +690,10 @@ Create, edit and remove refuse a catalog folder you cannot write, such as one se
 with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for
 this or any other reason keeps your edited draft and names it, so the edit is not lost.
 `--no-input` refuses editing before an editor opens. Under `--json`, the editor's output goes to
-stderr so stdout carries only the JSON receipt. That `--no-input` refusal, and a removal
-refused for want of `--yes`, give the fix without the command's help.
+stderr so stdout carries only the JSON receipt. On POSIX, when a plain editor command or one with
+literal arguments is not found, the JSON receipt reports the lookup failure without the shell's
+diagnostic. The `--no-input` refusal, and a removal refused for want of `--yes`, give the fix without
+the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove
 refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names it in a
@@ -714,7 +736,8 @@ draft validation and commit fence. Its `list` refuses a catalog folder it cannot
 `PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
 than reporting it empty. It lists malformed files alongside readable definitions and exits 4 if any
 definition could not be read. For a persona symlink with a missing target, it names both paths and
-suggests restoring the target or replacing the link with a regular persona file. A YAML error names
+suggests restoring the target or replacing the link with a regular persona file. For an invalid
+display name in frontmatter, it shows the file path and the name validation rule. A YAML error names
 the file and its line and column when known, without quoting the YAML. The list escapes control
 characters in the names, fields and bodies it prints, as `persona show` does, and shows each
 persona's description or first prompt line whole, wrapped to the terminal's width. Its
@@ -743,8 +766,9 @@ body input. Leading frontmatter follows the native persona merge:
 the supplied name wins, explicit model/role/application and channel fields override the file,
 and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
 1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
-If the manager instance ID is invalid, find the full ID with `cotal ps` in the same space and replace
-only the `--on` value. Keep the definition options and pipe any standard input again.
+If the manager instance ID is invalid, use the suggested roster lookup. It keeps the selected
+space, broker and output format. If the broker address contains private details, use the original
+broker options yourself. Replace only the `--on` value and pipe any standard input again.
 
 The remote wire accepts name, body, model, role, application, initial read channels and read/post
 ACLs. `--harness`, `--subscribe`, `--allow-subscribe` and `--allow-publish` name those fields.

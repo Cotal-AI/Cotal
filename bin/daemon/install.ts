@@ -51,11 +51,11 @@ import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
 import { missingSystemdProgram, observeSystemdRepairUnit } from "./install-linux-repair.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, windowsDaemonFirstStart } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
-import { assertServiceRepairPair, readServiceRepair, repairReplies, serviceRepairFile, sourceDigest } from "./service-repair.js";
+import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -417,12 +417,12 @@ function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undef
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false, repairing = false): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
+function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false, repairing = false, missingReceipt?: () => CommandFailure): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
   if (!repairing) assertNoServiceRepair(paths);
   const service = nativeService(run);
   const saved = readReceipt(paths);
   const receipt = saved ?? (recover ? recoveredLinuxUnit(daemonHome) : undefined);
-  if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
+  if (!receipt) throw missingReceipt?.() ?? new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
   const mechanism = receipt.mechanism ?? "systemd-user";
   if (mechanism !== (service ? service.mechanism : "systemd-user")) throw new CommandFailure("refused", "CONFLICT", `the recorded unit ${receipt.unit} is a ${mechanism} unit, which this OS does not run; nothing was removed`);
   if (process.platform === "win32") {
@@ -454,19 +454,32 @@ function assertLinuxRecordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: 
 }
 
 /** The exact recorded unit `uninstall` would remove, refusing a receipt that no longer matches. */
-export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
-  return recordedUnit(paths, daemonHome, nativeRun, true).plan;
+export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined, missingReceipt?: () => CommandFailure): UninstallPlan {
+  return recordedUnit(paths, daemonHome, nativeRun, true, false, missingReceipt).plan;
 }
 
 /** Update only the PATH field the installer wrote. Windows tasks have no PATH pin. */
-export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
-  if (mechanism === "scheduled-task") return undefined;
+function pinnedPathMatch(mechanism: Exclude<ServiceMechanism, "scheduled-task">, source: string): { pattern: RegExp; match: RegExpExecArray; old: string } {
   const pattern = mechanism === "systemd-user" ? /^Environment=PATH="((?:\\.|[^"\\])*)"$/m : /(<key>PATH<\/key>\s*<string>)([^<]*)(<\/string>)/;
   const match = pattern.exec(source);
   if (!match) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service has no readable pinned PATH; nothing was changed");
   const old = mechanism === "systemd-user"
     ? match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%")
     : match[2]!.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  return { pattern, match, old };
+}
+
+/** The PATH a recorded systemd or launchd service runs with. Undefined for the Windows task, which
+ *  reads the account's PATH each time it starts. */
+export function installedServicePath(paths: DaemonPaths, daemonHome?: string): string | undefined {
+  const { receipt, plan } = recordedUnit(paths, daemonHome);
+  if (plan.mechanism === "scheduled-task") return undefined;
+  return pinnedPathMatch(plan.mechanism, readFileSync(receipt.unitPath, "utf8")).old;
+}
+
+export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
+  if (mechanism === "scheduled-task") return undefined;
+  const { pattern, match, old } = pinnedPathMatch(mechanism, source);
   // A systemd unit and a launchd plist carry a POSIX search path whatever host reads them.
   const merged = [...new Set([...pinnedPath(terminalPath, posix).split(posix.delimiter), ...pinnedPath(old, posix).split(posix.delimiter)])].join(posix.delimiter);
   return source.replace(pattern, () => mechanism === "systemd-user" ? `Environment=PATH=${unitValue(merged)}` : `${match[1]}${xmlText(merged)}${match[3]}`);
@@ -631,10 +644,11 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     const id = randomUUID().replaceAll("-", "");
     const answer = replies!.read(id, op === "managers-prepare-restart" ? 130_000 : 70_000);
     socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op }));
-    const reply = JSON.parse(await answer) as DaemonResponse;
+    const raw: unknown = JSON.parse(await answer);
+    if (!linux) return repairReplyResult(raw, id, op);
+    const reply = raw as DaemonResponse;
     if (reply.id !== id || reply.v !== DAEMON_PROTOCOL_VERSION) throw new Error("the pinned daemon did not confirm service repair preparation");
-    if (!reply.ok && linux) throw failure(reply.error.message, "LIFECYCLE_BLOCKED");
-    if (!reply.ok) throw new Error("the pinned daemon refused service repair preparation");
+    if (!reply.ok) throw failure(reply.error.message, "LIFECYCLE_BLOCKED");
     if ("event" in reply || !("version" in reply.result)) throw new Error("the pinned daemon refused service repair preparation");
     return reply.result;
   };
@@ -899,7 +913,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
     return Math.min(limit, left);
   };
   const run: NativeRun = automatic ? (file, args, env) => nativeRun(file, args, env, remaining(30_000)) : nativeRun;
-  const recorded = () => recordedUnit(paths, daemonHome, run);
+  const recorded = () => recordedUnit(paths, daemonHome, run, false, false, startOnly ? () => new CommandFailure("refused", "TARGET_NOT_FOUND", "no scheduled task installation is recorded for this daemon", { remedy: windowsDaemonFirstStart(daemonHome) }) : undefined);
   const { receipt, plan } = recorded();
   if (process.platform !== "win32" || plan.mechanism !== "scheduled-task") throw new CommandFailure("refused", "UNSUPPORTED", "Windows daemon restart requires the recorded scheduled task");
   if (automatic && JSON.stringify(receipt) !== automatic.receipt) throw new Error("the captured Windows installation changed before activation");

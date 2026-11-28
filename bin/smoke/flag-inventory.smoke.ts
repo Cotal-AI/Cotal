@@ -80,6 +80,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // runtimes, project and space as flags. `--start`/`--detach` start the prepared space only on
   // explicit request, and `--on` pins the manager instance a self-hosted start launches through.
   setup: { flags: ["configure-only:boolean", "connection-file:string", "demo:boolean", "destination:string", "detach:boolean:d", "full:boolean", "harness:string:H", "json:boolean:j", "on:string", "plain:boolean", "project:string", "runtime:string", "skills:boolean", "space:string:s", "start:boolean", "yes:boolean:y"], positionals: false },
+  trust: { flags: ["hex:boolean", "json:boolean:j", "plain:boolean"], positionals: true },
   // `--space`/`--server`/`--creds` (2026-09): after disk reconciliation, `update` reports the
   // selected running manager's custody generation. `--check` reads without changing anything.
   update: { flags: [...TARGET, "auto:boolean", "check:boolean", "json:boolean:j", "notify:boolean", "on:string", "plain:boolean", "self:boolean", "stop-agents:boolean"], positionals: true },
@@ -178,13 +179,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--enrollment-file` redeems a one-time enrollment for that seat. `--config`, `--agent` and
   // `--expect-owner`/`--expect-lifecycle-uid` (2026-10, #2420) are the delegated launch contract
   // version 0 an older manager writes. `--allow-stale`/`--runtime` refuse and name `team deploy`.
+  // `--mode` (2026-11) chooses a model's modes, which the catalog lists beside its variants.
   spawn: {
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string:C", "detach:boolean:d", "dry-run:boolean",
       "enrollment-file:string", "events:boolean", "expect-lifecycle-uid:string", "expect-owner:string",
       "expires-at:string", "expires-in:string", "file:string:f", "foreground:boolean", "harness:string:H", "json:boolean:j", "live-only:boolean",
-      "model:string:m", "name:string:n", "no-event-payloads:boolean", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
+      "mode:string", "model:string:m", "name:string:n", "no-event-payloads:boolean", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
       "prompt:string:p", "restart-window:string", "restarts:string", "resume:string", "role:string",
       "runtime:string", "server:string", "share-tools:string", "space:string:s", "subscribe:string",
       "variant:string",

@@ -1,5 +1,23 @@
 # @cotal-ai/tmux
 
+## 0.183.1
+
+No changes in this release.
+
+## 0.183.0
+
+No changes in this release.
+
+## 0.182.1
+
+No changes in this release.
+
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+
 ## 0.181.0
 
 No changes in this release.

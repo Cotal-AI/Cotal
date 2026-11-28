@@ -1,5 +1,101 @@
 # @cotal-ai/manager
 
+## 0.183.1
+
+### Patch Changes
+
+- Updated dependencies [c049810]
+- Updated dependencies [99e5057]
+  - @cotal-ai/workspace@0.183.1
+  - @cotal-ai/core@0.183.1
+  - @cotal-ai/seat@0.183.1
+
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+- eb9fd3d: Keep retrying interrupted hosted workflows through a 30-minute authority outage and log when automatic recovery starts retrying or gives up.
+- Updated dependencies [a0e9aae]
+- Updated dependencies [c3236a3]
+- Updated dependencies [335d8e9]
+- Updated dependencies [447e860]
+- Updated dependencies [6930623]
+- Updated dependencies [0c10988]
+- Updated dependencies [067ff29]
+- Updated dependencies [06629ca]
+  - @cotal-ai/core@0.183.0
+  - @cotal-ai/workspace@0.183.0
+  - @cotal-ai/seat@0.183.0
+
+## 0.182.1
+
+### Patch Changes
+
+- 938d757: The `set-model` policy refusal and configuration read warning now refer to the Cotal configuration without implying that you should run a command.
+- e4bef3d: Stop running agents or open them in the system terminal from the desktop agent list, which now shows their state, elapsed time, application and model.
+- c788d9f: Show the endpoint's reason for refusing an invocation in both terminal and JSON output.
+- 57b3b2d: When a Claude Code launch times out waiting for its startup prompt in a PTY, the error shows the last visible screen lines or says that no text was visible.
+- fab8c5f: Keep a stopped seat's name reusable even when the manager cannot remove its private Claude home.
+- 2b296a3: Managers retry interrupted workflow runs when the hosted credential issuer takes longer than the broker to recover.
+- Updated dependencies [8495df7]
+- Updated dependencies [8eead0e]
+- Updated dependencies [5117d48]
+- Updated dependencies [2af983b]
+- Updated dependencies [c27ddc1]
+- Updated dependencies [57b3b2d]
+- Updated dependencies [8a9ffeb]
+- Updated dependencies [287b874]
+  - @cotal-ai/workspace@0.182.1
+  - @cotal-ai/core@0.182.1
+  - @cotal-ai/seat@0.182.1
+
+## 0.182.0
+
+### Minor Changes
+
+- d0d5bf5: Legacy persona creation, persona renames, team manifest validation and direct terminal launches now reject names that start with `-`, so choose a name that starts with a letter, digit or underscore instead.
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+
+### Patch Changes
+
+- 1142b5a: `cotal ps` and `cotal status` omit the requested Claude variant when `--opt effort=<level>` overrides it.
+- 1f37adb: OpenCode seats launched without a model pin report the model they use after a mesh-delivered prompt in `cotal who` and plain `cotal status`.
+- f1651fc: On Windows, a confirmed `cotal down` now ends foreground `cotal up` successfully, and a stopped PTY seat releases its console host so it does not block stack shutdown.
+- 9c0795d: Fix the Claude workspace trust smoke so it passes when its tmux session has already exited.
+- Updated dependencies [ecd506f]
+- Updated dependencies [896100c]
+- Updated dependencies [77a02cd]
+- Updated dependencies [1d10f92]
+- Updated dependencies [7ef585e]
+- Updated dependencies [48b6414]
+- Updated dependencies [423aa24]
+- Updated dependencies [1f37adb]
+- Updated dependencies [30b474d]
+- Updated dependencies [b670c41]
+- Updated dependencies [c9a8881]
+- Updated dependencies [0adb7ba]
+- Updated dependencies [b4d8ea1]
+- Updated dependencies [9f63fee]
+- Updated dependencies [365e355]
+- Updated dependencies [dd426ff]
+- Updated dependencies [f5b2a30]
+- Updated dependencies [0c9e27a]
+- Updated dependencies [d387f8b]
+- Updated dependencies [e6cd8f2]
+- Updated dependencies [6c10b18]
+  - @cotal-ai/workspace@0.182.0
+  - @cotal-ai/core@0.182.0
+  - @cotal-ai/seat@0.182.0
+
 ## 0.181.0
 
 ### Minor Changes

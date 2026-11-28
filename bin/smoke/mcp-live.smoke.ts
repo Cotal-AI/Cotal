@@ -134,9 +134,69 @@ async function competingNames(space: string, mode: "race" | "sequential"): Promi
   }
 }
 
+async function boundedNames(space: string, name: string, fallback: string, label: string): Promise<void> {
+  const first = new Rpc(space, `${label}-one`);
+  const second = new Rpc(space, `${label}-two`);
+  try {
+    await Promise.all([first.initialize(), second.initialize()]);
+    const original = await first.call("cotal_connect", { name });
+    const duplicate = await second.call("cotal_connect", { name });
+    check(`${label}: stdio connects both hosts and reports the bounded fallback`,
+      !original.result?.isError && text(original).startsWith(`Connected as ${name}.\n`) &&
+      !duplicate.result?.isError && text(duplicate).startsWith(`Connected as ${fallback} (${JSON.stringify(name)} was taken).\n`),
+      text(duplicate).split("\n")[0]);
+  } finally {
+    await Promise.all([first.end(), second.end()]);
+  }
+}
+
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
+
+async function inboxOverflow(space: string): Promise<void> {
+  const reader = new Rpc(space, "overflow-reader");
+  const writer = new Rpc(space, "overflow-writer");
+  try {
+    await Promise.all([reader.initialize(), writer.initialize()]);
+    const connect = async (rpc: Rpc) => {
+      const result = await rpc.call("cotal_connect", { name: rpc.tag });
+      const connection_id = /connection_id: (\S+)/.exec(text(result))?.[1];
+      assert.ok(connection_id, text(result));
+      return async (name: string, args: Record<string, unknown> = {}) => {
+        const reply = await rpc.call(name, { connection_id, ...args });
+        assert.ok(reply.result && !reply.result.isError, text(reply));
+        return text(reply);
+      };
+    };
+    const read = await connect(reader);
+    const write = await connect(writer);
+    const channel = "general";
+    const omitted = /\d+ unread channel posts? (?:was|were) omitted/;
+    const notice = "3 unread channel posts were omitted because the local inbox was full.";
+    for (let i = 0; i < 203; i++) {
+      await write("cotal_send", { channel, text: `overflow-probe-${i} end` });
+    }
+    let peeked = "";
+    await until(async () => {
+      peeked = await read("cotal_inbox", { peek: true });
+      return peeked.includes("overflow-probe-202 end");
+    }, "last overflow probe did not reach the reader");
+    const drained = await read("cotal_inbox");
+    check("MCP inbox reports how many unread channel posts overflowed and how to recover them",
+      drained.includes(notice) && drained.includes("`cotal history <channel> --limit <n>`"));
+    check("MCP peek shows the overflow without clearing the notice or posts",
+      peeked.includes(notice) && drained.includes("overflow-probe-3 end") && drained.includes("overflow-probe-202 end") && !drained.includes("overflow-probe-2 end"));
+    check("MCP clearing read consumes the overflow notice", !(await read("cotal_inbox")).match(omitted));
+    await write("cotal_send", { channel, text: "below-cap-probe" });
+    await until(async () => (await read("cotal_inbox", { peek: true })).includes("below-cap-probe"), "control post did not reach the reader");
+    const control = await read("cotal_inbox");
+    check("an ordinary MCP delivery does not report omissions", control.includes("below-cap-probe") && !omitted.test(control));
+  } finally {
+    await Promise.all([reader.end(), writer.end()]);
+  }
+}
+
 /** This suite's identity directories, under the Cotal home where provision makes them or in the temp dir where earlier versions did. */
 const identities = () => [join(env.COTAL_HOME!, "app-identities"), env.TMPDIR!].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((name) => name.startsWith("cotal-app-identity-")));
 const persona = "---\nname: default\nsubscribe: [general]\nallowSubscribe: [general, team.>]\nallowPublish: [general]\ncapabilities: []\n---\n\nA local conversation.\n";
@@ -309,11 +369,38 @@ try {
   const open = new Rpc(openSpace, "open");
   await open.initialize();
   const openReply = await open.call("cotal_connect", { name: "reader" });
-  check("an open mesh also connects through the shipped command", !openReply.result?.isError && Boolean(/connection_id:/.test(text(openReply))));
+  const openHandle = /connection_id: (\S+)/.exec(text(openReply))?.[1];
+  check("an open mesh also connects through the shipped command", !openReply.result?.isError && Boolean(openHandle));
+  assert.ok(openHandle, text(openReply));
+  const remaining = new Rpc(openSpace, "remaining");
+  await remaining.initialize();
+  const remainingReply = await remaining.call("cotal_connect", { name: "remaining" });
+  const remainingHandle = /connection_id: (\S+)/.exec(text(remainingReply))?.[1];
+  assert.ok(!remainingReply.result?.isError && remainingHandle, text(remainingReply));
+  const retiredReply = await open.call("cotal_disconnect", { connection_id: openHandle });
+  assert.ok(!retiredReply.result?.isError && text(retiredReply).startsWith("Disconnected "), text(retiredReply));
+  await until(async () => /(?:^|\n)· reader(?:\/[^\s]+)? — offline\b/.test(text(await remaining.call("cotal_roster", { connection_id: remainingHandle }))),
+    "retired reader did not appear offline");
+  const offlineDm = await remaining.call("cotal_dm", { connection_id: remainingHandle, to: "reader", text: "sent after retirement" });
+  const receipt = text(offlineDm);
+  check("an MCP DM to a retired connection succeeds without promising delivery",
+    !offlineDm.result?.isError && receipt.startsWith("Sent to reader. reader is offline.") &&
+    receipt.includes("stored, but delivery is not confirmed. Only the same lifecycle can receive it, and only if its inbox still exists.") &&
+    receipt.includes("A new session with the same name does not receive it."), receipt);
+  const successor = await open.call("cotal_connect", { name: "reader" });
+  const successorHandle = /connection_id: (\S+)/.exec(text(successor))?.[1];
+  assert.ok(!successor.result?.isError && text(successor).startsWith("Connected as reader.") && successorHandle && successorHandle !== openHandle, text(successor));
+  const successorInbox = await open.call("cotal_inbox", { connection_id: successorHandle });
+  check("the new same-name MCP connection does not inherit the retired connection's DM",
+    !successorInbox.result?.isError && text(successorInbox) === "Inbox empty, no new messages.", text(successorInbox));
+  await remaining.end();
   await open.end();
   check("open-mesh EOF removes its identity record", identities().length === 0);
   await competingNames(openSpace, "sequential");
   await competingNames(openSpace, "race");
+  await boundedNames(openSpace, "a".repeat(128), `${"a".repeat(126)}_2`, "maximum-length name");
+  await boundedNames(openSpace, `${"b".repeat(125)}🙂z`, `${"b".repeat(125)}_2`, "supplementary character at the cut");
+  await inboxOverflow(openSpace);
 
   const userSpace = `mcpuser${process.pid}`;
   recordMesh({ space: userSpace, server: servers, root, mode: "user", origin: "manual", ts: new Date().toISOString(),

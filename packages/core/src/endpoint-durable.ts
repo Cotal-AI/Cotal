@@ -7,26 +7,21 @@ import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { EndpointParts } from "./endpoint-parts.js";
 import { readAcl } from "./acls.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
-import type { DeliveryClass, Plane3Entry, ControlReply, CotalMessage } from "./types.js";
+import type { CotalMessage } from "./types.js";
 import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
-import type { KV } from "@nats-io/kv";
 import { nanos } from "@nats-io/transport-node";
 
 /** What the durable-membership component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time, so a member a caller replaced on
- *  the endpoint is the one that runs. */
+ *  the endpoint is the one that runs. A peer part is read from the parts record at call time. */
 export interface EndpointDurableDeps {
-  aclRegistry: () => Promise<KV>;
-  deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
-  deleteConsumerIfPresent: (stream: string, durable: string) => Promise<void>;
-  publishDinbox: (principal: string, lifecycleUid: string, entry: Plane3Entry) => Promise<void>;
-  requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
   emitRecoverable: (err: Error) => void;
-  membershipPause: (attempt: number) => Promise<void>;
 }
 
 /** One endpoint's durable membership. Internal: it owns its pending leaves, and `CotalEndpoint` keeps the shared fields and forwards to it. */
@@ -38,22 +33,16 @@ export class EndpointDurable {
    *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
   private readonly pendingDurableLeave = new Map<string, number>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDurableDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDurableDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane" | "durableBackstop" | "reconnection">) {}
 
-  private aclRegistry(): Promise<KV> { return this.deps.aclRegistry(); }
-  private deliveryClassFresh(channel: string): Promise<DeliveryClass> { return this.deps.deliveryClassFresh(channel); }
-  private deleteConsumerIfPresent(stream: string, durable: string): Promise<void> { return this.deps.deleteConsumerIfPresent(stream, durable); }
-  private publishDinbox(principal: string, lifecycleUid: string, entry: Plane3Entry): Promise<void> { return this.deps.publishDinbox(principal, lifecycleUid, entry); }
-  private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number): Promise<ControlReply> { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
-  private membershipPause(attempt: number): Promise<void> { return this.deps.membershipPause(attempt); }
 
   /** Whether one lifecycle's exact ACL row allows a membership on `channel` now (a family must lie
    *  inside one entry, {@link membershipInAllow}). A leader-served read: the handle is opened without
    *  direct reads, so a row narrowed before this read began is the row it returns. */
   async aclAllows(owner: string, lifecycleUid: string, channel: string): Promise<boolean> {
-    const row = await readAcl(await this.aclRegistry(), owner, lifecycleUid);
+    const row = await readAcl(await this.parts.durableBackstop.aclRegistry(), owner, lifecycleUid);
     return row !== undefined && membershipInAllow(row.record.allowSubscribe, channel);
   }
 
@@ -77,7 +66,7 @@ export class EndpointDurable {
     const stored = (ch: string): Promise<boolean> => {
       if (!family) return Promise.resolve(true);
       let cls = durableClass.get(ch);
-      if (cls === undefined) durableClass.set(ch, (cls = this.deliveryClassFresh(ch).then((c) => c === "durable")));
+      if (cls === undefined) durableClass.set(ch, (cls = this.parts.durableBackstop.deliveryClassFresh(ch).then((c) => c === "durable")));
       return cls;
     };
     // Consumer NAME must be JetStream-safe (no `.`) AND collision-free: use the principal DASH-form
@@ -89,7 +78,7 @@ export class EndpointDurable {
     const cuP = parsePrincipalKey(owner);
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
     // A failed read throws, leaving the pending row to retry over the same window.
-    await this.deleteConsumerIfPresent(chatStream(this.identity.space), name);
+    await this.parts.consumers.deleteConsumerIfPresent(chatStream(this.identity.space), name);
     await this.conn.jsm.consumers.add(chatStream(this.identity.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
       inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: fromSeqExcl + 1,
@@ -105,12 +94,13 @@ export class EndpointDurable {
         for await (const m of iter) {
           got++;
           if (m.seq > toSeqIncl) return copied;
+          if (hasStoredOrigin(m.headers)) continue;
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
           if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
           if (!(await stored(parsed.rest))) continue;
-          await this.publishDinbox(owner, lifecycleUid, {
+          await this.parts.durableBackstop.publishDinbox(owner, lifecycleUid, {
             msg, channel: parsed.rest, seq: m.seq, reason: "durable-channel", generation, ...(family ? { row: channel } : {}),
           });
           copied++;
@@ -119,7 +109,7 @@ export class EndpointDurable {
         pending -= got;
       }
     } finally {
-      await this.deleteConsumerIfPresent(chatStream(this.identity.space), name);
+      await this.parts.consumers.deleteConsumerIfPresent(chatStream(this.identity.space), name);
     }
     return copied;
   }
@@ -128,7 +118,7 @@ export class EndpointDurable {
    *  when no privileged writer is present (open / no delivery daemon). 30s timeout — activation catch-up may
    *  run before the reply (the window is small, but a busy channel can take more than the 5s default). */
   async durableJoinChannel(channel: string): Promise<{ durable: boolean; reason?: string; generation?: number }> {
-    const reply = await this.requestDelivery("durableJoin", { channel }, 30_000);
+    const reply = await this.parts.controlPlane.requestDelivery("durableJoin", { channel }, 30_000);
     if (!reply.ok) throw new Error(reply.error ?? "durable join rejected");
     return (reply.data as { durable: boolean; reason?: string; generation?: number }) ?? { durable: false };
   }
@@ -138,7 +128,7 @@ export class EndpointDurable {
    *  it) AND this incarnation's lifecycleUid — membership rows are lifecycle-keyed (SPEC 13.1), and a
    *  leave must resolve the selected principal-owned row even after the ACL row was narrowed or purged. */
   async durableLeaveChannel(channel: string, generation?: number, lifecycleUid = this.requireLifecycleUid("leaving a durable channel")): Promise<void> {
-    const reply = await this.requestDelivery("durableLeave", { channel, generation, lifecycleUid });
+    const reply = await this.parts.controlPlane.requestDelivery("durableLeave", { channel, generation, lifecycleUid });
     if (!reply.ok) throw new Error(reply.error ?? "durable leave rejected");
   }
 
@@ -161,7 +151,7 @@ export class EndpointDurable {
       } catch (e) {
         if (attempt === 0)
           this.emitRecoverable(new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`));
-        await this.membershipPause(attempt);
+        await this.parts.reconnection.membershipPause(attempt);
       }
     }
   }

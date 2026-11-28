@@ -192,7 +192,7 @@ const MARKETPLACE = "cotal-mesh";
 
 /** Desktop includes a Code executable even when the person has not installed the terminal CLI. */
 function claudeCommand(): string {
-  const terminal = spawnSync("claude", ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" });
+  const terminal = spawnSync("claude", ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL", windowsHide: true });
   if (terminal.status === 0) return "claude";
   if ((terminal.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT")
     throw new Error("The installed Claude Code command could not run. Repair it before running `cotal setup`.");
@@ -215,7 +215,7 @@ function claudeCommand(): string {
         : [join(root, entry.name, executable)];
       for (const candidate of candidates) {
         if (!existsSync(candidate)) continue;
-        if (spawnSync(candidate, ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" }).status !== 0)
+        if (spawnSync(candidate, ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL", windowsHide: true }).status !== 0)
           throw new Error("Claude Desktop's bundled Code executable could not run. Update or reinstall Claude Desktop.");
         return candidate;
       }
@@ -361,7 +361,7 @@ function command(...args: string[]): { status: number | null; output: string } {
 /** A spawn error (output past the limit, a directory that cannot be entered) is a failure whatever the
  *  exit status says, and its message is the output. */
 function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL" });
+  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL", windowsHide: true });
   if (result.error) return { status: null, output: result.error.message };
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }

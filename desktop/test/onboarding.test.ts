@@ -840,7 +840,7 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
         assert.equal(a.node("connection-title").textContent, "Waiting for owner approval");
         assert.equal(a.node("connection-icon").dataset.icon, "clock");
         assert.equal(a.node("connection-icon").dataset.tone, "waiting");
-        assert.equal(a.node("applications-label").hidden, true);
+        assert.equal(a.node("apps-strip-wrap").hidden, true);
         assert.equal(a.node("dashboard").hidden, true);
         assert.equal(a.node("recovery-panel").hidden, true);
         assert.match(a.node("connected-spaces").textContent!, /Waiting for owner approval/);

@@ -1,5 +1,50 @@
 # @cotal-ai/core
 
+## 0.183.1
+
+### Patch Changes
+
+- 99e5057: Internal refactor: the endpoint's internal parts reach each other through one `EndpointParts` record that the endpoint fills at the end of its constructor, replacing per-call dependency callbacks and the private methods that only forwarded to another part. No behaviour change.
+
+## 0.183.0
+
+### Minor Changes
+
+- 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
+  
+  SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
+  
+  The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
+
+### Patch Changes
+
+- a0e9aae: Run a foreground Hermes seat with a disposable managed profile in Windows PowerShell or Command Prompt.
+
+## 0.182.1
+
+### Patch Changes
+
+- 8eead0e: The desktop app has an Agent apps screen. It lists the application each connector runs (Claude Code, Codex, OpenCode, pi, Hermes and Jcode) with its logo, version and whether it is signed in, and installs a missing one with its maker's own installer in one click, with no terminal. Before you install, each app says which site it downloads from, and a connector that is not one of Cotal's own also shows its package name. When an installer leaves its folder off PATH, the app adds it, and the background service picks the application up. Claude Code and Codex sign in from the app through their own browser sign-in. A connector declares all this in a new `install` field beside `requires`, which the extensions manifest caches and checks.
+- 287b874: Keep membership watches live when the membership store is replaced under the same name by replaying the replacement's current entries.
+
+## 0.182.0
+
+### Minor Changes
+
+- 30b474d: Wire persona saves drop launch options and refuse channels outside the definer's grant, so pass options on spawn or set them in a local persona file, and list only channels the definer holds.
+- b4d8ea1: User-auth terminal connections stop working when their session ends, so start a new session with `cotal attach <agent>` and upgrade auth and delivery together to enforce the cutoff.
+- 0c9e27a: Messages carrying reserved stored-message headers are dropped, so send a fresh message without those headers instead of forwarding the stored delivery.
+- d387f8b: On user-auth meshes, a reply inbox name of the form `<owner>-<actor>-<nonce>` is refused if it names another principal, so use the bearer’s own owner and actor or keep the bare nonce that existing clients send.
+
+### Patch Changes
+
+- 896100c: The console space picker counts agents without including the manager or other endpoints.
+- 77a02cd: The console space picker includes configured channels even when they have no retained posts.
+- 423aa24: Fix full backups of open spaces after a seat disconnects, and restore its DM inbox with the standard inactivity threshold.
+- c9a8881: Keep evicting ended user-auth terminal connections when only callout replicas are running, limit delays from slow evictions, and explain when a one-shot terminal connection closes on a broker authorization error.
+- 0adb7ba: Fix the endpoint grants smoke test to check the exact principal-route permissions for static agent credentials.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 ### Minor Changes

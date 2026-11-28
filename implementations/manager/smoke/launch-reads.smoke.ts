@@ -9,7 +9,7 @@ import * as auth from "../../auth/dist/index.js";
 const assert: typeof import("node:assert/strict") = (await import("node:assert/strict")).default;
 const { createServer } = await import("node:http");
 const { createRequire } = await import("node:module");
-const { mkdirSync, writeFileSync, realpathSync, symlinkSync, chmodSync } = await import("node:fs");
+const { mkdirSync, writeFileSync, realpathSync, symlinkSync, chmodSync, rmSync } = await import("node:fs");
 const { join } = await import("node:path");
 const { hostname, homedir } = await import("node:os");
 const { SignJWT, generateKeyPair, exportJWK, decodeJwt } = createRequire(new URL("../../auth/package.json", import.meta.url))("jose") as any;
@@ -21,6 +21,7 @@ const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
 const { nativeRemoteManager } = await import("./_native-remote-manager.js");
 const { remoteManagerClient } = await import("../dist/index.js");
 const { emitSentinel } = await import("@cotal-ai/smoke-kit");
+const { trustProject } = await import("@cotal-ai/workspace");
 // A Manager runs as the `cotal` binary: a spawn that passes admission re-runs this process's entry
 // for the seat's bearer (`bearerEntryArgv`), and this suite must never be that entry.
 process.argv[1] = new URL("../../../bin/cotal.ts", import.meta.url).pathname;
@@ -276,6 +277,24 @@ try {
   const plain = await call(launcher, "harness-commands", { agent: "launch-plain", cwd: root });
   cell("harness-commands: a harness whose seats run no commands answers supported: false with the reason",
     plain.kind === "answered" && JSON.stringify(plain.data) === JSON.stringify({ agent: "launch-plain", cwd, supported: false, reason: "launch-plain seats run no commands or skills" }), plain);
+  const projectConfig = join(root, ".cotal", "config.json");
+  const operatorConfig = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = join(fx.dir, "launch-reads-operator-config");
+  try {
+    writeFileSync(projectConfig, JSON.stringify({ spawn: { env: ["COTAL_LAUNCH_READS_PROBE"] } }));
+    const args = { agent: "launch-probe", cwd: root };
+    const refused = await call(launcher, "harness-commands", args);
+    cell("harness-commands: untrusted project config is failed-precondition and not-executed",
+      refused.kind === "manager-refused" && refused.code === "failed-precondition"
+      && (refused.error as { outcome?: string })?.outcome === "not-executed" && /cotal trust/.test(JSON.stringify(refused.error)), refused);
+    trustProject(root);
+    const accepted = await call(launcher, "harness-commands", args);
+    cell("harness-commands: the same admitted caller receives the catalog after project trust", accepted.kind === "answered" && accepted.data.supported, accepted);
+  } finally {
+    if (operatorConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = operatorConfig;
+    rmSync(projectConfig, { force: true });
+  }
 
   // A spawn's first command is checked against the harness before anything is provisioned.
   const refusedSpawn = async (label: string, args: Record<string, unknown>, reason: RegExp) => {

@@ -20,15 +20,18 @@ export function checkPublicExchangePort(raw: string | undefined): void {
  *  create trust in an arbitrary directory. Validation runs before the dispatcher seeds extensions. */
 export function preparedUpRoot(value: string): string {
   if (!value) throw new CommandFailure("refused", "USAGE_INVALID", "--root needs an existing prepared project directory; an empty value is not the current folder");
-  let root: string;
+  let root: string, hasControlDirectory: boolean;
   try {
     root = realpathSync(resolve(value));
     if (!statSync(root).isDirectory()) throw new Error("not a directory");
-    const cotal = lstatSync(join(root, ".cotal"));
-    if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
+    hasControlDirectory = lstatSync(join(root, ".cotal")).isDirectory();
   } catch {
     throw unavailableUpRoot(resolve(value));
   }
+  if (!hasControlDirectory)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the .cotal entry in ${root} is not a project directory; nothing was started or changed`, {
+      target: { root }, remedy: "use --root to name another prepared project, or restore this project's .cotal directory before retrying",
+    });
   if (canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
     throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with `cotal space create <space> --root <dir>`" });
   return root;

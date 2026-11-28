@@ -99,7 +99,8 @@ It keeps each model that Jcode reports with an available route.
 Jcode reports no reasoning efforts per model, so the list offers none.
 If Jcode cannot list its models, for example before `jcode login`, the read fails with Jcode's own reason.
 
-Pass a bare model ID, without a `provider/` prefix:
+Pass the model ID as listed, keeping any slash that is part of the ID.
+Do not prepend a provider name. Jcode's configuration selects the provider.
 
 ```bash
 cotal spawn --harness jcode --model <model> --variant high
@@ -148,8 +149,11 @@ See [Event access](connect-claude.mdx#event-plane) for grants and [Jcode event b
 
 ## Resolve a launch refusal [#model-limits]
 
-A model with a provider prefix is refused as `model_prefix_rejected`.
-`model_refused` means Jcode rejected the bare ID.
+If the catalog lists only the part after the first slash, launch refuses with `model_prefix_rejected`.
+Select the provider in Jcode's configuration.
+For a detached launch with a single provider prefix, `Next` shows a retry with the listed `--model` ID when Cotal can print it safely.
+This overrides a prefixed `model:` in the persona without changing the file.
+`model_refused` means Jcode rejected the requested ID.
 `model_mismatch` means Cotal could not verify one provider route for the requested effort.
 The diagnostic names the requested model, reported runtime model and provider, matching-route count, and reason.
 The requested effort has not been applied. Check the model declaration and provider configuration before trying again.

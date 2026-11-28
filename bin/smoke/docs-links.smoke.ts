@@ -1,7 +1,7 @@
 /** Documentation links through the built CLI, on real terminals and redirected output.
  *  Offline, with no broker or agent. Run: pnpm smoke:docs-links */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -65,6 +65,17 @@ try {
   const followed = pipe(["docs", daemon, "--json"]);
   const destination = JSON.parse(followed.stdout).result as { slug: string; body: string };
   check("the displayed page and anchor reference opens through the CLI", followed.status === 0 && destination.slug === "cli-processes" && destination.body.length > 0);
+
+  const index = readFileSync(join(import.meta.dirname, "..", "..", "docs", "README.md"), "utf8");
+  const setupRow = index.split("\n").find((line) => line.startsWith("| Install + start a local mesh, non-interactive |"));
+  check("the docs index labels the chained command as Bash and links Windows readers to setup", Boolean(setupRow
+    && setupRow.includes("**Bash:** `npx cotal-ai setup")
+    && setupRow.includes("**Windows PowerShell or Command Prompt:**")
+    && setupRow.includes("[Configure a space](setup.mdx)")), setupRow);
+  const setup = pipe(["docs", "setup.mdx", "--plain"]);
+  check("the linked setup guide gives Windows two npm shim commands and gates startup on setup success", setup.status === 0
+    && /```powershell\r?\nnpx\.cmd -y cotal-ai setup [^\r\n&]+\r?\nnpx\.cmd -y cotal-ai up [^\r\n&]+\r?\n```/.test(setup.stdout)
+    && setup.stdout.includes("Run the second command only after setup succeeds."));
 
   const shutdown = pipe(["docs", "cli-shutdown", "--json"]);
   const shutdownPage = JSON.parse(shutdown.stdout).result as { slug: string; body: string };
