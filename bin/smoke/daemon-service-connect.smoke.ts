@@ -222,13 +222,15 @@ async function exerciseRestoreWait(opts: {
     process.kill(managerPid, "SIGCONT"); suspended = false;
     const result = await launching;
     check("The contending launch did not start a seat", !result.ok, result);
-    await waitFor("automatic restore to clear the journal", () => {
+    const attemptLog = join(home, "update-attempt.log");
+    const completed = "Restored cotal-ai@0.151.2 after an interrupted update.";
+    await waitFor("automatic restore to finish and clear the journal", () => {
       const recovery = readUpdateRecovery();
-      if (recovery?.phase === "paused") throw new Error(`automatic restore paused: ${recovery.reason}\n${readFileSync(join(home, "update-attempt.log"), "utf8").slice(-3000)}`);
-      return !recovery;
+      const log = existsSync(attemptLog) ? readFileSync(attemptLog, "utf8") : "";
+      if (recovery?.phase === "paused") throw new Error(`automatic restore paused: ${recovery.reason}\n${log.slice(-3000)}`);
+      return !recovery && log.includes(completed);
     }, 150_000);
-    const log = readFileSync(join(home, "update-attempt.log"), "utf8");
-    check("The automatic update run completed the restore without a command", log.includes("Restored cotal-ai@0.151.2 after an interrupted update.") && !existsSync(pending!.snapshot!), log);
+    check("The automatic update run completed the restore without a command", !existsSync(pending!.snapshot!));
   } finally {
     if (suspended) process.kill(managerPid, "SIGCONT");
     writeFileSync(gate, "ready");
@@ -3578,7 +3580,13 @@ process.exit(result.status ?? 93);
           }
           if (restoreObstructed) return;
           try {
-            const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            const managerStatus = async () => resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            let after = await managerStatus();
+            const availableBy = Date.now() + 20_000;
+            while (restoreBound && after.state !== "answering" && Date.now() < availableBy) {
+              await sleep(200);
+              after = await managerStatus();
+            }
             check("Manual install failure retains same answering hosted Manager", after.state === "answering" && after.instanceId === manager.instanceId && after.pid === manager.pid, after);
             if (racedLifecycle) check("Manual rollback keeps the raced seat on the same lifecycle", await sameRacedSeat());
             const recovered = await start("manual_install_released");
