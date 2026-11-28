@@ -95,6 +95,19 @@ function exhaust() {
   } finally { closeSync(fd); }
 }
 
+function exhaustInodes() {
+  const dir = join(disk, "inodes");
+  mkdirSync(dir);
+  const { files } = statfsSync(disk);
+  assert.throws(() => {
+    for (let i = 0; i <= files; i++) closeSync(openSync(join(dir, String(i)), "wx", 0o600));
+  }, { code: "ENOSPC" });
+  const space = statfsSync(disk);
+  assert.equal(space.ffree, 0);
+  assert.ok(space.bfree > 0, "inode exhaustion leaves free blocks");
+  return dir;
+}
+
 function snapshot(file) {
   const files = readdirSync(dirname(file)).filter(name => name.startsWith(basename(file))).sort();
   return { bytes: readFileSync(file), files };
@@ -156,15 +169,15 @@ async function managerCell() {
   expectSignInRefusal(await start());
   const before = snapshot(file);
   const inode = statSync(file).ino;
-  exhaust();
+  const inodes = exhaustInodes();
   assert.deepEqual(await start(), { v: 1, id: "probe", ok: false, error: { code: "OPERATION_FAILED", message: multiMessage } });
   assert.deepEqual(snapshot(file), before);
-  assert.equal((await status()).diskFull, true);
-  rmSync(fill);
+  assert.equal((await status()).diskFull, true, "free blocks do not clear inode exhaustion");
+  rmSync(inodes, { recursive: true });
   expectSignInRefusal(await start());
   assert.notEqual(statSync(file).ino, inode, "retry published a new refusal record");
   assert.equal((await status()).diskFull, undefined);
-  console.log("  ✓ configured Manager start reports unconfirmed persistence, then saves its real sign-in refusal");
+  console.log("  ✓ configured Manager start reports inode ENOSPC despite free blocks, then saves its refusal");
 }
 
 await waitReady();
