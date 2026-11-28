@@ -5,7 +5,8 @@
  * space delete removes them. Every expected name is written out, never derived from the helper the
  * code under test uses, so a list that drops a store on both sides is still caught.
  *
- * The restore list is covered by the live restore suite, which drives a real backup and restore.
+ * The backup, restore and scoped teardown are covered against a real CLI stack by
+ * `smoke:artifact-index-restore:live` (E15).
  *
  * Run: pnpm smoke:artifact-index-stores
  */
