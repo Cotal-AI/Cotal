@@ -46,13 +46,24 @@ appendFileSync(${JSON.stringify(invocations)}, process.argv[2] + " " + process.e
 if (process.argv[2] === "view" && process.argv[3] === "cotal-ai@latest") console.log(${JSON.stringify(JSON.stringify(version))});
 else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);
 `, { mode: 0o755 });
-  const result = spawnSync(process.execPath, [entry, "update", "--self"], {
-    cwd, encoding: "utf8", env: { ...env, PATH: `${tools}${delimiter}${env.PATH}` },
+  const run = (...args: string[]) => spawnSync(process.execPath, [entry, ...args], {
+    cwd, encoding: "utf8", env: { ...env, PATH: `${tools}${delimiter}${env.PATH}`, NO_COLOR: "1" },
   });
+  const before = run("update", "--check");
+  check("a fresh install has no recorded extensions and matches the latest tag", before.status === 0 &&
+    /CLI update:\s+matches latest tag/.test(before.stdout) && before.stdout.includes("No extensions in the recorded inventory."), before.stdout + before.stderr);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const update = run("update", "--self");
+    const output = update.stdout + update.stderr;
+    check("a fresh current self-update does not initialize any built-in connectors", update.status === 0 &&
+      /Update:\s+no newer latest tag/.test(output) && !/Built-in connectors|wrote operator-global seed store payload/.test(output) &&
+      !existsSync(join(env.XDG_CONFIG_HOME!, "cotal")), output);
+  }
+  const result = run("ext", "seed");
   const calls = existsSync(invocations) ? readFileSync(invocations, "utf8").trim().split("\n") : [];
-  check("self-update uses the running Node with PATH's npm for both the version check and connector install",
+  check("the version check and explicit connector seed use the running Node with PATH's npm",
     calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
-  check("self-update reconciles the built-ins with an unsupported Node first on PATH",
+  check("explicit seeding installs the built-ins with an unsupported Node first on PATH",
     result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
 }
 

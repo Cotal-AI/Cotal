@@ -93,13 +93,11 @@ console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(directory, "config")}`)});\
       assert.equal(existsSync(join(directory, "config/cotal/seed")), false, output);
       assert.equal(existsSync(join(directory, "config/cotal/extensions.json")), false, output);
     } else {
-      // The local registry serves version discovery, not package archives. Admission must reach
-      // real seed writes, then fail on the intentionally unavailable Jcode package dependency.
-      assert.equal(code, 1, output);
-      assert.match(output, /ETARGET.*No matching version found for cotal-ai@\^1\.1\.0/s);
-      assert.doesNotMatch(output, /installed daemon preflight/);
-      assert.match(output, /wrote operator-global seed store payload/);
-      assert.equal(existsSync(join(directory, "config/cotal/seed")), true, output);
+      assert.equal(code, 0, output);
+      assert.match(output, /Update:\s+no newer latest tag/);
+      assert.doesNotMatch(output, /installed daemon preflight|Built-in connectors|wrote operator-global seed store payload/);
+      assert.equal(existsSync(join(directory, "config/cotal/seed")), false, output);
+      assert.equal(existsSync(join(directory, "config/cotal/extensions")), false, output);
     }
     console.log(`PASS real update without runtime: ${kind} receipt`);
   }

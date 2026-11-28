@@ -44,7 +44,7 @@ import {
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
-import { assertConfigAncestorProtected, connectorConfigPreflightFailure, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
+import { assertConfigAncestorProtected, connectorBootstrapPending, connectorConfigPreflightFailure, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
 import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
@@ -57,7 +57,7 @@ import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedStat
 import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
-import { reportCurrentConnectorState } from "./setup-current-connectors.js";
+import { reportWithoutConnectorReconciliation } from "./setup-current-connectors.js";
 import { c } from "../ui.js";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
@@ -90,7 +90,7 @@ import {
   offlineUpdateMessage,
   waitForReleasePreflight,
 } from "./update-release.js";
-import { admitReconciliation, refusal, reportRunningManagers, reportUncheckedPreparedRecords } from "./update-continuity.js";
+import { admitReconciliation, refusal, reportRunningManagers } from "./update-continuity.js";
 export { isStoppedLocalMesh, reportRunningManagers, readUpdateManagerContinuity, readManagerContinuity, printLegacyReport } from "./update-continuity.js";
 
 export { parseNpmVersion, installedUpdatePrefix, verifyGlobalEntry } from "./update-process.js";
@@ -149,6 +149,7 @@ export interface UpdateRuntime {
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
+  canDeferConnectorBootstrap?(): boolean;
   reconcile(selfUpdate: boolean): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
   adoptUpdateChild?(): Promise<boolean | void>;
@@ -215,6 +216,7 @@ export const updateRuntime: UpdateRuntime = {
   parentPid: process.ppid,
   nodePath: process.execPath,
   version: cliVersion,
+  canDeferConnectorBootstrap: connectorBootstrapPending,
   isCurrent: () => {
     if (process.platform !== "linux") return false;
     if (!seedInstallationCurrent()) return false;
@@ -349,7 +351,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   let connectorSelection: UnreadableConnectorSelection | undefined;
   let preflightChanged = false;
   let permissionsRestored = false;
-  let promotionRecovered = false;
+  let promotionRecovered = false, hadUpdateRecovery = false;
   if (args.values.self === true) {
     const reportManifestAccess = manifestAccessReporter(line => { preflightChanged = true; rt.out(line); });
     try { preflightChanged = rt.preflightExecution?.() === true; }
@@ -381,7 +383,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       }
     }
   }
-  const restored = await recoverInterruptedUpdate(rt, false, targetArgv(args.values));
+  const restored = await recoverInterruptedUpdate(rt, false, targetArgv(args.values), () => { hadUpdateRecovery = true; });
   if (restored && (args.values.self !== true || restored.resumed)) return;
   if (restored && restored.version !== rt.version()) return restored.entry;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
@@ -406,19 +408,19 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     }
   }
   if (childBinding(rt).kind === "none") reclaimPreviousExtensionStages();
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored, hadUpdateRecovery);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
     recordUpdateCompletion(rt.version(), "manual update reconciled", true);
   }
 }
-
 /** Resume an abandoned replacement before a command or daemon can activate its closure. */
-export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false, flags: string[] = []): Promise<{ entry: string; version: string; resumed?: true } | undefined> {
+export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false, flags: string[] = [], onRecovery?: () => void): Promise<{ entry: string; version: string; resumed?: true } | undefined> {
   if (childBinding(rt).kind === "bound") return;
   const observed = readUpdateRecovery();
   if (!observed) return;
+  onRecovery?.();
   if (startup) {
     // A restarted daemon must answer the updater that still owns the closure. It may only
     // observe that live transaction here, never compete with it for restoration authority.
@@ -575,7 +577,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   ] }));
 }
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false, permissionsRestored = false): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection, preflightChanged = false, promotionRecovered = false, permissionsRestored = false, hadUpdateRecovery = false): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -649,9 +651,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       return 0;
     }
     reportConnectorAccessRestored(rt, permissionsRestored);
-    if (rt.isCurrent?.()) {
-      reportUncheckedPreparedRecords(rt, target);
-      await reportCurrentConnectorState(current, rt);
+    if (await reportWithoutConnectorReconciliation(current, rt, target, hadUpdateRecovery || promotionRecovered)) {
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
       reportVersion(current, latest.version, rt, false);
       return 0;

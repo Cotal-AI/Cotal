@@ -165,6 +165,14 @@ function preflightExecutionWithCleanup(): boolean {
   return repaired;
 }
 
+function canDeferConnectorBootstrap(): boolean {
+  const state = join(homeCotalDir(), "daemon");
+  try {
+    if ([unitReceiptFile({ state }), join(state, "daemon.lock")].some(path => lstatSync(path, { throwIfNoEntry: false }))) return false;
+  } catch { return false; }
+  return updateRuntime.canDeferConnectorBootstrap?.() === true;
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
@@ -385,6 +393,10 @@ const composed: Command = { ...command, async run(args) {
   }, onOfflineVersionCheckSkipped() { packageCheck = "offline"; }, isCurrent() {
     packageCheck = updateRuntime.isCurrent?.() ? "current" : undefined;
     return packageCheck === "current";
+  }, canDeferConnectorBootstrap() {
+    if (!canDeferConnectorBootstrap()) return false;
+    packageCheck = "current";
+    return true;
   }, async automaticUpdateAdvice() {
     const systemdAdvice = () => {
       const requirement = daemonServiceRequirement();

@@ -1,8 +1,16 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { CommandFailure, connectorConfigDir, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
+
+/** An untouched connector config has no seed state, installed prefix, or in-progress extension add. */
+export function connectorBootstrapPending(): boolean {
+  try {
+    const config = connectorConfigDir();
+    return ["seed", "extensions", ".extensions.lock"].every(name => !lstatSync(join(config, name), { throwIfNoEntry: false }));
+  } catch { return false; }
+}
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
 export function assertConfigAncestorProtected(): void {

@@ -424,6 +424,8 @@ it skips full connector reconciliation and the running Manager continuity check.
 can still repair a Codex marketplace you moved into the current Cotal home. It leaves other
 harness registrations unchanged and reports the result of the Codex repair separately.
 An unreadable Manager from another installation does not block this result.
+On a fresh installation with no newer release, a manual `cotal update --self` leaves built-in
+connector setup to the first command that needs it.
 If a first-party operator extension is missing its entry file, `cotal update --self` runs
 reconciliation to restore it even when the CLI is already current.
 

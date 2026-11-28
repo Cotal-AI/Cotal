@@ -47,7 +47,7 @@ if (process.platform === "win32") {
   }
 }
 const effects: string[] = [], output: string[] = [];
-const current = { isCurrent: () => true };
+const current = { isCurrent: () => true, canDeferConnectorBootstrap: () => false };
 const rt: UpdateRuntime = {
   ...updateRuntime, ...current, env: {}, version: () => "0.13.1",
   reportRunningManager: async () => { effects.push("custody"); return "legacy"; },
@@ -741,7 +741,7 @@ if (process.platform !== "win32") {
       const timer = setTimeout(() => child.kill("SIGTERM"), 180_000);
       child.stdout.on("data", chunk => {
         output += chunk.toString();
-        if (!removed && /Built-in connectors|installed package closure is current/.test(output)) {
+        if (!removed && /Built-in connectors|No newer CLI version/.test(output)) {
           rmdirSync(gone);
           removed = true;
         }
