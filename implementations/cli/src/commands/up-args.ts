@@ -234,7 +234,7 @@ function assertUpRootWritable(root: string): void {
  *  is refused here, by name, when this account cannot write it. */
 function assertUpStoreWritable(root: string, storeDir: string | undefined, beforeRestore: boolean): void {
   const problem = startupStoreProblem(root, storeDir, beforeRestore);
-  if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
+  if (problem) throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy }));
 }
 
 /** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both
