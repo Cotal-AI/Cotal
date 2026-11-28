@@ -344,6 +344,33 @@ async function checkJoinDuringRebuild(
   return undefined;
 }
 
+async function checkJoinRecoveryDeadline(manager: CotalEndpoint) {
+  const channel = "replay.control.inflight";
+  const agent = await wideReader(manager, "join-deadline", []);
+  await agent.start();
+  const held = holdJoinRebuild(agent);
+  const tool = cotalToolSpecs(agent.config).find(spec => spec.name === "cotal_join")!;
+  const joining = Promise.resolve(tool.run(agent, agent.config, { channel }));
+  try {
+    await Promise.race([held.nullWindow, joining.then(result => { throw new Error(result.text); })]);
+    const began = performance.now();
+    const result = await joining;
+    const elapsedMs = performance.now() - began;
+    assert(result.isError, result.text);
+    assert.equal(result.text, `Couldn't join #${channel}: reconnecting - try again shortly`);
+    assert(elapsedMs >= 9_900 && elapsedMs < 13_000, `expected the 10s recovery budget, waited ${elapsedMs}ms`);
+    assert(!agent.joinedChannels().includes(channel), "an expired join must stay unjoined");
+    console.log(`join recovery deadline: ${Math.round(elapsedMs)}ms, ${result.text}`);
+  } finally {
+    held.release();
+  }
+  await held.rebuilt();
+  assert(!agent.joinedChannels().includes(channel), "a late rebuild must not commit an expired join");
+  const retry = await tool.run(agent, agent.config, { channel });
+  assert(!retry.isError && retry.text.startsWith(`Joined #${channel} (live).`), retry.text);
+  await agent.stop();
+}
+
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
@@ -486,6 +513,7 @@ try {
     if (failure) rebuildFailures.push(failure);
   }
   assert.deepEqual(rebuildFailures, [], "held rebuild joins must succeed on the replacement connection");
+  await checkJoinRecoveryDeadline(manager);
   await checkWideReplay(manager, publisher);
   await checkInterruptedReplay(manager, publisher);
   await checkOverlappingWindows(manager, publisher, creds);
@@ -495,4 +523,4 @@ try {
   await killAndAwaitExit(broker);
   release();
 }
-emitSentinel({ passed: 15, failed: 0 });
+emitSentinel({ passed: 16, failed: 0 });
