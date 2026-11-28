@@ -34,7 +34,7 @@ import {
   ARTIFACTS_CAPABILITY, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, CotalEndpoint, DEV_OWNER, RECORD_KINDS, SERVICE_READY,
   artifactAttachBucket, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, credsFingerprint, idFromCreds, provisionAgentDurables,
   isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, readSvcRecordLeader, recordStatusKey,
-  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, EpEnvelopeError, type SecretStore,
+  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, EpEnvelopeError, endpointRegistrationBarrier, type SecretStore,
 } from "@cotal-ai/core";
 import {
   DAEMON_ENDPOINT_BOOTSTRAPS, DAEMON_ENDPOINT_SERVE_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, bootstrapDaemonEndpoint, daemonEndpointKey,
@@ -44,7 +44,7 @@ import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smo
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 27;
+const EXPECTED_CELLS = 31;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -317,6 +317,41 @@ try {
   }
   check("nativeConnections lists artifacts-serve, artifact-data and artifact-sweeper beside the daemon's own",
     labels === "artifact-data,artifact-sweeper,artifacts-serve,endpoint,membership-rw,timer-writer", labels);
+
+  // ---- E10: a registration that died holding its freeze, and a replacement daemon ----
+  // The real barrier freezes the gate under its own op id, as a registration's first step does, and
+  // that op then never runs again: nothing reopens the gate but the reconciler.
+  const deadOpId = mintLifecycleUid();
+  const liveGate = (await authKv.get(gateKey))!;
+  const deadFreeze = await endpointRegistrationBarrier(authKv, space, { endpoint: ARTIFACTS_ENDPOINT, instanceId: instanceId!, opId: deadOpId }).freeze(liveGate.revision);
+  const frozenByDead = JSON.parse(new TextDecoder().decode((await authKv.get(gateKey))!.value)) as { state: string; op?: { opId: string; kind: string } };
+  check("the interrupted registration left the gate frozen under its own op id",
+    deadFreeze !== null && frozenByDead.state === "frozen" && frozenByDead.op?.opId === deadOpId && frozenByDead.op.kind === "registration", frozenByDead);
+  // While this daemon still serves, the freeze-holder (the serve principal) is connected: the
+  // bootstrap must refuse loudly and leave the gate and last-good untouched.
+  const servingBeforeHeal = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string } };
+  let liveHolderRefusal: string | undefined;
+  try { await bootstrapDaemonEndpoint(target, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!()); } catch (e) { liveHolderRefusal = (e as Error).message; }
+  const stillFrozen = JSON.parse(new TextDecoder().decode((await authKv.get(gateKey))!.value)) as { state: string; op?: { opId: string } };
+  const servingAfterRefusal = (await admin.requestDeliveryAdmin("serveState", { endpoint: ARTIFACTS_ENDPOINT }, 10_000)).data as { state?: { credentialFingerprint: string } };
+  check("with the freeze-holder still connected the bootstrap refuses, naming the live holder, and the dead op's freeze and last-good stand",
+    liveHolderRefusal !== undefined && /frozen by an earlier registration/.test(liveHolderRefusal) && /ALIVE/.test(liveHolderRefusal)
+      && stillFrozen.state === "frozen" && stillFrozen.op?.opId === deadOpId
+      && servingAfterRefusal.state?.credentialFingerprint === servingBeforeHeal.state?.credentialFingerprint, liveHolderRefusal);
+  // The daemon goes away (its serve connection with it) and a replacement starts on the same store.
+  const epochBeforeHeal = restarted.epoch;
+  await handle.close();
+  handle = await startDeliveryService({
+    context: { accountPublicKey: account.account.pub, lifecycleUid: "artifacts-ctx" },
+    space, servers, store, storeIdentity: store.identity, stateDir: join(brokerDir, "state"), endpoints: [ARTIFACTS_ENDPOINT],
+  });
+  const healed = await bootstrapDaemonEndpoint(target, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!());
+  const healedGate = JSON.parse(new TextDecoder().decode((await authKv.get(gateKey))!.value)) as { state: string; processEpoch: number };
+  check("the replacement daemon's bootstrap completes the dead op, re-registers past it, and binds at a later epoch",
+    healed.epoch > epochBeforeHeal && healedGate.state === "open" && healedGate.processEpoch === healed.epoch
+      && log.some((l) => /a frozen registration was completed/.test(l)), { healed, healedGate });
+  const afterHeal = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  check("list answers on the replacement daemon after the recovery", afterHeal.ok, afterHeal);
 } catch (e) {
   check("the cell ran to completion", false, (e as Error).stack ?? String(e));
 } finally {

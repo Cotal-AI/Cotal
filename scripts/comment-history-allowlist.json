@@ -196,7 +196,7 @@
     "implementations/manager/src/commands.ts": { "issue-reference": 6, "no-longer": 2 },
     "implementations/manager/src/credential-renewal.ts": { "issue-reference": 19 },
     "implementations/manager/src/goal-writer.ts": { "issue-reference": 2 },
-    "implementations/manager/src/holder-liveness.ts": { "issue-reference": 3 },
+    "packages/workspace/src/holder-liveness.ts": { "issue-reference": 3 },
     "implementations/manager/src/lease-keeper.ts": { "issue-reference": 5 },
     "implementations/manager/src/managed-static-lifecycle.ts": { "issue-reference": 2, "no-longer": 2 },
     "implementations/manager/src/manager-service-contract.ts": { "issue-reference": 7, "no-longer": 3, "used-to": 1 },

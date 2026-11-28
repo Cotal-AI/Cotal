@@ -17,7 +17,7 @@
 import { createHash } from "node:crypto";
 import {
   authorizeServeGrant, contractArtifactCanonicalBytes, contractStoreContext,
-  DEV_OWNER, endpointRegistrationBarrier, mintCreds, mintLifecycleUid,
+  DEV_OWNER, endpointRegistrationBarrier, epgateKey, GateReconcileRefused, mintCreds, mintLifecycleUid, parseEndpointGate, reconcileEndpointGate,
   principalKey, provisionEndpointGateOpen, publishContractArtifact, readEndpointGateGeneration,
   registerServiceInstance, serveIssuanceGateKv, SERVICE_READY, withEndpointServeExecutorSession,
   writeServiceStatus, jwtFromCreds,
@@ -25,6 +25,7 @@ import {
   type ServiceNameAuthority, type SpaceAuth,
 } from "@cotal-ai/core";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
+import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 
 /** What a daemon-served endpoint brings: its name and its built-in contract. */
 export interface DaemonEndpointContract {
@@ -94,8 +95,14 @@ async function withDaemonEndpointSession(t: DaemonEndpointTarget, contract: Daem
       const ctx = await contractStoreContext(nc, t.space);
       for (const value of [...contract.artifactValues(), cluster.document, cluster.manifest])
         await publishContractArtifact(ctx, contractArtifactCanonicalBytes(value));
-      if ((await fence.observe()) === null)
+      const prior = await fence.observe();
+      if (prior === null)
         await provisionEndpointGateOpen(authKv, { endpoint, instanceId: t.instanceId, principal });
+      else if (prior.state === "frozen")
+        // A registration that died holding the freeze (E10): finish THAT op by its recorded id, behind
+        // the affirmative holder-gone guard, before this one starts. A fresh op id against a frozen gate
+        // would never resume it, and the barrier's freeze CAS would refuse forever.
+        await resumeFrozenRegistration(t, authKv, recordsKv, endpoint);
       const barrier = endpointRegistrationBarrier(authKv, t.space, {
         endpoint, instanceId: t.instanceId, opId,
         evict: makeManagerEndpointHolderEvictor({ space: t.space, servers: t.servers, auth: t.auth, tlsRequired: t.tls, log: t.log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
@@ -119,6 +126,33 @@ async function withDaemonEndpointSession(t: DaemonEndpointTarget, contract: Daem
     const creds = await mintCreds(t.auth, t.serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
     return { grant, creds, fingerprint: credentialFingerprint(creds) };
   });
+}
+
+/** The bucket handle the reconciler takes, without a direct `@nats-io/kv` dependency here. */
+type GateKv = Parameters<typeof reconcileEndpointGate>[0]["kv"];
+
+/** Reconcile a frozen registration gate with the reconciler the manager's boot self-heal uses: the
+ *  freeze-holder must be affirmatively gone (a CONNZ sweep through the delivery daemon), then the dead
+ *  op's own obligation is completed under ITS op id and the gate reopens. Live, unknown and
+ *  unestablishable holders, and a freeze under another op kind, stay loud refusals. A concurrent
+ *  reconciler that already reopened the gate is not a failure. */
+async function resumeFrozenRegistration(t: DaemonEndpointTarget, authKv: GateKv, recordsKv: GateKv, endpoint: string): Promise<void> {
+  const key = epgateKey(endpoint, t.instanceId);
+  try {
+    const report = await reconcileEndpointGate({
+      kv: authKv, recordsKv, space: t.space, endpoint, instanceId: t.instanceId,
+      probeHolder: makeManagerHolderLivenessProbe({ space: t.space, servers: t.servers, auth: t.auth, tlsRequired: t.tls, log: t.log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
+      evictHolders: makeManagerEndpointHolderEvictor({ space: t.space, servers: t.servers, auth: t.auth, tlsRequired: t.tls, log: t.log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
+      log: t.log,
+    });
+    t.log(`✓ ${endpoint}/${t.instanceId}: a frozen registration was completed and its gate reopened at generation ${report.reopenedAtGeneration}; registering`);
+  } catch (e) {
+    if (e instanceof GateReconcileRefused && (e.condition === "not-frozen" || e.condition === "raced")) {
+      const latest = await authKv.get(key);
+      if (latest?.operation === "PUT" && parseEndpointGate(latest.value, key).state === "open") return;
+    }
+    throw new Error(`${endpoint}/${t.instanceId}: the issuance gate is frozen by an earlier registration that cannot be completed, so nothing registers: ${(e as Error).message}`);
+  }
 }
 
 /** Write `ready` for the instance only when the daemon reported the credential minted here as bound
