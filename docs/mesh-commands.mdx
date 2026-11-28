@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 58. 46 commands.
+Cluster `ai.cotal.manager`, revision 59. 48 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -40,6 +40,8 @@ Cluster `ai.cotal.manager`, revision 58. 46 commands.
 | [`resolve-cwd`](#manager-resolve-cwd)                     | `manager.spawn`     | ephemeral | untargeted   |
 | [`resolve-agent`](#manager-resolve-agent)                 | `manager.spawn`     | ephemeral | untargeted   |
 | [`harness-commands`](#manager-harness-commands)           | `manager.spawn`     | ephemeral | untargeted   |
+| [`make-dir`](#manager-make-dir)                           | `manager.spawn`     | ephemeral | untargeted   |
+| [`clone`](#manager-clone)                                 | `manager.spawn`     | ephemeral | untargeted   |
 | [`spawn`](#manager-spawn)                                 | `manager.spawn`     | ephemeral | untargeted   |
 | [`despawn`](#manager-despawn)                             | `manager.lifecycle` | ephemeral | owner, any   |
 | [`attach`](#manager-attach)                               | `manager.lifecycle` | ephemeral | owner, any   |
@@ -1560,6 +1562,146 @@ Output schema:
       }
     }
   ]
+}
+```
+
+### manager make-dir
+
+Registered declaration:
+
+```json
+{
+  "name": "make-dir",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:e47bb8492be9b5ffa59c82b013cc919639263d3597719d0264a59815ed18eeb3",
+  "outputDigest": "sha256:6afa0ba3bf497b5d3746199beb49e958e9a3b86b1e55763c6062aa8bae5cdd0b"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "parent",
+    "name"
+  ],
+  "properties": {
+    "parent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "path"
+  ],
+  "properties": {
+    "path": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager clone
+
+Registered declaration:
+
+```json
+{
+  "name": "clone",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:b32aa2ced6b05ebba15139eeb6c07baff557baefc85742ad962db54c8e15661e",
+  "outputDigest": "sha256:6966e675a3a6638771bab0df730791ff8baf55e2aa8baff5cc7973995e882f7b"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "url",
+    "parent"
+  ],
+  "properties": {
+    "url": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "parent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "path",
+    "head",
+    "ref",
+    "existing"
+  ],
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "head": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "existing": {
+      "type": "boolean"
+    }
+  }
 }
 ```
 

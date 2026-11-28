@@ -26,7 +26,7 @@
  * Capability labels (describe/grant vocabulary, one per tier class):
  *   manager.vitals read host CPU, memory and filesystem capacity on this exact Manager
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
- *   manager.spawn    spawn / resolve-cwd / resolve-agent / list-dir / harness-commands   (privileged-grade creation)
+ *   manager.spawn    spawn / resolve-cwd / resolve-agent / list-dir / harness-commands / make-dir / clone   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona / removePersona         (privileged-grade; ownership-checked)
@@ -37,6 +37,7 @@
  */
 import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
 import type { ManagerVitals } from "./vitals.js";
+import { CLONE_INPUT_SCHEMA, CLONE_OUTPUT_SCHEMA, MAKE_DIR_INPUT_SCHEMA, MAKE_DIR_OUTPUT_SCHEMA } from "./project-folder-schemas.js";
 import {
   AGENT_COMMAND_ENTRY_SCHEMA,
   AGENT_COMMAND_LIST_MAX,
@@ -1103,6 +1104,8 @@ const ROWS: CommandRow[] = [
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
   { name: "harness-commands", capability: "manager.spawn", input: HARNESS_COMMANDS_INPUT_SCHEMA, output: HARNESS_COMMANDS_OUTPUT_SCHEMA, targeted: false, handler: "harnessCommands" },
+  { name: "make-dir", capability: "manager.spawn", input: MAKE_DIR_INPUT_SCHEMA, output: MAKE_DIR_OUTPUT_SCHEMA, targeted: false, handler: "makeDir" },
+  { name: "clone", capability: "manager.spawn", input: CLONE_INPUT_SCHEMA, output: CLONE_OUTPUT_SCHEMA, targeted: false, handler: "clone" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
   // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
   // instrument's cross-agent reach (rev 3): the any-mode subject row
@@ -1369,9 +1372,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  58 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
  *  against the connector's model catalog. The input schema is closed, so a revision-57 contract
- *  rejects the field. */
+ *  rejects the field.
+ *
+ *  59 = `make-dir` and `clone` make the folder a launch starts in on this Manager's host. New served
+ *  commands are what a revision is for. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 58, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 59, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1431,6 +1437,8 @@ interface ManagerServiceHandlers {
   models(ctx: EpServeContext): unknown | Promise<unknown>;
   harnessCommands(ctx: EpServeContext): unknown | Promise<unknown>;
   listDir(ctx: EpServeContext): unknown | Promise<unknown>;
+  makeDir(ctx: EpServeContext): unknown | Promise<unknown>;
+  clone(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveAgent(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;

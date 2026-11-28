@@ -351,6 +351,7 @@
     "smoke:list-dir-native": "tsx implementations/manager/smoke/list-dir-native.smoke.ts",
     "smoke:manager-launch-reads": "tsx implementations/manager/smoke/launch-reads.smoke.ts",
     "smoke:manager-spawn-catalog-choice": "tsx implementations/manager/smoke/spawn-catalog-choice.smoke.ts",
+    "smoke:manager-project-folders": "tsx implementations/manager/smoke/project-folders.smoke.ts",
     "smoke:manager-chat-session": "tsx implementations/manager/smoke/chat-session.smoke.ts",
     "smoke:static-chat-pure": "tsx packages/workspace/smoke/static-chat-pure.smoke.ts",
     "smoke:chat-compose": "tsx packages/workspace/smoke/chat-compose.smoke.ts",

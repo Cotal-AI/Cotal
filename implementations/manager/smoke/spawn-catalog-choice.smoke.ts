@@ -28,7 +28,7 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 
 // --- The served schema -------------------------------------------------------------------------
 const spawnInput = MANAGER_CONTRACTS.spawn!.input;
-check("the Manager cluster is at revision 58", managerShippedSurface().revision === 58, managerShippedSurface().revision);
+check("the Manager cluster is past the spawn modes of revision 58", managerShippedSurface().revision === 59, managerShippedSurface().revision);
 check("spawn takes a toggle and a choice in modes", spawnInput.validate({ name: "worker", modes: { fast: true, agent: "plan" } }) === true);
 check("spawn refuses an empty modes object", spawnInput.validate({ name: "worker", modes: {} }) === false);
 check("spawn refuses a mode value that is neither a boolean nor an option id", spawnInput.validate({ name: "worker", modes: { fast: 1 } }) === false);
