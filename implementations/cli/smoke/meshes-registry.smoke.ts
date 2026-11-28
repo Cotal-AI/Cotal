@@ -345,12 +345,12 @@ try {
   };
   const otherBroker = targetRefusal(() => resolveNativeServiceTarget(root, "started-here", DEAD));
   check("a service broker that disagrees with the registration is refused CONFLICT, naming both addresses",
-    isCommandFailure(otherBroker) && otherBroker.code === "CONFLICT" && otherBroker.message.includes(`"started-here" is registered at ${LIVE}, not ${DEAD}`), otherBroker?.message);
+    isCommandFailure(otherBroker) && otherBroker.code === "CONFLICT" && !otherBroker.message.includes(LIVE) && (otherBroker.remedy ?? "").includes(`"started-here" is registered at ${LIVE}, not ${DEAD}`), otherBroker?.message);
   check("…with a next step", isCommandFailure(otherBroker) && (otherBroker.remedy ?? "").includes("cotal space show started-here"), isCommandFailure(otherBroker) ? otherBroker.remedy : otherBroker);
   const otherRoot = projectRoot("other-service-root");
   const elsewhere = targetRefusal(() => resolveNativeServiceTarget(otherRoot, "started-here"));
   check("a service root that disagrees with the registration is refused, naming both folders",
-    isCommandFailure(elsewhere) && elsewhere.code === "CONFLICT" && elsewhere.message.includes(`"started-here" is registered for ${root}, not ${otherRoot}`), elsewhere?.message);
+    isCommandFailure(elsewhere) && elsewhere.code === "CONFLICT" && !elsewhere.message.includes(otherRoot) && (elsewhere.remedy ?? "").includes(`"started-here" is registered for ${root}, not ${otherRoot}`), elsewhere?.message);
   removeMesh("started-here");
   recordPreparedSpace({ space: "prepared-here", root, ts: new Date(0).toISOString() });
   const overPrepared = await run(["add", "prepared-here"], { server: DEAD, root, force: true });

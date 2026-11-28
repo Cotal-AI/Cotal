@@ -108,7 +108,7 @@ function finish(record: Promotion, prepareForUpdate = false): void {
         const writable = (path: string): void => {
           const stat = lstatSync(path);
           if (!stat.isDirectory() || stat.uid !== process.getuid!()) throw new Error(`cannot repair unowned rollback directory: ${path}`);
-          if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+          if ((stat.mode & 0o700) !== 0o700) chmodSync(path, (stat.mode & 0o7777) | 0o700);
           for (const entry of readdirSync(path, { withFileTypes: true })) if (entry.isDirectory()) writable(join(path, entry.name));
         };
         writable(record.old);

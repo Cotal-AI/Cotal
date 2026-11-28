@@ -375,13 +375,15 @@ if (process.platform !== "win32") {
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
   const rejected = JSON.parse(conflict.stdout);
   const copyDir = `${parent}/reviews-copy`;
-  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const retry = /cotal (endpoint init different --dir <new-directory>(?: --json)?)/.exec(rejected.error?.remedy ?? "");
+  if (!retry) throw new Error("endpoint init conflict omitted the alternate-directory command");
+  const copy = run(retry[1]!.split(" ").map((word) => word === "<new-directory>" ? copyDir : word), {}, cwd);
   const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
   check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
     conflict.status === 2 && conflict.stderr === "" && rejected.command === "endpoint init" && rejected.outcome === "refused"
     && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
-    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
-    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && retry?.[1]?.endsWith(" --json") && plainConflict.status === 2
+    && plainConflict.stderr.includes("cotal endpoint init different --dir <new-directory> --plain")
     && files.every((path, index) => readFileSync(path).equals(original[index]!))
     && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
     [conflict, plainConflict, copy, checked].map(shown));
@@ -877,7 +879,10 @@ for (const [args, usage, foreign] of [
       };
       bind(tree);
       const visit = (node: ts.Node): void => {
-        const text = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
+        // The argument of codeSpan() is printed inside backticks, so a shell line there, such as
+        // `cd <dir> && cotal down`, already has its command in a code span.
+        const spanned = node.parent !== undefined && ts.isCallExpression(node.parent) && node.parent.expression.getText(tree) === "codeSpan" && node.parent.arguments[0] === node;
+        const text = spanned ? undefined : ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
           : ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map((span) => (display.has(span.expression.getText(tree)) ? "cotal" : "${}") + span.literal.text).join("") : undefined;
         if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text)))
           for (const at of bare(text)) offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, at - 40), at + 40))}`);

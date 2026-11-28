@@ -470,6 +470,15 @@ const publishedNavigation = navigation.map(section => {
 writeFileSync(join(genDir, 'navigation.mjs'), `// @ts-check\n/** @type {import('../lib/navigation').NavigationSection[]} */\nexport const navigation = ${JSON.stringify(publishedNavigation, null, 2)};\n`);
 writeFileSync(join(genDir, 'pages.json'), JSON.stringify(pages, null, 2));
 writeFileSync(join(genDir, 'routes.json'), JSON.stringify(pages.map(({slug,url}) => ({slug,url}))));
+// Search index for the docs MCP server (functions/mcp.ts): per page its title,
+// headings and plain text, code blocks dropped, capped so the function bundle
+// stays small. The full markdown is read from the page's .md twin on demand.
+const plainText = md => md.replace(/```[\s\S]*?```/g, ' ').replace(/<[^>]+>/g, ' ').replace(/[#>*`_|]/g, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim();
+writeFileSync(join(genDir, 'search-index.json'), JSON.stringify(pages.map(page => ({
+  slug: page.slug, title: page.title, section: page.section, url: page.url,
+  headings: [...page.markdown.matchAll(/^#{2,3} (.+)$/gm)].map(match => match[1].trim()).slice(0, 40),
+  text: plainText(page.markdown).slice(0, 4000),
+}))));
 const redirects = ['/ /docs/what-is-cotal/ 301', '/docs /docs/what-is-cotal/ 301', '/docs/ /docs/what-is-cotal/ 301', '/api-reference /api-reference/api-reference/ 301', '/api-reference/ /api-reference/api-reference/ 301', '/agent-frameworks /docs/connect-pi/ 301', '/agent-frameworks/ /docs/connect-pi/ 301', '/agent-frameworks.md /docs/connect-pi.md 301'];
 for (const page of pages.filter(page => page.section !== 'api' && page.slug !== 'api-reference')) redirects.push(`/${page.slug} ${page.url} 301`, `/${page.slug}/ ${page.url} 301`, `/${page.slug}.md ${page.url.slice(0, -1)}.md 301`);
 redirects.push('/api-reference.md /api-reference/api-reference.md 301');

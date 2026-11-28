@@ -6,7 +6,7 @@
 import { RequestError } from "@agentclientprotocol/sdk";
 import { AGENT_CMD_SET_MODEL, type SetModelInput, type SetModelOutput } from "@cotal-ai/core";
 import { AgentCallFailed, type Mesh, type SeatRef } from "./mesh.js";
-import { applyOption, DEFAULT_VARIANT, parseModel, type Offer, type Selection } from "./options.js";
+import { applyOption, DEFAULT_VARIANT, parseModel, REASONING, type Offer, type Selection } from "./options.js";
 
 /** Why the seat cannot switch: its connector cannot now, for `cause` when the seat gave one, or it
  *  predates `set-model`. Names the harness and the way to another model. */
@@ -31,7 +31,7 @@ function request(next: Selection): SetModelInput {
  * RequestError that says why, and then nothing switched unless the seat's own error says otherwise.
  */
 export async function switchSeat(m: Mesh, seat: SeatRef, offer: Offer, selection: Selection, configId: string, value: string): Promise<Selection> {
-  if (configId !== "model" && configId !== "variant")
+  if (configId !== "model" && configId !== REASONING)
     throw RequestError.invalidParams(undefined, `${seat.name} is already running; ${configId} applies to a new agent, after /despawn`);
   const { agent } = parseModel(selection.model);
   let next: Selection;

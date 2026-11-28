@@ -1,9 +1,9 @@
 /** Agent apps: the harnesses this computer's connectors run, where each stands, and the buttons that
  *  install one or sign it in. The service names an application; this file only shows it. */
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { requireResult, type Frame } from "./model";
+import { DaemonRefusal, requireResult, type Frame } from "./model";
 import { icon } from "./icons";
-import { isReady, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type Activity, type AgentApp, type RowView } from "./agent-apps-model";
+import { appManagementMessages, appManagementRefusals, installedMessage, orderedApps, otherCopyMessage, parseApps, refusalDetail, refusalMessage, rowView, serviceOwnerOf, signInUrl, unknownAppChange, type Activity, type AgentApp, type AppManagement, type RowView, type ServiceOwner, type ServiceRefresh } from "./agent-apps-model";
 import claudeLogo from "../../assets/agents/claude-code.svg";
 import codexLogo from "../../assets/agents/codex.svg";
 import opencodeLogo from "../../assets/agents/opencode.svg";
@@ -15,9 +15,9 @@ const LOGOS: Record<string, { src: string; fill?: true }> = {
   claude: { src: claudeLogo }, codex: { src: codexLogo }, opencode: { src: opencodeLogo, fill: true },
   pi: { src: piLogo }, hermes: { src: hermesLogo, fill: true }, jcode: { src: jcodeLogo, fill: true },
 };
-export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
+function logo(name: string): HTMLElement {
   const box = document.createElement("span");
-  box.className = `app-logo app-logo-${size}`;
+  box.className = "app-logo app-logo-row";
   const known = LOGOS[name];
   if (known) {
     const img = document.createElement("img");
@@ -28,14 +28,17 @@ export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting"; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; management?: AppManagement; serviceOwner?: ServiceOwner; serviceRefresh?: ServiceRefresh; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
   const events = new Channel<Frame & { name?: string }>();
   events.onmessage = frame => { if ((frame.event as string) === "agent-app-progress" && typeof frame.line === "string") onLine?.(frame.line); };
   const result = requireResult(await invoke<Frame>("daemon_request", { request, onEvent: events }));
-  return { ...result, ...(Array.isArray(result.apps) ? { apps: parseApps(result) } : {}), ...(result.app ? { app: parseApps({ apps: [result.app] })[0] } : {}) } as AppResult;
+  if (request.op === "agent-apps" && result.management !== "local" && result.management !== "service" && (typeof result.management !== "string" || !Object.hasOwn(appManagementMessages, result.management))) {
+    throw new Error("Cotal could not confirm how this copy can manage agent apps.");
+  }
+  return { ...result, serviceOwner: serviceOwnerOf(result.serviceOwner), ...(Array.isArray(result.apps) ? { apps: parseApps(result) } : {}), ...(result.app ? { app: parseApps({ apps: [result.app] })[0] } : {}) } as AppResult;
 }
 
 /** Render one row into `row`, reusing its nodes so a progress line does not rebuild it. */
@@ -58,7 +61,7 @@ export function renderRow(row: HTMLElement, app: AgentApp, view: RowView, act: (
     name.replaceChildren(document.createTextNode(app.title), ...(app.maker ? [document.createTextNode(" "), maker] : []));
   }
   const status = copy.querySelector<HTMLElement>(".app-status")!;
-  const mark = view.tone === "ready" ? "check" : view.tone === "warn" || view.tone === "failed" ? "warning" : view.tone === "busy" ? "spinner" : undefined;
+  const mark = view.tone === "warn" || view.tone === "failed" ? "warning" : view.tone === "busy" ? "spinner" : undefined;
   if (status.dataset.text !== `${mark}:${view.status}`) {
     status.dataset.text = `${mark}:${view.status}`;
     status.replaceChildren(...(mark ? [icon(mark)] : []), document.createTextNode(view.status));
@@ -79,7 +82,7 @@ export function renderRow(row: HTMLElement, app: AgentApp, view: RowView, act: (
   holder.dataset.key = key;
   if (view.action) {
     const button = document.createElement("button");
-    button.type = "button"; button.className = `button ${view.action.primary ? "primary" : "secondary"}`;
+    button.type = "button"; button.className = "button secondary";
     if (view.action.kind === "open-page") button.className = "text-button";
     button.textContent = view.action.label;
     button.setAttribute("aria-label", `${view.action.label}: ${app.title}`);
@@ -87,8 +90,10 @@ export function renderRow(row: HTMLElement, app: AgentApp, view: RowView, act: (
     button.addEventListener("click", () => act(kind));
     holder.replaceChildren(button);
   } else if (view.tone === "ready") {
-    const pill = document.createElement("span"); pill.className = "app-pill"; pill.textContent = "Ready";
-    holder.replaceChildren(pill);
+    const ready = document.createElement("span"); ready.className = "app-pill";
+    const dot = document.createElement("span"); dot.className = "dot connected"; dot.setAttribute("aria-hidden", "true");
+    ready.append(dot, "Ready", icon("chevron"));
+    holder.replaceChildren(ready);
   } else holder.replaceChildren();
 }
 
@@ -96,34 +101,74 @@ export interface AgentAppsHost {
   platform(): string;
   announce(message: string): void;
   openUrl(url: string): void;
-  /** Show the Agent apps screen. */
-  openPanel(): void;
   /** Something the main window shows changed: readiness, a running action or the list. */
   changed(): void;
 }
 
-/** The Agent apps state and its two views: the full screen and the Ready screen's section. */
+/** State and actions for the Agent apps pane. */
 export class AgentApps {
   apps: AgentApp[] | undefined;
+  management: AppResult["management"];
+  private serviceOwner: ServiceOwner | undefined;
+  private installedBeforeOwnerChanged: string | undefined;
+  get readOnly(): boolean { return this.unknownChange || !!this.error || this.management !== undefined && this.management !== "local" && this.management !== "service"; }
+  get showCheckAgain(): boolean { return this.unknownChange || !!this.error || !this.readOnly || this.management === "no-user-services"; }
+  get showFixConnection(): boolean { return this.readOnly && !this.showCheckAgain && this.management !== "checking"; }
+  get retryOwnerCheck(): boolean { return !this.unknownChange && !this.error && this.management === "checking"; }
+  get ownerMessage(): string {
+    const management = this.management;
+    if (this.error || this.unknownChange) return "";
+    if (management === "other-copy" && this.serviceOwner) return otherCopyMessage(this.serviceOwner, this.installedBeforeOwnerChanged);
+    return management && management !== "local" && management !== "service" ? appManagementMessages[management] : "";
+  }
+  private unknownChange = false;
   private error: string | undefined;
   private loading: Promise<void> | undefined;
   private readonly activity = new Map<string, Activity>();
   private message = "";
   /** An install the service could not pick up while agents ran. Checked again once they stop. */
-  waitingForAgents = false;
+  private waitingForAgents = false;
+  private lastIdlePickup = -Infinity;
+  /** The message says the service has not picked an install up; a refresh that succeeds clears it. */
+  private servicePending = false;
   constructor(private readonly host: AgentAppsHost) {}
 
   get busy(): boolean { return [...this.activity.values()].some(item => item.kind === "installing" || item.kind === "signing-in"); }
-  get readyCount(): number { return this.apps?.filter(isReady).length ?? 0; }
+
+  observeRunningAgents(count: number | undefined, now = Date.now()): void {
+    if (typeof count !== "number") return;
+    if (count !== 0) { this.lastIdlePickup = -Infinity; return; }
+    if (!this.waitingForAgents || this.readOnly || this.busy || this.loading || now - this.lastIdlePickup < 30_000) return;
+    this.lastIdlePickup = now;
+    void this.load();
+  }
 
   /** Read the list again. `refresh` also lets the service pick up applications it cannot find yet. */
   load(refresh = false): Promise<void> {
     if (this.loading) return this.loading;
+    if (this.busy) return Promise.resolve();
+    if (this.unknownChange && !refresh) return Promise.resolve();
+    const observeOnly = this.unknownChange;
     this.loading = (async () => {
       try {
-        const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
+        const result = await appRequest({ op: "agent-apps", ...(!observeOnly && (refresh || this.waitingForAgents) ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
-        if (result.service === "refreshed" || result.service === "unchanged") { if (this.waitingForAgents) this.message = ""; this.waitingForAgents = false; }
+        this.management = result.management;
+        this.serviceOwner = result.serviceOwner;
+        if (this.management !== "other-copy") this.installedBeforeOwnerChanged = undefined;
+        if (observeOnly) { this.unknownChange = false; this.message = ""; }
+        if (this.readOnly) {
+          if (this.servicePending) this.message = "";
+          this.servicePending = this.waitingForAgents = false;
+        } else if (result.serviceRefresh?.state === "refreshed") {
+          if (this.servicePending) this.message = "";
+          this.servicePending = this.waitingForAgents = false;
+        } else if (result.serviceRefresh?.state === "pending") {
+          this.servicePending = true;
+          this.waitingForAgents = result.serviceRefresh.reason === "agents-running";
+          if (!this.waitingForAgents) this.message = "Cotal couldn't confirm that the background service can use the new apps. Choose Check again.";
+          else if (!this.message) this.message = "Your spaces can use the new apps once the running agents finish.";
+        }
       } catch (error) { this.error = refusalMessage(error); }
       finally { this.loading = undefined; this.host.changed(); }
     })();
@@ -143,27 +188,54 @@ export class AgentApps {
     };
   }
 
+  private recheckAfterRefusal(name: string, error: unknown): boolean {
+    if (!(error instanceof DaemonRefusal)) return false;
+    const management = error.native ? appManagementRefusals[error.native] : undefined;
+    if (error.code === "OPERATION_UNKNOWN") this.unknownChange = true;
+    else if (management) {
+      this.management = management;
+      this.serviceOwner = management === "other-copy" ? serviceOwnerOf(error.detail?.owner) : undefined;
+    }
+    else return false;
+    this.activity.delete(name);
+    this.message = this.unknownChange ? unknownAppChange : "";
+    if (this.unknownChange) this.host.announce(this.message);
+    return true;
+  }
+
   async install(name: string): Promise<void> {
-    if (this.busy) return;
+    if (this.busy || this.readOnly) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
     this.activity.set(name, { kind: "installing" }); this.message = ""; this.host.changed();
+    this.lastIdlePickup = -Infinity;
     this.host.announce(`Installing ${title}.`);
     try {
       const result = await appRequest({ op: "agent-app-install", name }, this.progress(name, "installing"));
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
-      this.waitingForAgents = result.service === "waiting";
-      this.message = result.service === "waiting" ? `${title} is installed. Your spaces can start it once the agents running on this computer stop.` : result.pathAdded ? `${title} is installed. Cotal added its folder to PATH in ${result.pathAdded}.` : `${title} is installed.`;
+      if (result.serviceOwner) {
+        this.management = "other-copy";
+        this.serviceOwner = result.serviceOwner;
+        this.installedBeforeOwnerChanged = title;
+        this.servicePending = this.waitingForAgents = false;
+        this.host.announce(this.ownerMessage);
+        return;
+      }
+      this.servicePending = result.serviceRefresh?.state === "pending";
+      this.waitingForAgents = result.serviceRefresh?.state === "pending" && result.serviceRefresh.reason === "agents-running";
+      this.message = installedMessage(title, result);
       this.host.announce(this.message);
-      if (result.app?.state === "signed-out") await this.signIn(name);
+      if (result.app?.state === "signed-out") await this.signIn(name, result);
     } catch (error) {
+      if (this.recheckAfterRefusal(name, error)) return;
       this.activity.set(name, { kind: "failed", action: "install", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} could not be installed.`);
     } finally { this.host.changed(); }
   }
 
-  async signIn(name: string): Promise<void> {
-    if (this.busy) return;
+  /** `installed` is the install this sign-in follows, whose service state the message keeps. */
+  async signIn(name: string, installed: AppResult = {}): Promise<void> {
+    if (this.busy || this.readOnly) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
     this.activity.set(name, { kind: "signing-in" }); this.host.changed();
     this.host.announce(`Sign in to ${title} in your browser.`);
@@ -172,8 +244,9 @@ export class AgentApps {
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
       if (result.app?.state === "signed-out") this.activity.set(name, { kind: "failed", action: "sign-in", message: "the sign-in finished, but the app still reports it is signed out" });
-      else { this.message = `${title} is ready.`; this.host.announce(this.message); }
+      else { this.message = installedMessage(title, installed, true); this.host.announce(this.message); }
     } catch (error) {
+      if (this.recheckAfterRefusal(name, error)) return;
       this.activity.set(name, { kind: "failed", action: "sign-in", message: refusalMessage(error), ...(refusalDetail(error) ? { detail: refusalDetail(error)! } : {}) });
       this.host.announce(`${title} sign-in did not finish.`);
     } finally { this.host.changed(); }
@@ -188,7 +261,9 @@ export class AgentApps {
     const text = this.error ?? this.message;
     if (message.textContent !== text) message.textContent = text;
     message.classList.toggle("error", !!this.error);
+    message.classList.toggle("warning", !this.error && this.servicePending && !this.waitingForAgents && !!text);
     refresh.disabled = this.busy || !!this.loading;
+    refresh.hidden = !this.showCheckAgain;
     if (!this.apps) { if (!list.children.length) list.replaceChildren(); return; }
     const keys = new Set(this.apps.map(app => app.name));
     for (const node of Array.from(list.children)) if (!keys.has((node as HTMLElement).dataset.app ?? "")) node.remove();
@@ -196,59 +271,11 @@ export class AgentApps {
       let row = Array.from(list.children).find(node => (node as HTMLElement).dataset.app === app.name) as HTMLElement | undefined;
       if (!row) { row = document.createElement("li"); row.dataset.app = app.name; }
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
-      renderRow(row, app, rowView(app, this.activity.get(app.name), this.host.platform()), kind => this.act(app, kind));
+      const view = rowView(app, this.activity.get(app.name), this.host.platform());
+      if (this.readOnly && view.action?.kind !== "open-page") delete view.action;
+      renderRow(row, app, view, kind => this.act(app, kind));
       row.querySelectorAll<HTMLButtonElement>(".app-action button:not(.text-button)").forEach(button => { button.disabled = this.busy; });
     });
   }
 
-  /** The Ready screen's section: the apps that are installed, or a prompt to install one. */
-  /** With an app ready, a compact button beside Open dashboard, so the spaces list keeps its room. With
-   *  none ready, a callout above it with the one step that matters. */
-  renderStrip(root: HTMLElement, chip: HTMLButtonElement): void {
-    const apps = this.apps ?? [];
-    renderChip(chip, apps.filter(app => app.state !== "missing"));
-    if (!apps.length || apps.some(isReady)) { root.hidden = true; delete root.dataset.key; return; }
-    root.hidden = false;
-    const signedOut = apps.find(app => app.state === "signed-out");
-    const suggested = signedOut ?? suggestedApp(apps);
-    const key = JSON.stringify([apps.map(app => [app.name, app.state]), suggested?.name, this.busy]);
-    if (root.dataset.key === key) return;
-    root.dataset.key = key;
-    const open = document.createElement("button");
-    open.type = "button"; open.className = "text-button"; open.textContent = "See all apps";
-    open.addEventListener("click", () => this.host.openPanel());
-    const logos = document.createElement("div"); logos.className = "apps-logos"; logos.setAttribute("aria-hidden", "true");
-    logos.append(...apps.map(app => logo(app.name, "tile")));
-    const heading = document.createElement("h2"); heading.textContent = signedOut ? `Sign in to ${signedOut.title}` : "Install an agent app";
-    const copy = document.createElement("p");
-    copy.textContent = signedOut ? `${signedOut.title} is installed but not signed in, so your spaces can’t start agents in it yet.` : "Agents run in an app on this computer, such as Claude Code or Codex. None is installed yet, so your spaces can’t start agents here.";
-    const actions = document.createElement("div"); actions.className = "actions";
-    if (suggested) {
-      const go = document.createElement("button");
-      go.type = "button"; go.className = "button primary"; go.disabled = this.busy;
-      go.textContent = signedOut ? `Sign in to ${signedOut.title}` : `Install ${suggested.title} from ${suggested.install!.source}`;
-      go.addEventListener("click", () => { this.host.openPanel(); void (signedOut ? this.signIn(signedOut.name) : this.install(suggested.name)); });
-      actions.append(go);
-    }
-    actions.append(open);
-    root.replaceChildren(logos, heading, copy, actions);
-  }
-}
-
-const listed = (items: string[]): string => new Intl.ListFormat("en", { type: "conjunction" }).format(items);
-/** The compact button: the installed apps' logos and "Agent apps", with their states in its name. */
-function renderChip(chip: HTMLButtonElement, shown: AgentApp[]): void {
-  const key = JSON.stringify(shown.map(app => [app.name, app.state]));
-  if (chip.dataset.key === key) return;
-  chip.dataset.key = key;
-  const signedOut = shown.filter(app => app.state === "signed-out").map(app => app.title);
-  const ready = shown.filter(isReady).map(app => app.title);
-  const summary = [ready.length ? `${listed(ready)} ready` : "", signedOut.length ? `${listed(signedOut)} not signed in` : ""].filter(Boolean).join("; ");
-  chip.setAttribute("aria-label", `Agent apps: ${summary}`);
-  chip.title = summary;
-  const logos = document.createElement("span"); logos.className = "apps-chip-logos"; logos.setAttribute("aria-hidden", "true");
-  logos.append(...shown.slice(0, 4).map(app => logo(app.name, "tile")));
-  const label = document.createElement("span"); label.textContent = shown.length > 4 ? `Agent apps +${shown.length - 4}` : "Agent apps";
-  const badge = document.createElement("span"); badge.className = "app-badge warn"; badge.setAttribute("aria-hidden", "true"); badge.append(icon("warning"));
-  chip.replaceChildren(logos, label, ...(signedOut.length ? [badge] : []));
 }

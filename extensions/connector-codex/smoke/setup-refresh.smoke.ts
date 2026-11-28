@@ -1,7 +1,7 @@
 /** Codex refresh must distinguish no installed plugin from an installed plugin it cannot update. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,6 +37,17 @@ try {
     fixture("absent");
     assert.equal(await refresh(), "not installed");
     assert.equal(existsSync(join(process.env.COTAL_HOME!, "codex-plugin", ".setup.lock")), false);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const market = join(process.env.COTAL_HOME!, "codex-plugin");
+      mkdirSync(market, { recursive: true, mode: 0o700 });
+      chmodSync(market, 0o500);
+      try {
+        assert.equal(await refresh(), "not installed");
+        assert.deepEqual(readdirSync(market), []);
+      } finally {
+        chmodSync(market, 0o700);
+      }
+    }
   });
   await check("an empty custom Codex home needs no executable", async () => {
     const f = fixture("empty-home");
@@ -191,22 +202,92 @@ if (args === "plugin list") {
       assert.doesNotMatch(repaired, /read-only/);
       assert.equal(status().state, "off");
       assert.ok(!status().text.includes(config));
-      if (process.platform !== "win32") {
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
         chmodSync(cache(f.codex), 0o500);
         const protectedCache = await codexSetupProvider.refresh!.run(changed);
         assert.ok(protectedCache.includes(cache(f.codex)));
         assert.match(protectedCache, /read-only.*run `cotal update`/);
         assert.ok(existsSync(join(cache(f.codex), version, ".codex-plugin/plugin.json")));
+        chmodSync(cache(f.codex), 0o700);
+        for (const mode of [0o500, 0o600] as const) {
+          chmodSync(market, mode);
+          for (const input of [{ cotal }, changed]) {
+            const protectedMarket = await codexSetupProvider.refresh!.run(input);
+            assert.equal(
+              protectedMarket,
+              `Codex plugin refresh deferred because ${market} is read-only. cotal@cotal-mesh remains at ${version}. Make that directory writable and searchable, then run \`cotal update\`.`,
+            );
+            assert.equal(statSync(market).mode & 0o777, mode);
+          }
+          await assert.rejects(
+            async () => codexSetupProvider.connector!.run({ cotal }),
+            new Error(`${market} is read-only. Make that directory writable and searchable, then run \`cotal setup\`.`),
+          );
+          chmodSync(market, 0o700);
+          assert.equal(existsSync(join(market, ".setup.lock")), false);
+        }
+
+        const marketLock = join(market, ".setup.lock");
+        writeFileSync(marketLock, "{}", { mode: 0o400 });
+        const setupOverLock = await codexSetupProvider.connector!.run({ cotal });
+        assert.equal(setupOverLock, `cotal@cotal-mesh ${version}`);
+        assert.equal(existsSync(marketLock), false);
+
+        writeFileSync(marketLock, "{}", { mode: 0o400 });
+        const refreshOverLock = await codexSetupProvider.refresh!.run(changed);
+        assert.doesNotMatch(refreshOverLock, /deferred/);
+        assert.match(refreshOverLock, /remains disabled/);
+        assert.equal(existsSync(marketLock), false);
+        rmSync(join(cache(f.codex), current), { recursive: true, force: true });
+        await codexSetupProvider.connector!.run({ cotal });
+
+        const marketBackup = join(f.root, "market-backup");
+        renameSync(market, marketBackup);
+        const missingTarget = join(f.root, "missing-codex-marketplace");
+        symlinkSync(missingTarget, market);
+        try {
+          assert.equal(
+            await codexSetupProvider.refresh!.run(changed),
+            `Codex plugin refresh deferred because ${market} is a symbolic link to a missing target (${missingTarget}). cotal@cotal-mesh remains at ${version}. Restore the link's target or replace the broken link, then run \`cotal update\`.`,
+          );
+          await assert.rejects(
+            async () => codexSetupProvider.connector!.run({ cotal }),
+            new Error(`${market} is a symbolic link to a missing target (${missingTarget}). Restore the link's target or replace the broken link, then run \`cotal setup\`.`),
+          );
+        } finally {
+          rmSync(market, { force: true });
+        }
+        symlinkSync(market, market);
+        try {
+          assert.equal(
+            await codexSetupProvider.refresh!.run(changed),
+            `Codex plugin refresh deferred because ${market} is a symbolic-link loop. cotal@cotal-mesh remains at ${version}. Replace the broken link with a writable and searchable directory, then run \`cotal update\`.`,
+          );
+          await assert.rejects(
+            async () => codexSetupProvider.connector!.run({ cotal }),
+            new Error(`${market} is a symbolic-link loop. Replace the broken link with a writable and searchable directory, then run \`cotal setup\`.`),
+          );
+        } finally {
+          rmSync(market, { force: true });
+        }
+        writeFileSync(market, "not a directory\n", { mode: 0o644 });
+        try {
+          await assert.rejects(async () => codexSetupProvider.refresh!.run(changed), { code: "EEXIST" });
+          await assert.rejects(async () => codexSetupProvider.connector!.run({ cotal }), { code: "EEXIST" });
+        } finally {
+          rmSync(market, { force: true });
+          renameSync(marketBackup, market);
+        }
       }
     } finally {
-      for (const dir of [f.codex, cache(f.codex)]) chmodSync(dir, 0o700);
+      for (const dir of [f.codex, cache(f.codex), market]) if (existsSync(dir)) chmodSync(dir, 0o700);
       rmSync(join(bin, "codex"));
     }
   });
   if (process.platform !== "win32") {
     process.env.PATH = before.PATH;
     const codex = (...args: string[]) => spawnSync("codex", args, { encoding: "utf8", timeout: 60_000 });
-    if (codex("--version").status === 0) await check("native Codex keeps a read-only cache and refreshes after write access returns", async () => {
+    if (codex("--version").status === 0) await check("native Codex keeps a read-only marketplace or cache and refreshes after write access returns", async () => {
       const f = fixture("native");
       const cotal = [process.execPath, join(ROOT, "cotal.js")];
       await codexSetupProvider.connector!.run({ cotal });
@@ -217,10 +298,36 @@ if (args === "plugin list") {
       const beforeRefresh = codex("plugin", "list");
       assert.equal(beforeRefresh.status, 0, beforeRefresh.stderr);
       const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
+      const marketDir = join(process.env.COTAL_HOME!, "codex-plugin");
       const cacheDir = cache(f.codex);
       const [oldVersion] = readdirSync(cacheDir);
       assert.ok(oldVersion);
       chmodSync(config, 0o600);
+      chmodSync(marketDir, 0o500);
+      try {
+        const deferredMarket = await codexSetupProvider.refresh!.run({ cotal: changed });
+        assert.equal(
+          deferredMarket,
+          `Codex plugin refresh deferred because ${marketDir} is read-only. cotal@cotal-mesh remains at ${oldVersion}. Make that directory writable and searchable, then run \`cotal update\`.`,
+        );
+        assert.equal(statSync(marketDir).mode & 0o777, 0o500);
+        assert.equal(existsSync(join(marketDir, ".setup.lock")), false);
+        assert.deepEqual(readdirSync(cacheDir), [oldVersion]);
+      } finally {
+        chmodSync(marketDir, 0o700);
+      }
+      chmodSync(marketDir, 0o600);
+      try {
+        const deferredUnsearchable = await codexSetupProvider.refresh!.run({ cotal: changed });
+        assert.equal(
+          deferredUnsearchable,
+          `Codex plugin refresh deferred because ${marketDir} is read-only. Make that directory writable and searchable, then run \`cotal update\`.`,
+        );
+        assert.equal(statSync(marketDir).mode & 0o777, 0o600);
+        assert.deepEqual(readdirSync(cacheDir), [oldVersion]);
+      } finally {
+        chmodSync(marketDir, 0o700);
+      }
       chmodSync(cacheDir, 0o500);
       try {
         const deferred = await codexSetupProvider.refresh!.run({ cotal: changed });
@@ -272,6 +379,20 @@ if (args === "plugin list") {
         renameSync(missing, replacement);
 
         const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
+        chmodSync(replacement, 0o500);
+        try {
+          const beforeDeferredBytes = readFileSync(config);
+          const beforeDeferredInode = statSync(config).ino;
+          const deferredMoved = await codexSetupProvider.refresh!.run({ cotal: changed });
+          assert.equal(
+            deferredMoved,
+            `Codex marketplace cotal-mesh could not be refreshed. Restore the Cotal marketplace at ${original}, then run \`cotal update\`.`,
+          );
+          assert.deepEqual(readFileSync(config), beforeDeferredBytes);
+          assert.equal(statSync(config).ino, beforeDeferredInode);
+        } finally {
+          chmodSync(replacement, 0o700);
+        }
         chmodSync(config, 0o444);
         assert.match(await codexSetupProvider.refresh!.run({ cotal: changed }), /read-only/);
         assert.equal(statSync(config).mode & 0o777, 0o444);

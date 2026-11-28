@@ -2,11 +2,12 @@ import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { codeSpan, ConfirmationRequired, CommandFailure, MAX_IDLE_EXIT_SECONDS, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
 import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, serviceListStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
@@ -44,7 +45,11 @@ export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
 export function validateServiceArguments(args: ParsedArgs): void {
   const presentation = presentationOf(args.values);
   const [mode = "list", name, ...extra] = args.positionals;
-  if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
+  if (mode === "list" && name !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "service list takes no definition name", {
+    remedy: `cotal service list${targetWords({ space: args.values.space })}${presentation === "rich" ? "" : ` --${presentation}`}`, remedyIsCommand: true,
+  });
+  if ((mode === "status" || mode === "logs") && name === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `service ${mode} needs a definition name`, { remedy: serviceListStep(args.values) });
+  if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode !== "list" && mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
   if (name !== undefined) localRecordName(name);
   if (args.values.preset !== undefined) {
     if (mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--preset belongs to service add");
@@ -116,11 +121,20 @@ function legacyProcesses(context: LocalProcessContext) {
   });
 }
 
-function stackMemberRemovalRemedy(root: string, space: string, json: boolean): string {
-  const cli = json ? "cotal" : displayCmd({ fromAnyFolder: true });
-  const stop = codeSpan(`${cli} down${targetWords({ space })} --yes`);
+function stackMemberRemovalRemedy(root: string, space: string, name: string, presentation: ReturnType<typeof presentationOf>): string {
+  const cli = presentation === "json" ? "cotal" : displayCmd({ fromAnyFolder: true });
+  const scope = targetWords({ space });
+  const inspect = codeSpan(`${cli} service show ${shellWord(name)}${scope}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  const stop = codeSpan(`${cli} down${scope} --yes`);
   const forget = codeSpan(`${cli} space forget ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`);
-  return `from ${oneLine(root)}, run ${stop}, then run ${forget}`;
+  return `inspect the definition with ${inspect}. Only to stop the whole stack and forget its local registration: from ${oneLine(root)}, run ${stop}, then run ${forget}`;
+}
+
+/** The refusal for a `show` or `remove` whose name matches no saved definition and no preset. Its
+ *  remedy names the inventory command in the caller's output mode. */
+function missingSavedService(target: { space: string; executionHost: string }, requested: string, space: string, presentation: ReturnType<typeof presentationOf>): CommandFailure {
+  const inventory = `cotal service${targetWords({ space })}${presentation === "rich" ? "" : ` --${presentation}`}`;
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: requested }, remedy: `see the saved definitions with ${codeSpan(inventory)}` });
 }
 
 export async function service(args: ParsedArgs, commandName = "service"): Promise<void> {
@@ -230,7 +244,6 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "show") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { ...serviceDefinitionProjection(row), rootMatch: definitionRootMatch(row.record.value, root) } }, (result): Report => ({ sections: [
       { title: "Service definition", blocks: [{ kind: "fields", rows: [["Name", result.name], ["Space", result.space], ["Execution host", "this machine"], ["Revision", result.revision], ["Launch", result.launch.type], ...(result.launch.type === "process" ? [["Executable", result.launch.executable], ["Arguments", `${result.launch.argumentCount} declared; values omitted`], ["Working directory", result.launch.cwd]] as const : [["Adapter", result.launch.adapter], ["Options", `${result.launch.optionCount} declared; values omitted`]] as const), ["Readiness policy", result.readiness.type], ["Readiness deadline", `${result.readiness.timeoutMs} ms`], ["Environment references", Object.entries(result.environmentReferences).map(([destination, source]) => `${destination} from ${source}`).join(", ") || "none"], ["Caller reference", result.credentialRef ? "protected file reference; not checked" : "none"], ["Added in", result.root === null ? "root not recorded" : result.rootMatch === "inherited" ? `${result.root}, not this space's root; it does not start here` : result.root], ["Live state", "not checked"]] }, { kind: "lines", lines: [{ text: "Saved policy is not proof of process ownership, OS supervision or endpoint registration. Argument bodies, adapter option values and credential contents are omitted.", tone: "hint" }] }] },
     ] }));
@@ -238,9 +251,8 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "remove") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
-      const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
+      const remedy = stackMemberRemovalRemedy(root, space, row.name, presentation);
       if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
       throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy });
     }
@@ -288,7 +300,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   // up in the selected one, whose service of that name it does not concern.
   const file = args.values.file;
   const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`cotal service remove ${name} --space ${oneLine(space)} --yes\`, then add it again` });
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`${serviceConfirmCommand("remove", name, space, {}, presentation)}\`, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   /** The broker's address is checked before a definition is saved, as its paths are, so a start does
    *  not record a failed instance for an address the broker cannot serve. */
@@ -345,11 +357,14 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal svc start ${name}${onSpace}`, description: "Start it; dependencies are not started for it" }, { command: `cotal svc show ${name}${onSpace}`, description: "Read its saved launch and readiness policy" }] }] }] }));
   /** The definition `show` or `remove` acts on: the one of this name, else the space's one service
    *  built on the preset of this name, said on stderr as the other actions say it. */
-  function savedService(requested: string): ServiceDefinitionSnapshot | undefined {
-    const exact = store.read(requested), preset = exact ? undefined : findServicePreset(requested);
+  function savedService(requested: string): ServiceDefinitionSnapshot {
+    const exact = store.read(requested);
+    if (exact) return exact;
+    const preset = findServicePreset(requested);
     const row = preset && presetDefinition(space, root, preset, requested, mode);
-    if (preset && row) announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation, args.values.space !== undefined);
-    return exact ?? row;
+    if (!row) throw missingSavedService(target, requested, space, presentation);
+    announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation, args.values.space !== undefined);
+    return row;
   }
   function cancelled(title: string): void { writeResult(presentation, { command: "service", target, result: { kind: "service-definition-change", changed: false }, noOp: true }, () => ({ sections: [{ title, blocks: [{ kind: "lines", lines: ["No service definition, process or OS unit was changed."] }] }] })); }
 }
@@ -443,10 +458,10 @@ function stoppedManagerStatus(resolved: PresetServiceTarget, recorded: NonNullab
 
 /** Why `action` refuses a preset's process recorded by PID alone: no saved service owns it. */
 export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, action: string): CommandFailure {
-  return new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
+  return localDiagnostic(new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
     target: { space, name, executionHost: "this-machine", pid: recorded.pid },
     remedy: `it stops with its stack through \`cotal down\`, or where \`cotal supervise\` runs it${name === "manager" || name === STACK_DEFINITION.manager ? "; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents" : ""}`,
-  });
+  }));
 }
 
 /** The log `up` opened for the manager it started with no saved service, read as `service logs`

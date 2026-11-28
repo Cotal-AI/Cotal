@@ -18,7 +18,7 @@
  * Run: pnpm smoke:config-preferences
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -598,7 +598,8 @@ if (process.platform !== "win32") {
   try {
     const read = run(["config", "--json"]);
     check("a symlinked preferences file is refused with PERMISSION_DENIED, exit 2, naming the link and its target",
-      read.status === 2 && read.envelope?.error?.code === "PERMISSION_DENIED" && (read.envelope.error.message ?? "").includes(`${file} is a symbolic link to ${target}`), shown(read));
+      read.status === 2 && read.envelope?.error?.code === "PERMISSION_DENIED" && read.envelope.error.message.includes("the preferences file is a symbolic link")
+        && !read.envelope.error.message.includes(file) && !read.envelope.error.message.includes(target) && read.envelope.error.remedy?.includes(`${file} points to ${target}`) === true, shown(read));
     const other = run(["ext", "root"]);
     check("it stops other commands too, as an invalid file does", other.status === 2 && other.stderr.includes(target), shown(other));
     const version = run(["version"]);
@@ -719,7 +720,7 @@ if (process.platform !== "win32") {
 
 // ── a config folder that is a file stops every command but help, version, docs and completion ────
 {
-  const fileXdg = join(home, "xdg-file");
+  const fileXdg = join(home, "xdg file");
   const folder = join(fileXdg, "cotal");
   mkdirSync(fileXdg);
   writeFileSync(folder, "a file\n");
@@ -729,7 +730,7 @@ if (process.platform !== "win32") {
     check(`\`${args.join(" ")}\` is refused with SCHEMA_INVALID naming the folder that is a file, with moving it as Next`,
       r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "SCHEMA_INVALID" &&
         r.envelope.error.message.startsWith(`the Cotal config folder ${folder} is a file, not a folder;`) &&
-        r.envelope.error.remedy?.startsWith(`move ${folder} aside, for example \`mv ${folder} ${folder}.old\``) === true, shown(r));
+        r.envelope.error.remedy?.startsWith(`move ${folder} aside to an unused name, then repeat the original command`) === true, shown(r));
   }
   const status = run(["status"], env);
   check("the text refusal names the folder, not a corrupt extensions manifest or ENOTDIR",
@@ -748,6 +749,10 @@ if (process.platform !== "win32") {
   const r = run(["config", "--json"], { XDG_CONFIG_HOME: folder });
   check("a config home that is itself a file names that file",
     r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID" && r.envelope.error.message.startsWith(`the Cotal config folder ${join(folder, "cotal")} cannot be made: ${folder} is a file, not a folder;`), shown(r));
+  writeFileSync(`${folder}.old`, "already saved");
+  renameSync(folder, `${folder}.saved`);
+  const retried = run(["config", "--json"], env);
+  check("moving the file to an unused name allows the original read and keeps both files", retried.status === 0 && readFileSync(`${folder}.old`, "utf8") === "already saved" && readFileSync(`${folder}.saved`, "utf8") === "a file\n", shown(retried));
 }
 
 // ── a relative COTAL_HOME stops them too, and a home other accounts can write takes no write ─────

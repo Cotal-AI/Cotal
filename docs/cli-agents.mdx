@@ -77,6 +77,7 @@ with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, b
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
+If the requested name is missing from a prepared or registered catalog, `cotal persona --space <space>` lists the names there. A preview keeps the requested output format in that suggestion.
 Foreground spawn and its preview refuse an unreadable persona file with `PERMISSION_DENIED` (exit 2).
 On POSIX, if you own the regular file and it lacks owner read permission, the refusal suggests
 `chmod u+r <path>` and a retry. The CLI does not change the file's permissions.
@@ -226,7 +227,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
 | `--server <url>` | registry entry | Broker URL override |
-| `--creds <path>` | none | Retained flag for managed launches with `-d` or `--on`. Raw credentials alone cannot provide supported off-registry Manager control authority; an endpoint-caller triple is required. Refused for a spawn in this terminal and from a managed seat's own shell |
+| `--creds <path>` | none | Retained flag for managed launches with `-d` or `--on`. A raw credential file cannot authorize a managed launch. Omit it and name a registered space you can access; switching to detached mode alone does not change the caller. Refused for a spawn in this terminal and from a managed seat's own shell |
 | `--name <n>`, `-n` | persona's `name:` | Presence-name override (does not choose the persona). Uses 1 to 128 letters, digits, `_` and `-`, starting with a letter, digit or `_` (up to 64 without `-` in user mode) |
 | `--file <persona-file>`, `-f` | none | Persona file to launch, on the execution host. A value with no path separator that does not end in `.md` is read as `./<value>`. Refused together with a positional persona, and when the file is a Mesh manifest |
 | `--harness <connector>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). `--agent` is the legacy spelling; giving both is refused |
@@ -234,20 +235,20 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--model <m>`, `-m` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers, Claude effort levels or pi thinking levels) |
 | `--mode <id=value>` | the application's default | A model mode, repeatable: `true` or `false` for a toggle, or an option id for a choice. Refused on a connector that does not support modes |
-| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. On a spawn in this terminal, a path that does not exist or is not a directory is refused with `TARGET_UNAVAILABLE` before provisioning. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
+| `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. A foreground spawn and its preview refuse a missing path or a file with `TARGET_UNAVAILABLE`. If the account cannot enter the directory, they refuse with `PERMISSION_DENIED` before provisioning. The account does not need permission to list the directory. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.mdx)). The manager records the source session id, and `ps --wide` shows it. On a managed launch with `--on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.mdx#resume-a-session)); carrying one needs `--on` |
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
 | `--no-event-payloads` | payload publication on where mapped | Withhold tool inputs and results while retaining the event plane; the persona equivalent is `eventPayloads: false` |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
-| `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it. Each entry is validated with `USAGE_INVALID` before preview or launch, and must be within `--allow-subscribe` when both flags are given |
+| `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it. Each entry is validated with `USAGE_INVALID` before preview or launch, and must be within `--allow-subscribe` when both flags are given. A foreground launch and its preview also refuse `USAGE_INVALID` if the override conflicts with the persona's read policy |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override; `""` sets it to the read set. Each entry is validated with `USAGE_INVALID` before preview or launch |
 | `--allow-publish <a,b>` | deny | Post-ACL override; `""` clears it. Each entry is validated with `USAGE_INVALID` before preview or launch |
 | `--detach`, `-d` | off | Launch through a manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |
 | `--foreground` | on without `-d` or `--on` | Run the application in this terminal, as a spawn without `-d` or `--on` does; kept for scripts. Its exit, or the terminal's, may end the agent. Refuses `--detach`, `--creds`, `--on`, `--restarts`, and `--json` or `--plain` except with `--dry-run` |
 | `--on <instance>` | none | Launch through one manager instance and attach to the agent, or with `-d` return once it joins. Takes the instance id (the whole id, as `ps` prints it), or on a user-auth mesh a manager's name or host, as [`ps`](cli-agent-control.mdx#managed-seats) takes them. Refused with `--foreground` and when empty. On a static or open mesh an id that names no running manager is refused `TARGET_NOT_FOUND` before anything is sent, naming the managers that run, or `TARGET_UNAVAILABLE` as an unpinned launch is when none runs. A pinned manager that does not answer is refused `TARGET_UNAVAILABLE`, exit 2, after the reply deadline, because the launch was never sent |
-| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). It needs `-d` or `--on`. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. `auto` is refused `USAGE_INVALID` before anything is sent. Which host checks any other name is described below this table. Other seats on that manager keep the runtime they already have |
+| `--runtime <name>` | the serving manager's runtime | The terminal runtime for this one managed seat (`pty`, or an installed extension such as `tmux`). Use `-d` without an interactive terminal; `--on` alone requests attachment. A spawn in this terminal refuses it, because that spawn has no manager runtime to choose. `auto` is refused `USAGE_INVALID` before anything is sent. Which host checks any other name is described below this table. Other seats on that manager keep the runtime they already have |
 | `--restarts <n>`, `--restart-window <ms>` | none | Managed launches only, with `-d` or `--on`, and given together: the manager restarts the agent at most `<n>` times within `<ms>`. Each must be a positive integer |
 | `--live-only` | off | A spawn in this terminal only: skip the durable backstop |
 | `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A spawn in this terminal on a static mesh only, one or the other: when the seat's issued credential ends. Without either it has no expiry. It is never renewed, and it is retired when the seat leaves cleanly. Refused with `-d` or `--on`, whose manager renews its own seats, and on a user-auth or open mesh |
@@ -766,8 +767,9 @@ body input. Leading frontmatter follows the native persona merge:
 the supplied name wins, explicit model/role/application and channel fields override the file,
 and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
 1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
-If the manager instance ID is invalid, find the full ID with `cotal ps` in the same space and replace
-only the `--on` value. Keep the definition options and pipe any standard input again.
+If the manager instance ID is invalid, use the suggested roster lookup. It keeps the selected
+space, broker and output format. If the broker address contains private details, use the original
+broker options yourself. Replace only the `--on` value and pipe any standard input again.
 
 The remote wire accepts name, body, model, role, application, initial read channels and read/post
 ACLs. `--harness`, `--subscribe`, `--allow-subscribe` and `--allow-publish` name those fields.

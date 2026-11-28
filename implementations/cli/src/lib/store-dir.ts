@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
 import { authDir, boundedValue, c, codeSpan, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, oneLine, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -98,7 +99,7 @@ export function storeTenantsText(tenants: readonly StoreTenant[]): string {
 export function sharedStoreAtStart(dir: string, space: string, recorded: boolean): StoreTenant[] {
   const tenants = otherStoreTenants(dir, space);
   if (tenants.length && !recorded)
-    throw new CommandFailure("refused", "CONFLICT", `the --store-dir ${dir} is the store of ${storeTenantsText(tenants)}, and a store folder belongs to one space; nothing was started`, { target: { space, storeDir: dir, otherSpaces: tenants }, remedy: "name a folder no other space uses with --store-dir, or omit it to use this root's .cotal/nats" });
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `the --store-dir ${dir} is the store of ${storeTenantsText(tenants)}, and a store folder belongs to one space; nothing was started`, { target: { space, storeDir: dir, otherSpaces: tenants }, remedy: "name a folder no other space uses with --store-dir, or omit it to use this root's .cotal/nats" }));
   return tenants;
 }
 
@@ -129,10 +130,10 @@ export function oldStoreForeignEntries(path: string | undefined): string[] {
  *  `outcome` what did not happen, and `retry` is what to run once they are moved out, a command in
  *  backticks or a step such as "the restore". */
 export function foreignEntriesRefusal(path: string, entries: readonly string[], held: string, outcome: string, retry: string, target: Readonly<Record<string, unknown>> = {}): CommandFailure {
-  return new CommandFailure("refused", "CONFLICT", `${held} ${path} also holds ${listEntries(entries)}, which no Cotal store writes; ${outcome}`, {
+  return localDiagnostic(new CommandFailure("refused", "CONFLICT", `${held} ${path} also holds ${listEntries(entries)}, which no Cotal store writes; ${outcome}`, {
     target: { ...target, storeDir: path, entries: [...entries] },
     remedy: `move ${entries.length === 1 ? "it" : "them"} out of ${path}, then run ${retry} again`,
-  });
+  }));
 }
 
 /** Up to five entry names, then how many more there are. */
@@ -231,10 +232,12 @@ function blockedStoreAncestor(path: string): { path: string; chmod?: string } | 
 
 export function missingRestoreStoreParent(storeDir: string): CommandFailure {
   const path = dirname(storeDir);
-  return new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${path} does not resolve to an existing directory; no restore was started`, {
+  return localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${path} does not resolve to an existing directory; no restore was started`, {
     target: { storeDir, path }, remedy: "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it", selfContained: true,
-  });
+  }));
 }
+
+const NEW_RESTORE_STORE = "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it";
 
 function checkStoreDirPath(path: string, root: string, purpose: "start" | "restore"): void {
   // A dangling link has no real path, so its own target is named instead.
@@ -246,7 +249,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
     }
     const remedy = purpose === "restore"
-      ? "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it"
+      ? NEW_RESTORE_STORE
       : real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir";
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy });
   }
@@ -260,10 +263,10 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
   const physical = stat ? join(realpathSync.native(existing), relative(existing, path)) : path;
   const control = controlDirectory(path) ?? controlDirectory(physical);
   if (control !== undefined && path !== join(resolve(root), ".cotal", "nats"))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" });
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: purpose === "restore" ? `${NEW_RESTORE_STORE}. Choose a parent outside the control directory.` : "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" }));
   if (!stat) return;
   if (!stat.isDirectory())
-    throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: "name a directory, or a path to create in one, with --store-dir" });
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: purpose === "restore" ? NEW_RESTORE_STORE : "name a directory, or a path to create in one, with --store-dir" }));
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
   if (purpose === "restore" && existing !== dirname(path)) throw missingRestoreStoreParent(path);
@@ -274,7 +277,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
     const remedy = purpose === "restore"
       ? "make the parent directory writable by this account or choose a path under a writable parent. Leave the store directory absent so the restore can create it."
       : "name a store directory this account can create, or create it with the right owner first";
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy });
+    throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy }));
   }
 }
 

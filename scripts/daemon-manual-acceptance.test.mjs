@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
@@ -15,8 +16,7 @@ async function fixture(t, { platform = 'linux', status = {}, statusDelayMs = 0, 
   if (platform === 'win32') process.env.SystemRoot = 'C:\\Windows';
   t.after(() => { if (priorSystemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = priorSystemRoot; });
   assert.equal(process.platform, 'linux', 'these filesystem fixtures require the Linux host');
-  mkdirSync('/var/tmp/upgrade-matrix', { recursive: true, mode: 0o700 });
-  const home = mkdtempSync('/var/tmp/upgrade-matrix/manual-');
+  const home = mkdtempSync(join(tmpdir(), 'manual-'));
   const dirs = Object.fromEntries(['output', 'cotalHome', 'daemonHome', 'config', 'pkg', 'globalRoot', 'tmp'].map(key => [key, join(home, key)]));
   for (const directory of Object.values(dirs)) mkdirSync(directory, { mode: 0o700 });
   const children = new Set();

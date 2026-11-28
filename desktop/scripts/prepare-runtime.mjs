@@ -137,6 +137,12 @@ if (process.platform === 'darwin' || process.platform === 'linux') {
   const stripped = spawnSync('strip', stripArgs, { encoding: 'utf8' });
   if (stripped.status !== 0) throw new Error(`strip failed for bundled Node: ${stripped.stderr || stripped.stdout}`);
 }
+// Stripping invalidates Node's signature, and macOS 27 kills a binary whose signature is invalid. Sign the
+// stripped copy ad hoc so the probe below can run it; the app bundle signs it again with its own identity.
+if (process.platform === 'darwin') {
+  const signed = spawnSync('codesign', ['--force', '--sign', '-', stagedBinary], { encoding: 'utf8' });
+  if (signed.status !== 0) throw new Error(`ad hoc codesign failed for bundled Node: ${signed.stderr || signed.stdout}`);
+}
 const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--version'], {
   encoding: 'utf8', timeout: 30_000,
   env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key))),

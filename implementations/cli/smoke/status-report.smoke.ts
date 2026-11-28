@@ -364,7 +364,7 @@ if (!brokerDisplayOnly) {
   const plain = run(["status", "--space", "alpha", "--plain"]);
   const next = plain.stdout.split("\nNext\n")[1] ?? "";
   check("an unreachable manual registration names its broker recovery instead of a live roster",
-    plain.status === 0 && next.includes(`start it where it runs, or \`${displayCmd()} space forget alpha\` to unregister it`) && !next.includes("See the live roster"), { status: plain.status, next, stderr: plain.stderr });
+    plain.status === 0 && next.includes(`To unregister this space, run \`${displayCmd()} space forget alpha\``) && next.includes("check the address and connection to the host") && !next.includes("See the live roster"), { status: plain.status, next, stderr: plain.stderr });
   const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
     /^ {2}beta +open, not checked$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&

@@ -3,6 +3,7 @@ import { delimiter, dirname, isAbsolute, resolve } from "node:path";
 import { CommandFailure, oneLine, parseServiceDefinitionInput, protectedLocalDirectory, protectedLocalEntry, resolveOnPath, shellPath, type ServiceDefinitionInput } from "@cotal-ai/workspace";
 import { decodeLocalJson, ProtectedRecordStore, protectedCredentialReference, readLocalRecordSource, type LocalRecordSnapshot } from "./protected-records.js";
 
+import { localDiagnostic } from "../telemetry.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 
 export type ServiceDefinitionSnapshot = LocalRecordSnapshot<ServiceDefinitionInput>;
@@ -31,7 +32,10 @@ export function validateServiceDefinition(input: unknown, space: string, checkRe
     assertLaunchPath(executable, "executable", space, saved);
     if (!adapterPlan) protectedServiceExecutable(executable);
   }
-  if (value.credentialRef) protectedCredentialReference(value.credentialRef.path);
+  if (value.credentialRef) {
+    try { protectedCredentialReference(value.credentialRef.path); }
+    catch (error) { throw error instanceof Error ? localDiagnostic(error) : error; }
+  }
   return value;
 }
 

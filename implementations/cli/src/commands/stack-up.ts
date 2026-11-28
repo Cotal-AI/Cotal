@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
+import { localDiagnostic } from "../telemetry.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -181,6 +182,10 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** True when a targeted restart accounts for all supplied CLI options. */
+  simpleTargetedStartup?: boolean;
+  /** A complete, locally printable retry for an occupied recorded address, when available. */
+  retryAtRecordedAddress?(): string | undefined;
   /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
   retryAtAnotherAddress?(bindHost: string): Promise<string | undefined>;
   /** The root of the folder `up --root` was run from, when it is not this stack's root. */
@@ -284,6 +289,20 @@ function holdsBrokerAccount(root: string): boolean {
 }
 
 const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open", user: "user auth" };
+
+/** The broker already has a journal. Repeat only the target and the settings for the unstarted manager. */
+function stackLoginRetry(request: StackUpRequest): string {
+  const bare = "run bare `cotal up` again";
+  if (request.manifest) return bare;
+  const { root, space, runtime, managerName, managerSeatCap, maxSessions, foreground, presentation } = request;
+  const options = [
+    ...(runtime !== "pty" ? ["--runtime", shellWord(runtime)] : []), ...(managerName ? ["--manager-name", shellWord(managerName)] : []),
+    ...(managerSeatCap !== undefined ? ["--seat-cap", String(managerSeatCap)] : []), ...(maxSessions !== undefined ? ["--max-sessions", String(maxSessions)] : []),
+    ...(foreground ? ["--foreground"] : []), ...(presentation === "rich" ? [] : [`--${presentation}`]),
+  ];
+  if (!options.length && (!request.invokedRoot || request.invokedRoot === root)) return bare;
+  return `run ${codeSpan([presentation === "json" ? "cotal" : displayCmd(), "up", "--root", shellWord(root), "--space", shellWord(space), ...options].join(" "))} again`;
+}
 
 /** The next step when an explicit mode is not the one a root's first whole-stack `up` recorded.
  *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
@@ -405,11 +424,13 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
-    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry)} again`;
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
+    const format = request.presentation === "rich" ? "" : ` --${request.presentation}`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options"
+      : request.simpleTargetedStartup ? `run ${codeSpan(retry + format)} again` : "repeat your original startup command from the same folder with the same options";
+    throw localDiagnostic(new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
-    });
+    }));
   }
   if (legacy.length || brokerPidfile) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", brokerPidfile?.message ?? "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy }, remedy: brokerPidfile?.remedy });
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally started space uses this root; a single-space controller stack cannot share its broker", { target: { root, space } });
@@ -736,6 +757,11 @@ export function bindReaches(host: string, server: string): boolean {
   }
 }
 
+function recordedAddressRemedy(request: StackUpRequest, freeAddress: string): string {
+  const retry = request.retryAtRecordedAddress?.() ?? "repeat your original startup command from the same folder with the same options";
+  return `${freeAddress}, then ${retry}; this stack keeps its recorded address`;
+}
+
 /** Refuse a busy broker address before launch. Only a recorded address held by TIME-WAIT gets a bounded retry. */
 async function assertStackBrokerAddress(request: StackUpRequest, root: string, space: string, server: string, bindHost: string | undefined, recorded: boolean): Promise<void> {
   const { host: dialHost, port } = brokerListenAddress(server);
@@ -764,7 +790,7 @@ async function assertStackBrokerAddress(request: StackUpRequest, root: string, s
     throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
       target: { root, space, server, bindError: bindError.code },
       remedy: recorded
-        ? `${frees}, then run ${codeSpan(`${displayCmd()} up${request.foreground ? " --foreground" : ""}${request.noManager ? " --no-manager" : ""}`)} from ${root}; this stack keeps its recorded address`
+        ? recordedAddressRemedy(request, frees)
         : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
     });
   }
@@ -944,8 +970,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         : `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager`,
     });
   const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal, recordedInputs !== undefined && strayHost === undefined && !newCap && !newLog);
-  // A recorded stack keeps its space and broker address. The refusal names what is recorded and the
-  // bare up that starts it there.
+  // A recorded stack keeps its space and broker address.
   const recordedTarget = { root, space, recorded: { space: previous?.journal.space, server: previous?.journal.server }, requested: { space, server: request.server } };
   if (previous && previous.journal.space !== space)
     throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded for space ${previous.journal.space}, and this up asked for ${space}; it was not rebound`, { target: recordedTarget, remedy: `run bare \`cotal up\` from ${root} to start ${previous.journal.space}` });
@@ -953,7 +978,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // one, bare up refuses too, so the refusal names that holder rather than sending the operator there.
   if (previous && canonicalServer(previous.journal.server) !== canonicalServer(request.server)) {
     const held = await recordedAddressHeld(space, previous.journal.server, brokerHost);
-    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address${held ? `, and ${held.says}` : ""}`, { target: recordedTarget, remedy: held ? `${held.frees}, then run bare \`cotal up\` from ${root}; no command moves a stack that ran to another address, so it starts only at ${previous.journal.server}` : `run bare \`cotal up\` from ${root} to start it at ${previous.journal.server}` });
+    const address = previous.journal.server;
+    const retry = request.manifest ? `use the recorded broker address ${address} in the manifest, then repeat your original command`
+      : `repeat your original startup command from the same folder with ${codeSpan(`--server ${shellWord(address)}`)} and all other options unchanged`;
+    throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${address}, and this up asked for ${request.server}; a recorded stack is not moved to another address${held ? `, and ${held.says}` : ""}`, { target: recordedTarget, remedy: held ? `${held.frees}, then ${retry}` : retry });
   }
   // The broker service's own address rules run before anything is written, so an address it would
   // refuse never becomes this root's recorded broker address.
@@ -1104,7 +1132,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
           ? `${retry !== undefined ? `${retry}, or ` : ""}${stopHolder} and retry this start`
-          : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
+          : recordedAddressRemedy(request, stopHolder),
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
@@ -1255,7 +1283,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // as `manager start` confirms it. Without a signed-in, granted login, or with one the IdP
     // rejects, it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
-      try { await assertManagerLogin(root, space, "run bare `cotal up` again"); }
+      try { await assertManagerLogin(root, space, () => stackLoginRetry(request)); }
       catch (error) {
         if (!isCommandFailure(error) || error.code !== "AUTH_REQUIRED") throw error;
         loginBlock = error;

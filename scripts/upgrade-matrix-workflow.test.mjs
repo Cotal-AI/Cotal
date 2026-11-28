@@ -45,7 +45,12 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
 test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
   const job = workflow.jobs['release-corepack-node-fallback'];
   assert.equal(job.needs, 'select');
-  assert.equal(job.if, "needs.select.outputs.applicable == 'true'");
+  // The frozen-source probe belongs to the release matrix, not the focused push modes.
+  assert.equal(job.if, [
+    "needs.select.outputs.applicable == 'true'",
+    ...['windows-job-only', 'windows-baseline-only', 'mac-controls-only', 'mac-transition-only', 'scheduler-only', 'installer-only']
+      .map(mode => `!contains(github.event.head_commit.message, '[${mode}]')`),
+  ].join(' && '));
   assert.equal(job.steps[0].with.ref, '${{ needs.select.outputs.source }}');
   assert.equal(job.steps[0].with['persist-credentials'], false);
   assert(job.steps.some(step => step.run?.includes('node bin/smoke/update-registry-arrival.smoke.mjs corepack-node-fallback')));
@@ -85,12 +90,15 @@ test('ordinary landing push cannot admit the legacy priority cascade', () => {
   assert.equal(workflow.jobs['desktop-beside-cli'].needs, 'priority');
   assert(workflow.jobs['desktop-beside-cli'].if.includes("needs.priority.result == 'success' || needs.priority.result == 'failure'"));
 });
-test('durable events preserve immutable heads without privileged PR execution or cancellation', () => {
+test('durable events run without privileged PR execution, and only a replaced pull request head is cancelled', () => {
   assert.deepEqual(workflow.on.pull_request.types, ['opened', 'synchronize', 'reopened']);
   assert.equal(workflow.on.pull_request.paths, undefined);
   assert.deepEqual(workflow.on.workflow_run, { workflows: ['Changesets'], types: ['completed'] });
   assert.equal(workflow.on.pull_request_target, undefined);
-  assert.equal(workflow.concurrency, undefined);
+  assert.deepEqual(workflow.concurrency, {
+    group: "upgrade-matrix-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
+    'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
+  });
   assert.deepEqual(workflow.permissions, { contents: 'read', actions: 'read' });
   const select = workflow.jobs.select.steps.find(s => s.id === 'plan').with.script;
   for (const token of ['changeset-release/main', 'upgrade-publication', 'publication.sourceSHA', 'publication.runId', "actual.path, '.github/workflows/changesets.yml'"]) assert(select.includes(token), token);

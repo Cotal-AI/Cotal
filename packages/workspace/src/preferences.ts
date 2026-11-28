@@ -156,10 +156,12 @@ export function preferencesPath(): string {
   return join(globalConfigDir(), "preferences.json");
 }
 
-const invalid = (problem: string): CommandFailure =>
-  new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesPath()} is invalid: ${problem}`, {
-    remedy: `fix or remove ${preferencesPath()}; nothing resets it`,
+function invalid(problem: string): CommandFailure {
+  const preferencesFile = preferencesPath();
+  return new CommandFailure("refused", "SCHEMA_INVALID", `the preferences file ${preferencesFile} is invalid: ${problem}`, {
+    target: { preferencesFile }, remedy: `fix or remove ${preferencesFile}; nothing resets it`,
   });
+}
 
 const SPACE_NAME_REMEDY = "run `cotal space` for the names of the spaces this machine knows";
 
@@ -214,9 +216,9 @@ function parsePreferences(text: string): Preferences {
  *  so the file is neither read through the link nor replaced by a write. */
 function assertPreferencesNotLinked(path: string): void {
   if (localRecordAccess() === "posix" && lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink())
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences file ${path} is a symbolic link to ${readlinkSync(path)}; preferences are kept only in a regular file, so nothing was read or changed`, {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "the preferences file is a symbolic link; preferences are kept only in a regular file, so nothing was read or changed", {
       target: { path },
-      remedy: `replace the link ${path} with a regular copy of the file it names`,
+      remedy: `the link ${path} points to ${readlinkSync(path)}; replace it with a regular copy of the intended preferences file`,
     });
 }
 

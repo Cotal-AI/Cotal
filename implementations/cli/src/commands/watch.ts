@@ -5,6 +5,7 @@ import { MeshView, openObserver } from "@cotal-ai/workspace/view";
 import { completingFlagValue } from "../lib/completion.js";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { watchSetupFailureRecords } from "../lib/stream-setup-failure.js";
+import { recordTelemetryFailure } from "../telemetry.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -43,6 +44,7 @@ export async function watch(args: ParsedArgs): Promise<void> {
     // its message is not written for an operator.
     const refusal = isConnectRefusal(error) ? error : undefined;
     const failure = isCommandFailure(error) ? error : refusal?.failure();
+    if (failure) recordTelemetryFailure(failure.outcome, failure.code);
     const refusedSpace = refusal?.target?.space;
     const space = resolved.space ?? (typeof refusedSpace === "string" ? refusedSpace : undefined);
     for (const record of watchSetupFailureRecords(args, failure, space)) writeStreamRecord(record);
