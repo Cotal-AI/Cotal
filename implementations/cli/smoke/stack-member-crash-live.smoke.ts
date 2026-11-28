@@ -384,6 +384,10 @@ try {
     managerPreview.status === 0 && doc(managerPreview)?.warnings?.length === 1 && doc(managerPreview)?.warnings?.[0]?.message === `the real stop would refuse: ${refusal?.message}; ${refusal?.remedy}`, managerPreview.out);
   check("...whose Next names the added service's stop first, then bare down, or the manager's stop and the broker stop again",
     refusal?.remedy === `stop the services outside the stack first with \`cotal service stop idle --instance ${idle} --space crash --yes\`, then stop the whole stack with bare \`cotal down\`, or also run \`cotal service stop stack-manager --instance ${managerId} --space crash --yes\` and then stop the broker again`, managerBlocked.out);
+  const blockedStack = cli("down", "--space", "crash", "--yes", "--with-agents", "--json");
+  check("the blocked stack stop keeps its space, agent policy, confirmation and format for the retry",
+    blockedStack.status === 2 && doc(blockedStack)?.error?.code === "LIFECYCLE_BLOCKED" &&
+      /`(?:pnpm )?cotal down --with-agents --yes --space crash --json`/.test(doc(blockedStack)?.error?.remedy ?? ""), blockedStack.out);
   const idleStop = cli("service", "stop", "idle", "--instance", String(idle), "--space", "crash", "--yes", "--json");
   check("the named service stop stops it", idleStop.status === 0, idleStop.out);
   const idleRemoved = cli("service", "remove", "idle", "--space", "crash", "--yes", "--json");
