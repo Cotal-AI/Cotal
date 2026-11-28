@@ -47,10 +47,10 @@ const PATH = /(?:~|[A-Za-z]:)?(?:[\\/][^\s\\/'"`:)]+){2,}/g;
 const TOKEN = /[A-Za-z0-9_-]{32,}/g;
 const FRAME_PATH = /(?:file:\/\/)?(?:[A-Za-z]:)?[\\/][^\s()]+/g;
 
-/** An error message with what could identify someone masked: quoted words (the CLI quotes every
- *  user value it echoes), URLs, email addresses, IPv4 addresses, paths (the home directory first,
- *  so a path under it reads as one) and any token-shaped run of 32 characters or more. */
+/** Mask identifying values before sending a diagnostic. The local read-policy refusal includes
+ *  the entire allow list in brackets, with no quotes around its individual channel names. */
 export function scrubErrorText(text: string, max = MAX_MESSAGE): string {
+  if (text.includes(" is not within allowSubscribe [")) return "subscription is not within allowSubscribe".slice(0, max);
   return text
     .split(HOME).join("~")
     .replace(QUOTED, "$1<value>$1")

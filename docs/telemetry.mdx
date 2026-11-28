@@ -66,6 +66,8 @@ stack stay local because the diagnostic can include the agent's terminal output.
 records the typed error code. When a JSON watch stream reports a typed setup failure, its command
 event records the code without collecting the stream message or stack. If `up` refuses to convert a
 legacy membership store, the local error target names the space; the reported message omits its name.
+When a subscription falls outside `allowSubscribe`, the local diagnostic names the channels. The event
+reports the mismatch without the subscription or the allowed channels.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at
