@@ -6,6 +6,8 @@ import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cl
 import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
+import { join } from "node:path";
+import { writeDirectory, type ObserveWrite } from "./write-observation.js";
 
 type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> };
 
@@ -25,8 +27,13 @@ async function recoverAccountSpace(home: string, reconciler: ReturnType<typeof c
   await withIdpSessionDir(home, () => reconciler.apply(account, snapshot, context.revision!, context.bindingRevisions!, true, context.abort.signal));
 }
 
+function observedComputerId(home: string, account: { issuer: string; sub: string }, observe?: ObserveWrite): string {
+  try { return accountComputerId(home, account); }
+  catch (error) { observe?.(error, writeDirectory(error, join(home, "daemon", "accounts"))); throw error; }
+}
+
 /** Poll account intent without interpreting transport failure as an empty desired set. */
-export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>, onChange?: () => void) {
+export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>, onChange?: () => void, observe?: ObserveWrite) {
   const notify = () => { try { onChange?.(); } catch {} };
   let vitals: ComputerVitals | undefined;
   let vitalsError: string | undefined;
@@ -34,7 +41,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   const sample = () => sampling ??= import("@cotal-ai/manager").then(({ measureComputerVitals }) => measureComputerVitals()).then(value => { vitals = value; vitalsError = undefined; }).catch(() => { vitalsError = "Computer vitals could not be measured; no new sample was sent."; }).finally(() => { sampling = undefined; });
   let name: string;
   let nameWarning: string | undefined;
-  try { name = readComputerName(home); }
+  try { name = readComputerName(home, observe); }
   catch {
     name = defaultComputerName();
     nameWarning = 'Computer name record is unreadable. Replace it with `cotal daemon name "<name>"`.';
@@ -54,7 +61,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     if (!accounts.length) { state = { mode: "signed-out", hostSupport: "unknown", spaces: [] }; for (const context of contexts.values()) context.abort.abort(); contexts.clear(); return; }
     for (const key of contexts.keys()) if (!accounts.some(account => account.ownerKey === key)) { contexts.get(key)!.abort.abort(); contexts.delete(key); }
     accounts.forEach((account) => {
-      const machineId = accountComputerId(home, account);
+      const machineId = observedComputerId(home, account, observe);
       const context: NonNullable<ReturnType<typeof contexts.get>> = contexts.get(account.ownerKey) ?? { state: { machineId, mode: "account", hostSupport: "unknown", spaces: [] } as AccountComputerStatus, lastHeartbeat: 0, abort: new AbortController() };
       const session = loadIdpSession(home, account.idpUrl);
       Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: name });
@@ -140,7 +147,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     if (!entry.catalogId || !entry.catalogOwner) throw new Error("Refresh your account's spaces before connecting this computer.");
     if (context.state.mode === "sign-in-required") throw new Error("Sign in again before changing this computer's spaces.");
     if (context.state.hostSupport !== "supported") throw new Error("The account host is unavailable. Check your connection and try again.");
-    const machineId = accountComputerId(home, account);
+    const machineId = observedComputerId(home, account, observe);
     const signal = AbortSignal.any([abort.signal, context.abort.signal]);
     for (let attempt = 0; attempt < 2; attempt++) {
       const fresh = await requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method: "GET", signal });
