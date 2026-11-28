@@ -334,6 +334,14 @@ for (const level of ["regular", "minimal"]) {
 
 {
   const space = "private-project";
+  for (const code of ["TARGET_NOT_FOUND", "TARGET_UNAVAILABLE"] as const) {
+    const message = `no manager matches the pin in ${space}`;
+    const failure = new CommandFailure("refused", code, message, { target: { space, requestedManagerInstance: "fixture-id" } });
+    const text = telemetryErrorText("ps", failure);
+    check(`a missing Manager pin keeps its ${code} diagnostic local`, text.message === null && text.stack === null && failure.message === message);
+    const other = new CommandFailure("refused", code, "no available target", { target: { space } });
+    check(`an unpinned ${code} diagnostic still reports its reason`, telemetryErrorText("ps", other).message === other.message);
+  }
   const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
@@ -351,6 +359,15 @@ for (const level of ["regular", "minimal"]) {
   check("native spawn messages and stacks stay local", text.message === null && text.stack === null && failure.message === message);
   const usage = telemetryErrorText("spawn", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
   check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
+}
+
+{
+  const message = 'no managed agent "fixture-agent" on manager fixture-instance';
+  const failure = new CommandFailure("refused", "TARGET_NOT_FOUND", message, { native: { code: "not-found" } });
+  const text = telemetryErrorText("attach", failure);
+  check("an attach miss reported by a manager keeps the agent and instance local", text.message === null && text.stack === null && failure.message === message);
+  const usage = telemetryErrorText("attach", new CommandFailure("refused", "USAGE_INVALID", "name the agent"));
+  check("an attach usage refusal still reports its diagnostic", usage.message === "name the agent" && typeof usage.stack === "string");
 }
 
 // ---- minimal ----
