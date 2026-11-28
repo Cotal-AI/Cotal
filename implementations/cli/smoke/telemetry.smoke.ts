@@ -247,13 +247,41 @@ for (const level of ["regular", "minimal"]) {
 
 {
   const s = sandbox(), space = "private-preset-fixture";
+  const marker = "private-root-fixture", file = join(s.project, `regular file ${marker}`);
+  writeFileSync(file, "original");
+  const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
+  const commands = invalid.sent.filter(body => body.event === "command");
+  check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
+    && commands.length === 1 && commands[0]?.errorCode === "USAGE_INVALID" && commands[0]?.errorMessage === "the project root is not a directory" && !JSON.stringify(invalid.sent).includes(marker), shown(invalid));
+  const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
+  const addEvent = add.sent.find(body => body.event === "command");
+  check("a refused registration root stays local", add.status === 1 && add.stdout.includes(marker) && addEvent?.errorCode === "USAGE_INVALID" && addEvent.errorMessage === "--root must name an existing directory" && !JSON.stringify(add.sent).includes(marker), shown(add));
+  const odd = join(s.project, `tab\tfolder ${marker}`);
+  const refused = await s.run(["space", "create", space, "--root", odd, "--json"]);
+  const reported = refused.sent.filter(body => body.event === "command");
+  check("a project path with a control character is named only locally", refused.status === 1 && refused.stdout.includes(marker) && refused.stdout.includes("a tab") && !existsSync(odd)
+    && reported.length === 1 && reported[0]?.errorCode === "USAGE_INVALID" && reported[0].errorMessage === null && reported[0].errorStack === null && !JSON.stringify(refused.sent).includes(marker), shown(refused));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  const absent = "private-absent-fixture", unknown = await s.run(["use", absent, "--plain"]);
+  const event = unknown.sent.find(body => body.event === "command");
+  check("a refused selection lists known spaces only on this machine", unknown.status === 2 && unknown.stderr.includes(space) && unknown.stderr.includes(absent)
+    && event?.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null && event.errorStack === null && ![space, absent].some(name => JSON.stringify(unknown.sent).includes(name)), shown(unknown));
   for (const mode of ["status", "logs"]) {
     const r = await s.run(["manager", mode, "--space", space, "--json"], { COTAL_TELEMETRY: "regular" });
     const commands = r.sent.filter(body => body.event === "command"), event = commands[0];
     check(`an unstarted manager's ${mode} refusal keeps the space local`, prepared.status === 0 && r.status === 2 && r.stdout.includes(space)
       && commands.length === 1 && event?.outcome === "refused" && event.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null
       && event.errorStack === null && !JSON.stringify(r.sent).includes(space), shown(r));
+  }
+}
+
+{
+  const s = sandbox(), marker = "private-conflict-fixture", root = join(s.project, `folder ${marker}`);
+  const made = await s.run(["space", "create", "existing", "--root", root], { DO_NOT_TRACK: "1" });
+  for (const [name, at] of [["existing", s.project], ["another", root]] as const) {
+    const r = await s.run(["space", "create", name, "--root", at, "--json"]), event = r.sent.find(body => body.event === "command");
+    check(`preparation conflict for ${name} keeps the existing path local`, made.status === 0 && r.status === 2 && r.stdout.includes(marker) && r.stdout.includes("space show existing --json")
+      && event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
 }
 
