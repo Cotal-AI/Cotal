@@ -53,3 +53,25 @@ export function observeDarwinPtySession(root: Readonly<DarwinSharedIdentity>): r
     return matchesRoot() ? members : undefined;
   } catch { return undefined; }
 }
+
+/** Directly attributable detached processes only. Reparented or unseen children are not counted. */
+export function observeDarwinDetachedChildren(root: Readonly<DarwinSharedIdentity>): readonly DarwinSharedIdentity[] | undefined {
+  if (process.platform !== "darwin" || !root.uid || root.uid !== process.getuid?.()) return undefined;
+  try {
+    if (darwinBootSession() !== root.bootId) return undefined;
+    const native = loadNativeHelper<SessionNative>();
+    const verified = () => {
+      const row = native.processSession(root.pid);
+      return row?.pid === root.pid && row.start === root.start && row.uid === root.uid && row.session === root.pid && !row.exited;
+    };
+    if (!verified()) return undefined;
+    const found: DarwinSharedIdentity[] = [];
+    for (const pid of native.accountProcesses()) {
+      const row = native.processSession(pid);
+      if (!row || row.exited || row.parent !== root.pid || row.session === root.pid) continue;
+      if (row.pid !== pid || row.uid !== root.uid || !birth.test(row.start)) return undefined;
+      found.push({ pid, uid: row.uid, start: row.start, bootId: root.bootId });
+    }
+    return verified() ? found : undefined;
+  } catch { return undefined; }
+}
