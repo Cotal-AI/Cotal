@@ -92,7 +92,7 @@ When a project name is already prepared elsewhere, another space already uses th
 When `space create` or `setup` cannot write the project's `.cotal` directory, the event reports `PERMISSION_DENIED`. The project path, message and stack stay local.
 If a broker requires authentication and the registration folder holds trust for a different space, the event reports the mismatch. The names, broker address and trust path stay in the local remedy.
 If a project command refuses to use a control directory as the project folder, the paths stay local. A refusal to write the machine's connector store from a checkout or unrecognized executable also keeps the store and executable paths local.
-When a foreground launch or its preview refuses a missing persona, the file or catalog path stays in the local diagnostic. A connection refusal for a space that has not started also keeps its restart path and space name local.
+When a foreground launch or its preview refuses a missing or malformed persona, the file path and validation details stay in the local diagnostic. A connection refusal for a space that has not started also keeps its restart path and space name local.
 If a foreground connector reports an overlong control socket path, the CLI shows the path and the shorter-directory remedy locally. The command event reports `USAGE_INVALID` without the message or stack.
 If `endpoint check` cannot open its local contract file because of permissions or a refused link, the local diagnostic names the path. The event carries `PERMISSION_DENIED` without the message or stack.
 If `setup` rejects a destination, an unknown runtime, or a scripted project path that is not a directory, its diagnostic stays local. The command event still reports `USAGE_INVALID`.
