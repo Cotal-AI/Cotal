@@ -1029,12 +1029,13 @@ export class EndpointHistory {
     return rows[0]?.seq ?? 0;
   }
 
-  async pluginJoinFrontier(channel: string): Promise<number> {
+  async pluginJoinFrontier(channel: string): Promise<number | undefined> {
     try { return await this.channelFrontier(channel); }
     catch (error) {
       if (isPermissionDenied(error) || isStreamNotFound(error)) throw error;
       this.deps.emit("warning", error);
-      return 0;
+      // Zero is a successful read of an empty channel, not a recovery position for a failed read.
+      return undefined;
     }
   }
 
@@ -1226,21 +1227,26 @@ export class EndpointHistory {
   async backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
-      const policy = await this.joinPolicyFresh(ch);
       if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch)) {
-        const stillJoined = this.parts.consumers.pluginReplayFence(ch);
-        if (!stillJoined()) continue;
-        const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
-        const replayed = policy.replay
-          ? await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier, stillJoined, true)
-          : 0;
-        if (replayed !== undefined && stillJoined()) this.parts.consumers.rememberPluginHistory(ch, frontier);
-        total += replayed ?? 0;
-      } else if (policy.replay) {
-        total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+        total += await this.backfillPluginJoin(ch, frontier, this.parts.consumers.pluginReplayFence(ch));
+      } else {
+        const policy = await this.joinPolicyFresh(ch);
+        if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
       }
     }
     return total;
+  }
+
+  /** Finish initial replay for a plugin subscription with a confirmed frontier (including a retry). */
+  async backfillPluginJoin(channel: string, frontier: number, stillJoined: () => boolean): Promise<number> {
+    const policy = await this.joinPolicyFresh(channel);
+    if (!stillJoined()) return 0;
+    const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
+    const replayed = policy.replay
+      ? await this.emitPluginHistory(channel, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier, stillJoined, true)
+      : 0;
+    if (replayed !== undefined && stillJoined()) this.parts.consumers.rememberPluginHistory(channel, frontier);
+    return replayed ?? 0;
   }
 
   /** Replay policy + backfill window read straight from the registry bucket (vs the watch cache)
