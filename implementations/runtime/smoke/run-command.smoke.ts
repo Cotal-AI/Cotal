@@ -1241,7 +1241,10 @@ const takeoverRun = startedId()!;
     // A list reaches run-ps only after a live registry row and a describe whose cluster is in the
     // store. This double answers describe and stays silent on run-ps. The command then waits out its
     // own launch deadline, so the suite runs that wait once.
-    const input = { type: "object", additionalProperties: false, properties: { endpoint: { type: "string", minLength: 1 } } };
+    const input = { type: "object", additionalProperties: false, properties: {
+      endpoint: { type: "string", minLength: 1 },
+      page: { type: "object", additionalProperties: false, properties: { limit: { type: "integer" }, cursor: { type: "string" } } },
+    } };
     const output = { type: "array" };
     const cluster = buildClusterArtifacts(buildClusterDocument("ai.cotal.list", 1, [
       { name: "run-ps", targeted: false, capability: "manager.read", input, output },
@@ -1257,7 +1260,7 @@ const takeoverRun = startedId()!;
       endpoint: "manager", owner: "open", clusterDigests: [cluster.closureDigest], protocol: { v: 1 },
     })));
     await records.create(recordStatusKey(RECORD_KINDS.svc, ["manager", instance]), new TextEncoder().encode(JSON.stringify({
-      epoch: 1, state: "ready", observedSpecRevision: spec.revision,
+      epoch: 1, state: "ready", observedSpecRevision: spec,
     })));
     const seen: string[] = [];
     const sub = fixture.subscribe(`cotal.${openSpace}.ep.>`);
@@ -1280,14 +1283,28 @@ const takeoverRun = startedId()!;
       reset();
       return wf(["ps"], { ...flags, local: undefined, ...values }).then(() => undefined, (e: unknown) => e);
     };
-    const plain = await listed({});
-    const pageOf = (remedy: unknown) => typeof remedy === "string"
+    const pageOf = (remedy: unknown, output = "") => typeof remedy === "string"
       && remedy.includes("`cotal run --page --on <instance>")
-      && remedy.includes(`--space ${openSpace}`) && remedy.includes(`--server '${openServers}'`) && remedy.includes("--endpoint manager");
+      && remedy.includes(`--space ${openSpace}`) && remedy.includes(`--server '${openServers}'`) && remedy.includes("--endpoint manager")
+      && (output === "" ? !remedy.includes(" --json") && !remedy.includes(" --plain") : remedy.includes(output) && !remedy.includes(" --plain"));
+    const plain = await listed({});
     c("a list that draws no reply goes through the command, publishes run-ps, and names a page with the caller's space, server and endpoint",
       isCommandFailure(plain) && plain.code === "OPERATION_FAILED" && pageOf(plain.remedy)
       && seen.filter((command) => command === "run-ps").length === 1 && seen.includes("describe"),
       { seen, remedy: isCommandFailure(plain) ? plain.remedy : plain });
+    const json = await listed({ json: true });
+    c("a --json list that draws no reply names a page that keeps --json",
+      isCommandFailure(json) && json.code === "OPERATION_FAILED" && pageOf(json.remedy, " --json"),
+      isCommandFailure(json) ? json.remedy : json);
+    const text = await listed({ plain: true });
+    c("a --plain list that draws no reply names a page that does not keep --plain",
+      isCommandFailure(text) && text.code === "OPERATION_FAILED" && pageOf(text.remedy),
+      isCommandFailure(text) ? text.remedy : text);
+    const already = await listed({ page: true, on: instance });
+    c("a page that draws no reply does not name the page form again",
+      isCommandFailure(already) && already.code === "OPERATION_FAILED" && already.remedy === "a read changes nothing, so it is safe to run again"
+      && seen.filter((command) => command === "run-ps").length === 4,
+      { seen, remedy: isCommandFailure(already) ? already.remedy : already });
     const malformed = await envelopeOf(["ps"], { server: openServers, space: openSpace, endpoint: "not_dns" });
     c("a name that is not DNS-shaped lists nothing and says the view holds no run record",
       (malformed?.result as { items?: unknown[] } | undefined)?.items?.length === 0
@@ -1304,7 +1321,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 152;
+const DECLARED = 155;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

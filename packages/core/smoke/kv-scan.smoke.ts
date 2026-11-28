@@ -690,8 +690,11 @@ try {
   }
 
   // A filtered batched Direct Get. `Nats-Num-Pending` counts messages that still match the batch's
-  // `next_by_subj` (ADR-31, Response headers). More than one page of matching keys, with keys the
-  // filter does not match between them, costs one request per page of matches and no more.
+  // `next_by_subj` (ADR-31, Response headers: "the number of messages left in the stream matching
+  // the batch parameters"), not every later stream message. The last message here does not match,
+  // so reading the header as "stream messages left" would start another page. More than one page of
+  // matching keys, with non-matching keys between them and after the last match, costs one request
+  // per page of matches and no more.
   {
     const jsmb = await jetstreamManager(nc);
     const batch = await kvm.create("batch_filter", { history: 1 });
@@ -702,6 +705,7 @@ try {
     }
     await batch.put("keep.0", enc("rewritten"));
     await batch.delete("keep.gone");
+    await batch.put("skip.tail", enc("after"));
     const before = (await jsmb.streams.info("KV_batch_filter")).state.consumer_count;
     const outBefore = nc.stats().outMsgs;
     const read = await lastKvEntries(batch, "keep.>");
@@ -711,7 +715,7 @@ try {
     const once = read.length === byKey.size && [...byKey.keys()].every((key) => key.startsWith("keep."));
     check("the filtered batch returns each matching key once, including a rewrite and a delete marker",
       once && read.length === matching + 1 && byKey.get("keep.0")?.string() === "rewritten" && byKey.get("keep.gone")?.operation === "DEL"
-      && byKey.get("keep.1")?.string() === "v1", { keys: read.length, distinct: byKey.size });
+      && byKey.get("keep.1")?.string() === "v1" && !byKey.has("skip.tail"), { keys: read.length, distinct: byKey.size });
     check("the filtered batch costs one request per page of matching keys", requests === Math.ceil((matching + 1) / 1024), requests);
     check("the filtered batch creates no consumer", after === before, { before, after });
     check("a filter matching nothing is one request in a bucket past one page",

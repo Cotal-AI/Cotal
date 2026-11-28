@@ -377,10 +377,10 @@ const DIRECT_BATCH = 1024;
  *
  * A key rewritten during the walk only moves to a higher sequence, so the walk still reaches it, and
  * the greatest revision per key wins, as in {@link walkKvLatest}. Each message's `Nats-Num-Pending`
- * counts how many messages that still match the batch's `next_by_subj` remain after it (ADR-31,
- * Response headers), so a filter's pending count ignores keys the filter does not match. The walk ends
- * at 0 or when the broker has nothing at or after the cursor, and a page that ends with neither throws
- * {@link IncompleteKvScan} instead of returning a short list.
+ * counts messages that still match this batch's `next_by_subj`, not later messages of any subject
+ * (ADR-31, Response headers: "the number of messages left in the stream matching the batch
+ * parameters"). The walk ends at 0 or when the broker has nothing at or after the cursor, and a
+ * page that ends with neither throws {@link IncompleteKvScan} instead of returning a short list.
  *
  * Each completed page releases its native reply subscription immediately, without waiting for the
  * native five-second timeout. The callback is the client's supported cleanup-owning read path.

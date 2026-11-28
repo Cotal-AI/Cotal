@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, parseCommandArgs, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure, runOperation, shellPath } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
@@ -351,6 +351,33 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     c("a list remedy keeps the caller's flags and prints neither a credentials path nor a server that carries credentials",
       !String(hidden.remedy).includes("private-token") && !String(hidden.remedy).includes("private-caller.creds")
       && String(hidden.remedy).includes("--creds '<file>'") && !String(hidden.remedy).includes("--server"), hidden.remedy);
+  }
+  // The printed page is parsed as the command line parses it, then accepted by the page grammar.
+  // `--plain` is not kept: a page refuses it.
+  {
+    const run = registry.resolve("command", "run") as Command;
+    const instance = "m".repeat(26);
+    const commandOf = (remedy: string | undefined) => remedy?.match(/`([^`]+)`/)?.[1]?.replace("<instance>", instance);
+    const accepted = (values: Record<string, string | boolean>) => {
+      const remedy = unansweredHostFailure("run-ps", "s", sent("run-ps"), values).remedy;
+      const command = commandOf(remedy);
+      if (command === undefined) return { remedy, accepted: false };
+      let parsed: ReturnType<typeof parseCommandArgs>;
+      try { parsed = parseCommandArgs(run, command.split(/\s+/).slice(2)); } catch (e) { return { remedy, command, accepted: false, error: String(e) }; }
+      let grammar: unknown;
+      try { grammar = workflowArguments(parsed); } catch (e) { grammar = e; }
+      return { remedy, command, parsed, grammar, accepted: !(grammar instanceof Error) };
+    };
+    for (const [name, values, kept] of [
+      ["neither", {}, ""],
+      ["--json", { json: true }, " --json"],
+      ["--plain", { plain: true }, ""],
+    ] as const) {
+      const got = accepted({ space: "s", server: "nats://127.0.0.1:4222", endpoint: "manager", ...values });
+      const expected = `cotal run --page --on ${instance} --space s --server 'nats://127.0.0.1:4222' --endpoint manager${kept}`;
+      c(`the page named for a ${name} list parses and the page form accepts it`,
+        got.accepted === true && got.command === expected && !(got.command ?? "").includes("--plain"), got);
+    }
   }
   {
     const paged = unansweredHostFailure("run-ps", "s", sent("run-ps"), { page: true });

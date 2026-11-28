@@ -1101,14 +1101,14 @@ function retryFlag(flag: string, value: string | undefined): string {
   return ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
 }
 
-/** A page of the same list. `<instance>` is one `cotal ps` names. A manager answers a page from contract
- *  revision 29 on. A private target value is never echoed: `--creds` stays a placeholder, and a server
- *  address that carries credentials is not printed. */
+/** A page of the same list. `<instance>` is one `cotal ps` names, from contract revision 29 on.
+ *  `--creds` stays a placeholder, a credentialled server is left out, and `--plain` is not printed:
+ *  a page is JSON and refuses it. */
 function runPageRemedy(values: RunValues): string {
   const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
   const shown: RunValues = { ...values, ...(values.creds !== undefined ? { creds: "<file>" } : {}), ...(privateServer ? { server: undefined } : {}) };
   const flags = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, shown[flag])).join("");
-  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  const output = values.json ? " --json" : "";
   return `a list that misses its budget may miss it again; ${codeSpan(`cotal run --page --on <instance>${flags}${output}`)} reads one page. <instance> is one \`cotal ps\` names, and a page needs a manager at contract revision 29 or later`;
 }
 
