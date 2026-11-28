@@ -73,10 +73,10 @@ if every declared connector is unavailable, those commands stay on this instance
 while a launch, preserved resume, supervised restart, model lookup or command listing rechecks
 only the requested connector. Once a connector becomes available, its resolved executable paths
 stay pinned and never switch to another copy on `PATH`; if a pinned file disappears or leaves
-`PATH`, the row becomes unavailable until that pinned file returns or the manager restarts.
-Finding the first available application on a read or launch enables the class rail without a
-restart, and losing the last available application drops it when that read or launch observes the
-change.
+`PATH`, the row becomes unavailable (naming any other copy now on `PATH`) until that pinned file
+returns or the manager restarts. Finding the first available application on a read or launch
+enables the class rail without a restart, and losing the last available application drops it when
+that read or launch observes the change.
 `describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
 on the class rail, an unpinned spawn is refused and names the agent application to add. Wire

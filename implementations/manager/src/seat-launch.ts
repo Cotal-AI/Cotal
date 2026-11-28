@@ -352,15 +352,22 @@ export class SeatLaunch {
   }
 
   /** Named harness-unavailable refusal. Wire `spawn`/`launch` refusals name `--on` so a caller on
-   *  the class rail or a pinned instance can restore the harness or pin another manager in the
-   *  space; the standing serve credential cannot enumerate sibling `svc.*.status` inventories, so
-   *  the residual is the flag, not a list of capable instance ids. Direct in-process `startAgent`
-   *  calls (`route` undefined) keep the local reason only. */
+   *  the class rail or a pinned instance can act on this host or pin another manager in the space;
+   *  the standing serve credential cannot enumerate sibling `svc.*.status` inventories, so the
+   *  residual is the flag, not a list of capable instance ids. Direct in-process `startAgent` calls
+   *  (`route` undefined) keep the local reason only. */
   harnessUnavailableError(reason: string, route?: "one" | "all" | "inst"): string {
     if (route === undefined) return reason;
-    if (route === "inst")
-      return `${reason}. Restore the harness on this host, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
-    return `${reason}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
+    const clean = reason.replace(/\.+$/, "");
+    if (route === "inst") {
+      if (clean.startsWith("Claude wake channel setup failed:"))
+        return `${clean}, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+      if (clean.includes(" - not found"))
+        return `${clean}. Restore the harness on this host, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+      if (clean.includes("(restart this Manager to use it)"))
+        return `${clean}. Restart this Manager to use the copy now on PATH, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+    }
+    return `${clean}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
   }
 
   /** The refusal for a `once` spawn this manager cannot run as one task: every check is made before

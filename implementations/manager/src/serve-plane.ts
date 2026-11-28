@@ -277,6 +277,7 @@ export class ServePlane {
       }
       s.nc = nc;
       s.handle = handle;
+      this.syncClassSpawn();
       console.error(`manager service endpoint re-dialed: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${s.grant.epoch})`);
       return true;
     });

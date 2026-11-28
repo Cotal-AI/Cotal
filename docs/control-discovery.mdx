@@ -394,13 +394,14 @@ A `status` read rechecks every declared connector row on the Manager's `PATH`, w
 preserved resume, supervised restart, model lookup or command listing rechecks only the requested
 connector. Once a connector becomes available, its resolved executable paths stay pinned and never
 switch to another copy on `PATH`; if a pinned file disappears or leaves `PATH`, the row becomes
-unavailable until that pinned file returns or the Manager restarts. When the first application
-becomes available on a read or launch, the Manager subscribes to class `spawn` and `launch`
-without restarting, and when that read or launch observes none remaining available it unsubscribes
-them. A manager that can launch some connectors keeps the class rail. Wire `spawn` and `launch`
-refusals for an unavailable harness name `--on`, because the standing serve credential cannot read
-sibling inventories. Restore the harness on that host, or pin a capable instance (the whole id, as
-`ps` prints it).
+unavailable (naming any other copy now on `PATH`) until that pinned file returns or the Manager
+restarts. When the first application becomes available on a read or launch, the Manager subscribes
+to class `spawn` and `launch` without restarting, and when that read or launch observes none
+remaining available it unsubscribes them. A manager that can launch some connectors keeps the class
+rail. Wire `spawn` and `launch` refusals for an unavailable harness name `--on`, because the
+standing serve credential cannot read sibling inventories. Follow the refusal's host remedy
+(restore a missing harness, restart the Manager for a moved copy, or run host setup), or pin a
+capable instance (the whole id, as `ps` prints it).
 
 ## Scatter liveness [#scatter-and-liveness]
 

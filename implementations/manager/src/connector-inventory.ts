@@ -95,8 +95,8 @@ export class ConnectorInventory {
       cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
       await provider.connector.run({ cotal, machineHost: true });
     } catch (error) {
-      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
-      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.settings.machineSetupCommand}\` on this computer.`;
+      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800)).replace(/[.!?]+$/, "");
+      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.settings.machineSetupCommand}\` on this computer`;
     }
   }
 
