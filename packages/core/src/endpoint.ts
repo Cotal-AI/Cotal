@@ -422,6 +422,15 @@ export class CotalEndpoint extends EventEmitter {
     return this.messaging.multicast(text, opts);
   }
 
+  /** {@link multicast}, plus the chat stream sequence the broker acknowledged for the entry it wrote,
+   *  the handle `confirm-attach` names a post by. */
+  async multicastWithAck(
+    text: string,
+    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
+  ): Promise<{ msg: CotalMessage; seq: number; duplicate: boolean }> {
+    return this.messaging.multicastWithAck(text, opts);
+  }
+
   /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
    *  caller's own payload.
    *
