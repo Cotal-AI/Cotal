@@ -993,12 +993,13 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     else connections.delete(name);
   }
   if (connections.size && !editing && !linked) listOpened = true;
+  if (!space && !editing && !setupActive && Array.isArray(status.managers) && status.managers.some(item => item.state === "starting")) { listOpened = true; showStage("finished"); buttons(); return; }
   if (upgradeNeeded) {
     state("ready", space);
     showStage(stage);
     buttons(); return;
   }
-  if (space) {
+  if (space && !editing && !setupActive && !choosingSpace) {
     const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
     if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
     instances.delete(space);
