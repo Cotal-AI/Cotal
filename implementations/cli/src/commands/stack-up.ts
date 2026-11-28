@@ -821,6 +821,21 @@ function advertisedWebsocketPort(port: number | undefined, mode: string, space: 
   return running ? port : undefined;
 }
 
+/** Wait out a dead predecessor's delivery lease before a replacement daemon starts. A daemon that was
+ *  killed, or that exited when its broker went away, cannot release shard 0, and a replacement started
+ *  inside the row's TTL loses the create and refuses to bind. No daemon runs here, so a row held by the
+ *  credential this folder gave the previous one is that dead daemon's: wait for the bucket TTL to
+ *  remove it. A row written again meanwhile has a live holder, and that is refused. */
+async function awaitPreviousDeliveryLease(a: { root: string; space: string; server: string; creds: string; previous: string; presentation: StackUpRequest["presentation"] }): Promise<void> {
+  const { root, space, server } = a;
+  const waited = await awaitDeadDeliveryLease({
+    servers: server, space, creds: a.creds, tls: resolveNativeServiceTarget(root, space, server).tlsRequired,
+    deadHolder: deliveryLeaseHolderFor(a.previous), ttlMs: LEASE_TTL_MS,
+    onWait: (ms) => { if (a.presentation !== "json") process.stderr.write(`${STACK_DEFINITION.delivery}: shard 0 is still leased to this folder's previous delivery daemon, which is not running; waiting ${Math.ceil(ms / 1000)}s for the lease to expire\n`); },
+  });
+  if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; \`cotal down\` does not reach a daemon this folder has no record of` });
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -1259,20 +1274,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const stoppedDelivery = prepared && runningDelivery && await stopDeliveryForBrokerRepair(root, recordedMembers, runningDelivery);
       if (!runningDelivery || stoppedDelivery) {
         const creds = await mintCreds(auth, newIdentity(), "delivery");
-        // A daemon that was killed, or that exited when its broker went away, cannot release shard 0,
-        // and a replacement started inside the row's TTL loses the create and refuses to bind. No
-        // daemon runs here, so a row held by the credential this folder gave the previous one is that
-        // dead daemon's: wait for the bucket TTL to remove it. A row written again meanwhile has a
-        // live holder, and that is refused.
+        // A previous daemon's shard-0 lease is waited out first (awaitPreviousDeliveryLease).
         const previous = await store.get(credsKey);
-        if (previous !== undefined) {
-          const waited = await awaitDeadDeliveryLease({
-            servers: server, space, creds, tls: resolveNativeServiceTarget(root, space, server).tlsRequired,
-            deadHolder: deliveryLeaseHolderFor(previous), ttlMs: LEASE_TTL_MS,
-            onWait: (ms) => { if (request.presentation !== "json") process.stderr.write(`${STACK_DEFINITION.delivery}: shard 0 is still leased to this folder's previous delivery daemon, which is not running; waiting ${Math.ceil(ms / 1000)}s for the lease to expire\n`); },
-          });
-          if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; \`cotal down\` does not reach a daemon this folder has no record of` });
-        }
+        if (previous !== undefined) await awaitPreviousDeliveryLease({ root, space, server, creds, previous, presentation: request.presentation });
         await store.put(credsKey, creds);
       }
       const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server, ...(serve?.length ? { serve } : {}) }, 40000), root, replace("delivery"));
