@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import axe from "axe-core";
 import { nativeStub, scenarios } from "./fixtures.mjs";
 import { sidebarScenarios } from "./sidebar.mjs";
+import { MOTION_ELEMENTS, readMotion, recordMotion, reducedRun, reducedViolations } from "./motion.mjs";
 
 const root = resolve(process.env.RENDER_DIST ?? fileURLToPath(new URL("../../dist/", import.meta.url)));
 const output = resolve(process.env.SHOTS ?? "test/render/artifacts");
@@ -27,6 +28,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ["--no-sandbox"] });
 let count = 0;
+const motion = { normal: 0, normalElements: 0, reduced: 0, reducedStill: 0 };
 const failed = [];
 const matrix = process.env.SIDEBAR_ONLY ? sidebarScenarios(scenarios) : [...scenarios, ...(scenarios.some(({ name }) => name === "welcome") ? sidebarScenarios(scenarios) : [])];
 const cases = matrix.filter(scenario => !process.env.CASES || process.env.CASES.split(",").includes(scenario.name));
@@ -102,6 +104,7 @@ try {
       page.on("request", request => requests.push(request.url()));
       page.on("pageerror", error => errors.push(error.message));
       page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+      await page.addInitScript(recordMotion);
       await page.addInitScript(nativeStub, scenario.state);
       await page.goto(address);
       await page.evaluate(() => document.fonts.ready);
@@ -155,6 +158,13 @@ try {
         await page.evaluate(() => { for (const a of window.__motion) a.cancel(); });
       }
       await page.waitForTimeout(300);
+      if (reducedMotion === "no-preference") {
+        // The control: what stands still under reduce does move here, so the reduce check can't pass by showing nothing.
+        const shown = await page.evaluate(selector => [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length).map(el => el.getAnimations({ subtree: true }).some(a => a.playState === "running")), MOTION_ELEMENTS);
+        assert.ok(shown.every(Boolean), `${name}: spinner and progress bar animate in normal motion`);
+        motion.normal += (await readMotion(page)).length;
+        motion.normalElements += shown.length;
+      }
       await page.screenshot({ path: `${output}/${name}.png`, fullPage: true });
       if (scenario.expect) { await scenario.expect(page); await page.waitForTimeout(300); }
       assert.equal(await page.evaluate(() => window.__renderState.paintReports), 1, `${name}: first paint reported once, including while daemon status waits`);
@@ -282,8 +292,8 @@ try {
         visited.push(await page.evaluate(() => document.activeElement.id || document.activeElement.tagName));
       }
       assert.deepEqual(visited, expected, `${name}: keyboard order`);
-      await page.emulateMedia({ reducedMotion: "reduce" });
       if (scenario.name === 'audit-account-refusal-agents') {
+        await page.emulateMedia({ reducedMotion: "reduce" });
         await page.waitForTimeout(350);
         const viewport = page.viewportSize();
         await page.setViewportSize({ width: viewport.width, height: Math.round(viewport.height * .7) });
@@ -291,9 +301,12 @@ try {
         const sizingAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'running' && a.effect?.target?.id === 'agent-list').map(a => a.transitionProperty || a.animationName));
         assert.deepEqual(sizingAnimations, [], `${name}: delayed resize has no agent sizing motion under reduce`);
       }
-      await page.waitForTimeout(300);
-      const runningAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").map(a => ({ target: a.effect?.target?.id, name: a.animationName || a.transitionProperty })));
-      assert.deepEqual(runningAnimations, [], `${name}: reduced motion`);
+      if (reducedMotion === "no-preference") {
+        const reduced = await reducedRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
+        assert.deepEqual(reducedViolations(reduced.entries), [], `${name}: reduced motion only fades and never repeats`);
+        motion.reduced += reduced.entries.length;
+        motion.reducedStill += reduced.still;
+      }
       count++;
       console.log(`PASS ${name}`);
     } catch (error) {
@@ -303,5 +316,7 @@ try {
     }
   }
   console.log(`${count} screen renders passed. Screenshots: ${output}`);
+  console.log(`Motion: normal ${motion.normal} animations (${motion.normalElements} spinner or progress bar shown); reduced ${motion.reduced} animations, ${motion.reducedStill} spinner or progress bar held still.`);
   assert.deepEqual(failed, [], "failed screen renders");
+  if (motion.normalElements) assert.ok(motion.reducedStill > 0, "reduced motion: the spinner and progress bar shown in normal motion are present and still under reduce");
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
