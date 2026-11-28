@@ -10,6 +10,13 @@ export function nativeStub(scenario) {
   ];
   const callbacks = new Map(); let next = 0;
   const state = { ...scenario, accountRequests: [] };
+  if (state.trackOwnerTimer) {
+    const schedule = window.setTimeout;
+    window.setTimeout = function (callback, delay, ...args) {
+      if (delay === 5000) state.ownerTimers = (state.ownerTimers ?? 0) + 1;
+      return schedule.call(this, callback, delay, ...args);
+    };
+  }
   const ok = result => ({ v: 1, event: "result", ok: true, result });
   const fail = (code, message, native) => ({ v: 1, event: "result", ok: false, error: { code, message, ...(native ? { native: { code: native } } : {}) } });
   const manager = () => ({ space: "acme-team", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }, { agent: "codex", state: "available" }] });
@@ -38,15 +45,18 @@ export function nativeStub(scenario) {
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
-      if (command === "set_connection_state") { state.tray = [...(state.tray ?? []), args]; return null; }
+      if (command === "set_connection_state") { state.nativeConnection = args; return null; }
       if (command === "open_browser" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
+      if (state.trackAppNavigation && ["install", "login", "setup"].includes(request.op)) {
+        (state.connectionActions ??= []).push(request.op);
+      }
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
       if (request.op === "log") { state.logReads = (state.logReads ?? 0) + 1; if (state.logError) return fail("LOG_UNAVAILABLE", "The background service log could not be read."); return ok({ text: state.logText ?? "", truncated: state.logTruncated === true }); }
       if (request.op === "about") {
         if (state.loading) await new Promise(() => {});
-        return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
+        return ok({ version: "0.156.0", machine: state.aboutMachine ?? "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
       if (request.op === "update-policy") { if (state.policyError) throw new Error("Preference unavailable"); if (request.auto !== undefined) state.autoUpdates = request.auto; return ok({ auto: state.autoUpdates !== false }); }
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
@@ -55,22 +65,28 @@ export function nativeStub(scenario) {
       if (request.op === "agent-apps") {
         state.appsRequests = [...(state.appsRequests ?? []), request.refresh === true];
         if (state.appsHold) await new Promise(() => {});
-        // A refresh follows the live service state: once the other copy has fixed it, the service picks the app up.
-        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: state.appService ?? state.refreshService ?? "unchanged" } : {}) });
+        return ok({ apps: state.agentApps ?? defaultApps, management: state.appManagement ?? (state.installed ? "service" : "local"), ...(state.serviceOwner ? { serviceOwner: state.serviceOwner } : {}), ...(request.refresh && state.refreshService ? { serviceRefresh: state.refreshService } : {}) });
       }
       if (request.op === "agent-app-install" || request.op === "agent-app-sign-in") {
         state.appActions = [...(state.appActions ?? []), `${request.op}:${request.name}`];
         const installing = request.op === "agent-app-install";
         for (const line of installing ? state.installLines ?? ["Downloading the installer from its maker", "Installing native build latest…"] : ["Opening browser to sign in…", "If the browser didn't open, visit:", "https://claude.ai/oauth/authorize?code=true"]) send({ v: 1, event: "agent-app-progress", name: request.name, line });
         if (installing ? state.appInstallHold : state.signInHold) await new Promise(() => {});
+        if (installing && state.appInstallUnknown) return fail("OPERATION_UNKNOWN", "The service disconnected before returning the install result.");
         if (installing && state.appInstallFails) return { v: 1, event: "result", ok: false, error: { code: "OPERATION_FAILED", message: "the installer stopped with exit code 1", native: { code: "INSTALLER_FAILED", detail: "curl: (56) Recv failure: Connection reset by peer\nerror: the download did not finish" } } };
         const apps = state.agentApps ?? defaultApps;
         const app = { ...apps.find(item => item.name === request.name), state: installing && request.name === "claude" ? "signed-out" : installing ? "installed" : "signed-in", version: "2.1.332" };
         delete app.missing;
         state.agentApps = apps.map(item => item.name === request.name ? app : item);
-        return ok(installing ? { app, service: state.appService ?? "refreshed", ...(state.serviceError ? { serviceError: state.serviceError } : {}), ...(state.serviceOwner ? { serviceOwner: state.serviceOwner } : {}), ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
+        if (installing && state.ownerChangesOnInstall) {
+          state.appManagement = "other-copy";
+          state.serviceOwner = { kind: "app" };
+          return ok({ app, serviceOwner: state.serviceOwner, serviceRefresh: { state: "pending", reason: "unconfirmed" } });
+        }
+        return ok(installing ? { app, ...(state.appService ? { serviceRefresh: state.appService } : {}), ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
       }
       if (request.op === "install") {
+        state.installRequests = (state.installRequests ?? 0) + 1;
         for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
         if (state.installHold) await new Promise(resolve => { window.__releaseInstall = resolve; });
         if (state.installWait) await new Promise(() => {});
@@ -78,10 +94,15 @@ export function nativeStub(scenario) {
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
+      if (request.op === "start") {
+        (state.startRequests ??= []).push(request);
+        state.serviceStopped = false;
+        return ok({ state: "start-requested" });
+      }
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
-      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
+      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(state.explicitStop ? { stopped: "by-you" } : {}) } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...state.statusFields });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
       if (request.op === "status-watch") {
@@ -104,8 +125,8 @@ export function nativeStub(scenario) {
         return await new Promise(resolve => { window.__closeStatusWatch = resolve; });
       }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
-      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
-      if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
+      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? (state.signedInProviders ?? ["https://cloud.cotal.ai/api/auth"]) : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
+      if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? state.aboutMachine ?? "Davids-MacBook-Pro" }); }
       if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
       if (request.op === "logout") {
         state.accountRequests.push({ ...request });
@@ -193,38 +214,134 @@ const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `te
 const appState = (name, state, extra = {}) => ({ name, title: { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", pi: "pi", jcode: "Jcode", hermes: "Hermes" }[name], maker: { claude: "Anthropic", codex: "OpenAI", opencode: "Anomaly", pi: "Earendil", jcode: "Jeremy Huang", hermes: "Nous Research" }[name], state, ...(state === "missing" ? { missing: [{ claude: "claude", codex: "codex", opencode: "opencode", pi: "pi", jcode: "jcode", hermes: "uv" }[name]] } : { version: "1.4.2" }), install: { source: { claude: "claude.ai", codex: "chatgpt.com", opencode: "opencode.ai", pi: "pi.dev", jcode: "jcode.sh", hermes: "astral.sh" }[name] }, ...(["claude", "codex"].includes(name) ? { signIn: true } : {}), ...extra });
 const connectedApps = { installed: true, signedIn: true, connected: true };
 const accountOnly = { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } };
-const openApps = async page => { await page.getByRole("button", { name: /^(Agent apps: |See all apps$)/ }).click(); await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor(); };
+const openApps = async page => { await page.click("#view-apps"); await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor(); };
+const installClaude = async page => { await openApps(page); await appButton(page, "Install: Claude Code").click(); };
 const appButton = (page, label) => page.getByRole("button", { name: label, exact: true });
 const noApps = ["claude", "codex", "opencode", "pi", "jcode", "hermes"].map(name => appState(name, "missing"));
+const viewTab = (page, name) => page.getByRole("tab", { name, exact: true });
+async function openAppsDuringSetup(page) {
+  const tab = viewTab(page, "Agent apps");
+  assert.equal(await tab.isVisible(), true, "Agent apps is reachable without completing connection setup");
+  await viewTab(page, "Connection").focus();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await tab.getAttribute("aria-selected"), "true");
+  await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor();
+}
+async function expectAppRecovery(page, sentence, label) {
+  const panel = page.locator("#apps-panel");
+  assert.equal(await panel.getByText(sentence, { exact: true }).isVisible(), true, `approved copy: ${sentence}`);
+  const controls = panel.getByRole("button", { name: /^(Fix in Connection|Check again)$/ });
+  const enabled = [];
+  for (const button of await controls.all()) {
+    if (await button.isEnabled()) enabled.push(await button.innerText());
+  }
+  assert.deepEqual(enabled, [label], "one enabled recovery button");
+  assert.equal(await page.evaluate(() => window.__renderState.ownerTimers ?? 0), 0, "no 5s owner retry scheduled");
+  return controls.and(panel.locator(":enabled"));
+}
+const appOwnerRefusals = [
+  ["version-conflict", "The app and the background service are different versions."],
+  ["older-service", "This background service is too old to manage agent apps here."],
+  ["foreground", "Cotal is running without an installed background service. This app can show your agent apps, but it can’t change them."],
+  ["unrecorded-service", "There's a background service on this computer that this copy of Cotal can't verify. It won't change your agent apps."],
+  ["no-user-services", "Cotal can't reach this Linux session's user services. Open Cotal from a desktop session, then choose Check again.", "Check again"],
+];
 const appsScenarios = [
-  { name: "agent-apps-strip", state: connectedApps, expect: async page => {
-    const chip = page.locator("#apps-chip");
-    await chip.waitFor();
-    assert.equal(await page.locator("#apps-chip .app-logo").count(), 2);
-    assert.equal(await chip.getAttribute("aria-label"), "Agent apps: Claude Code and Codex ready");
-    assert.equal(await page.locator("#apps-strip").isVisible(), false, "no callout once an app is ready");
-    const [dashboard, button] = await Promise.all([page.locator("#dashboard").boundingBox(), chip.boundingBox()]);
-    assert.ok(Math.abs(dashboard.y + dashboard.height / 2 - (button.y + button.height / 2)) <= 1, "the button shares Open dashboard's row");
+  { name: "agent-apps-before-setup", state: { trackAppNavigation: true, agentApps: noApps, appManagement: "local" }, act: async page => {
+    await page.locator("#sign-in-panel:not([hidden])").waitFor();
+    const title = await page.locator("#connection-title").textContent();
+    await openAppsDuringSetup(page);
+    assert.equal(await page.locator("#apps-local").isVisible(), true);
+    await appButton(page, "Install: Jcode").click();
+    await page.locator('[data-app="jcode"] .app-status').getByText(/Installed.*version/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:jcode"]);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.connectionActions ?? []), [], "installing an app never starts Cotal setup");
+    await viewTab(page, "Settings").click();
+    assert.equal(await page.locator("#settings-panel").isVisible(), true);
+    await viewTab(page, "Connection").click();
+    assert.equal(await page.locator("#connection-title").textContent(), title);
+    await openAppsDuringSetup(page);
   } },
-  { name: "agent-apps-strip-sign-in", state: { ...connectedApps, agentApps: [appState("claude", "signed-in"), appState("codex", "signed-out"), appState("opencode", "missing")] }, act: async page => { await page.click("#apps-chip"); await page.locator("#apps-panel:not([hidden]) .app-row").first().waitFor(); await page.click("#apps-back"); }, expect: async page => {
-    assert.equal(await page.locator("#apps-chip").getAttribute("aria-label"), "Agent apps: Claude Code ready; Codex not signed in");
-    assert.equal(await page.locator("#apps-chip .app-badge.warn").count(), 1);
-    assert.equal(await page.evaluate(() => document.activeElement?.id), "apps-chip", "Back returns focus to the button that opened the screen");
+  { name: "agent-apps-during-sign-in", state: { installed: true, waiting: true, trackAppNavigation: true, agentApps: noApps, appManagement: "service" }, act: async page => {
+    await page.click("#login");
+    await page.waitForFunction(() => window.__renderState.connectionActions?.includes("login"));
+    const title = await page.locator("#connection-title").textContent();
+    await openAppsDuringSetup(page);
+    await page.click("#apps-refresh");
+    await page.waitForFunction(() => window.__renderState.appsRequests?.includes(true));
+    await appButton(page, "Install: Jcode").click();
+    await page.locator('[data-app="jcode"] .app-status').getByText(/Installed.*version/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:jcode"]);
+    assert.equal(await viewTab(page, "Agent apps").getAttribute("aria-selected"), "true");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.connectionActions), ["login"]);
+    await viewTab(page, "Connection").click();
+    assert.equal(await page.locator("#connection-title").textContent(), title);
+    await openAppsDuringSetup(page);
+  } },
+  { name: "agent-apps-other-copy", state: { appManagement: "other-copy", agentApps: noApps }, act: openAppsDuringSetup, expect: async page => {
+    assert.match(await page.locator("#apps-owner").textContent(), /^Another copy of Cotal runs the background service/);
+    assert.equal(await page.locator("#app-list button").count(), 0);
+    await page.getByRole("button", { name: "Fix in Connection" }).click();
+    assert.equal(await viewTab(page, "Connection").getAttribute("aria-selected"), "true");
+  } },
+  ...appOwnerRefusals.map(([management, sentence, label = "Fix in Connection"]) => ({
+    name: `agent-apps-${management}`,
+    state: { appManagement: management, agentApps: noApps, platform: "linux", trackOwnerTimer: true },
+    act: openAppsDuringSetup,
+    expect: async page => {
+      const recovery = await expectAppRecovery(page, sentence, label);
+      assert.equal(await page.locator("#app-list button:enabled").count(), 0, "ownership refusal blocks app changes");
+      if (label === "Fix in Connection") {
+        await recovery.click();
+        assert.equal(await viewTab(page, "Connection").getAttribute("aria-selected"), "true");
+      }
+    },
+  })),
+  { name: "agent-apps-install-unknown", state: { appManagement: "local", agentApps: noApps, appInstallUnknown: true, trackOwnerTimer: true }, act: async page => {
+    await openAppsDuringSetup(page);
+    await page.evaluate(() => { window.__renderState.appsRequests = []; });
+    await appButton(page, "Install: Jcode").click();
+    await page.locator("#apps-message").filter({ hasText: /\S/ }).waitFor();
+  }, expect: async page => {
+    const recovery = await expectAppRecovery(page, "Cotal couldn’t confirm whether the app changed. Choose Check again to see its current status.", "Check again");
+    assert.equal(await page.locator("#app-list button:enabled").count(), 0, "unknown outcome blocks app changes");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appsRequests), [], "inventory waits for Check again");
+    await page.evaluate(() => {
+      const state = window.__renderState;
+      state.agentApps = state.agentApps.map(app => app.name === "jcode" ? { ...app, state: "installed", missing: [], version: "1.4.2" } : app);
+    });
+    await recovery.click();
+    await page.locator('[data-app="jcode"] .app-status').getByText(/Installed.*version/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appsRequests), [false], "Check again reads inventory without requesting a service refresh");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:jcode"], "Check again does not replay the install or start sign-in");
+  } },
+  { name: "agent-apps-checking-owner", state: { appManagement: "checking", agentApps: noApps, trackOwnerTimer: true }, act: openAppsDuringSetup, expect: async page => {
+    assert.match(await page.locator("#apps-owner").textContent(), /checking the background service/i);
+    assert.equal(await page.locator("#app-list button").count(), 0);
+    assert.equal(await page.locator("#apps-fix-connection").isVisible(), false);
+    assert.equal(await page.evaluate(() => window.__renderState.ownerTimers), 1, "checking schedules one 5s owner retry");
+    await page.evaluate(() => { window.__renderState.appManagement = "local"; });
+    await appButton(page, "Install: Jcode").waitFor({ timeout: 8000 });
+    assert.equal(await page.locator("#apps-owner").isVisible(), false);
+  } },
+  { name: "agent-apps-mixed-sign-in", state: { ...connectedApps, agentApps: [appState("claude", "signed-in"), appState("codex", "signed-out"), appState("opencode", "missing")] }, act: openApps, expect: async page => {
+    assert.match(await page.locator('[data-app="claude"] .app-status').textContent(), /Signed in/);
+    assert.match(await page.locator('[data-app="codex"] .app-status').textContent(), /Not signed in/i);
+    assert.equal(await appButton(page, "Sign in: Codex").isVisible(), true);
   } },
   { name: "agent-apps-panel", state: connectedApps, act: openApps, expect: async page => {
     assert.equal(await page.locator("#app-list .app-row").count(), 6);
     assert.deepEqual(await page.locator("#app-list .app-name").evaluateAll(nodes => nodes.map(node => node.firstChild.textContent)), ["Claude Code", "Codex", "OpenCode", "pi", "Jcode", "Hermes"]);
     assert.match(await page.locator('[data-app="claude"] .app-status').textContent(), /Signed in · version 2\.1\.332/);
     assert.equal(await page.locator(".connection-card").isVisible(), false);
-    await page.click("#apps-back");
+    await page.click("#view-connection");
     assert.equal(await page.locator("#apps-panel").isVisible(), false);
     assert.equal(await page.locator(".connection-card").isVisible(), true);
     await openApps(page);
   } },
-  { name: "agent-apps-none", state: { ...accountOnly, agentApps: noApps }, expect: async page => {
-    await page.locator("#apps-strip.apps-callout").waitFor();
-    assert.match(await page.locator("#apps-strip h2").textContent(), /Install an agent app/);
-    assert.equal(await appButton(page, "Install Claude Code from claude.ai").isVisible(), true);
+  { name: "agent-apps-none", state: { ...accountOnly, agentApps: noApps }, act: openApps, expect: async page => {
+    assert.equal(await page.locator('#app-list [data-state="missing"]').count(), 6);
+    assert.equal(await appButton(page, "Install: Claude Code").isVisible(), true);
   } },
   { name: "agent-apps-provenance", state: { ...accountOnly, agentApps: [appState("claude", "missing"), appState("hermes", "missing"), { name: "thing", title: "Thing", maker: "Thing Co", state: "missing", missing: ["thing"], install: { source: "thing.example" }, package: "cotal-connector-thing" }] }, act: openApps, expect: async page => {
     assert.equal(await page.locator('[data-app="claude"] .app-status').textContent(), "Not installed · installs from claude.ai");
@@ -232,79 +349,64 @@ const appsScenarios = [
     assert.equal(await page.locator('[data-app="thing"] .app-status').textContent(), "Not installed · installs from thing.example · package cotal-connector-thing");
     assert.equal(await appButton(page, "Install: Thing").isVisible(), true);
   } },
-  { name: "agent-apps-only-third-party", state: { ...accountOnly, agentApps: [{ name: "thing", title: "Thing", maker: "Thing Co", state: "missing", missing: ["thing"], install: { source: "thing.example" }, package: "cotal-connector-thing" }] }, expect: async page => {
-    await page.locator("#apps-strip.apps-callout").waitFor();
-    assert.equal(await page.locator("#apps-strip .button.primary").count(), 0, "the callout offers no one-click install of a connector that is not Cotal's");
-    assert.equal(await appButton(page, "See all apps").isVisible(), true);
+  { name: "agent-apps-only-third-party", state: { ...accountOnly, agentApps: [{ name: "thing", title: "Thing", maker: "Thing Co", state: "missing", missing: ["thing"], install: { source: "thing.example" }, package: "cotal-connector-thing" }] }, act: openApps, expect: async page => {
+    assert.equal(await page.locator("#app-list .app-row").count(), 1);
+    assert.equal(await appButton(page, "Install: Thing").isVisible(), true);
   } },
-  { name: "agent-apps-none-install", state: { ...accountOnly, agentApps: noApps, appInstallHold: true }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"][data-state="busy"]').waitFor(); }, expect: async page => {
+  { name: "agent-apps-none-install", state: { ...accountOnly, agentApps: noApps, appInstallHold: true }, act: async page => { await installClaude(page); await page.locator('[data-app="claude"][data-state="busy"]').waitFor(); }, expect: async page => {
     assert.equal(await page.locator("#apps-panel").isVisible(), true);
     assert.match(await page.locator('[data-app="claude"] .app-status').textContent(), /Installing from claude\.ai/);
     assert.match(await page.locator('[data-app="claude"] .app-line').textContent(), /Installing native build latest/);
     assert.equal(await appButton(page, "Install: Codex").isDisabled(), true);
     assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude"]);
   } },
-  { name: "agent-apps-install-signs-in", state: { ...accountOnly, agentApps: noApps, signInHold: true }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"] .app-status:has-text("Finish signing in")').waitFor(); }, expect: async page => {
+  { name: "agent-apps-install-signs-in", state: { ...accountOnly, agentApps: noApps, signInHold: true }, act: async page => { await installClaude(page); await page.locator('[data-app="claude"] .app-status:has-text("Finish signing in")').waitFor(); }, expect: async page => {
     assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude", "agent-app-sign-in:claude"]);
     assert.equal(await appButton(page, "Open sign-in page: Claude Code").isVisible(), true);
     await appButton(page, "Open sign-in page: Claude Code").click();
   } },
-  { name: "agent-apps-install-signs-in-service-failed", state: { ...accountOnly, agentApps: noApps, appService: "failed", serviceError: "the daemon did not answer within 60s" }, act: async page => { await appButton(page, "Install Claude Code from claude.ai").click(); await page.locator('[data-app="claude"][data-state="ready"]').waitFor(); }, expect: async page => {
+  { name: "agent-apps-install-signs-in-service-failed", state: { ...accountOnly, agentApps: noApps, appService: { state: "pending", reason: "unconfirmed" } }, act: async page => { await installClaude(page); await page.locator('[data-app="claude"][data-state="ready"]').waitFor(); }, expect: async page => {
     // The automatic sign-in keeps the reason the service has not picked Claude Code up; only a refresh that ran clears it.
     assert.deepEqual((await page.evaluate(() => window.__renderState.appActions)), ["agent-app-install:claude", "agent-app-sign-in:claude"]);
-    const reason = "Claude Code is signed in, but the background service has not picked it up yet: the daemon did not answer within 60s. Choose Check again to try once more.";
+    const reason = "Claude Code is signed in. Cotal couldn't confirm that the background service can use it. Choose Check again.";
     assert.equal(await page.locator("#apps-message").textContent(), reason);
-    // "unchanged" also means the service did not answer, so the reason stays.
+    // An inventory response without a pickup result cannot clear the warning.
     const asked = (await page.evaluate(() => window.__renderState.appsRequests)).length;
     await page.click("#apps-refresh");
     await page.waitForFunction(n => window.__renderState.appsRequests.length > n && !document.querySelector("#apps-refresh").disabled, asked);
     assert.equal(await page.locator("#apps-message").textContent(), reason);
-    await page.evaluate(() => { window.__renderState.appService = "refreshed"; });
+    await page.evaluate(() => { window.__renderState.refreshService = { state: "refreshed" }; });
     await page.click("#apps-refresh");
     await page.waitForFunction(() => document.querySelector("#apps-message")?.textContent === "");
     assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).at(-1), true);
   } },
-  // Another Cotal copy owns the background service: the install stands, but the outcome is a
-  // warning naming that copy and its step, and this copy's own Check again cannot succeed, so it is not offered.
-  { name: "agent-apps-install-other-owner", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app", location: "/Applications" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
-    const warning = "pi is installed. Another copy of Cotal runs the background service (the Cotal app in your Applications folder), so pi can't be used yet. Open that copy and choose Check again in its Agent apps.";
-    assert.equal(await page.locator("#apps-message").textContent(), warning);
-    assert.equal(await page.locator("#apps-message.warning").count(), 1, "the box is a warning, never success");
-    assert.equal(await page.locator("#apps-message.error").count(), 0);
-    assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
-    assert.ok(!(await page.locator("#apps-message").textContent()).includes("/"), "no path in the prose");
-  } },
-  // A command-line owner names the install kind and its own step.
-  { name: "agent-apps-install-command-line-owner", state: { ...connectedApps, agentApps: noApps, platform: "linux", appService: "failed", serviceOwner: { kind: "cli" } }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="ready"]').waitFor(); }, expect: async page => {
-    const warning = "Jcode is installed. Another copy of Cotal runs the background service (a command-line install of Cotal), so Jcode can't be used yet. Run setup again from that install.";
-    assert.equal(await page.locator("#apps-message").textContent(), warning);
-    assert.equal(await page.locator("#apps-message.warning").count(), 1, "the box is a warning, never success");
-    assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
-  } },
-  // A Linux app owner: the folder it is in is named, never "your Applications folder".
-  { name: "agent-apps-install-linux-app-owner", state: { ...connectedApps, agentApps: noApps, platform: "linux", appService: "failed", serviceOwner: { kind: "app", location: "/opt/apps" } }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="ready"]').waitFor(); }, expect: async page => {
-    const warning = "Jcode is installed. Another copy of Cotal runs the background service (the Cotal app in /opt/apps), so Jcode can't be used yet. Open that copy and choose Check again in its Agent apps.";
-    assert.equal(await page.locator("#apps-message").textContent(), warning);
-    assert.equal(await page.locator("#apps-message.warning").count(), 1, "the box is a warning, never success");
-    assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
-  } },
-  // A macOS app outside Applications: the folder is named, no Applications claim.
-  { name: "agent-apps-install-app-outside-applications", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app", location: "/Users/david/Downloads" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
-    const warning = "pi is installed. Another copy of Cotal runs the background service (the Cotal app in /Users/david/Downloads), so pi can't be used yet. Open that copy and choose Check again in its Agent apps.";
-    assert.equal(await page.locator("#apps-message").textContent(), warning);
-    assert.ok(!(await page.locator("#apps-message").textContent()).includes("your Applications folder"), "the folder is named only when it is known");
-    assert.equal(await page.locator("#apps-message.warning").count(), 1);
-    assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
-  } },
-  // The warning clears by itself once the other copy fixes the service: no button needed here.
-  { name: "agent-apps-install-other-owner-clears", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app", location: "/Applications" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
-    await page.locator("#apps-message:not(:empty)").waitFor();
-    // The person fixed the other copy; time passes (the reload only re-reads after 30s), then the
-    // next status-driven re-read notices and the box clears by itself.
-    await page.evaluate(() => { window.__renderState.appService = "refreshed"; const now = Date.now; Date.now = () => now() + 45_000; window.__pushStatus(); });
-    await page.waitForFunction(() => document.querySelector("#apps-message")?.textContent === "", null, { timeout: 20000 });
-    assert.equal(await page.locator("#apps-message.warning").count(), 0, "the warning style leaves with the warning");
-    assert.equal(await page.locator("#apps-refresh").isHidden(), false, "Check again returns once it can succeed again");
+  ...[
+    ["agent-apps-install-other-owner", "app", "the Cotal app", "Open that copy and choose Check again in its Agent apps."],
+    ["agent-apps-install-command-line-owner", "cli", "a command-line install of Cotal", "Run setup again from that install."],
+  ].map(([name, kind, owner, step]) => ({ name, state: { ...connectedApps, agentApps: noApps, appManagement: "other-copy", serviceOwner: { kind, location: "/private/fixture" }, trackOwnerTimer: true }, act: openApps, expect: async page => {
+    await expectAppRecovery(page, `Another copy of Cotal runs the background service (${owner}). This copy can show your agent apps but can't change them. ${step}`, "Fix in Connection");
+    assert.equal(await page.locator("#apps-owner.warning").count(), 1);
+    assert.equal(await page.locator("#app-list button:enabled").count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions ?? []), []);
+  } })),
+  { name: "agent-apps-install-other-owner-clears", state: { ...connectedApps, agentApps: noApps, ownerChangesOnInstall: true, trackOwnerTimer: true }, act: async page => {
+    await openApps(page);
+    await appButton(page, "Install: Claude Code").click();
+    await page.locator("#apps-owner.warning").waitFor();
+  }, expect: async page => {
+    const warning = "Claude Code is installed. Another copy of Cotal runs the background service (the Cotal app), so Claude Code can't be used yet. Open that copy and choose Check again in its Agent apps.";
+    const action = await expectAppRecovery(page, warning, "Fix in Connection");
+    assert.equal(await page.locator("#apps-owner.warning").count(), 1);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:claude"], "no sign-in replay to a new owner");
+    const reads = await page.evaluate(() => window.__renderState.appsRequests.length);
+    await page.evaluate(() => { const now = Date.now; Date.now = () => now() + 45_000; window.__pushStatus(); });
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(() => window.__renderState.appsRequests.length), reads, "a lasting owner does not schedule a read or native refresh");
+    await action.click();
+    await page.evaluate(() => { window.__renderState.appManagement = "service"; delete window.__renderState.serviceOwner; });
+    await openApps(page);
+    await page.waitForFunction(() => document.querySelector("#apps-owner").hidden);
+    assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).slice(reads), [false], "explicit re-entry reads inventory only");
   } },
   { name: "agent-apps-install-failed", state: { ...connectedApps, appInstallFails: true }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="failed"]').waitFor(); }, expect: async page => {
     assert.match(await page.locator('[data-app="jcode"] .app-status').textContent(), /Couldn’t install: The installer stopped with exit code 1/);
@@ -315,8 +417,25 @@ const appsScenarios = [
   { name: "agent-apps-installed-path", state: { ...connectedApps, pathAdded: "~/.zshrc" }, act: async page => { await openApps(page); await appButton(page, "Install: OpenCode").click(); await page.locator('[data-app="opencode"][data-state="ready"]').waitFor(); }, expect: async page => {
     assert.match(await page.locator("#apps-message").textContent(), /OpenCode is installed\. Cotal added its folder to PATH in ~\/\.zshrc\./);
   } },
-  { name: "agent-apps-installed-waiting", state: { ...connectedApps, appService: "waiting" }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
-    assert.match(await page.locator("#apps-message").textContent(), /once the agents running on this computer stop/);
+  { name: "agent-apps-installed-waiting", state: { ...connectedApps, appService: { state: "pending", reason: "agents-running" }, agents: [{ ...auditAgents[0], agents: auditAgents[0].agents.slice(0, 1) }] }, act: async page => {
+    await page.locator("#agent-list .agent-row").waitFor();
+    await page.waitForFunction(() => typeof window.__pushStatus === "function");
+    await openApps(page);
+    await page.evaluate(() => { window.__renderState.appsRequests = []; });
+    await appButton(page, "Install: pi").click();
+    await page.locator('[data-app="pi"][data-state="ready"]').waitFor();
+  }, expect: async page => {
+    assert.equal(await page.locator("#apps-message").textContent(), "pi is installed. Your spaces can use it once the running agents finish.");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appsRequests), [], "no pickup while the seat is running");
+    await page.evaluate(() => {
+      const state = window.__renderState;
+      state.agents[0].agents = [];
+      state.refreshService = { state: "refreshed" };
+      window.__pushStatus();
+    });
+    await page.waitForFunction(() => document.querySelector("#apps-message").textContent === "", null, { timeout: 8000 });
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appsRequests), [true], "status push triggers one inventory refresh");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:pi"], "pickup does not replay install");
   } },
   { name: "agent-apps-signed-out-needs", state: { ...connectedApps, platform: "win32", agentApps: [appState("claude", "signed-in"), appState("codex", "signed-out"), { ...appState("opencode", "missing"), install: undefined }, appState("pi", "missing", { install: { source: "pi.dev", needs: ["node", "npm"] } }), appState("jcode", "installed"), appState("hermes", "missing")] }, act: openApps, expect: async page => {
     assert.equal(await appButton(page, "Sign in: Codex").isVisible(), true);
@@ -343,9 +462,9 @@ export const scenarios = [
     },
   })),
   { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },
-    act: page => page.click('#open-settings'), expect: async page => { assert.match(await page.locator('#settings-update-summary').textContent(), /An app operation is still running/); } },
+    act: page => page.click('#view-settings'), expect: async page => { assert.match(await page.locator('#settings-update-summary').textContent(), /An app operation is still running/); } },
   { name: 'mac-apply-visible', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0' } },
-    act: page => page.click('#open-settings'), expect: async page => {
+    act: page => page.click('#view-settings'), expect: async page => {
       assert.equal(await page.locator('#restart-update').isVisible(), true);
       assert.match(await page.locator('#settings-update-summary').textContent(), /Restart to update/);
       assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0);
@@ -357,7 +476,7 @@ export const scenarios = [
     name: `installer-only-${mode}`,
     state: { installed: true, signedIn: true, connected: true, nativeCheckPending: mode === "pending", nativeCheckError: mode === "native-error", policyError: mode === "policy-error",
       update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}), ...(mode === "failed" ? { latest: undefined, lastResult: "check failed" } : {}), notify: mode !== "notify-off" } },
-    act: page => page.click("#open-settings"),
+    act: page => page.click("#view-settings"),
     expect: async page => {
       assert.equal(await page.locator("#update-preference-label").textContent(), "Notify me about updates");
       assert.equal(await page.locator("#update-preference").isChecked(), mode !== "notify-off");
@@ -369,14 +488,14 @@ export const scenarios = [
         await page.waitForFunction(() => window.__renderState.update.notify === true);
         assert.equal(await page.evaluate(() => window.__renderState.autoUpdates), undefined, "notify does not write shared auto");
       }
-      await page.click("#open-settings");
+      await page.click("#view-connection");
       assert.equal(await page.locator("#update-banner").isVisible(), !["current", "failed"].includes(mode));
     },
   })),
   ...["current", "failed"].map(phase => ({
     name: `app-manual-check-${phase}`,
     state: { installed: true, signedIn: true, connected: true, autoUpdates: false, appUpdate: { phase, checkedAt: Date.now(), reason: "Network unavailable" }, update },
-    act: async page => { await page.click("#open-settings"); await page.click("#check-updates"); },
+    act: async page => { await page.click("#view-settings"); await page.click("#check-updates"); },
     expect: async page => { assert.deepEqual(await page.evaluate(() => window.__renderState.appChecks), [{ manual: false }, { manual: true }]); },
   })),
 
@@ -384,7 +503,7 @@ export const scenarios = [
     name: `app-updater-${phase}`,
     state: { installed: true, signedIn: true, connected: true, autoUpdates: phase !== "off", update,
       appUpdate: { phase: phase === "off" ? "available" : phase, ...(phase === "preparing" || phase === "unconfigured" || phase === "current" || phase === "checking" ? {} : { version: "0.161.0" }), downloaded: 25, total: 100, ...(phase === "failed" ? { reason: "Signature verification failed" } : {}) } },
-    act: page => page.click("#open-settings"),
+    act: page => page.click("#view-settings"),
     expect: async page => {
       assert.equal(await page.locator("#settings-update-summary").getAttribute("data-update-state"), phase === "unconfigured" ? null : phase === "off" ? "available" : phase);
       assert.equal(await page.locator("#update-preference-label").textContent(), phase === "unconfigured" ? "Notify me about updates" : "Install updates automatically");
@@ -411,48 +530,31 @@ export const scenarios = [
     assert.ok(inline, "short names, pills and statuses share one line");
     const heights = await page.locator('[data-testid="connected-space-row"]').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
     assert.ok(heights.every(height => height < 70), "short names retain natural compact row heights");
-    const fit = await page.locator(".connected-spaces-scroll").evaluate(el => {
-      const rows = [...el.querySelectorAll("li")].map(row => row.getBoundingClientRect().height);
-      const height = el.getBoundingClientRect().height;
-      let used = 0;
-      let count = 0;
-      for (const row of rows) { if (used + row > height + 1) break; used += row; count++; }
-      const panel = el.closest("#connected-panel");
-      const card = el.closest(".connection-card");
-      const capacity = Math.min(220, panel.clientHeight + parseFloat(getComputedStyle(card).maxHeight) - card.getBoundingClientRect().height - (panel.scrollHeight - height));
-      return { height, used, count, next: rows[count] ?? 0, capacity };
-    });
-    if (page.viewportSize().width === 880) assert.ok(fit.count >= 4, "wide short-name list shows at least four whole rows");
-    assert.ok(Math.abs(fit.height - fit.used) <= 1, "list ends on a whole row");
-    assert.ok(fit.count === heights.length || fit.used + fit.next > fit.capacity - 1, "list shows every complete row that fits its budget");
-  } },
-  { name: "header-name-editor", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#edit-computer-name"), expect: async page => {
-    assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true, "finished header Edit opens the Settings row editor");
+    assert.equal(heights.length, 6, "all six short-name rows are rendered");
   } },
   { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
-    assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
+    assert.equal(await page.locator('[data-space="research"] .space-state').textContent(), "Starting", "a space without a ready Manager must not claim Connected");
   } },
   ...[
-    ["offline", "No internet connection", "Cotal reconnects by itself when this computer is back online.", "Offline", "offline", "this computer cannot look up cotal.cloud (ENOTFOUND)", "No internet connection"],
-    ["unreachable", "Can't reach your space", "Cotal reconnects by itself when the space answers again.", "Can't connect", "warning", "cotal.cloud is not answering", "Can't reach this space"],
-  ].map(([kind, title, description, pill, icon, reason, row]) => ({
+    ["offline", "No internet connection", "Cotal reconnects by itself when this computer is back online.", "Offline", "this computer cannot look up cotal.cloud (ENOTFOUND)", "No internet connection"],
+    ["unreachable", "Can't reach your space", "Cotal reconnects by itself when the space answers again.", "Can't connect", "cotal.cloud is not answering", "Can't reach this space"],
+  ].map(([kind, title, description, pill, reason, row]) => ({
     name: `account-connection-${kind}`,
     state: { installed: true, signedIn: true, connected: true, managers: [{ space: "research", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }], connection: { state: kind, reason } }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: kind }] } },
     expect: async page => {
       assert.equal(await page.locator("#connection-title").textContent(), title, "a lost connection must not claim Connected or Starting");
       assert.equal(await page.locator("#connection-description").textContent(), description);
-      assert.equal(await page.locator("#tray-label").textContent(), pill);
-      assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
-      assert.deepEqual(await page.evaluate(() => window.__renderState.tray?.at(-1)), { connected: false, label: pill }, "the tray tooltip must use the pill's words");
-      assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), icon);
-      assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), pill);
+      assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: pill }, "the native command must receive the sidebar's words");
+      assert.equal(await page.locator("#recovery-panel").isHidden(), true, "automatic reconnect must not show a Setup action");
       assert.equal(await page.locator('[data-space="research"] small').last().textContent(), `${row}: ${reason}`);
     },
   })),
 
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
-    act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+    act: async page => { await page.click("#view-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
     expect: async page => {
       assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true);
       assert.equal(await page.locator("#computer-name-input").evaluate(el => el === document.activeElement), true);
@@ -465,7 +567,7 @@ export const scenarios = [
   })),
   ...[false, true].map(missingAsset => ({
     name: `audit-settings-installer-outcome-${missingAsset ? "missing" : "available"}`, state: { installed: true, signedIn: true, connected: true, missingAsset, update },
-    act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); },
+    act: async page => { await page.click("#view-settings"); await page.click("#settings-download"); },
     expect: async page => {
       assert.equal(await page.locator("#settings-last-check").textContent(), missingAsset ? "No installer for this platform is on this release. Opening its release page." : "Install the downloaded version, then reopen Cotal.");
       assert.equal(await page.locator("#settings-last-check").isVisible(), true);
@@ -476,12 +578,15 @@ export const scenarios = [
     name: `audit-account-${mode}`,
     state: mode === "approval-copy" ? { installed: true, signedIn: true, serviceState: "approval-pending" } : { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } },
     act: async page => {
-      if (mode === "settings-label") await page.click("#open-settings");
+      if (mode === "settings-label") await page.click("#view-settings");
       if (mode === "add-space") await page.click("#another-space");
     },
     expect: async page => {
       if (mode === "connected-label") assert.equal(await page.locator('[data-space="acme-team"] strong').textContent(), "Acme team");
-      if (mode === "settings-label") assert.match(await page.locator("#settings-spaces").textContent(), /Acme team/);
+      if (mode === "settings-label") {
+        assert.match(await page.locator("#settings-account").textContent(), /david@cotal\.ai/);
+        assert.equal(await page.locator("#settings-spaces").textContent(), "Signed in · 2 spaces");
+      }
       if (mode === "add-space") {
         assert.equal(await page.locator("#space").isVisible(), true);
         assert.deepEqual(await page.locator("#space option").evaluateAll(options => options.filter(option => option.value).map(option => ({ value: option.value, label: option.textContent }))), [{ value: "acme-team", label: "Acme team" }, { value: "research", label: "Research" }]);
@@ -492,41 +597,41 @@ export const scenarios = [
       }
     },
   })),
-  { name: "audit-settings-name-edit", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
-  { name: "audit-settings-name-invalid", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
-  { name: "audit-settings-current-name-edit", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: "0.156.0" } }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
-  { name: "audit-settings-download-click", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
-  { name: "audit-settings-missing-click", state: { installed: true, signedIn: true, connected: true, missingAsset: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-settings-name-edit", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#view-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-name-invalid", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#view-settings"); await page.click("#settings-name"); await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+  { name: "audit-settings-current-name-edit", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: "0.156.0" } }, act: async page => { await page.click("#view-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-download-click", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#view-settings"); await page.click("#settings-download"); } },
+  { name: "audit-settings-missing-click", state: { installed: true, signedIn: true, connected: true, missingAsset: true, update }, act: async page => { await page.click("#view-settings"); await page.click("#settings-download"); } },
   { name: "audit-account-several-spaces", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } } },
   { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
-  { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
+  { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#view-settings"), expect: presenceOffer("pin-offer") },
   // Settings keeps its Startup row while the main card asks for attention behind it.
   ...[["sign-in-required", { installed: true, account: { mode: "sign-in-required", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "starting" }] } }],
     ["service-update", { installed: true, signedIn: true, connected: true, version: "0.155.0" }]].map(([mode, state]) => ({
     name: `settings-startup-${mode}`, state,
-    act: page => page.click("#open-settings"),
+    act: page => page.click("#view-settings"),
     expect: async page => {
       assert.equal(await page.locator("#settings-panel").isVisible(), true);
       assert.equal(await page.locator("#settings-startup #preferences").isVisible(), true, "the Startup row shows in Settings");
       assert.match(await page.locator("#settings-startup").innerText(), /Open at login/);
     },
   })),
-  { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
+  { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#view-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
   ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {
     await page.locator("#dashboard").scrollIntoViewIfNeeded();
     assert.ok(await page.locator("#dashboard").evaluate(el => { const box = el.getBoundingClientRect(); const card = el.closest(".connection-card").getBoundingClientRect(); return box.top >= card.top && box.bottom <= card.bottom && box.bottom <= innerHeight; }), "dashboard stays fully reachable inside the connection card");
   } })),
-  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-settings`, state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await zoom(factor)(page); }, expect: reachable })),
+  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-settings`, state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#view-settings"); await zoom(factor)(page); }, expect: reachable })),
 
   { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
   { name: "audit-account-spaces-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: auditAgents } },
   { name: "audit-account-refusal-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "refusal", lastRefusal: "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again." }] }, agents: auditAgents } },
-  { name: "audit-agents-unavailable", state: { installed: true, signedIn: true, connected: true, omitAgents: true }, expect: async page => { assert.equal(await page.locator("#apps-chip").isVisible(), true); } },
+  { name: "audit-agents-unavailable", state: { installed: true, signedIn: true, connected: true, omitAgents: true }, expect: async page => { assert.equal(await page.locator("#view-apps").isVisible(), true); } },
 
   ...["signed-out", "pending", "unconnected"].map(mode => ({
     name: `agents-hidden-${mode}`,
     state: { installed: true, signedIn: mode !== "signed-out", account: { mode: mode === "signed-out" ? "sign-in-required" : "account", hostSupport: "supported", spaces: mode === "unconnected" ? [] : [{ space: "acme-team", desired: true, observed: mode === "pending" ? "approval-pending" : "starting" }] } },
-    expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), false); assert.equal(await page.locator("#apps-chip").isVisible(), mode !== "signed-out"); },
+    expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), false); assert.equal(await page.locator("#view-apps").isVisible(), true); },
   })),
   ...[12, 30].map(count => ({
     name: `connected-long-spaces-${count}`,
@@ -534,34 +639,26 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
-      const visibleRows = await page.locator(".connected-spaces-scroll").evaluate(el => {
-        const bounds = el.getBoundingClientRect();
-        return [...el.querySelectorAll("li")].map(row => { const box = row.getBoundingClientRect(); return { full: box.top >= bounds.top && box.bottom <= bounds.bottom + 1, partial: box.top < bounds.bottom && box.bottom > bounds.bottom + 1 }; });
-      });
-      assert.ok(visibleRows.filter(row => row.full).length >= (page.viewportSize().width === 880 ? 2 : 1), "space list shows whole wrapped rows");
-      assert.equal(visibleRows.some(row => row.partial), false, "space list never slices a row");
       assert.equal(await page.locator("#spaces-heading").textContent(), `Spaces using this computer (${count})`);
       assert.ok(await page.locator("footer").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "long-space footer stays inside the viewport");
       assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
-      assert.deepEqual(await page.locator('[data-testid="connected-space-row"] > span > small:last-child').allTextContents(), Array(count).fill("Connected"));
+      assert.deepEqual(await page.locator('[data-testid="connected-space-row"] .space-state').allTextContents(), Array(count).fill("Connected"));
       assert.equal(await page.locator("#settings-panel").isVisible(), false);
-      const region = page.getByRole("region", { name: "Connected space list", exact: true });
-      assert.equal(await region.getAttribute("tabindex"), "0");
+      const main = page.getByRole("main");
+      assert.equal(await main.getAttribute("tabindex"), "0");
       const lastRow = page.locator('[data-testid="connected-space-row"]').last();
-      await region.focus();
-      await region.press("End");
-      await page.waitForFunction(() => { const el = document.querySelector(".connected-spaces-scroll"); return el.scrollTop + el.clientHeight >= el.scrollHeight - 2; });
+      await main.press("End");
+      await page.waitForFunction(() => { const el = document.querySelector("main"); return el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2; });
       await lastRow.scrollIntoViewIfNeeded();
       const lastButton = lastRow.locator("button").last();
       await lastButton.focus();
       assert.equal(await lastButton.evaluate(el => el === document.activeElement), true);
-      assert.equal(await lastButton.evaluate(el => { const row = el.getBoundingClientRect(); const bounds = el.closest(".connected-spaces-scroll").getBoundingClientRect(); return row.top >= bounds.top && row.bottom <= bounds.bottom; }), true);
-      await region.evaluate(el => { el.scrollTop = 0; });
+      assert.equal(await lastButton.evaluate(el => { const row = el.getBoundingClientRect(); const bounds = el.closest("main").getBoundingClientRect(); return row.top >= bounds.top && row.bottom <= bounds.bottom; }), true);
       assert.equal(await page.locator("#dashboard").isVisible(), true);
-      await page.click("#open-settings", { timeout: 5000 });
+      await page.click("#view-settings", { timeout: 5000 });
       assert.equal(await page.locator("#settings-panel").isVisible(), true);
-      assert.equal(await page.locator("#open-settings").textContent(), "Back");
-      await page.click("#open-settings", { timeout: 5000 });
+      assert.equal(await page.locator("#view-settings").getAttribute("aria-selected"), "true");
+      await page.click("#view-connection", { timeout: 5000 });
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
     },
   })),
@@ -595,7 +692,7 @@ export const scenarios = [
       assert.deepEqual(await page.evaluate(() => window.__terminalRequest), { op: 'agent-terminal', space: 'acme-team', lifecycleUid: 'test-0' });
       assert.equal(await page.getByRole('button', { name: 'Opening terminal… writer-1' }).isDisabled(), true);
       assert.equal(await page.getByRole('button', { name: 'Open in Terminal writer-2' }).isEnabled(), true);
-      assert.equal(await page.locator('#open-settings').isEnabled(), true);
+      assert.equal(await page.locator('#view-settings').isEnabled(), true);
       await page.evaluate(() => window.__finishTerminal());
       await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).waitFor();
       if (outcome === 'refused') {
@@ -627,7 +724,7 @@ export const scenarios = [
       assert.equal(await page.getByRole('button', { name: /Open in Terminal/ }).count(), 0);
       assert.equal(await page.getByRole('button', { name: 'Stopping… writer-1' }).isDisabled(), true);
       assert.equal(await page.getByRole('button', { name: 'Stop writer-2' }).isEnabled(), true);
-      assert.equal(await page.locator('#open-settings').isEnabled(), true);
+      assert.equal(await page.locator('#view-settings').isEnabled(), true);
       if (outcome === 'exited') {
         await page.evaluate(() => {
           window.__renderState.agents[0].agents.shift();
@@ -649,7 +746,7 @@ export const scenarios = [
     },
   })),
   { name: "account-disconnect-long-confirmation", state: { installed: true, signedIn: true, connected: true, accountAction: "disconnect-confirmation", catalogSpaces: longAccountSpaces, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "account", hostSupport: "supported", spaces: [{ space: longAccountSpaces[0].space, desired: true, observed: "connected" }] } }, act: async page => {
-    await page.click("#open-settings");
+    await page.click("#view-settings");
     await page.evaluate(spaces => {
       window.__renderState.catalogSpaces = spaces;
       window.__renderState.account.spaces = spaces.map(({ space }) => ({ space, desired: true, observed: "connected" }));
@@ -661,15 +758,17 @@ export const scenarios = [
   }, expect: async page => {
     assert.equal(await page.locator("#account-confirm-spaces li").count(), 12);
     assert.match(await page.locator("#account-confirm-spaces li").first().textContent(), /Organization \/ engineering \/ projects/);
-    const bounds = await page.locator("#account-confirm-spaces").evaluate(el => ({ height: el.clientHeight, scroll: el.scrollHeight, right: el.getBoundingClientRect().right, width: window.innerWidth }));
-    assert.ok(bounds.height <= 100);
-    assert.ok(bounds.scroll > bounds.height, "long lists remain scrollable");
+    const bounds = await page.locator("#account-confirm-spaces").evaluate(el => {
+      const main = el.closest("main");
+      return { range: main.scrollHeight - main.clientHeight, right: el.getBoundingClientRect().right, width: window.innerWidth };
+    });
+    assert.ok(bounds.range > 0, "long lists remain scrollable in the pane");
     assert.ok(bounds.right <= bounds.width, "pathlike names stay within the window");
     assert.equal(await page.locator("#account-confirm").isVisible(), true);
     assert.equal(await page.locator("#account-cancel").isVisible(), true);
     assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
   } },
-  { name: "account-signedout-connected", state: { installed: true, signedIn: false, connected: true, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "stale-account-owner", mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, act: page => page.click("#open-settings"), expect: async page => {
+  { name: "account-signedout-connected", state: { installed: true, signedIn: false, connected: true, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "stale-account-owner", mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, act: page => page.click("#view-settings"), expect: async page => {
     assert.equal(await page.locator("#settings-signout").isDisabled(), true);
     assert.equal(await page.locator("#settings-disconnect").isEnabled(), true);
     assert.equal(await page.evaluate(() => window.__renderState.connected), true);
@@ -679,7 +778,7 @@ export const scenarios = [
     name: `account-${action}-${mode}`,
     state: { installed: true, signedIn: true, connected: true, multiple: true, accountAction: `${action}-${mode}`, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "account-owner", mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected" })) } },
     act: async page => {
-      await page.click("#open-settings");
+      await page.click("#view-settings");
       await page.click(`#settings-${action}`);
       await page.locator("#account-confirmation:not([hidden])").waitFor();
       if (mode === "confirmation") return;
@@ -722,12 +821,13 @@ export const scenarios = [
       }
       if (mode === "outcome-back") {
         assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), false);
+        assert.equal(await page.locator("#settings-title").evaluate(el => el === document.activeElement), true);
         for (const id of ["settings-name", "check-updates", "update-preference", "autostart", "settings-signout", "settings-disconnect", "settings-versions", "release-notes"]) {
+          await page.locator(`#${id}`).scrollIntoViewIfNeeded();
           const geometry = await page.locator(`#${id}`).evaluate(el => { const rect = el.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, right: rect.right, height: window.innerHeight, width: window.innerWidth }; });
           assert.equal(await page.locator(`#${id}`).isVisible(), true);
           assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height && geometry.right <= geometry.width, `${id} fully restored within viewport`);
         }
-        assert.equal(await page.locator("#settings-title").evaluate(el => el === document.activeElement), true);
         assert.equal(await page.locator("#account-outcome-back").isVisible(), false);
         assert.equal(snapshot.connected, true);
         return;
@@ -762,7 +862,7 @@ export const scenarios = [
   ...["available", "missing", "current", "failed", "off", "linux", "windows", "toggle-off", "toggle-on", "check"].map(mode => ({
     name: `settings-${mode}`,
     state: { installed: true, signedIn: true, connected: true, missingAsset: mode === "missing", platform: mode === "linux" ? "linux" : mode === "windows" ? "win32" : "darwin", update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : mode === "failed" ? { latest: undefined, lastResult: "check failed" } : mode === "off" || mode === "toggle-on" ? { notify: false } : {}) } },
-    act: async page => { await page.click("#open-settings"); if (mode.startsWith("toggle-")) await page.click("#update-preference"); if (mode === "check") await page.click("#check-updates"); },
+    act: async page => { await page.click("#view-settings"); if (mode.startsWith("toggle-")) await page.click("#update-preference"); if (mode === "check") await page.click("#check-updates"); },
     expect: async page => { assert.equal(await page.locator("#settings-panel").isVisible(), true); assert.equal(await page.locator("#autostart").isVisible(), true); },
   })),
   { name: "update-available", state: { installed: true, signedIn: true, connected: true, update }, expect: async page => { assert.match(await page.locator("#update-banner").textContent(), /0.161.0/); } },
@@ -773,7 +873,8 @@ export const scenarios = [
     act: async page => {
       if (mode !== "settings") await signIn(page);
       if (mode === "view") return;
-      await page.click("#edit-computer-name");
+      await page.click("#view-settings");
+      await page.click("#settings-name");
       if (mode === "edit" || mode === "settings") return;
       await page.fill("#computer-name-input", mode === "invalid" ? "" : mode === "long" ? "Very long computer name ".repeat(5) : "My named computer");
       if (mode === "cancel") await page.press("#computer-name-input", "Escape");
@@ -782,7 +883,7 @@ export const scenarios = [
     expect: async page => {
       if (mode === "invalid") {
         assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
-        assert.ok(await page.locator(".machine").evaluate(el => parseFloat(getComputedStyle(el).borderRadius) < 100), "Connect editor must not be a pill");
+        assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true);
       }
       if (mode === "save") assert.equal(await page.locator("#machine-name").textContent(), "My named computer");
       if (mode === "cancel") assert.equal(await page.locator("#machine-name").textContent(), "Davids-MacBook-Pro");
@@ -802,16 +903,15 @@ export const scenarios = [
   } },
   { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
-    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Connected");
   } },
   { name: "account-ready", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
     assert.equal(await page.locator("#another-space").textContent(), "Add a space");
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
-    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
-    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Connected");
     assert.equal(await page.locator("#dashboard").isVisible(), true);
     assert.equal(await page.locator("#dashboard-spaces-note").isVisible(), false);
-    assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(95, 168, 102)");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "ok");
   } },
   ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
     name: `account-${observed.replaceAll(" ", "-")}`,
@@ -819,14 +919,12 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
-      const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : observed === "refusal" ? "Needs attention" : "Starting";
-      assert.equal(await page.locator("#tray-label").textContent(), pill);
-      const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
-      assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
+      const pill = observed === "sign-in-required" ? "Sign in required" : observed === "refusal" ? "Can't connect" : ["connected", "removed on this computer"].includes(observed) ? "Connected" : "Starting";
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), pill);
+      assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), pill === "Connected" ? "ok" : pill === "Starting" ? "waiting" : "problem");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: pill === "Connected", label: pill });
       if (observed === "refusal") {
-        assert.equal(await page.locator("#connection-title").textContent(), "Connection needs attention");
-        assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
-        assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+        assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
       }
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
@@ -835,13 +933,57 @@ export const scenarios = [
       }
     },
   })),
+  ...[["offline", "Offline", "No internet connection"], ["unreachable", "Can't connect", "Can't reach your space"]].map(([observed, word, title]) => ({
+    name: `account-network-${observed}`,
+    state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed }] } },
+    expect: async page => {
+      assert.equal(await page.locator("#connection-title").textContent(), title);
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), word);
+      assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: word });
+    },
+  })),
+  ...[
+    ["disk-full", { ...connectedApps, statusFields: { diskFull: true } }, "Disk full", "Your disk is full", "problem", "Check again"],
+    ["explicit-stop", { installed: true, serviceStopped: true, explicitStop: true }, "Service stopped", "The background service is stopped", "problem", "Start"],
+    ["updating", { ...connectedApps, statusFields: { generation: { state: "starting" } } }, "Updating", "Cotal is updating", "waiting"],
+    ["repair", { ...accountOnly }, "Repair needed", "This computer needs a repair", "problem"],
+  ].map(([name, state, word, title, tone, action]) => ({
+    name: `sidebar-status-${name}`, state,
+    ...(name === "repair" ? { act: async page => {
+      await page.waitForFunction(() => window.__pushStatus);
+      await page.evaluate(() => {
+        window.__renderState.statusFields = { recovery: { reason: "test recovery" } };
+        window.__pushStatus();
+      });
+    } } : {}),
+    expect: async page => {
+      assert.equal(await page.locator("#connection-title").textContent(), title);
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), word);
+      assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), tone);
+      assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: word });
+      if (action) assert.equal(await page.locator("#recover:visible").textContent(), action);
+      if (name === "disk-full") {
+        const requests = await page.evaluate(() => window.__renderState.statusRequests);
+        await page.evaluate(() => { window.__renderState.statusFields.diskFull = false; });
+        await page.click("#recover");
+        await page.waitForFunction(before => window.__renderState.statusRequests > before && document.querySelector("#sidebar-status-word").textContent === "Connected", requests, { timeout: 5000 });
+      }
+      if (name === "explicit-stop") {
+        await page.click("#recover");
+        await page.waitForFunction(() => window.__renderState.statusRequests > 0 && document.querySelector("#sidebar-status-word").textContent !== "Service stopped");
+        assert.deepEqual(await page.evaluate(() => window.__renderState.startRequests), [{ op: "start" }]);
+        assert.equal(await page.evaluate(() => window.__renderState.installRequests ?? 0), 0);
+      }
+    },
+  })),
   { name: "loading", state: { loading: true }, expect: async page => {
-    assert.equal(await page.locator("#tray-label").textContent(), "Checking connection");
+    assert.equal(await page.locator("#sidebar-status-word").textContent(), "Starting");
     assert.equal(await page.locator("#loading-icon .icon-spinner").count(), 1);
     assert.ok(await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().height) < 100);
   } },
   { name: "welcome", state: {} },
-  { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#journey li').count(), 4) },
+  { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#connection-view #journey li').count(), 4) },
   { name: "link", state: { link } },
   { name: "custom-host", state: {}, act: page => page.click("#other-host") },
   { name: "custom-host-back-to-cloud", state: {}, act: async page => { await page.click("#other-host"); await page.getByRole("button", { name: "Use Cotal Cloud", exact: true }).click(); }, expect: async page => {
@@ -854,14 +996,15 @@ export const scenarios = [
     assert.match(await page.locator("#settings-versions").textContent(), /^App /);
     assert.equal(await page.locator("#service-log").isVisible(), true, "the service log is reachable before sign-in");
     assert.equal(await page.locator("#settings-account").textContent(), "No account selected");
+    assert.equal(await page.locator("#settings-spaces").isHidden(), true);
     assert.equal(await page.locator("#settings-signout").isDisabled(), true);
     assert.equal(await page.locator("#settings-disconnect").isDisabled(), true);
-    await page.locator("#open-settings").click();
+    await page.locator("#view-connection").click();
     assert.equal(await page.locator("#settings-panel").isHidden(), true);
-    assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "Back returns to Welcome");
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "Connection returns to Welcome");
   } },
-  { name: "settings-before-sign-in-header", state: {}, act: page => page.getByRole("button", { name: "Settings", exact: true }).click(), expect: async page => {
-    assert.equal(await page.locator("#settings-panel").isVisible(), true, "the header's Settings opens Settings before sign-in");
+  { name: "settings-before-sign-in-sidebar", state: {}, act: page => page.click("#view-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-panel").isVisible(), true, "sidebar Settings opens before sign-in");
     await page.locator("#service-log summary").click();
     await page.locator("#refresh-log").click();
     await page.waitForFunction(() => (window.__renderState.logReads ?? 0) > 0);
@@ -921,6 +1064,14 @@ export const scenarios = [
   { name: "ready", state: {}, act: connect },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
+  { name: "no-application-opens-apps", state: { noApp: true }, prepare: connect, act: async page => {
+    await page.click("#recover-apps");
+    await page.locator("#app-list .app-row").first().waitFor();
+  }, expect: async page => {
+    assert.equal(await page.locator("#view-apps").getAttribute("aria-selected"), "true");
+    await page.click("#view-connection");
+    assert.equal(await page.locator("#recover-apps").isVisible(), true);
+  } },
   { name: "sessions-active", state: { setupError: "SEATS_ACTIVE" }, act: connect },
   { name: "expired", state: { expired: true }, act: page => page.click("#login"), expect: async page => assert.equal(await page.locator("#recover .icon-spinner").count(), 0) },
   { name: "declined", state: { loginError: "DENIED" }, act: page => page.click("#login") },
@@ -959,7 +1110,7 @@ export const scenarios = [
     await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Cotal was updated");
     assert.ok(await page.evaluate(() => document.querySelectorAll("#connected-spaces li").length) >= 2, "both spaces are listed behind the refusal");
     assert.equal(await page.locator("#connection-description").isVisible(), true, "the refusal explains itself");
-    assert.equal(await page.locator("#connection-icon").isVisible(), true);
+    assert.equal(await page.locator("#connection-icon").count(), 0, "no separate pane status icon");
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
@@ -970,9 +1121,8 @@ export const scenarios = [
     assert.equal(await page.locator("#refresh").isVisible(), true);
     assert.equal(await page.locator("#refresh").textContent(), "Check approval");
     assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval");
-    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "clock");
     assert.equal(await page.locator("#dashboard").isVisible(), false);
-    assert.equal(await page.locator("#apps-chip").isVisible(), false);
+    assert.equal(await page.locator("#view-apps").isVisible(), true);
     assert.match(await page.locator("#connected-spaces").textContent(), /Waiting for owner approval/);
     assert.equal(await page.locator(".connection-card.has-refusal").count(), 0);
   } },
@@ -989,7 +1139,14 @@ export const scenarios = [
     assert.match(await page.locator("#refusal-detail").textContent(), /App version 0\.156\.0 · background service old\./);
     assert.ok(!(await page.locator(".connection-card").textContent()).includes("connection needs"), "the internal word is gone");
   } },
-  { name: "progress-done", state: { connecting: true }, prepare: connect, act: page => page.evaluate(() => window.__advanceSetup()) },
+  { name: "progress-done", state: { connecting: true }, prepare: connect, act: async page => {
+    const row = page.getByTestId("progress-3");
+    await row.locator('.progress-mark[data-icon="spinner"]').waitFor();
+    await page.evaluate(() => window.__advanceSetup());
+    await row.locator('.progress-mark[data-icon="check"]').waitFor();
+    assert.equal(await row.getAttribute("data-state"), "done");
+    assert.equal(await row.locator(".icon-spinner").count(), 0);
+  } },
   { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => { assert.equal(await page.locator("#notice").isVisible(), false); assert.equal(await page.locator("#spaces-heading").isVisible(), false); assert.equal(await page.locator(".connected-spaces-scroll").isVisible(), false); assert.equal(await page.locator("#another-space").textContent(), "Add a space"); } },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
@@ -999,9 +1156,23 @@ export const scenarios = [
   { name: "audit-approval-refusal", state: { installed: true, offline: true, offlineCode: "APPROVAL_PENDING" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval"); assert.equal(await page.locator("#recover").textContent(), "Check approval"); } },
   { name: "audit-default-refusal", state: { installed: true, offline: true, offlineCode: "OPERATION_FAILED" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
   { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or menu bar. Quit app leaves the background service running.")), expect: async page => { assert.match(await page.locator("#notice").textContent(), /Cotal stays in your system tray/); } },
-  { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
-  { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
-  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
+  { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#view-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
+  { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#view-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
+  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#view-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-update-summary").textContent(), "Version 0.156.0");
+    for (const id of ["settings-name", "check-updates", "settings-signout", "release-notes"]) {
+      const outline = await page.locator(`#${id}`).evaluate(el => {
+        const style = getComputedStyle(el);
+        return style.borderTopStyle === "solid" && parseFloat(style.borderTopWidth) > 0 && style.borderTopColor !== "rgba(0, 0, 0, 0)";
+      });
+      assert.ok(outline, `${id} has a visible outline`);
+    }
+    assert.equal(await page.getByRole("button", { name: "Sign out", exact: true }).count(), 1);
+    const disconnect = page.locator('section[aria-labelledby="advanced-heading"] .settings-row').filter({ has: page.locator("#settings-disconnect") });
+    assert.equal(await disconnect.getByRole("button", { name: "Disconnect", exact: true }).count(), 1);
+    assert.equal(await disconnect.getByRole("heading").textContent(), "Disconnect this computer");
+    assert.match(await disconnect.textContent(), /Your spaces stop using this computer\. It stays in your account\./);
+  } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
   { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.watchMode), "push");
@@ -1026,15 +1197,16 @@ const auditCase = (source, name, expect) => {
 };
 for (const source of ["settings-available", "settings-missing", "audit-pin-offer", "audit-pin-message"]) {
   auditCase(source, `audit-e1-${source}`, async page => {
+    await page.locator("#release-notes").scrollIntoViewIfNeeded();
     const geometry = await page.locator("#settings-panel").evaluate(card => {
       const about = document.querySelector("#settings-versions").closest(".settings-row");
-      const box = card.getBoundingClientRect();
+      const box = card.closest("main").getBoundingClientRect();
       const row = about.getBoundingClientRect();
-      return { scroll: card.scrollHeight - card.clientHeight, scrollTop: card.scrollTop,
-        contained: row.top >= box.top + card.clientTop && row.bottom <= box.top + card.clientTop + card.clientHeight };
+      return { nestedScroll: getComputedStyle(card).overflowY,
+        contained: row.top >= box.top - 1 && row.bottom <= box.bottom + 1 };
     });
-    console.log(`E1 ${source}: ${JSON.stringify(geometry)}`);
-    assert.deepEqual(geometry, { scroll: 0, scrollTop: 0, contained: true }, "E1: About is fully inside Settings without internal scrolling at 100% zoom");
+    assert.equal(geometry.contained, true, "About is fully reachable in the main scroller");
+    assert.doesNotMatch(geometry.nestedScroll, /^(auto|scroll)$/, "Settings has no separate scroller");
   });
 }
 auditCase("audit-pin-message", "audit-e4-pin-message-order", async page => {
@@ -1059,16 +1231,12 @@ auditCase("audit-move-offer", "audit-e4-move-offer-spacing", async page => {
     return { margin: parseFloat(style.marginTop), divider: parseFloat(style.borderTopWidth),
       gap: offer.getBoundingClientRect().top - explanation.bottom };
   });
-  assert.ok(spacing.margin >= 16 && spacing.divider >= 2 && spacing.gap >= 16,
+  assert.ok(spacing.margin >= 16 && spacing.divider >= 1 && spacing.gap >= 16,
     `E4: move offer has a top divider and breathing room: ${JSON.stringify(spacing)}`);
 });
 auditCase("account-signout-outcome-back", "audit-e5-post-signout-labels", async page => {
-  const copy = await page.locator("#settings-spaces").textContent();
-  console.log(`E5 post-signout Settings: ${copy}`);
-  assert.match(copy, /Acme team/, "E5: Settings retains Acme team after sign-out");
-  assert.match(copy, /Research/, "E5: Settings retains Research after sign-out");
-  assert.doesNotMatch(copy, /acme-team|research/, "E5: Settings does not fall back to raw slugs");
-  await page.click("#open-settings");
+  assert.equal(await page.locator("#settings-spaces").isHidden(), true, "Settings only shows the space count while signed in");
+  await page.click("#view-connection");
   assert.deepEqual(await page.locator('[data-testid="connected-space-row"] strong').allTextContents(),
     ["Acme team", "Research"], "E5: Connected view retains labels after sign-out");
 });

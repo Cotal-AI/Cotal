@@ -71,6 +71,7 @@ import {
   retireTerminalSeat,
   seatExpiryAt,
 } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { c, stderrLine } from "../ui.js";
 import { parseChannelFlag, spawnReadAcl } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
@@ -956,7 +957,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       });
     } catch (error) {
       if (error instanceof CommandFailure) throw error;
-      throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
+      throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } }));
     }
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     spec.env = { ...spec.env, ...modelPolicyEnv(cotalConfig, role) };
