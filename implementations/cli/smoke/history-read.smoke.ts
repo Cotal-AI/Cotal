@@ -335,16 +335,22 @@ async function checkEnabledScopedViews(
 async function checkDegradedConsoleSends(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, creds: string): Promise<void> {
   const { servers, space, chatChannel, channel } = fixture;
   const sockets = new Set<Socket>();
-  let connections = 0;
-  const proxy = createServer((client) => {
+  const pending = new Set<Socket>();
+  let paused = false;
+  const forward = (client: Socket) => {
     const upstream = connectSocket(Number(new URL(servers).port), "127.0.0.1");
-    connections++;
-    sockets.add(client);
-    client.on("close", () => { sockets.delete(client); upstream.destroy(); });
+    client.on("close", () => upstream.destroy());
     upstream.on("close", () => client.destroy());
     upstream.on("error", () => client.destroy());
     client.on("error", () => upstream.destroy());
     client.pipe(upstream).pipe(client);
+  };
+  const proxy = createServer((client) => {
+    sockets.add(client);
+    client.on("close", () => { pending.delete(client); sockets.delete(client); });
+    client.on("error", () => client.destroy());
+    if (paused) pending.add(client);
+    else forward(client);
   });
   await new Promise<void>((resolve, reject) => {
     proxy.once("error", reject);
@@ -360,12 +366,18 @@ async function checkDegradedConsoleSends(fixture: Awaited<ReturnType<typeof star
     await cs.keys(tab.exec(clean(cs.out))![1]!);
     const selected = `● ${space} · #${channel}`;
     if (!(await cs.waitFor(selected, 5_000))) throw new Error(`console tab did not select: ${clean(cs.out).slice(-1600)}`);
-    const previous = connections;
-    const after = cs.mark();
     await fixture.writeProjection({});
+    const cutAt = cs.mark();
+    paused = true;
     for (const socket of sockets) socket.destroy();
-    if (!(await cs.waitFor(selected, 25_000, after)) || connections <= previous)
-      throw new Error(`console did not reconnect with its cached selection: ${clean(cs.out.slice(after)).slice(-1600)}`);
+    if (!(await cs.waitFor(`⨯ ${space} · #${channel}`, 10_000, cutAt)))
+      throw new Error(`console did not observe the cut: ${clean(cs.out.slice(cutAt)).slice(-1600)}`);
+    const resumeAt = cs.mark();
+    paused = false;
+    for (const client of pending) forward(client);
+    pending.clear();
+    if (!(await cs.waitFor(selected, 25_000, resumeAt)))
+      throw new Error(`console did not reconnect with its cached selection: ${clean(cs.out.slice(resumeAt)).slice(-1600)}`);
     const refusal = "This credential cannot see plugin channels.";
     let mark = cs.mark();
     await cs.compose("reserved cached compose must not be routed");
