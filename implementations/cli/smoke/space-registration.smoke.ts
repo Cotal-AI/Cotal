@@ -1312,7 +1312,7 @@ if (process.platform === "linux") {
     refused(inCopy, 2, "CONFLICT") && inCopy.env?.error?.message === `${accountCopy} holds records copied or moved from ${accountRoot}, the root of "held"`, shown(inCopy));
   const heldElsewhere = await json(["space", "add", "alias", "--server", AUTH_LIVE, "--root", accountRoot]);
   check("an auth broker whose --root holds another space's trust is refused naming that space first",
-    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
+    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && heldElsewhere.env?.error?.message === "the broker requires auth, but this folder holds trust for a different space" && heldElsewhere.env.error.remedy.includes('holds the trust for "held", not "alias"') && heldElsewhere.env.error.remedy.includes(AUTH_LIVE), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   const rootFile = join(home, "plain-file-root");
   writeFileSync(rootFile, "keep");

@@ -427,7 +427,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   if (!unverified) {
     const match = checkEnforcement(mode, enforces, server as string, space, root);
     if (!match.ok) {
-      io.log.error(match.message);
+      io.log.error(withRemedy(match));
       return cancelled(io, "Nothing was registered.");
     }
   }

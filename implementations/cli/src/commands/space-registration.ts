@@ -176,6 +176,12 @@ function take<T>(check: Check<T>, target: unknown): T {
 const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: string): CommandFailure =>
   new CommandFailure("refused", code, message, { target, ...(remedy ? { remedy } : {}) });
 
+function showSpaceCommand(name: string, presentation: Presentation): string {
+  const cli = presentation === "json" ? "cotal" : displayCmd({ fromAnyFolder: true });
+  const format = presentation === "rich" ? "" : ` --${presentation}`;
+  return codeSpan(`${cli} space show${name.startsWith("-") ? `${format} -- ${shellWord(name)}` : ` ${shellWord(name)}${format}`}`);
+}
+
 /** The registration a name already has when a new one added by hand may replace it. A prepared
  *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
  *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
@@ -536,16 +542,16 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const registered = findMesh(name);
   if (registered) {
     if (again === true && registered.origin === "up" && here(registered.root)) return "started";
-    throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with \`cotal space show ${name}\``);
+    throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with ${showSpaceCommand(name, presentation)}`);
   }
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
     const problem = projectRootProblem(prepared.root);
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem
+    throw localDiagnostic(refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem
       ? displayRemedy(preparedRootRemedy(name, problem, `run ${flag === "--project" ? "setup" : "this create"} again`), presentation === "json" ? "cotal" : undefined) : flag === "--project"
         ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
-        : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+        : `inspect the prepared space with ${showSpaceCommand(name, presentation)}, or choose another space name for this project`));
   }
   // Missing member records do not prove another home. Do not prepare over the running stack.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
@@ -568,7 +574,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   }
   const accounts = take(spacesAtRoot(root), target);
   const registrations = loadMeshes().filter((m) => here(m.root));
-  const held = [...new Set([...accounts, ...registrations.map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
+  const preparation = preparedSpaceAt(root);
+  const recorded = [...new Set([...registrations.map(m => m.space), ...(preparation ? [preparation.space] : [])])];
+  const held = [...new Set([...accounts, ...recorded])];
   // A space started here before and stopped since keeps its trust in this root.
   if (again === true && held.length === 1 && held[0] === name) return "started";
   if (held.length > 0) {
@@ -590,18 +598,16 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
     }
     const conflict = `${root} is already the root of "${held.join('", "')}"`;
-    const manual = registrations.filter((m) => m.origin === "manual");
-    if (manual.length) {
-      const cli = presentation === "json" ? "cotal" : displayCmd();
-      const steps = manual.map(({ space }) => `for "${space}", start its broker where it runs, inspect the registration with ${codeSpan(`${cli} space show ${shellWord(space)}`)}, or forget it with ${codeSpan(`${cli} space forget ${shellWord(space)}`)}`);
-      throw refuse("CONFLICT", conflict, target, `create "${name}" in another folder with ${flag} <dir>; ${steps.join("; ")}`);
+    if (recorded.length) {
+      const inspections = recorded.map(space => showSpaceCommand(space, presentation)).join(", ");
+      throw localDiagnostic(refuse("CONFLICT", conflict, target, `inspect what uses this folder with ${inspections}; to create "${name}", choose another folder with ${flag} <dir>`));
     }
-    const stopped = held.length === 1 && journaled === undefined && !registrations.length && preparedSpaceAt(root) === undefined;
+    const stopped = held.length === 1 && journaled === undefined;
     // The next step names the space already here, so whoever meant it can start, select or forget it.
     const which = held.length === 1 ? held[0]! : "<space>";
-    throw refuse("CONFLICT", conflict, target, stopped
+    throw localDiagnostic(refuse("CONFLICT", conflict, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
-      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``);
+      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``));
   }
   return "created";
 }
