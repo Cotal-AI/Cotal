@@ -31,6 +31,7 @@ import {
   SPACE_NAME_MAX,
   spaceNameTooLong,
 } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveSpace } from "../lib/status.js";
 import { cotalRoot, homeHoldsStack, linkedCotalRefusal, upRootWriteProblem } from "../lib/paths.js";
@@ -202,7 +203,7 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
     const root = args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : freshFolderRoot(args.values) ?? cotalRoot();
     // A path with a control character or a bidirectional formatting mark is refused before any write.
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
-    if (pathProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" });
+    if (pathProblem) throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" }));
     const control = rootControlProblem(root);
     if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
       ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"

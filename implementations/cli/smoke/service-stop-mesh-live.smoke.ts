@@ -68,15 +68,21 @@ try {
   const remove = ["service", "remove", "stack-broker", "--space", space, "--yes"];
   const removeDefinition = run(elsewhere, ...remove, "--plain");
   const stopWords = ["down", "--space", space, "--yes"];
-  const advice = (cli: string) => `from ${root}, run \`${cli} ${stopWords.join(" ")}\`, then run \`${cli} space forget ${space}\``;
+  const advice = (cli: string, output: string) => `inspect the definition with \`${cli} service show stack-broker --space ${space} ${output}\`. Only to stop the whole stack and forget its local registration: from ${root}, run \`${cli} ${stopWords.join(" ")}\`, then run \`${cli} space forget ${space}\``;
   check("removing a live stack definition refuses and prints the owning folder and explicit space",
     removeDefinition.status === 2 && /Code:\s+UNSUPPORTED/.test(removeDefinition.stderr) &&
-      ["cotal", "pnpm cotal", `${process.execPath} ${BIN}`].some((cli) => removeDefinition.stderr.includes(advice(cli))), shown(removeDefinition));
+      ["cotal", "pnpm cotal", `${process.execPath} ${BIN}`].some((cli) => removeDefinition.stderr.replace(/\s+/g, " ").includes(advice(cli, "--plain"))), shown(removeDefinition));
   const removeInstance = run(elsewhere, ...remove, "--instance", broker.instanceId, "--json");
   const refusal = JSON.parse(removeInstance.stdout);
   check("removing its instance refuses with the same remedy and retains the exact instance ID",
-    removeInstance.status === 2 && refusal.error?.code === "UNSUPPORTED" && refusal.error.remedy === advice("cotal") &&
+    removeInstance.status === 2 && refusal.error?.code === "UNSUPPORTED" && refusal.error.remedy === advice("cotal", "--json") &&
       refusal.target?.instanceId === broker.instanceId, shown(removeInstance));
+  const inspect = /^inspect the definition with `cotal (service show [^`]+)`/.exec(refusal.error?.remedy ?? "")?.[1];
+  if (inspect === `service show stack-broker --space ${space} --json`) {
+    const shown = run(elsewhere, ...inspect.split(" "));
+    const receipt = JSON.parse(shown.stdout);
+    check("the printed inspection reads this stack member from another folder", shown.status === 0 && receipt.target.space === space && receipt.result.name === "stack-broker");
+  }
   const retained = JSON.parse(status().stdout).result;
   check("both refusals leave the same broker running", retained.instanceId === broker.instanceId && retained.observedProcess === "running", retained);
   assertSmokeSandboxDown(sandbox, stopWords, { cwd: root, env });

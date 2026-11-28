@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { codeSpan, ConfirmationRequired, CommandFailure, MAX_IDLE_EXIT_SECONDS, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
 import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
@@ -119,11 +120,13 @@ function legacyProcesses(context: LocalProcessContext) {
   });
 }
 
-function stackMemberRemovalRemedy(root: string, space: string, json: boolean): string {
-  const cli = json ? "cotal" : displayCmd({ fromAnyFolder: true });
-  const stop = codeSpan(`${cli} down${targetWords({ space })} --yes`);
+function stackMemberRemovalRemedy(root: string, space: string, name: string, presentation: ReturnType<typeof presentationOf>): string {
+  const cli = presentation === "json" ? "cotal" : displayCmd({ fromAnyFolder: true });
+  const scope = targetWords({ space });
+  const inspect = codeSpan(`${cli} service show ${shellWord(name)}${scope}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  const stop = codeSpan(`${cli} down${scope} --yes`);
   const forget = codeSpan(`${cli} space forget ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`);
-  return `from ${oneLine(root)}, run ${stop}, then run ${forget}`;
+  return `inspect the definition with ${inspect}. Only to stop the whole stack and forget its local registration: from ${oneLine(root)}, run ${stop}, then run ${forget}`;
 }
 
 /** The refusal for a `show` or `remove` whose name matches no saved definition and no preset. Its
@@ -248,7 +251,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   if (mode === "remove") {
     const row = savedService(suppliedName!);
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
-      const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
+      const remedy = stackMemberRemovalRemedy(root, space, row.name, presentation);
       if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
       throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy });
     }
@@ -454,10 +457,10 @@ function stoppedManagerStatus(resolved: PresetServiceTarget, recorded: NonNullab
 
 /** Why `action` refuses a preset's process recorded by PID alone: no saved service owns it. */
 export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, action: string): CommandFailure {
-  return new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
+  return localDiagnostic(new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
     target: { space, name, executionHost: "this-machine", pid: recorded.pid },
     remedy: `it stops with its stack through \`cotal down\`, or where \`cotal supervise\` runs it${name === "manager" || name === STACK_DEFINITION.manager ? "; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents" : ""}`,
-  });
+  }));
 }
 
 /** The log `up` opened for the manager it started with no saved service, read as `service logs`
