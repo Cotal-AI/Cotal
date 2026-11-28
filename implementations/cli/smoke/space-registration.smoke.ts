@@ -1562,6 +1562,14 @@ if (process.platform === "linux") {
   const selected = await json(["use", "demo"]);
   check("use promotes the same adopted selection to explicit", selected.status === 0 && readCurrentSelection()?.source === "explicit" && selected.env?.outcome === "ok", shown(selected));
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
+  const emptyRoot = ["add", "empty-root", "--server", DEAD, "--root", "", "--mode", "open", "--force"];
+  const modernEmpty = await json(["space", ...emptyRoot], fresh);
+  check("space add refuses an empty root without writing a registration",
+    refused(modernEmpty, 1, "USAGE_INVALID") && findMesh("empty-root") === undefined, shown(modernEmpty));
+  const legacyEmpty = await run(["meshes", ...emptyRoot], {}, fresh);
+  check("meshes add with an empty root records the current project and preserves the selection",
+    legacyEmpty.status === 0 && findMesh("empty-root")?.root === fresh && getCurrent() === "demo", shown(legacyEmpty));
+  removeMesh("empty-root");
   const besidePrepared = await run(["meshes", "add", "beside-prepared", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
   const stillPrepared = await json(["use"], fresh);
   check("meshes add preserves an explicitly selected prepared space and does not announce a new default",
