@@ -79,7 +79,8 @@ export async function inspectHostedLaunches(paths: DaemonPaths, space: string, i
     const reply = JSON.parse(await readLine(sock, Math.max(1, Math.ceil(deadline - performance.now())))) as DaemonResponse;
     if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("invalid launch inspection reply");
     if (!reply.ok) {
-      if (reply.error.code === "UNKNOWN_OP") return undefined;
+      // Released peers validate fields before dispatch and may reject the operation's only field first.
+      if (reply.error.code === "UNKNOWN_OP" || (reply.error.code === "UNKNOWN_FIELD" && reply.error.message === 'unknown request field "space"')) return undefined;
       throw new Error(reply.error.message);
     }
     if (!("instanceId" in reply.result) || reply.result.instanceId !== instanceId) throw new Error("hosted Manager identity changed during launch inspection");

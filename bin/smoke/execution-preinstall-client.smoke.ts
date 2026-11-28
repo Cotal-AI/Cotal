@@ -7,6 +7,8 @@ import { serveDaemon } from "../daemon/server.js";
 import { processBirth, holdLifetime } from "../daemon/lifetime.js";
 import { observeUpdateDaemon, sameUpdateDaemon, assertUpdateDaemon } from "../daemon/update-lifetime.js";
 import { PREINSTALL_TIMEOUT_MS, targetExecutionPreinstall } from "../daemon/execution-preinstall-client.js";
+import { inspectHostedLaunches } from "../daemon/client.js";
+import { DAEMON_PROTOCOL_VERSION } from "../daemon/endpoint.js";
 
 const root = mkdtempSync(join(tmpdir(), "execution-receipt-"));
 try {
@@ -65,6 +67,24 @@ try {
       assert.equal(await observeUpdateDaemon(paths), undefined, "a shared listener does not belong to a home with no lifetime lock");
     } finally { await new Promise<void>(resolve => foreign.close(() => resolve())); }
     assert.equal(connections, 0, "the unrelated listener was not contacted");
+    const lease = holdLifetime(paths.lock);
+    let message = 'unknown request field "space"';
+    const released = createServer(socket => socket.once("data", bytes => {
+      const { id, op, space } = JSON.parse(bytes.toString());
+      assert.equal(op, "manager-launch-inspect");
+      assert.equal(space, "example");
+      socket.end(`${JSON.stringify({ v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "UNKNOWN_FIELD", message } })}\n`);
+    }));
+    try {
+      await new Promise<void>((resolve, reject) => released.once("error", reject).listen(paths.socket, resolve));
+      chmodSync(paths.socket, 0o600);
+      assert.equal(await inspectHostedLaunches(paths, "example", "original", 3000), undefined, "released parser checks fields first");
+      message = 'unknown request field "unrelated"';
+      await assert.rejects(inspectHostedLaunches(paths, "example", "original", 3000), /unknown request field "unrelated"/);
+    } finally {
+      if (released.listening) await new Promise<void>(resolve => released.close(() => resolve()));
+      lease.release();
+    }
   }
   const daemon = await serveDaemon({ paths, version: "0.0.0-lifetime", sessionDir: state, stopAllowed: async () => false });
   try {
