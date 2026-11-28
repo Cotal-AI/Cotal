@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, resolveReadAcl, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, previewPersonaReader, projectTrustForPreview, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchModes, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
@@ -11,7 +11,18 @@ import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./s
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
-import type { spawnFlags } from "./spawn.js";
+import type { spawnFlags, validateSpawnArguments } from "./spawn.js";
+
+type Channels = ReturnType<typeof validateSpawnArguments>;
+
+function checkPreviewSubscriptions(definition: AgentDef, channels: Channels): void {
+  try { resolveReadAcl(channels.subscribe ?? definition.subscribe ?? [], channels["allow-subscribe"] ?? definition.allowSubscribe); }
+  catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, {
+      remedy: "omit the conflicting channel override or choose subscriptions within the effective allowSubscribe list", selfContained: true,
+    });
+  }
+}
 
 function readPreviewConfig(root: string, target: { space: string; path: string }, trusted: ReturnType<typeof projectTrustForPreview>) {
   try { return loadCotalConfig(root, trusted); }
@@ -42,7 +53,7 @@ function unknownHarness(harness: string | undefined, explicit: boolean, space: s
 /** An offline preview never signs in to a broker or allocates an agent. It
  *  reads whether the recorded brokers answer only where the launch reads it to pick its space, so the
  *  two name the same one. */
-export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
+export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }, channels: Channels): Promise<void> {
   const values = args.values;
   let root: string;
   let space: string;
@@ -134,6 +145,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
+  checkPreviewSubscriptions(definition, channels);
   const config = readPreviewConfig(root, { ...target, path }, trusted);
   const cwd = directSpawnCwd(values.cwd ?? ".", space);
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });

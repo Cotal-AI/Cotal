@@ -16,6 +16,7 @@ import {
   anycastBucket,
   channelBucket,
   chatStream,
+  chatWildcard,
   deliveryBucket,
   dlvStream,
   dmStream,
@@ -346,7 +347,7 @@ export function canonicalBackupStreamConfig(
   const p = spacePrefix(space);
   const target = historyLimitStreamOf(space, stream);
   const limits = target && { max_age: nanos((limit ?? historyLimitDefault(target)).maxAgeMs), max_msgs_per_subject: (limit ?? historyLimitDefault(target)).perSubject };
-  if (target === "chat") return { ...baseConfig(stream, [`${p}.chat.>`]), ...limits, allow_direct: true };
+  if (target === "chat") return { ...baseConfig(stream, [chatWildcard(space)]), ...limits, allow_direct: true };
   if (stream === eventPayloadStream(space))
     return { ...baseConfig(stream, [`${p}.evp.>`]), max_msgs_per_subject: CHAT_HISTORY_DEFAULT.perSubject, allow_direct: true };
   if (target === "dm") return { ...baseConfig(stream, [`${p}.inst.>`]), ...limits };

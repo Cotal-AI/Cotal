@@ -88,11 +88,17 @@ export function ownerToken(s: string): string {
   return s === "*" ? "*" : assertValidOwnerToken(s);
 }
 
+/** The chat plane prefix, optionally narrowed to a sender pattern, with a trailing dot. */
+export function chatSubjectPrefix(space: string, sender?: { owner: string; actor: string }): string {
+  const plane = `${spacePrefix(space)}.chat.`;
+  return sender === undefined ? plane : `${plane}${ownerToken(sender.owner)}.${ownerToken(sender.actor)}.`;
+}
+
 /** Multicast: `chat.<owner>.<actor>.<channel…>` — the publishing principal (owner+actor) precedes the
  *  channel (owner+actor grammar, Shape A). Either identity slot may be `*` for subscribe/allow rules
  *  (`chat.*.*.<ch>` = read a channel from any principal). */
 export function chatSubject(space: string, owner: string, actor: string, channel: string): string {
-  return `${spacePrefix(space)}.chat.${ownerToken(owner)}.${ownerToken(actor)}.${channelPath(channel)}`;
+  return `${chatSubjectPrefix(space, { owner, actor })}${channelPath(channel)}`;
 }
 
 /** True if a channel names a concrete sub-channel (no `*`/`>`) — i.e. it can be
