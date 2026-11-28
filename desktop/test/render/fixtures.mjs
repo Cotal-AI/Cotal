@@ -86,16 +86,24 @@ export function nativeStub(scenario) {
       }
       if (request.op === "start") {
         (state.powerRequests ??= []).push(request);
+        if (state.startFails) return fail("OPERATION_UNKNOWN", "Start was not confirmed.");
         state.stoppedByYou = false;
         return ok({ state: "start-requested", unit: "test-service" });
       }
-      if (state.stoppedByYou && ["status", "status-watch"].includes(request.op)) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "You stopped the background service. Start it to run agents on this computer again.", detail: { installed: true, stopped: "by-you" } } };
+      if (state.stoppedByYou && ["status", "status-watch"].includes(request.op)) {
+        if (request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
+        return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "You stopped the background service. Start it to run agents on this computer again.", detail: { installed: true, stopped: "by-you" } } };
+      }
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
+      if (request.op === "status") {
+        state.statusRequests = (state.statusRequests ?? 0) + 1;
+        if (state.startStatusHold) await new Promise(resolve => { window.__releaseStartStatus = resolve; });
+        return ok(statusPayload());
+      }
       if (request.op === "status-watch") {
         state.statusWatchRequests = (state.statusWatchRequests ?? 0) + 1;
         if (state.version && state.version !== "0.156.0") {
@@ -855,9 +863,11 @@ export const scenarios = [
   { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");
     assert.equal(await page.locator("#recover").textContent(), "Start service");
+    assert.equal(await page.getByRole("button", { name: "Start", exact: true }).count(), 0);
     await page.locator("#recover").click();
     await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests ?? []), []);
   } },
   { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
   { name: "signed-in", state: {}, act: signIn },
@@ -904,6 +914,37 @@ export const scenarios = [
   }, expect: async page => {
     assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
     assert.equal(await page.locator("#service-confirmation").isVisible(), false);
+  } },
+  { name: "service-start-from-stopped", state: { installed: true, stoppedByYou: true, signedIn: true, connected: true, startStatusHold: true }, expect: async page => {
+    const start = page.getByRole("button", { name: "Start", exact: true });
+    await start.waitFor();
+    assert.equal(await start.count(), 1);
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service is stopped");
+    assert.equal(await page.locator("#connection-description").textContent(), "You stopped the background service. Start it to run agents on this computer again.");
+    assert.equal(await page.locator("#tray-label").textContent(), "Service stopped");
+    assert.equal(await page.locator("#journey").isVisible(), false);
+    assert.equal(await page.locator("#details").isVisible(), false);
+    assert.equal(await page.evaluate(() => window.__renderState.stoppedStatusChecks), 1);
+    await start.click();
+    await page.waitForFunction(() => typeof window.__releaseStartStatus === "function");
+    assert.equal(await page.locator("#tray-label").textContent(), "Service stopped", "Start is not proof that the service is running");
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "start" }]);
+    await page.evaluate(() => { window.__renderState.startStatusHold = false; window.__releaseStartStatus(); });
+    await page.waitForFunction(() => document.querySelector("#tray-label")?.textContent === "Connected");
+    assert.equal(await start.count(), 0);
+    assert.equal(await page.locator("#service-start-result").isVisible(), false);
+  } },
+  { name: "service-start-unconfirmed", state: { installed: true, stoppedByYou: true, startFails: true }, act: async page => {
+    await page.getByRole("button", { name: "Start", exact: true }).click();
+    await page.locator("#service-start-result").waitFor();
+  }, expect: async page => {
+    assert.equal(await page.locator("#service-start-result p").textContent(), "Cotal couldn't confirm that the background service started.");
+    assert.equal(await page.getByRole("button", { name: "Start", exact: true }).count(), 0);
+    const before = await page.evaluate(() => window.__renderState.stoppedStatusChecks);
+    await page.click("#service-start-check");
+    await page.getByRole("button", { name: "Start", exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.__renderState.stoppedStatusChecks), before + 1);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "start" }]);
   } },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
