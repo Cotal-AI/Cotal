@@ -113,7 +113,7 @@ import { cotalLangRunHost as runHost } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { logLineText } from "./log-line.js";
+import { logLineText, writeLine } from "./log-line.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, RunAnswerBlocked } from "./resolve-checkpoint.js";
 
 const USAGE =
@@ -476,7 +476,7 @@ async function drive(
       handler,
       ...(values.file !== undefined ? { file: values.file } : {}),
       ...(planes.resultBytes !== undefined ? { resultBytes: planes.resultBytes } : {}),
-      onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => console.log(`run ${runId}: log ${logLineText(line)}`),
+      onLog: (line: { readonly scope: string; readonly values: readonly unknown[] }) => writeLine(process.stdout, `run ${runId}: log ${logLineText(line)}`),
     };
     if (a.mode === "new") console.log(`starting run ${runId} on endpoint ${endpoint} in space ${planes.space}`);
     let out: DriveOutcome;

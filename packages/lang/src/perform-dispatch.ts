@@ -5,6 +5,7 @@ import { InterpreterDefect, RuntimeFault } from "./errors.js";
 import { atMostOnce, requestId, stepKeyString } from "./keys.js";
 import { type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, deepFreeze } from "./values.js";
+import { assertCrossingFits } from "./limits.js";
 import { HOLDABLE_KINDS, PRIMITIVES } from "./primitives.js";
 import { parseDuration } from "./duration.js";
 import { notifyFactViolation } from "./notify-fact.js";
@@ -380,6 +381,10 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       throw e;
     }
   });
+  // And what crosses is BOUNDED, before any entry is written: an effect's arguments are posted to
+  // the host whole, and one that counts each reference to a string in full can be hundreds of times
+  // the size it has in the program (L4016, the value-size refusal; `limits.ts` for the measure).
+  assertCrossingFits(`the arguments of \`${name}\``, args.filter((_, i) => spec.probeAt !== i));
   // FREEZE ON SHARE, at the share. What crossed is what was hashed and recorded, so the program
   // mutating it afterwards, or the HANDLER mutating it on its side, would make the run's own
   // value disagree with its recorded form (measured before this line: `schema.deep.x = 2` after

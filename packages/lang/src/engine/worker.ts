@@ -35,11 +35,22 @@ import type { RunPins, EffectCeilings } from "../pins.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
 import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
+import { ENGINE_HEAP_LIMITS } from "../limits.js";
 
 /** Where the reason's byte length lives in the shared stop buffer; the bytes follow it. */
 const STOP_HEADER = 4;
 /** Room for the reason. A reason is a sentence, and one that does not fit is truncated, not dropped. */
 const STOP_CAPACITY = 512;
+/**
+ * After the reason: the bytes of log lines the thread has posted that this host has not yet taken
+ * (an `Int32` the thread adds to and the host subtracts from), so a program that logs in a loop waits
+ * for the host instead of queueing copies in its memory. See {@link MAX_CROSSING_IN_FLIGHT}.
+ */
+const LOG_IN_FLIGHT_AT = STOP_HEADER + STOP_CAPACITY;
+const STOP_BYTES = LOG_IN_FLIGHT_AT + 4;
+
+/** The heap limits every run's thread is created with; see {@link ENGINE_HEAP_LIMITS}. */
+const WORKER_RESOURCE_LIMITS = ENGINE_HEAP_LIMITS;
 
 export interface WorkerHandlerSpec {
   /**
@@ -195,8 +206,13 @@ export interface WorkerRunOptions {
    * A `file:` URL or an absolute path.
    */
   readonly entry: URL | string;
-  /** Called for each `log` the run emits, as it emits it. */
-  readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
+  /**
+   * Called for each `log` the run emits, as it emits it. A host that writes the line to a stream may
+   * return a promise that settles when the stream has taken it: the thread waits for lines it has
+   * posted past {@link MAX_CROSSING_IN_FLIGHT} bytes to be taken, so a program logging in a loop is
+   * paced by the stream rather than buffered in this process.
+   */
+  readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => unknown;
   /**
    * The live seam a `"bridged"` request runs against: the host's handler and its durable store.
    * Required exactly when the request says `"bridged"`; see {@link WorkerRunRequest.handler}.
@@ -228,7 +244,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
         : `request ${request.runId} names a module handler and a bridge seam at once; a run's effects live in the thread or in the host, not both`,
     );
   }
-  const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
+  const stop = new SharedArrayBuffer(STOP_BYTES);
+  const logInFlight = new Int32Array(stop, LOG_IN_FLIGHT_AT, 1);
   let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
   let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
   // Assigned when the run's answer is set up below; the bridge hears only the thread, which does
@@ -244,8 +261,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   let worker: Worker;
   try {
     worker = bridge !== undefined
-      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port] })
-      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion } });
+      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port], resourceLimits: WORKER_RESOURCE_LIMITS })
+      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion }, resourceLimits: WORKER_RESOURCE_LIMITS });
   } catch (e) {
     // A thread that never started never reaches `done`, where the seam closes, so close it here:
     // the handler's quiescence hook would otherwise wait forever on a thread that does not exist.
@@ -264,14 +281,29 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
       answered = true;
       reject(e);
     };
-    worker.on("message", (m: { kind: "ready" } | { kind: "log"; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
+    worker.on("message", (m: { kind: "ready" } | { kind: "log"; bytes?: number; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
       if (m.kind === "ready" && !ready) {
         ready = true;
         worker.postMessage({ kind: "root-start", reason: cancellationReason ?? null } satisfies WorkerRootControl);
         return;
       }
       if (m.kind === "log") {
-        options.onLog?.(m.line);
+        // The line is taken when the sink says so: its bytes then leave the thread's allowance, and a
+        // thread waiting on it wakes. A sink that throws has still taken it.
+        const release = (): void => {
+          if (typeof m.bytes === "number") {
+            Atomics.sub(logInFlight, 0, m.bytes);
+            Atomics.notify(logInFlight, 0);
+          }
+        };
+        let taken: unknown;
+        try {
+          taken = options.onLog?.(m.line);
+        } catch {
+          taken = undefined;
+        }
+        if (taken instanceof Promise) taken.then(release, release);
+        else release();
         return;
       }
       // AN UNKNOWN KIND IS A DISAGREEMENT ABOUT THE PROTOCOL, and it is refused rather than read as
@@ -286,7 +318,15 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
       answered = true;
       resolve(m.result);
     });
-    worker.on("error", (e: Error) => reject(e));
+    worker.on("error", (e: Error & { code?: unknown }) => {
+      // Node ends a thread that reaches its heap limit and reports it here; the run's failure names
+      // the limit so an operator reading the run record knows which bound it met.
+      if (e.code === "ERR_WORKER_OUT_OF_MEMORY") {
+        reject(new Error(`run ${request.runId} was stopped at the workflow engine's memory limit of ${WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb} MB; the program holds more data than a run may`));
+        return;
+      }
+      reject(e);
+    });
     worker.on("exit", (code) => {
       // A worker that exits without answering has taken the run's outcome with it, and saying so is
       // the only honest thing left: the journal may hold a pending step and only the store knows.

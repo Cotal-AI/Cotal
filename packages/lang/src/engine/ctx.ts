@@ -24,6 +24,7 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
+import { assertArrayFits, assertFieldWriteFits, assertRecordFits, assertSpreadFits, assertStringFits, codePoints, stringElements } from "../limits.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
 import { agentHandles, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
@@ -45,10 +46,10 @@ export interface Site {
 }
 
 /**
- * The seam. Fourteen members, and the count is the point: a member added here without a joint rule
+ * The seam. Fifteen members, and the count is the point: a member added here without a joint rule
  * is a widening, and the transform's surface cell reddens on any call to a name not on this
  * interface. Thirteen came with the seam contract; `callee` is the fourteenth, added under the
- * adaptation invariant below.
+ * adaptation invariant below, and `spread` the fifteenth, the value-size bound.
  */
 export interface EngineCtx {
   /** L4013 step budget, plus the yield that keeps the macrotask queue alive and applies the cut. */
@@ -56,7 +57,7 @@ export interface EngineCtx {
   /**
    * Read a member: L4014 (no prototype reach, curated tables), L4020, L4018 on a computed key.
    *
-   * `binding` is the cell read, taken as a third argument rather than a fifteenth member. A binding
+   * `binding` is the cell read, taken as a third argument rather than another member. A binding
    * the transform classified as a CELL is emitted as `get(cell, "v", "x")`, and an absent OWN key
    * means the declaration has not run yet, which is L2004 for that binding by name. PRESENCE is
    * `hasOwn` and not truthiness, because `v: undefined` is a binding that HAS been initialised, to
@@ -77,7 +78,7 @@ export interface EngineCtx {
   /**
    * Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else.
    *
-   * `optional` is `o.m?.()`, a flag rather than a fifteenth member. It guards a
+   * `optional` is `o.m?.()`, a flag rather than another member. It guards a
    * NULLISH MEMBER and nothing else (measured on the walker, `?.` softens neither L4014 nor L4011),
    * and a short-circuited call evaluates NO ARGUMENT, which is why the optional form takes a thunk.
    *
@@ -108,8 +109,17 @@ export interface EngineCtx {
   binary(op: string, l: unknown, r: unknown): unknown;
   /** `-`, `+`, `~` under the same law, and `update` for the operand of `++`/`--`. `!`/`typeof` are native. */
   unary(op: string, v: unknown): unknown;
-  /** The iterability law (L4015): arrays and strings, nothing else. */
-  iter(v: unknown): unknown[];
+  /**
+   * The iterability law (L4015): arrays and strings, nothing else. With `take`, a destructuring
+   * pattern's reading of a string: only the elements it names, or all of them past a bounded rest.
+   */
+  iter(v: unknown, take?: number, rest?: boolean): unknown[];
+  /**
+   * The value-size bound for a literal, call or rest that spreads, from its evaluated operands, before
+   * it is built. `plain` is the other elements' count for an array and the plain keys for a record,
+   * whose fields are counted as distinct keys; `excluded` is the keys a rest pattern took by name.
+   */
+  spread(kind: "array" | "record", operands: readonly unknown[], plain: number | readonly unknown[], where: string, excluded?: readonly unknown[]): void;
   /** The L4011 refusal at a non-function callee. Emitted behind a `typeof`, so only the refusal runs. */
   callee(v: unknown): unknown;
   /** At the head of every emitted catch: rethrow the uncatchable, else the program-visible error. */
@@ -758,6 +768,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
             `index ${i} is past the end of this array (length ${o.length}), and JavaScript would fill the gap with holes, which this language does not have. Write at an existing index, at the length to append, or use \`push\`.`,
           );
         }
+        if (i === o.length) assertArrayFits("this index write", i + 1);
       } else if (prop === "__proto__") {
         throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
       }
@@ -773,6 +784,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // rule at its record-member write sites, so what was the last declared divergence of this
       // reordering is a corpus row the differential can compare.
       if (prop === "then") refuseThenable({ then: v }, "this field write");
+      if (!Array.isArray(o)) assertFieldWriteFits(o as object, prop);
       setOwn(o, prop, v);
       return v;
     },
@@ -824,6 +836,8 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
     born(v) {
       refuseThenable(v, "this value");
+      if (Array.isArray(v)) assertArrayFits("this array", v.length);
+      else if (v !== null && typeof v === "object") assertRecordFits("this record", Object.keys(v).length);
       return stampBirth(v, currentFrame().depth);
     },
 
@@ -880,10 +894,13 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       let out = "";
       for (let i = 0; i < parts.length; i += 1) {
         out += parts[i] ?? "";
+        assertStringFits("this template", out.length);
         if (i < values.length) {
           const v = values[i];
           refuseCoercion("${...}", v);
-          out += String(v);
+          const text = String(v);
+          assertStringFits("this template", out.length + text.length);
+          out += text;
         }
       }
       return out;
@@ -912,6 +929,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         case ">=":
           return a >= b;
         case "+":
+          if (typeof l === "string" || typeof r === "string") assertStringFits("`+`", String(l).length + String(r).length);
           return a + b;
         case "-":
           return a - b;
@@ -972,17 +990,25 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       }
     },
 
-    iter(v) {
+    iter(v, take, rest) {
       if (Array.isArray(v)) return v;
-      if (typeof v === "string") return [...v];
+      if (typeof v === "string") {
+        if (take !== undefined) return stringElements(v, take, rest === true, "this rest element");
+        assertArrayFits("spreading this string", codePoints(v));
+        return [...v];
+      }
       throw new RuntimeFault(
         "L4015",
         `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
       );
     },
 
+    spread(kind, operands, plain, where, excluded) {
+      assertSpreadFits(kind, where, operands, plain, excluded);
+    },
+
     callee(v) {
-      // Member 14, the last of the seam. The transform emits it behind a `typeof` so a real call
+      // Member 14. The transform emits it behind a `typeof` so a real call
       // stays a native call; this is only the refusal, and it is the walker's own words because the
       // differential suite compares the message, not merely the code.
       if (typeof v !== "function") {

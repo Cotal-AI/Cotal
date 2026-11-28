@@ -513,7 +513,10 @@ class Emitter {
         const taken: string[] = [];
         for (const p of (pattern.properties as AnyNode[]) ?? []) {
           if (p.type === "RestElement") {
+            // Counted before it is built: the fields not taken by name, each once (the `spread`
+            // seam's record form, with the taken keys excluded).
             const rest = this.temp();
+            out += `${this.seam("spread", `"record", [${s}], 0, "this rest element", [${taken.join(", ")}]`)};\n`;
             out += `${rest} = { ...${s} };\n`;
             for (const k of taken) out += `delete ${rest}[${k}];\n`;
             out += this.bindPattern(p.argument as AnyNode, this.seam("born", rest), mode);
@@ -529,13 +532,16 @@ class Emitter {
         const s = this.temp();
         let out = `${s} = ${valueCode};\nif (${s} === null || ${s} === ${VOID}) ${this.seam("get", `${s}, ${q("")}`)};\n`;
         const items = this.temp();
-        out += `${items} = ${this.seam("iter", s)};\n`;
         const els = (pattern.elements as (AnyNode | null)[]) ?? [];
+        // A string gives only what the pattern takes (the `take` and `rest` arguments of `iter`), so
+        // an in-bound string destructures whatever its length, as the walker's does.
+        const restAt = els.findIndex((el) => el?.type === "RestElement");
+        out += `${items} = ${this.seam("iter", `${s}, ${restAt === -1 ? els.length : restAt}, ${restAt !== -1}`)};\n`;
         for (let i = 0; i < els.length; i += 1) {
           const el = els[i];
           if (el === null || el === undefined) continue;
           if (el.type === "RestElement") {
-            out += this.bindPattern(el.argument as AnyNode, this.seam("born", `${items}.slice(${i})`), mode);
+            out += this.bindPattern(el.argument as AnyNode, this.restArray(`${items}.slice(${i})`, "this rest element"), mode);
             break;
           }
           out += this.bindPattern(el, `${items}[${i}]`, mode);
@@ -585,7 +591,7 @@ class Emitter {
     for (let i = 0; i < params.length; i += 1) {
       const p = params[i] as AnyNode;
       if (p.type === "RestElement") {
-        binds += this.bindPattern(p.argument as AnyNode, this.seam("born", `${args}.slice(${i})`), "let");
+        binds += this.bindPattern(p.argument as AnyNode, this.restArray(`${args}.slice(${i})`, "these rest parameters"), "let");
         break;
       }
       binds += this.bindPattern(p, `${args}[${i}]`, "let");
@@ -621,21 +627,19 @@ class Emitter {
         return this.seam("template", `[${quasis.join(", ")}], [${exprs.join(", ")}]`);
       }
       case "ArrayExpression": {
-        const parts = ((node.elements as (AnyNode | null)[]) ?? []).map((el) => {
-          if (el === null || el === undefined) throw new Error("transform: an array hole is not a value this language has");
-          return el.type === "SpreadElement" ? `...${this.seam("iter", this.expr(el.argument as AnyNode))}` : this.expr(el);
-        });
-        return this.seam("born", `[${parts.join(", ")}]`);
+        const elements = (node.elements as (AnyNode | null)[]) ?? [];
+        if (elements.some((el) => el === null || el === undefined)) throw new Error("transform: an array hole is not a value this language has");
+        if (elements.some((el) => el!.type === "SpreadElement")) return this.seam("born", this.spreadContainer(elements as AnyNode[], "array"));
+        return this.seam("born", `[${(elements as AnyNode[]).map((el) => this.expr(el)).join(", ")}]`);
       }
       case "ObjectExpression": {
         // Every key is emitted COMPUTED. A literal `__proto__:` key sets a prototype in JavaScript
         // and names an own field in this language; the validator refuses the literal spelling
         // (L1028, measured), and a computed key never reaches the prototype at all, so the emitted
         // form cannot express the hazard whatever the validator does later.
-        const parts = ((node.properties as AnyNode[]) ?? []).map((p) =>
-          p.type === "SpreadElement" ? `...${this.expr(p.argument as AnyNode)}` : `[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`,
-        );
-        return this.seam("born", `{ ${parts.join(", ")} }`);
+        const properties = (node.properties as AnyNode[]) ?? [];
+        if (properties.some((p) => p.type === "SpreadElement")) return this.seam("born", this.spreadContainer(properties, "record"));
+        return this.seam("born", `{ ${properties.map((p) => `[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`).join(", ")} }`);
       }
       case "MemberExpression":
       case "ChainExpression":
@@ -949,16 +953,70 @@ class Emitter {
     const defers = spec !== undefined && spec.scope !== null && spec.optionsAt === 2;
     return ((node.arguments as AnyNode[]) ?? [])
       .map((a, i) => {
-        const code = a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a);
+        // The validator refuses a spread here (L1029): a primitive's arguments are positional.
+        if (a.type === "SpreadElement") throw new Error("transform: a primitive's argument is never spread (the validator refuses it, L1029)");
+        const code = this.expr(a);
         return defers && i === 1 ? `async () => (${code})` : code;
       })
       .join(", ");
   }
 
   private args(node: AnyNode): string {
-    return ((node.arguments as AnyNode[]) ?? [])
-      .map((a) => (a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a)))
-      .join(", ");
+    const elements = (node.arguments as AnyNode[]) ?? [];
+    if (!elements.some((el) => el.type === "SpreadElement")) return elements.map((el) => this.expr(el)).join(", ");
+    return `...${this.spreadContainer(elements, "array")}`;
+  }
+
+  /** A rest array, bounded and named by the `spread` seam before it is stamped. */
+  private restArray(sliced: string, where: string): string {
+    const t = this.temp();
+    return `((${t} = ${sliced}), ${this.seam("spread", `"array", [${t}], 0, ${q(where)}`)}, ${this.seam("born", t)})`;
+  }
+
+  /**
+   * An array or record literal, or an argument list, that spreads, as one expression building it.
+   *
+   * Every part is evaluated into a temporary in source order, and each spread operand is COPIED the
+   * moment it is evaluated, as JavaScript copies it: a later part that changes the operand changes
+   * nothing already taken (`[...xs, xs.push(2)]` is `[1, 2]` for `xs = [1]`, and
+   * `{ ...o, b: (o.c = 3) }` has no `c`). Right after each copy the `spread` seam counts what the
+   * container would hold so far, and once more after the last part, a record's fields as distinct
+   * keys; only then is the container written from the temporaries. So a container over the
+   * value-size bound is refused at the spread that takes it over, before any later part runs, exactly
+   * where the walker refuses it, and before the host builds it.
+   */
+  private spreadContainer(elements: readonly AnyNode[], kind: "array" | "record"): string {
+    const evals: string[] = [];
+    const parts: string[] = [];
+    const spreads: string[] = [];
+    const keys: string[] = [];
+    let plain = 0;
+    const where = q(kind === "array" ? "this spread" : "this record spread");
+    const check = (): string =>
+      this.seam("spread", `${q(kind)}, [${spreads.join(", ")}], ${kind === "record" ? `[${keys.join(", ")}]` : String(plain)}, ${where}`);
+    for (const el of elements) {
+      if (el.type === "SpreadElement") {
+        const t = this.temp();
+        const operand = this.expr(el.argument as AnyNode);
+        evals.push(`${t} = ${kind === "array" ? `[...${this.seam("iter", operand)}]` : `{ ...${operand} }`}`);
+        spreads.push(t);
+        parts.push(`...${t}`);
+        evals.push(check());
+      } else if (kind === "record") {
+        const k = this.temp();
+        const v = this.temp();
+        evals.push(`${k} = ${this.propertyKey(el)}`, `${v} = ${this.expr(el.value as AnyNode)}`);
+        parts.push(`[${k}]: ${v}`);
+        keys.push(k);
+      } else {
+        const t = this.temp();
+        evals.push(`${t} = ${this.expr(el)}`);
+        parts.push(t);
+        plain += 1;
+      }
+    }
+    const built = kind === "array" ? `[${parts.join(", ")}]` : `{ ${parts.join(", ")} }`;
+    return `(${[...evals, check(), built].join(", ")})`;
   }
 
   /**
@@ -994,8 +1052,10 @@ class Emitter {
   }
 }
 
-/** Operators whose native meaning is the walker's for two strings as well as two numbers. */
-const STRING_SAFE: ReadonlySet<string> = new Set(["+", "<", "<=", ">", ">="]);
+/** Operators whose native meaning is the walker's for two strings as well as two numbers. `+` over
+ *  two strings is not among them: it builds a new string, so it goes through `binary`, which bounds
+ *  the result's length. */
+const STRING_SAFE: ReadonlySet<string> = new Set(["<", "<=", ">", ">="]);
 
 export function emit(program: AnyNode): Emission {
   const ids = new Set<string>();

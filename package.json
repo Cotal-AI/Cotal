@@ -122,6 +122,7 @@
     "smoke:runtime-mesh-turn": "tsx implementations/runtime/smoke/mesh-turn.smoke.ts",
     "smoke:runtime-mesh-replied": "tsx implementations/runtime/smoke/mesh-replied.smoke.ts",
     "smoke:runtime-wait-sender": "tsx implementations/runtime/smoke/wait-sender.smoke.ts",
+    "smoke:runtime-worker-memory": "tsx implementations/runtime/smoke/worker-memory.smoke.ts",
     "smoke:runtime-mesh-worktree": "tsx implementations/runtime/smoke/mesh-worktree.smoke.ts",
     "smoke:runtime-mesh-seam": "tsx implementations/runtime/smoke/mesh-seam.smoke.ts",
     "smoke:runtime-fork": "tsx implementations/runtime/smoke/fork-run.smoke.ts",

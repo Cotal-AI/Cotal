@@ -370,6 +370,23 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
 
   const args = (node.arguments as AnyNode[]) ?? [];
 
+  // A primitive's arguments are POSITIONAL: the step name, the option bag and the hashed input each
+  // sit at a fixed index the table names, and this validator, the flowchart and the journal all read
+  // them by that index without running the program. A spread moves every argument after it to an
+  // index known only at run time, so it is not in the language there (L1029, the code for syntax the
+  // language does not have), refused before any engine sees it.
+  for (const a of args) {
+    if (a.type === "SpreadElement") {
+      v.fail(
+        "L1029",
+        a,
+        `\`${name}\` takes its arguments by position, and a spread moves them to positions known only when the program runs.`,
+        `Pass each argument by itself: ${spec.signature}.`,
+        name,
+      );
+    }
+  }
+
   // `checkpoint` takes its name positionally; every other primitive takes it in the option bag.
   if (name === "checkpoint") {
     const first = args[0];

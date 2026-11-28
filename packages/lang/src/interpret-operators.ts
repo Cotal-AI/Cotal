@@ -1,9 +1,11 @@
 /** The walker's operator semantics on primitives: the binary operators, the update operand check, the
- *  no-coercion refusal and canonical array indexes. A leaf: it imports only the error types. */
+ *  no-coercion refusal and canonical array indexes. A leaf: it imports only the error types and the
+ *  value-size bounds. */
 import {
   RuntimeFault,
   InterpreterDefect,
 } from "./errors.js";
+import { assertStringFits } from "./limits.js";
 
 /** Refuse a container or function where a primitive is needed: there is no implicit conversion. */
 export function refuseCoercion(where: string, v: unknown): void {
@@ -64,6 +66,7 @@ export function applyBinary(op: string, l: unknown, r: unknown): unknown {
     case ">=":
       return a >= b;
     case "+":
+      if (typeof l === "string" || typeof r === "string") assertStringFits("`+`", String(l).length + String(r).length);
       return a + b;
     case "-":
       return a - b;

@@ -90,7 +90,7 @@ interface EngineHostRequest {
   readonly effectCeiling?: number;
   readonly ceilings?: EffectCeilings;
   readonly stepBudget?: number;
-  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
+  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => unknown;
 }
 
 /**
@@ -231,7 +231,13 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
   }, STOP_POLL_MS);
 
   try {
-    const result = await worker.done;
+    const result = await worker.done.catch((e: unknown) => {
+      // A thread that refused to start for a reason in THIS host (a heap flag on the process, a
+      // package mismatch) has run nothing of the program. The run is released, as the driver releases
+      // any run it cannot serve, so a host started correctly can take it back.
+      if (e instanceof Error && e.name === "EngineUnavailable") throw new RunReleased(e.message);
+      throw e;
+    });
     if (pollFault !== undefined) throw pollFault;
     if (!result.ok) throw rehydrate(result, store);
     return {
