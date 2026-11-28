@@ -15,7 +15,7 @@
  * waits, fences or proof that an earlier write cannot still land. */
 import type { MsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket, contractDigest, contractStoreContext, endpointRegistrationBarrier, epgateKey, publishContractArtifact, recordAtomicKey, recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest, writeServiceStatus, type ContractStoreContext, type ServiceAuthorityStatus, type ServiceRegistrationSnapshot, type ServiceRegistrationWitness, type ServiceUidCustodyV1 } from "@cotal-ai/core";
+import { EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket, contractDigest, contractStoreContext, endpointRegistrationBarrier, epgateKey, publishContractArtifact, recordAtomicKey, recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest, writeServiceStatus, type ContractStoreContext, type ServiceAuthorityStatus, type ServiceGateAuthority, type ServiceRegistrationSnapshot, type ServiceRegistrationWitness, type ServiceUidCustodyV1 } from "@cotal-ai/core";
 import { openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
 import { findInteractiveActor } from "./ledger.js";
 import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -127,6 +127,22 @@ function serviceHostScopeReads(t: ServiceHostScopeTarget): ServiceHostEffectRead
   return Object.freeze({ records: Object.freeze([...new Set(serveRecordKeys(t).reads)]), contract: Object.freeze([...new Set(contract)]) });
 }
 const NO_WRITES: ServiceWriteScope = Object.freeze({ records: Object.freeze([]), auth: Object.freeze([]), authFamilies: Object.freeze([]) });
+
+function servingApprovalLive(authority: ServiceGateAuthority, now: number, instanceId: string): boolean {
+  if (serviceGateApprovalLive(authority, now)) return true;
+  const { rootExpiresAt, approvalExpiresAt } = authority;
+  const at = (expiry: number) => {
+    const utc = new Date(expiry * 1000).toJSON();
+    return utc === null ? "" : ` at ${utc} (UTC)`;
+  };
+  if (authority.state === "approved" && rootExpiresAt !== null) {
+    if (approvalExpiresAt !== null && approvalExpiresAt <= now)
+      console.error(`Service instance ${instanceId}: The approval expired${at(approvalExpiresAt)}.`);
+    if (rootExpiresAt <= now)
+      console.error(`Service instance ${instanceId}: The root credential expired${at(rootExpiresAt)}. Restarting this instance does not replace its root. Ask whoever runs the integration whether it can register a replacement.`);
+  }
+  return false;
+}
 /** One per-invocation effect connection's registry. `gone` resolves when the connection is gone for
  *  good, which fences the invocation. `close` runs only after every awaited call returned. */
 export interface ServiceHostEffect { registry: LifecycleRegistry; gone: Promise<void>; close(): Promise<void>;
@@ -831,7 +847,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     if (!resuming) {
       if (g.row.state !== "open") return deniedServe("registration-pending");
       if (!expectationHolds(g.row)) return deniedServe("conflict");
-      if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
+      if (!servingApprovalLive(a, seconds(Date.now()), b.binding.instanceId)) return deniedServe("expired");
     }
     if (inv.contract === undefined) return held("unavailable", ctx.step, "the effect connection has no contract store");
     ctx.step = "R-publish";
@@ -891,7 +907,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       const a = g.row.serviceAuthority, current = stampWitness(ctx, b.binding, g.row);
       if (current === undefined || serviceWitnessDigest(current) !== serviceWitnessDigest(req.witness!)) return deniedServe("stale-witness");
       if (g.row.state !== "open") return deniedServe("registration-pending");
-      if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
+      if (!servingApprovalLive(a, seconds(Date.now()), b.binding.instanceId)) return deniedServe("expired");
       const root = await rootExpiresAt(ctx, inv, b.binding, current.rootCredentialId);
       if (typeof root !== "number") return root;
       if (!a.activationIssued) {
@@ -917,7 +933,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const a = g.row.serviceAuthority, current = stampWitness(ctx, b.binding, g.row);
     if (current === undefined || serviceWitnessDigest(current) !== serviceWitnessDigest(req.witness!) || !a.activationIssued) return deniedServe("stale-witness");
     if (g.row.state !== "open") return deniedServe("registration-pending");
-    if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
+    if (!servingApprovalLive(a, seconds(Date.now()), b.binding.instanceId)) return deniedServe("expired");
     const root = await rootExpiresAt(ctx, inv, b.binding, current.rootCredentialId);
     if (typeof root !== "number") return root;
     const name = await nameOf(ctx, b.binding.endpoint);

@@ -205,9 +205,9 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
     const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
     if (pathProblem) throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `${pathProblem}; nothing was started or written`, { target: { root }, remedy: "rename the folder without those characters, then run `cotal up` there" }));
     const control = rootControlProblem(root);
-    if (control) throw new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
-      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
-      : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
+    if (control) throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `${control.message}; nothing was started or written`, { target: { root, controlDirectory: control.controlDirectory }, remedy: control.project === undefined
+      ? "prepare a project folder with `cotal space create <space> --root <dir>`, then repeat your original startup command with --root set to that folder"
+      : `repeat your original startup command with ${codeSpan(`--root ${shellWord(control.project)}`)} for the enclosing project` }));
     assertUpRootWritable(root);
     // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
     if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"), beforeRestore);
@@ -493,11 +493,9 @@ export function assertSelectionNotMoved(root: string, space: string): void {
   if (!prepared) return;
   const problem = projectRootProblem(prepared.root);
   if (!problem) return;
-  const recover = problem === "missing"
-    ? `if this is that folder moved, forget it with \`cotal space forget ${current}\`, prepare it here with \`cotal space create ${current}\`, then repeat your startup command with the same options`
-    : `${problem === "not-directory" ? "restore the original project folder at its recorded path" : "restore access to the original project folder"}, then repeat your startup command in that folder`;
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which ${projectRootProblemText(problem)}, and this folder names no space, so up did not start "${space}" here`, {
+  const recover = problem === "inaccessible" ? "restore access to the original project folder" : "restore the original project folder at its recorded path";
+  throw localDiagnostic(new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which ${projectRootProblemText(problem)}, and this folder names no space, so up did not start "${space}" here`, {
     target: { root, space: current, preparedRoot: prepared.root },
-    remedy: `${recover}; to start "${space}" here instead, add \`--space ${space}\` to your original command`,
-  });
+    remedy: `${recover}, then repeat your startup command in that folder; to start "${space}" here instead, add \`--space ${space}\` to your original command`,
+  }));
 }

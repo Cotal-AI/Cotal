@@ -1559,12 +1559,14 @@ if (args.includes("show") && args.includes("cotal-daemon.service")) {
       try {
         if (opts.mode === "desktop-app-refresh") {
           const setupDistHref = new URL("../dist/daemon/setup.js", import.meta.url).href;
+          const desktopPathHref = new URL("../dist/daemon/desktop-path.js", import.meta.url).href;
           const driver = join(dir, "run-app-refresh.mjs");
           writeFileSync(
             driver,
             `process.argv[1] = ${JSON.stringify(cli)};
 process.execArgv = [];
 const { refreshServiceForApplication } = await import(${JSON.stringify(setupDistHref)});
+const { serviceApplicationPath } = await import(${JSON.stringify(desktopPathHref)});
 const lines = [];
 const result = await refreshServiceForApplication(
   {
@@ -1574,6 +1576,10 @@ const result = await refreshServiceForApplication(
     report: line => lines.push(line),
   },
   [${JSON.stringify(extraBin)}],
+  {
+    path: serviceApplicationPath(${JSON.stringify(`${extraBin}:${basePath}`)}, "linux", ${JSON.stringify(env.HOME!)}),
+    assertOwner() {},
+  },
 );
 console.log(JSON.stringify({ result, lines }));
 `,
@@ -1595,14 +1601,14 @@ console.log(JSON.stringify({ result, lines }));
             appErr += String(c);
           });
           const appCode = await new Promise<number | null>((resolve) => appChild.once("close", resolve));
-          const parsed = appCode === 0 ? (JSON.parse(appOut) as { result: string; lines: string[] }) : undefined;
+          const parsed = appCode === 0 ? (JSON.parse(appOut) as { result: boolean; lines: string[] }) : undefined;
           check(
-            "refreshServiceForApplication pins waitForDaemon to recoveredVersion ('0.182.1') and returns 'refreshed'",
+            "refreshServiceForApplication pins waitForDaemon to recoveredVersion ('0.182.1') and returns true",
             appCode === 0 &&
-              parsed?.result === "refreshed" &&
+              parsed?.result === true &&
               closureFreeDuringStart &&
               serviceLockFreeDuringStart &&
-              readFileSync(unitPath, "utf8").includes(`Environment=PATH="${extraBin}:${basePath}"`),
+              readFileSync(unitPath, "utf8").includes(`Environment=PATH="${extraBin}:${basePath}:`),
             { appCode, appOut, appErr, parsed, closureFreeDuringStart, serviceLockFreeDuringStart },
           );
           return;
@@ -1633,7 +1639,7 @@ console.log(JSON.stringify({ result, lines }));
               serviceLockFreeDuringStart &&
               stderr.includes(`service: updating ${unit} pinned PATH`) &&
               stderr.includes(`service: restarted ${unit} with the updated PATH`) &&
-              readFileSync(unitPath, "utf8").includes(`Environment=PATH="${extraBin}:${basePath}"`),
+              readFileSync(unitPath, "utf8").includes(`Environment=PATH="${extraBin}:${basePath}:`),
             { code, stdout, stderr, closureFreeDuringStart, serviceLockFreeDuringStart },
           );
         } else {
