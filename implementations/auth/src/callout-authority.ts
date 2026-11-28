@@ -128,6 +128,16 @@ interface CalloutAuthorityDeps {
   refuse: () => void;
 }
 
+export function pluginChannelStateResolver(recordsJsm: JetStreamManager, space: string, refuse: () => void = () => {}): CalloutAuthority["resolvePluginChannelState"] {
+  return async (requestedSpace) => {
+    refuse();
+    if (requestedSpace !== space) throw new EpEnvelopeError("permission-denied", "channel routing state belongs to a different space");
+    const { state } = await readPluginChannelSpaceState(recordsJsm, space);
+    refuse();
+    return state;
+  };
+}
+
 export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
   const { space, issuer, dir, dataAccount, registry, chat, gate, refuse } = deps;
   const fileArm = ledgerAuthorizeConnect(dir);
@@ -156,11 +166,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
     }
   });
   return {
-    resolvePluginChannelState: async (requestedSpace) => {
-      refuse();
-      if (requestedSpace !== space) throw new EpEnvelopeError("permission-denied", "channel routing state belongs to a different space");
-      return (await readPluginChannelSpaceState(deps.recordsJsm, space)).state;
-    },
+    resolvePluginChannelState: pluginChannelStateResolver(deps.recordsJsm, space, refuse),
     resolveEndpointCaller: async (t) => {
       refuse();
       // A chat session is not an actor grant, so no caller policy can name it: it is minted no

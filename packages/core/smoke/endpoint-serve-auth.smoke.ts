@@ -27,6 +27,7 @@
  * Run: pnpm smoke:ep-serve:auth   (needs nats-server on PATH; part of smoke:ci)
  */
 import { randomUUID } from "node:crypto";
+import { matchesMainPermissions } from "./_off-channel-main.js";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -216,6 +217,13 @@ try {
       && r.registrationRevision === reg.registrationRevision && r.nameAuthorityRevision === NAR; })());
   c("a SECOND mint from the same artifact writes a DISTINCT per-JWT ledger row (renewal never overwrites)",
     (await mintServe()).includes("USER JWT") && gate.active() === 2 && new Set([...gate.rows.keys()]).size === 2);
+  {
+    const creds = await mintServe({ pluginChannelsEnabled: false });
+    const jwt = /BEGIN NATS USER JWT-+\s+(\S+)/.exec(creds)![1];
+    const { nats, sub: connectionId } = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
+    const rows = JSON.parse(JSON.stringify({ pub: nats.pub, sub: nats.sub }).replaceAll(space, "FIXTURE_SPACE").replaceAll(connectionId, "FIXTURE_CONN"));
+    c("off-state endpoint-serve JWT matches main's complete permission rows", matchesMainPermissions("endpointServe", rows));
+  }
   c("the issuance gate stage is create-only/idempotent (re-staging the SAME row keeps ONE row; a differing row for the same id conflicts)",
     (() => {
       const before = gate.rows.size; const r = [...gate.rows.values()][0];

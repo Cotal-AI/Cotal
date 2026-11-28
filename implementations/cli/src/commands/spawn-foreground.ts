@@ -312,6 +312,7 @@ export async function provisionUserForeground(
       store,
       dir,
       space,
+      broker: { server, ...(target.tlsRequired ? { tlsRequired: true } : {}) },
       owner,
       actor: name,
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),

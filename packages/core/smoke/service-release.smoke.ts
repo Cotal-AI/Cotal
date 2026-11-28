@@ -1,4 +1,5 @@
 import nodeAssert from "node:assert/strict";
+import { matchesMainPermissions } from "./_off-channel-main.js";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -144,13 +145,16 @@ try {
   const mintAuth = { space, account: { pub: account.getPublicKey(), signingSeed: new TextDecoder().decode(signer.getSeed()) } };
   const admittedAt = Math.floor(Date.now() / 1000), accessExpiresAt = admittedAt + 30, inboxNonce = "n".repeat(32);
   const mintArgs = { serve: grant, gate: native, principal: { owner, actor }, connection: serviceConnection,
-    inboxNonce, admittedAt, accessExpiresAt, expiresAt: accessExpiresAt };
+    inboxNonce, admittedAt, accessExpiresAt, expiresAt: accessExpiresAt, pluginChannelsEnabled: false };
   const minted = await mintServiceCalloutJwt(mintAuth, mintArgs), claims = decode(minted.jwt);
   assert.equal(minted.credentialId, credentialIdOf(minted.jwt));
   assert.equal(claims.name, principalKey(owner, actor).name, "callout authorized_user identifies the actual serving principal");
   assert.equal(claims.sub, serviceConnection.userNkey);
   assert.equal(claims.exp, accessExpiresAt);
   const nativePermissions = claims.nats as { sub: { allow: string[] }; pub: { allow: string[] } };
+  const nativeRows = JSON.parse(JSON.stringify({ pub: nativePermissions.pub, sub: nativePermissions.sub }).replaceAll(instanceId, "FIXTURE_INSTANCE"));
+  assert.ok(matchesMainPermissions("serviceCallout", nativeRows),
+    "off-state service callout JWT matches main's complete permission rows");
   assert.ok(nativePermissions.sub.allow.includes(`_INBOX_${inboxNonce}.>`));
   assert.ok(!nativePermissions.sub.allow.includes(`_INBOX_${serviceConnection.userNkey}.>`), "reply nonce is not inferred from the broker user key");
   assert.ok(nativePermissions.pub.allow.every((subject) => !subject.startsWith("$JS.") && !subject.startsWith("$KV.")));

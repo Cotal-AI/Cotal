@@ -319,6 +319,7 @@ try {
   try {
     await cotalAuthProvider.grantAgent({
       store: workspaceSecretStore(root), dir: stateDir, space: SPACE,
+      broker: { server: SERVER },
       owner: cliRow!.owner, actor: defaultIdentity.id, lifecycleUid: defaultLifecycle,
       scope: shippedDefault.capabilities ?? [], role: shippedDefault.role,
       allowSubscribe: shippedDefault.allowSubscribe ?? [], allowPublish: shippedDefault.allowPublish ?? [],

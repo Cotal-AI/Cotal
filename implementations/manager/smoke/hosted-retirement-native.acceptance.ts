@@ -868,7 +868,7 @@ try {
 
   async function provisionRetained(actor: string, lifecycleUid: string): Promise<ManagerResumeAgent> {
     const grant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
-      store: hostStore, dir: hostDir, space, owner, actor, scope: [], allowSubscribe: [], allowPublish: [],
+      store: hostStore, dir: hostDir, space, broker: { server }, owner, actor, scope: [], allowSubscribe: [], allowPublish: [],
       parent: `${owner}.cli`, lifecycleUid,
     });
     const provisioner = new CotalEndpoint({
@@ -993,7 +993,7 @@ try {
       rowLifecycleUidAfterRevoke: rowAfterRevoke?.lifecycleUid,
     });
   const restoredGrant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
-    store: hostStore, dir: hostDir, space, owner, actor: "validation_negative", lifecycleUid: validationUid,
+    store: hostStore, dir: hostDir, space, broker: { server }, owner, actor: "validation_negative", lifecycleUid: validationUid,
     scope: [], allowSubscribe: [], allowPublish: [], parent: `${owner}.cli`,
   });
   validationActorToken = restoredGrant.actorToken;

@@ -119,6 +119,8 @@ export function joinOrStartDelegatedUserIntent(
 export type ObservePlatformControlAssignment = PlatformControlDeps["observeAssignment"];
 
 export interface AuthorizeDelegatedUserIntentAdmissionArgs {
+  /** Leader state from the auth service that owns this host's space. */
+  resolvePluginChannelState: (space: string) => Promise<{ enabled: boolean }>;
   request: DelegatedUserIntentRequest;
   space: string;
   accountPublicKey: string;
@@ -187,6 +189,7 @@ export async function authorizeDelegatedUserIntentAdmission(
     if (gate.principal !== servePrincipal)
       throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
     const t = r.intent.target;
+    const { enabled } = await observe("channel routing state", () => args.resolvePluginChannelState(args.space));
     // A dry run of the walk the host's writer repeats at the write, over the read ACL that writer
     // provisions: refuse before any record exists.
     try {
@@ -194,11 +197,11 @@ export async function authorizeDelegatedUserIntentAdmission(
         owner: args.owner,
         actor: t.actor,
         scope: t.capabilities ?? [],
-        allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe),
+        allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe, enabled),
         allowPublish: t.allowPublish ?? [],
         parent,
         ...(t.role !== undefined ? { role: t.role } : {}),
-      }, "spawn");
+      }, "spawn", enabled);
     } catch (e) {
       throw new EpEnvelopeError("permission-denied", e instanceof Error ? e.message : String(e));
     }

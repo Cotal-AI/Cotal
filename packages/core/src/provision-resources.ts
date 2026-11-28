@@ -95,7 +95,7 @@ export async function provisionAgentDurables(
   // Re-assert the load-time invariant at the trust boundary (defense in depth): the pre-created
   // live filter (subscribe) must sit within the read ACL (allowSubscribe), or the provisioner
   // would hand the agent live delivery it isn't permitted to read.
-  const allowSubscribe = resolveReadAcl(subscribe, opts.allowSubscribe);
+  const allowSubscribe = resolveReadAcl(subscribe, opts.allowSubscribe, opts.pluginChannelsEnabled);
   await provisioner.provisionDmInbox(pr.owner, pr.actor, uid);
   // The Plane-3 backstop carries channel copies only. A channel-less lifecycle has no authorized
   // DLV copy and therefore gets no consumer. Re-granting from [] to nonempty calls the unchanged
