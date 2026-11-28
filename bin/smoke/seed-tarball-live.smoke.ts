@@ -113,6 +113,51 @@ mkdirSync(prefix, { recursive: true });
 mkdirSync(physicalConfig, { recursive: true });
 if (cfg !== physicalConfig) symlinkSync(physicalConfig, cfg, "dir");
 
+function checkOfflineUpgrade(archives: readonly string[], version: string): void {
+  const dir = join(base, "offline-upgrade");
+  const home = join(dir, "home"), install = join(dir, "prefix");
+  const cache = join(dir, "cache"), emptyCache = join(dir, "empty-cache");
+  mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config"),
+    npm_config_cache: cache, npm_config_userconfig: join(home, ".npmrc"), npm_config_globalconfig: join(dir, "global.npmrc"),
+    npm_config_fetch_retries: "0", npm_config_update_notifier: "false", DO_NOT_TRACK: "1" };
+  const cli = (...args: string[]) => spawnSync(join(install, "bin", "cotal"), args, {
+    cwd: home, env, encoding: "utf8", timeout: 120_000,
+  });
+  const installCli = (...specs: string[]) => execFileSync("npm", ["install", "-g", "--prefix", install, "--no-audit", "--no-fund", ...specs], {
+    cwd: home, env, stdio: ["ignore", "ignore", "pipe"], timeout: 180_000,
+  });
+  installCli("cotal-ai@0.183.1");
+  for (const args of [["ext", "seed"], ["ext", "add", "@cotal-ai/cmux"]]) {
+    const run = cli(...args);
+    if (run.status !== 0) throw new Error(`${args.join(" ")} failed: ${run.stdout}${run.stderr}`);
+  }
+  const oldPrefix = cli("ext", "root").stdout.trim();
+  const cmux = "@cotal-ai/cmux";
+  rmSync(join(oldPrefix, "node_modules", cmux), { recursive: true });
+  installCli(...archives);
+  env.npm_config_cache = emptyCache;
+  env.npm_config_offline = "true";
+
+  for (const space of ["offline-first", "offline-next"]) {
+    const root = join(dir, space);
+    mkdirSync(root);
+    const run = cli("space", "create", space, "--root", root, "--json");
+    check(`${space}: an empty cache and absent cmux do not block space creation`,
+      run.status === 0 && JSON.parse(run.stdout).outcome === "ok", run.stdout + run.stderr);
+    check(`${space}: stderr names the deferred cmux and its remedy`, run.stderr.includes(`The npm cache does not have ${cmux}`) && /ext seed`/.test(run.stderr), run.stderr);
+  }
+  const selected = cli("ext", "root").stdout.trim();
+  const inventory = JSON.parse(readFileSync(join(selected, "extensions.json"), "utf8")) as { extensions: { pkg: string; version: string; source: string }[] };
+  const builtIns = inventory.extensions.filter(entry => entry.source === "seeded");
+  check("offline upgrade: all seven built-ins are refreshed and the seed cursor is clear",
+    builtIns.length === 7 && builtIns.every(entry => entry.version === version) && !existsSync(join(selected, "..", "seed", "reconcile.cursor.json")), inventory);
+  check("offline upgrade: cmux remains recorded at its original version but is not installed",
+    inventory.extensions.some(entry => entry.pkg === cmux && entry.version === "0.183.1") && !existsSync(join(selected, "node_modules", cmux)), inventory);
+  const listed = cli("space", "--json");
+  check("offline upgrade: both spaces are recorded", listed.status === 0 && listed.stdout.includes("offline-first") && listed.stdout.includes("offline-next"), listed.stdout + listed.stderr);
+}
+
 try {
   console.log("packing the cotal-ai closure …");
   const dirs = [
@@ -418,7 +463,10 @@ try {
     const physicalUpdate = update("--self");
     check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
   }
-  if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
+  if (process.platform === "linux") {
+    await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
+    checkOfflineUpgrade(tarballs.map(file => join(tgz, file)), umbrellaVersion);
+  }
 } finally {
   rmSync(base, { recursive: true, force: true });
 }
