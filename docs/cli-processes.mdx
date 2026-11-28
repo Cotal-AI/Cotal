@@ -656,35 +656,63 @@ installation reports a conflict and leaves the running daemon alone.
 
 `cotal daemon repair` checks this computer's background service and prints what it would fix, in
 order: the service is installed by this installation, it runs this installation's version, the
-service finds the installed agent applications, and every hosted space runs. It changes nothing and
+service finds the installed agent applications, every hosted space runs, no old registration of
+this computer's agent host is left, and no account needs sign-in again. It changes nothing and
 prints a plan digest. `cotal daemon repair --apply <digest>` runs that plan and nothing else, and refuses
 `CONFLICT` with cause `PLAN_CHANGED` when the computer changed since it was printed.
 
+Three kinds of step ask first, and `--apply` refuses `LIFECYCLE_BLOCKED` with cause
+`CONSENT_REQUIRED` until they are approved: `takeover` (moving the service from another
+installation), `start-stopped` (starting a service that is not running, which the person may have
+stopped) and `remove-old-registration`. `--yes` approves all three. The spaces step starts only the
+spaces the plan named.
+
+With `--json`, the plan is `{digest, steps}`. Each step has `step`, `outcome` (`ok`, `fix`,
+`needs-you` or `cannot`) and `found`, and may have `change`, `consent`, `space`, `spaces`, `agents`,
+`agentsUnknown`, `owner` and `action`. `agentsUnknown: true` means the service's agents could not be
+read, so any agent it runs stops. `action: "update"` marks a `cannot` step that updating this app
+fixes. A step that fails stops the run, and the command refuses with that step's cause. The desktop
+app instead receives `{steps, repaired, remaining}`: each step has `changed` or `failed` plus
+`detail`, steps after a failed one did not run, and `remaining` is what a new check still finds.
+`bin/daemon/repair.ts` exports `planRepair`, `applyRepair`, `planFrom`, `probeRepair`, `runSteps`,
+`startSpaces`, `accountSteps` and `compareVersions`.
+
 When another Cotal installation runs the service, the plan moves it to this installation. A move
-needs `--yes` (cause `CONSENT_REQUIRED` without it) and lists the agents that stop. It stops the
-recorded service through the same verified path as `uninstall`, but keeps every record in the daemon
-home: sign-in, this computer's account identity and each space's service records. It then installs
-this installation's service and waits for it to answer. If that service does not answer, the move puts
-the previous service back, starts it, and refuses with cause `MOVE_ROLLED_BACK`. `uninstall` still
-erases the space service records; use `repair` to move the service.
+needs consent `takeover` and lists the agents that stop. When the service's status or an agent row
+cannot be read, the plan says any agents it runs stop. A move never replaces a newer installation:
+when the service runs a later version than this one, the step is `cannot` and names updating this
+app. A move stops the recorded service through the same verified path as `uninstall`, but keeps every
+record in the daemon home: sign-in, this computer's account identity and each space's service records.
+It then installs this installation's service and waits for it to answer. If that service does not
+answer, the move puts the previous service back, starts it, and refuses with cause
+`MOVE_ROLLED_BACK`; the agents the previous service ran were stopped and do not start again by
+themselves. When the previous service's shutdown cannot be confirmed, the move refuses
+`OPERATION_UNKNOWN` with cause `MOVE_UNCONFIRMED` and keeps the unit and receipt. A process that
+dies after the previous unit is removed and before this one is published leaves no unit, and the
+next Repair offers to set the service up. `uninstall` still erases the space service records; use
+`repair` to move the service.
 
 When a hosted Manager's cleanup record names an older instance than the one this computer now runs,
 `service-disconnect` refuses ("Manager cleanup identity differs from its recorded instance"). The
-plan then offers one step per space to remove that old registration; it needs `--yes` (consent
-`remove-old-registration`). Repair asks the space to remove only the older instance, through the same
-guarded deregistration as disconnect and with the record's verified authority. While the older
-instance still answers, the space refuses and Repair leaves it alone. When the space confirms the
-removal, the record is rebound to the current instance and the space's Manager starts again. Any other
-answer keeps the record. The current instance is never removed. The daemon request is
-`manager-repair-cleanup {space}`.
+plan then offers one step per space to remove that old registration (consent
+`remove-old-registration`). Repair reads the space's hosting intent first, then asks the space to
+remove only the older instance, through the same guarded deregistration as disconnect and with the
+record's verified authority. While the older instance still answers, the space refuses and Repair
+leaves it alone. When the space confirms the removal, the record is rebound to the current instance.
+A space this computer still hosts starts its Manager again. A space the person disconnected stays
+disconnected: Repair finishes that disconnect, which removes the current instance through
+disconnect's own path. Any other answer keeps the record. Repair's own request never names the
+current instance. The daemon request is `manager-repair-cleanup {space}`.
 
 The desktop app offers Repair as the one button on every error screen whose cause it handles, and in
-the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`.
-Its `status` reply and every `status-watch` frame add `recovery: {reason: "another-installation", owner}`
+the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`, and
+`repair-apply` sends `repair-progress {line}` events while it runs.
+Its `status` reply and each pushed `status-watch` status frame add `recovery: {reason: "another-installation", owner}`
 while another installation runs the service, so the window offers Repair without a manual refresh.
-A move holds the same `agent-app.lock` admission that agent-app installs and sign-ins hold, so it
-refuses `LIFECYCLE_BLOCKED` while one runs and none starts during the move. The new service's
-startup never takes that lock.
+A move holds the agent-app admission lock (`agent-app.lock`) for the whole handoff and refuses
+`LIFECYCLE_BLOCKED` while another holder has it. Agent-app installs and sign-ins take the same lock
+once #10941 lands, so until then a move does not wait for them. The new service's startup never
+takes that lock.
 
 Daemon launches keep the invoked Node path when it resolves to the running Node in the same
 directory, including a distribution's stable `node` symlink. Links through another directory,
@@ -1605,7 +1633,11 @@ A broker connection lost during startup's ready call is also retried. Recovery n
 `service-connect`. Other refusals, including ended authority and damaged local records, stop these
 retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
 daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. With no current
+`service-status` reads the daemon's current answer without contacting the space. For a space
+whose hosted Manager is running, it reports that Manager and succeeds only while the Manager
+answers with no lost connection. Otherwise it refuses with the code `OFFLINE` (this computer cannot
+look up the space's host) or `SPACE_UNREACHABLE` (it can, and the space does not answer), or with
+`MANAGER_<STATE>`, such as `MANAGER_STARTING`, for the Manager's own state. With no current
 answer or saved register request, a space that is not registered locally reports `NOT_REGISTERED`
 (`TARGET_NOT_FOUND`). Check the name or run `cotal space` to list registered spaces. A registered
 user-auth space without a request reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`), including after a

@@ -58,7 +58,7 @@ const daemonFlags = [
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
-  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script. repair --apply: approve moving the service from another Cotal installation" },
+  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script. repair --apply: approve every step that asks: moving the service from another Cotal installation, starting a stopped service, and removing an old registration" },
   { name: "apply", type: "string", value: "<digest>", description: "repair: run the plan with this digest, as `cotal daemon repair` printed it" },
   { name: "wait", type: "string", value: "<seconds>", description: "setup --no-manager only: how long to wait for machine approval (default 900, 0 reports what it reached)" },
   { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
@@ -174,7 +174,7 @@ function statusView(s: DaemonStatus): Report {
       ? [{ kind: "lines" as const, lines: [inventory.message] }]
       : inventory.agents.length ? inventory.agents.map(agent => ({ kind: "fields" as const, rows: [["Name", agent.name], ["Application", agent.application], ["Model", agent.model ?? "not pinned"], ["Space", inventory.space], ["Folder", agent.cwd], ["Started", agent.startedAt], ["State", agent.state]] as [string, string][] }))
         : [{ kind: "lines" as const, lines: ["No agents running. Start agents from the dashboard."] }] })),
-    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.registrationCleanup ? [["Registration cleanup", manager.registrationCleanup]] : []), ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
+    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ...(manager.connection ? [["Connection", `${manager.connection.state}: ${manager.connection.reason}`]] : []), ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.registrationCleanup ? [["Registration cleanup", manager.registrationCleanup]] : []), ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
 }
 
@@ -358,9 +358,13 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
-  const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
-  const ok = op === "service-status" && r.manager && r.manager.state !== "stopped"
-    ? r.manager.state === "answering"
+  // service-status judges a hosted Manager by the Manager; its refusal names what the Manager lacks.
+  const manager = op === "service-status" && r.manager && r.manager.state !== "stopped" ? r.manager : undefined;
+  const nativeCode = manager?.connection ? (manager.connection.state === "offline" ? "OFFLINE" : "SPACE_UNREACHABLE")
+    : manager ? `MANAGER_${manager.state}` : r.state === "ended" && r.reason ? r.reason : r.state;
+  const native = { native: { code: nativeCode.toUpperCase().replaceAll("-", "_") } };
+  const ok = manager
+    ? manager.state === "answering" && !manager.connection
     : r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
   if (!ok) {
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
@@ -372,11 +376,11 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
     const remedy = r.remedy ?? r.manager?.next;
-    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(remedy ? { remedy } : {}) });
+    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}${r.manager.connection ? `; connection ${r.manager.connection.state}: ${r.manager.connection.reason}` : ""}` : ""}`, { ...native, ...(remedy ? { remedy } : {}) });
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
     { title: "Machine service and Manager", blocks: [
-      { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
+      { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ...(r.manager.connection ? [["Connection", `${r.manager.connection.state}: ${r.manager.connection.reason}`]] : []), ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
       { kind: "lines", lines: [{ text: r.message, tone: "hint" }] },
     ] },
   ] }));
@@ -444,7 +448,7 @@ async function repairCommand(args: ParsedArgs): Promise<void> {
     return;
   }
   if (!/^[0-9a-f]{64}$/.test(values.apply)) throw new CommandFailure("refused", "USAGE_INVALID", "--apply needs the 64-character plan digest that `cotal daemon repair` printed");
-  const result = await applyRepair({ ...opts, digest: values.apply, consent: values.yes === true ? [...REPAIR_CONSENTS] : [] });
+  const result = await applyRepair({ ...opts, digest: values.apply, consent: values.yes === true ? [...REPAIR_CONSENTS] : [], throwOnFailure: true });
   writeResult(presentation, { command: "daemon repair", target: null, result }, () => ({ sections: [
     { title: result.repaired ? "Repaired" : "Repaired in part", blocks: [{ kind: "fields", rows: result.steps.map((step): [string, string] => [step.step, step.changed ?? step.found]) }] },
   ] }));
@@ -765,7 +769,7 @@ const daemonCommand: Command = {
     { name: "serve", usage: "cotal daemon serve [--daemon-home <dir>] [--json|--plain]", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", usage: "cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "uninstall", usage: "cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
-    { name: "repair", usage: "cotal daemon repair [--apply <digest> [--yes]] [--daemon-home <dir>] [--json|--plain]", summary: "check this computer's background service and say what Repair would fix; --apply runs that exact plan, and --yes approves moving the service from another Cotal installation", examples: [{ command: "cotal daemon repair", note: "show what Repair would fix" }, { command: "cotal daemon repair --apply <digest> --yes", note: "run the plan shown, moving the service if it needs to" }], flagNames: ["apply", "yes", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "repair", usage: "cotal daemon repair [--apply <digest> [--yes]] [--daemon-home <dir>] [--json|--plain]", summary: "check this computer's background service and say what Repair would fix; --apply runs that exact plan, and --yes approves every step that asks first", examples: [{ command: "cotal daemon repair", note: "show what Repair would fix" }, { command: "cotal daemon repair --apply <digest> --yes", note: "run the plan shown, moving the service if it needs to" }], flagNames: ["apply", "yes", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "login", usage: "cotal daemon login [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["cloud", "no-browser", "idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "connect-check", usage: "cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon whether it could register with a space as its own service; registers nothing", examples: [{ command: "cotal daemon connect-check --space <space>", note: "check whether it could register" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "register", usage: "cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon to request its own service registration with a space; the space owner must approve it, and it does not connect", examples: [{ command: "cotal daemon register --space <space>", note: "ask a space to approve it as a service" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

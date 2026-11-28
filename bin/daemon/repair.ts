@@ -13,12 +13,13 @@
  * each space's service records. Only the native registration changes (see `applyMove`).
  */
 import { createHash } from "node:crypto";
-import { lstatSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths, PeerPid, PeerUid } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { applyInstall, applyMove, installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startInstalled } from "./install.js";
+import { answeringAt, applyInstall, applyMove, installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startInstalled } from "./install.js";
 import { unitReceiptFile } from "./install-receipt.js";
 import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
 import type { DaemonStatus, HostedManager } from "./protocol.js";
@@ -45,8 +46,23 @@ export interface RepairStep {
   readonly space?: string;
   /** Agents the change stops, by space, name and agent app. */
   readonly agents?: readonly { readonly space: string; readonly name: string; readonly application: string }[];
+  /** The agents could not be read, so `agents` may be incomplete: any agent the service runs stops. */
+  readonly agentsUnknown?: true;
+  /** The spaces the spaces step starts. It starts these and no others. */
+  readonly spaces?: readonly string[];
+  /** The one thing in the app that fixes a "cannot" step. */
+  readonly action?: "update";
   readonly owner?: ServiceOwner;
 }
+
+/** A step as applied: what changed, or why it stopped. */
+export type AppliedStep = RepairStep & {
+  readonly changed?: string;
+  /** The step did not finish, in plain words. Steps after it did not run. */
+  readonly failed?: string;
+  /** What the service said, for Details. */
+  readonly detail?: string;
+};
 
 export interface RepairPlan {
   readonly digest: string;
@@ -54,8 +70,10 @@ export interface RepairPlan {
 }
 
 export interface RepairResult {
-  readonly steps: readonly (RepairStep & { readonly changed?: string })[];
+  readonly steps: readonly AppliedStep[];
   readonly repaired: boolean;
+  /** What a new check finds still needs fixing, when it could be read. */
+  readonly remaining?: readonly RepairStep[];
 }
 
 export interface RepairOptions {
@@ -69,14 +87,68 @@ export interface RepairOptions {
 
 const APPLICATIONS: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
 
-async function readStatus(opts: RepairOptions): Promise<DaemonStatus | undefined> {
+/** What planning reads. `planFrom` turns it into steps without reading anything else. */
+export interface RepairProbe {
+  readonly status: DaemonStatus | undefined;
+  /** A service may be running but its status could not be read, so the agents it runs are unknown. */
+  readonly statusUnknown: boolean;
+  readonly service:
+    | { readonly kind: "none" }
+    | { readonly kind: "this" }
+    | { readonly kind: "other"; readonly installed: string; readonly entry: string; readonly version?: string };
+}
+
+async function readStatus(opts: RepairOptions): Promise<{ readonly status?: DaemonStatus; readonly unknown: boolean }> {
   try {
     const reply = await queryDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid });
-    return reply.ok ? reply.result : undefined;
+    return reply.ok ? { status: reply.result, unknown: false } : { unknown: true };
   } catch (error) {
-    if (error instanceof EndpointRefusal && (error.code === "NOT_RUNNING" || error.code === "PEER_NOT_LOCK_OWNER")) return undefined;
+    if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return { unknown: false };
+    if (error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER") return { unknown: true };
     throw error;
   }
+}
+
+/** The version an installation's `package.json` names, beside its `dist/cotal.js`. */
+function packageVersion(entry: string): string | undefined {
+  try {
+    const version = (JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")) as { version?: unknown }).version;
+    return typeof version === "string" ? version : undefined;
+  } catch { return undefined; }
+}
+
+/** Read this computer for planning. Changes nothing. */
+export async function probeRepair(opts: RepairOptions): Promise<RepairProbe> {
+  const { status, unknown } = await readStatus(opts);
+  if (!preflightInstalledDaemon(opts.paths, opts.daemonHome)) return { status, statusUnknown: unknown, service: { kind: "none" } };
+  const identity = installedDaemonIdentity(opts.paths, opts.daemonHome);
+  if (identity.same) return { status, statusUnknown: unknown, service: { kind: "this" } };
+  return { status, statusUnknown: unknown, service: { kind: "other", installed: identity.installed, entry: identity.installedEntry, version: status?.version ?? packageVersion(identity.installedEntry) } };
+}
+
+/** Order two release versions; undefined when either is not one. A prerelease sorts before its release. */
+export function compareVersions(a: string, b: string): number | undefined {
+  const parse = (value: string) => /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/.exec(value);
+  const left = parse(a), right = parse(b);
+  if (!left || !right) return undefined;
+  for (let i = 1; i <= 3; i++) if (Number(left[i]) !== Number(right[i])) return Number(left[i]) - Number(right[i]);
+  if (!left[4] || !right[4]) return left[4] ? -1 : right[4] ? 1 : 0;
+  const l = left[4].split("."), r = right[4].split(".");
+  for (let i = 0; i < Math.max(l.length, r.length); i++) {
+    if (l[i] === undefined || r[i] === undefined) return l[i] === undefined ? -1 : 1;
+    if (l[i] === r[i]) continue;
+    const ln = /^\d+$/.test(l[i]!), rn = /^\d+$/.test(r[i]!);
+    if (ln && rn) return Number(l[i]) - Number(r[i]);
+    return ln ? -1 : rn ? 1 : l[i]! < r[i]! ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The service's agents cannot be listed: its status or one of its agent rows could not be read. */
+function agentsUnknown(probe: RepairProbe): boolean {
+  if (probe.statusUnknown) return true;
+  if (!probe.status) return false;
+  return !probe.status.agents || probe.status.agents.some(row => row.state !== "read");
 }
 
 function runningAgents(status: DaemonStatus | undefined): NonNullable<RepairStep["agents"]> {
@@ -86,26 +158,33 @@ function runningAgents(status: DaemonStatus | undefined): NonNullable<RepairStep
 }
 
 /** The service step: is the background service installed by this installation? */
-function ownerStep(opts: RepairOptions, status: DaemonStatus | undefined): RepairStep {
-  if (!preflightInstalledDaemon(opts.paths, opts.daemonHome)) {
-    if (status) return { step: "service-owner", outcome: "cannot", found: "A background service runs that Cotal did not install. Stop it, then repair again." };
+function ownerStep(probe: RepairProbe, version: string): RepairStep {
+  const { status, service } = probe;
+  if (service.kind === "none") {
+    // Started by hand or by a container, with no unit to stop: nothing here can stop it safely.
+    if (status) return { step: "service-owner", outcome: "cannot", found: "A background service is running that Cotal did not set up, so Repair can't change it. Restart this computer to stop it, then choose Repair." };
     return { step: "service-owner", outcome: "fix", found: "The background service is not set up.", change: "Set up the background service." };
   }
-  const identity = installedDaemonIdentity(opts.paths, opts.daemonHome);
-  if (identity.same) return { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." };
-  const owner = serviceOwner(identity.installedEntry);
+  if (service.kind === "this") return { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." };
+  const owner = serviceOwner(service.entry);
+  // A move never replaces a newer service with this older app.
+  if (service.version && (compareVersions(service.version, version) ?? 0) > 0)
+    return { step: "service-owner", outcome: "cannot", owner, action: "update", found: "A newer copy of Cotal runs the background service. Update this app, then repair again." };
   const agents = runningAgents(status);
+  const unknown = agentsUnknown(probe);
   return {
-    step: "service-owner", outcome: "fix", consent: "takeover", owner, agents,
+    step: "service-owner", outcome: "fix", consent: "takeover", owner, agents, ...(unknown ? { agentsUnknown: true as const } : {}),
     found: owner.kind === "app" ? "Another copy of the Cotal app runs the background service." : "A command-line install of Cotal runs the background service.",
-    change: agents.length ? `Use this app for the background service. ${agents.length === 1 ? "1 agent stops" : `${agents.length} agents stop`}.` : "Use this app for the background service.",
+    change: unknown ? "Use this app for the background service. Any agents it runs stop."
+      : agents.length ? `Use this app for the background service. ${agents.length === 1 ? "1 agent stops" : `${agents.length} agents stop`}.` : "Use this app for the background service.",
   };
 }
 
-function runningStep(opts: RepairOptions, status: DaemonStatus | undefined, owner: RepairStep): RepairStep {
+function runningStep(status: DaemonStatus | undefined, version: string, owner: RepairStep): RepairStep {
   if (owner.outcome !== "ok") return { step: "service-running", outcome: "ok", found: "Checked after the service is set up." };
-  if (!status) return { step: "service-running", outcome: "fix", found: "The background service is not running.", change: "Start the background service." };
-  if (status.version !== opts.version) return { step: "service-running", outcome: "fix", found: "The background service runs an older version.", change: "Restart the background service when no agent is running." };
+  // The person may have stopped it, so starting it asks first.
+  if (!status) return { step: "service-running", outcome: "fix", consent: "start-stopped", found: "The background service is not running.", change: "Start the background service." };
+  if (status.version !== version) return { step: "service-running", outcome: "fix", found: "The background service runs an older version.", change: "Restart the background service when no agent is running." };
   return { step: "service-running", outcome: "ok", found: "The background service is running." };
 }
 
@@ -119,7 +198,7 @@ function appsStep(status: DaemonStatus | undefined): RepairStep {
 function spacesStep(status: DaemonStatus | undefined): RepairStep {
   const refused = (status?.managers ?? []).filter(manager => manager.state === "refused" && !staleCleanup(manager));
   if (!status) return { step: "spaces", outcome: "ok", found: "Checked after the service is running." };
-  if (refused.length) return { step: "spaces", outcome: "fix", found: `${refused.length === 1 ? "1 space has" : `${refused.length} spaces have`} stopped on this computer.`, change: "Start those spaces again." };
+  if (refused.length) return { step: "spaces", outcome: "fix", spaces: refused.map(manager => manager.space), found: `${refused.length === 1 ? "1 space has" : `${refused.length} spaces have`} stopped on this computer.`, change: "Start those spaces again." };
   return { step: "spaces", outcome: "ok", found: "Every space on this computer is running." };
 }
 
@@ -155,37 +234,76 @@ export function accountSteps(status: DaemonStatus | undefined): RepairStep[] {
 }
 
 function digestOf(steps: readonly RepairStep[]): string {
-  return createHash("sha256").update(JSON.stringify(steps.map(({ step, outcome, consent, owner, agents, space }) => ({ step, outcome, consent, owner, agents, space })))).digest("hex");
+  return createHash("sha256").update(JSON.stringify(steps.map(({ step, outcome, consent, owner, agents, agentsUnknown, space, spaces }) => ({ step, outcome, consent, owner, agents, agentsUnknown, space, spaces })))).digest("hex");
+}
+
+/** The plan for what `probeRepair` read, for `version`, this installation's version. */
+export function planFrom(probe: RepairProbe, version: string): RepairPlan {
+  const { status } = probe;
+  const owner = ownerStep(probe, version);
+  const steps = [owner, runningStep(status, version, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status), ...accountSteps(status)];
+  return { digest: digestOf(steps), steps };
 }
 
 /** Read this computer and say what Repair would do. Changes nothing. */
 export async function planRepair(opts: RepairOptions): Promise<RepairPlan> {
-  const status = await readStatus(opts);
-  const owner = ownerStep(opts, status);
-  const steps = [owner, runningStep(opts, status, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status), ...accountSteps(status)];
-  return { digest: digestOf(steps), steps };
+  return planFrom(await probeRepair(opts), opts.version);
+}
+
+/** Why a step did not finish, in words the window can show. */
+function failedCopy(error: unknown): string {
+  const code = (error as { native?: { code?: unknown } } | undefined)?.native?.code;
+  if (code === "MOVE_ROLLED_BACK") return "This app's service did not start, so the other copy of Cotal runs the background service again. The agents it ran stopped and do not start again by themselves.";
+  if (code === "MOVE_UNCONFIRMED") return "Repair could not confirm the other copy's service stopped. Choose Repair again to check this computer.";
+  if ((error as { code?: unknown } | undefined)?.code === "LIFECYCLE_BLOCKED") return "Another change is running on this computer. Wait for it to finish, then choose Repair again.";
+  return "Repair could not finish this step.";
+}
+
+/** Run each fix step of an approved plan in order. A step that fails ends the run: it and the steps
+ *  before it are returned as they are, and `onError` receives the failure. */
+export async function runSteps(steps: readonly RepairStep[], fix: (step: RepairStep) => Promise<string>, report?: (line: string) => void, onError?: (error: unknown) => void): Promise<AppliedStep[]> {
+  const done: AppliedStep[] = [];
+  let stopped = false;
+  for (const step of steps) {
+    if (stopped || step.outcome !== "fix") { done.push(step); continue; }
+    report?.(step.change!);
+    try { done.push({ ...step, changed: await fix(step) }); }
+    catch (error) {
+      stopped = true;
+      onError?.(error);
+      done.push({ ...step, failed: failedCopy(error), detail: (error instanceof Error ? error.message : String(error)).slice(0, 1500) });
+    }
+  }
+  return done;
+}
+
+/** The spaces fix: start the spaces the plan named that are still stopped, and no others. */
+export async function startSpaces(step: RepairStep, read: () => Promise<DaemonStatus | undefined>, start: (space: string) => Promise<unknown>): Promise<string> {
+  const status = await read();
+  const named = new Set(step.spaces ?? []);
+  for (const manager of (status?.managers ?? []).filter(item => item.state === "refused" && named.has(item.space))) await start(manager.space);
+  return "Those spaces were started again.";
 }
 
 /** Run the plan the person approved. Refuses when the computer changed since that plan. */
-export async function applyRepair(opts: RepairOptions & { readonly digest: string; readonly consent: readonly RepairConsent[] }): Promise<RepairResult> {
+export async function applyRepair(opts: RepairOptions & { readonly digest: string; readonly consent: readonly RepairConsent[]; readonly throwOnFailure?: boolean }): Promise<RepairResult> {
   const plan = await planRepair(opts);
   if (plan.digest !== opts.digest) throw new CommandFailure("refused", "CONFLICT", "this computer changed since Repair checked it; nothing was changed", { native: { code: "PLAN_CHANGED" } });
   const missing = plan.steps.find(step => step.outcome === "fix" && step.consent && !opts.consent.includes(step.consent));
   if (missing) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "Repair needs your approval for this step; nothing was changed", { native: { code: "CONSENT_REQUIRED", detail: { step: missing.step } } });
-  const done: (RepairStep & { changed?: string })[] = [];
-  for (const step of plan.steps) {
-    if (step.outcome !== "fix") { done.push(step); continue; }
-    opts.report?.(step.change!);
-    done.push({ ...step, changed: await fix(opts, step) });
-  }
-  const after = await planRepair(opts);
-  return { steps: done, repaired: after.steps.every(step => step.outcome === "ok") };
+  let failure: unknown;
+  const done = await runSteps(plan.steps, step => fix(opts, step), opts.report, error => { failure = error; });
+  // The command line reports a failed step as its refusal; the window reads the partial result.
+  if (failure !== undefined && opts.throwOnFailure) throw failure;
+  let remaining: RepairStep[] | undefined;
+  try { remaining = (await planRepair(opts)).steps.filter(step => step.outcome !== "ok"); } catch { remaining = undefined; }
+  return { steps: done, repaired: failure === undefined && remaining?.length === 0, ...(remaining ? { remaining } : {}) };
 }
 
 async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
   const install: InstallOptions = { paths: opts.paths, daemonHome: opts.daemonHome, peerUid: opts.peerUid, peerPid: opts.peerPid, version: opts.version, report: line => opts.report?.(line) };
   if (step.step === "service-owner" && step.consent === "takeover") {
-    // The same gate agent-app changes hold: no install or sign-in runs across the handoff.
+    // The agent-app admission gate: no change that takes it runs across the handoff.
     // The new service's startup never takes it, so waiting for it to answer cannot deadlock.
     return withAppMutation(opts.paths, async () => {
       const identity = installedDaemonIdentity(opts.paths, opts.daemonHome);
@@ -199,9 +317,10 @@ async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
   }
   if (step.step === "service-running") {
     lstatSync(unitReceiptFile(opts.paths));
-    const status = await readStatus(opts);
+    const { status } = await readStatus(opts);
     if (!status) {
       await startInstalled(opts.paths, opts.daemonHome, opts.version, line => opts.report?.(line));
+      await answeringAt(opts.paths, opts.version, 60_000);
       return "The background service was started.";
     }
     // An older service restarts only through the idle fence: running agents keep it waiting.
@@ -222,7 +341,5 @@ async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
     const result = await managerViaDaemon(opts, { op: "manager-repair-cleanup", space: step.space! }) as HostedManager & { repair?: { message?: unknown } };
     return typeof result.repair?.message === "string" ? result.repair.message : "The space did not confirm removing the old registration, so Repair left it as it was.";
   }
-  const status = await readStatus(opts);
-  for (const manager of (status?.managers ?? []).filter(item => item.state === "refused")) await managerViaDaemon(opts, { op: "manager-start", space: manager.space });
-  return "Those spaces were started again.";
+  return startSpaces(step, async () => (await readStatus(opts)).status, space => managerViaDaemon(opts, { op: "manager-start", space }));
 }

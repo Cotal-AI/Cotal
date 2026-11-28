@@ -369,8 +369,8 @@ if (process.getuid && process.getuid() !== 0) {
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
-  check("...and its next step creates it in another folder with --project, or starts, selects or forgets research",
-    literal(`create "research2" in another folder with --project <dir>; for "research", which uses this folder, start it with \`cotal up\` from ${dir}, select it with \`cotal use research\`, or forget it with \`cotal space forget research\``).test(other.env?.error?.remedy ?? ""), other.env?.error);
+  check("...and its next step inspects the existing space or creates the new one in another folder",
+    other.env?.error?.remedy === 'inspect what uses this folder with `cotal space show research --json`; to create "research2", choose another folder with --project <dir>', other.env?.error);
   const moved = await json(FULL("research", project("elsewhere")));
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }

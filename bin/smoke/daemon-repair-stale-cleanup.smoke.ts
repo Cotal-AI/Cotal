@@ -10,15 +10,17 @@ const removed: Answer = r => ({ ...r, state: "removed", removedSpecRevision: 4, 
 const refused = (condition: "instance-answered" | "instance-not-affirmed-gone" | "not-registered" | "permission-denied" | "unavailable"): Answer => r => ({ ...r, state: "refused", condition });
 const unknown: Answer = r => ({ ...r, state: "unknown", condition: "unavailable" });
 
-async function run(answer: Answer | undefined, read: StaleCleanup | null = stale, authority = () => {}) {
-  const sent: RemoteEndpointDeregisterRequest[] = [], rebound: string[] = [];
-  let starts = 0;
+async function run(answer: Answer | undefined, read: StaleCleanup | null = stale, authority = () => {}, intended = true) {
+  const sent: RemoteEndpointDeregisterRequest[] = [], rebound: string[] = [], order: string[] = [];
+  let starts = 0, disconnects = 0;
   const outcome = await repairStaleCleanup({
+    intended: () => { order.push("intent"); return intended; },
     read: () => read ?? undefined, verifyAuthority: authority,
-    deregister: async request => { sent.push(request); return answer!(request); },
+    deregister: async request => { order.push("deregister"); sent.push(request); return answer!(request); },
     rebind: current => { rebound.push(current); }, start: async () => { starts++; },
+    finishDisconnect: async () => { disconnects++; },
   });
-  return { outcome, sent, rebound, starts };
+  return { outcome, sent, rebound, starts, disconnects, order };
 }
 
 {
@@ -27,6 +29,15 @@ async function run(answer: Answer | undefined, read: StaleCleanup | null = stale
   assert.deepEqual(r.sent.map(s => s.instanceId), ["manager-old"], "only the recorded old instance is sent");
   assert.deepEqual(r.rebound, ["manager-new"]); assert.equal(r.starts, 1);
   console.log("PASS removed: 1 request for the old instance, record rebound to the current one, host started once");
+}
+{
+  // Finding 2: a space the person disconnected stays disconnected; Repair finishes that disconnect.
+  const r = await run(removed, stale, () => {}, false);
+  assert.equal(r.order[0], "intent", "the intent is read before any request");
+  assert.equal(r.starts, 0, "a disconnected space is not started again");
+  assert.equal(r.disconnects, 1, "its disconnect is finished");
+  assert.equal(r.outcome.message, "The old registration in team was removed and the space stays disconnected from this computer.");
+  console.log("PASS a withdrawn space: old registration removed, disconnect finished, 0 starts");
 }
 {
   const r = await run(refused("not-registered"));
