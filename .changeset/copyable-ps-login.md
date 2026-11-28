@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-When you run `cotal ps` without signing in or having a local space available, it explains why and prints a copyable `cotal login` command.
+On a fresh install with no sign-in or saved space, `cotal ps` explains why it cannot list agents and prints a copyable `cotal login` command.

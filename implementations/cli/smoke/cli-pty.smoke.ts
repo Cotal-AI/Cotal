@@ -237,7 +237,7 @@ try {
   check("cotal help on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
   check("on 40 columns cotal help wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
 
-  // The refusal wraps its diagnosis but keeps the command under Next on its own line.
+  // At 40 columns, the diagnosis wraps and the login command appears below Next.
   const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
   ptys.push(failPty);
   const f = session(failPty);

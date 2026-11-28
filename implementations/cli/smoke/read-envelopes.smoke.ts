@@ -9,10 +9,11 @@
  * Run: pnpm smoke:read-envelopes
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSuite } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -47,7 +48,7 @@ function sandbox(manifest?: unknown, viaLink = false) {
     mkdirSync(join(xdg, "cotal", "extensions"), { recursive: true });
     writeFileSync(join(xdg, "cotal", "extensions", "extensions.json"), JSON.stringify(manifest));
   }
-  return (args: string[], extraEnv: Record<string, string> = {}) => {
+  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
     const r = spawnSync(process.execPath, [BIN, ...args], {
       cwd: home,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", ...extraEnv },
@@ -60,6 +61,7 @@ function sandbox(manifest?: unknown, viaLink = false) {
     if (lines.length === 1 && lines[0]!.startsWith("{")) envelope = JSON.parse(lines[0]!) as Envelope;
     return { status: r.status, stdout, stderr: r.stderr ?? "", envelope };
   };
+  return Object.assign(run, { home });
 }
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
 const ansi = /\x1b\[/;
@@ -122,12 +124,13 @@ registry.register({ kind: "runtime", name: "probe", available() {
 
 // ── ps, models and run ps: no mesh to read is refused before any request ─────────────────────────
 const firstRunPsMessage = "You are not signed in, and no local space is available.";
+const generalTargetRemedy = "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`";
 {
   const run = sandbox();
   for (const words of [["ps"], ["models"], ["run", "ps"], ["run", "ps", "--local"]]) {
     const command = words.join(" "), json = run([...words, "--json"]);
     const message = command === "ps" ? firstRunPsMessage : "no mesh running";
-    const remedy = command === "ps" ? "cotal login" : "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`";
+    const remedy = command === "ps" ? "cotal login" : generalTargetRemedy;
     check(`${command} --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2`,
       json.status === 2 && json.stderr === "" && json.envelope?.outcome === "refused" && json.envelope.command === words[0] && json.envelope.error?.code === "TARGET_NOT_FOUND", shown(json));
     check(`${command} --json with no mesh gives the remedy apart from the message`,
@@ -154,6 +157,42 @@ const firstRunPsMessage = "You are not signed in, and no local space is availabl
     const plain = run([...request, "--plain"]);
     check(`${request[0]} keeps plain output in the suggested inventory`, plain.status === 2 && plain.stderr.includes("`cotal space --plain`"), shown(plain));
   }
+}
+
+// A prepared space, a retained offline record, or a cached account is not a fresh install.
+for (const state of ["prepared", "offline", "signed-in"] as const) {
+  const run = sandbox();
+  const store = join(run.home, ".cotal");
+  const project = join(run.home, "project");
+  if (state === "prepared") {
+    mkdirSync(project);
+    const prepared = run(["space", "create", "prepared", "--root", project]);
+    check("the project is prepared without selecting it", prepared.status === 0, shown(prepared));
+  } else if (state === "offline") {
+    mkdirSync(project);
+    mkdirSync(join(store, "meshes"), { recursive: true });
+    writeFileSync(join(store, "meshes", "offline.json"), JSON.stringify({
+      space: "offline", root: project, server: `nats://127.0.0.1:${await freePort()}`,
+      mode: "open", origin: "up", ts: new Date(0).toISOString(),
+    }));
+  } else {
+    mkdirSync(store, { recursive: true });
+    const issuer = `http://127.0.0.1:${await freePort()}`, idpUrl = `${issuer}/api/auth`, sub = "smoke-account";
+    const ownerKey = createHash("sha256").update(`${issuer}\0${sub}`).digest("hex");
+    writeFileSync(join(store, "idp-sessions.json"), JSON.stringify({
+      ver: 1, sessions: { [idpUrl]: { sub, token: "smoke-session", expiresAt: Date.now() + 3_600_000 } },
+    }), { mode: 0o600 });
+    // A fresh no-catalog result needs neither network access nor a real sign-in.
+    writeFileSync(join(store, "space-catalogs.json"), JSON.stringify({
+      ver: 1, accounts: { [ownerKey]: { ownerKey, idpUrl, issuer, sub, advertised: true, advertisementCheckedAt: new Date().toISOString() } },
+    }), { mode: 0o600 });
+  }
+  const selection = run(["use", "--json"]);
+  check(`${state}: there is no space selected`, selection.status === 0 && selection.envelope?.target === null, shown(selection));
+  const refusal = run(["ps", "--json"]);
+  check(`${state}: ps keeps the general target refusal and startup advice`,
+    refusal.status === 2 && refusal.stderr === "" && refusal.envelope?.error?.code === "TARGET_NOT_FOUND" &&
+      refusal.envelope.error.message === "no mesh running" && refusal.envelope.error.remedy === generalTargetRemedy, shown(refusal));
 }
 
 // ── ps and models: a home reached through a symlink is still no project ──────────────────────────

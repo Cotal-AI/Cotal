@@ -14,6 +14,7 @@ import {
   isCommandFailure,
   isConnectRefusal,
   isGenuineSpace,
+  isMeshRegistryError,
   isWorkspaceTargetError,
   jsonFlag,
   legacyStackOtherHome,
@@ -25,6 +26,8 @@ import {
   preparedSpaceAt,
   presentationOf,
   projectRootProblem,
+  readMeshRegistry,
+  readPreparedSpaces,
   resolveSeatControlTarget,
   targetFlags,
   writeResult,
@@ -718,6 +721,19 @@ function psUnusableJournalRefusal(e: unknown, v: FlagValues<typeof psFlags>): Co
   return undefined;
 }
 
+/** An unreadable inventory does not establish that this is a first run. */
+function noRecordedLocalSpace(): boolean {
+  try {
+    const prepared = readPreparedSpaces();
+    const registered = readMeshRegistry();
+    return prepared.spaces.length === 0 && prepared.unusable.length === 0 &&
+      registered.unusable.length === 0 && !registered.entries.some((entry) => entry.origin !== "catalog");
+  } catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    return false;
+  }
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: --wide is a human layout and --json the document that already carries every
@@ -747,7 +763,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (journalRefusal) throw journalRefusal;
     const cause = isConnectRefusal(e) ? e.cause : e;
     if (v.space === undefined && v.server === undefined && isWorkspaceTargetError(cause) && cause.code === "no-meshes" &&
-        cause.details.root === undefined && preparedCatalogDiagnostics().length === 0) {
+        cause.details.root === undefined && preparedCatalogDiagnostics().length === 0 && noRecordedLocalSpace()) {
       const cli = presentation === "json" ? "cotal" : displayCmd();
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "You are not signed in, and no local space is available.", {
         remedy: `${cli} login`, remedyIsCommand: true,

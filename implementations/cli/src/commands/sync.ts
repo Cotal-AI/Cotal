@@ -386,7 +386,7 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
 
 let catalogDiagnostics: AuthSpaceCatalogResult[] = [];
 
-/** The account results prepared by the dispatcher immediately before `status` renders. */
+/** The current command's account results from dispatcher catalog preparation. */
 export function preparedCatalogDiagnostics(): readonly AuthSpaceCatalogResult[] {
   return catalogDiagnostics;
 }
