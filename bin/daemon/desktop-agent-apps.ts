@@ -384,7 +384,7 @@ export type AgentAppRequest =
 type ServiceOptions = Omit<InstallOptions, "report">;
 
 /** Let the installed service find what was installed. Running agents defer it: the app says so and
- *  checks again later. */
+ *  checks again later. When another Cotal installation owns the service, the refusal says so. */
 async function refreshService(service: ServiceOptions, dirs: readonly string[], before: string | undefined, progress: Emit): Promise<"none" | "unchanged" | "refreshed" | "waiting"> {
   try { return await refreshServiceForApplication({ ...service, report: line => progress(line) }, dirs, before); }
   catch (error) {
@@ -416,7 +416,11 @@ async function answer(req: AgentAppRequest, service: ServiceOptions, emit: (fram
   const installed = await installAgentApp(req.name, progress);
   const done = { app: installed.app, ...(installed.pathAdded ? { pathAdded: installed.pathAdded } : {}) };
   // The install stands even when the service cannot pick it up yet, so the reply says both and Check
-  // again (`agent-apps` with refresh) tries the service once more.
+  // again (`agent-apps` with refresh) tries the service once more. When another installation owns the
+  // service, the owner says so as data and the app offers no re-check, because it cannot succeed.
   try { return { ...done, service: await refreshService(service, installed.dirs, installed.before, progress) }; }
-  catch (error) { return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error) }; }
+  catch (error) {
+    const owner = error instanceof CommandFailure && error.native?.code === "ANOTHER_INSTALLATION" && (error.native.detail as { owner?: { kind?: unknown } } | undefined)?.owner;
+    return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error), ...(owner && (owner.kind === "app" || owner.kind === "cli") ? { serviceOwner: { kind: owner.kind } } : {}) };
+  }
 }
