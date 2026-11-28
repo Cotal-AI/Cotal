@@ -206,7 +206,7 @@ try {
     staleDoc.error?.code === "TARGET_UNAVAILABLE" && staleDoc.error?.message.includes(`pinned instance ${absent} of manager did not answer`) &&
     staleDoc.error.message.includes("500ms --timeout") && staleDoc.error.message.includes("no invocation was sent"), stale.out);
   ok("an unanswered pin advises checking the same space or giving that pin more time",
-    staleDoc.error?.remedy.includes(`cotal endpoint list --live --space ${space}`) && staleDoc.error.remedy.includes("--timeout 10000") &&
+    staleDoc.error?.remedy.includes(`\`cotal endpoint list --live --space ${space} --json\``) && staleDoc.error.remedy.includes("--timeout 10000") &&
     staleDoc.error.remedy.includes("if you expect that instance to answer") && !staleDoc.error.remedy.includes("start the service"), stale.out);
 
   const stopped = await run(["down", "--yes"]);

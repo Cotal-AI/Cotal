@@ -410,6 +410,7 @@ unpinned, the class queue answers and the attribution line names whichever insta
 calls one command by name. If either command refuses an invalid pin, use the full instance ID of
 the selected endpoint. For the native `manager` endpoint without a credential file, the lookup
 keeps the selected space and broker. A Manager roster cannot identify a different endpoint.
+If no instance answers the contract read, the suggested inventory command keeps `--json` or `--plain` when requested.
 
 When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
 once more to the instance that answered its describe; a caller whose grants name only that instance, such as a service

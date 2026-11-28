@@ -14,7 +14,7 @@ import {
 import { presenceSeat, type ManagerPin } from "@cotal-ai/workspace/control";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
-import { endpointFailure, NativeReplyError, shellWord, verifyPinnedEndpoint, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
+import { endpointFailure, NativeReplyError, serviceInventory, shellWord, verifyPinnedEndpoint, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
 import { onFlag } from "../lib/control.js";
@@ -88,6 +88,7 @@ function parsedInput(text: string | undefined): Record<string, unknown> | undefi
 
 export async function describeCmd(args: ParsedArgs, commandName = "describe"): Promise<void> {
   validateEndpointArguments(args, "describe");
+  const presentation = presentationOf(args.values);
   const requestedInstance = (args.values as FlagValues<typeof describeFlags>).on;
   const selection = resolveEndpointSelection(args.positionals[0]!, args.values as { space?: string; server?: string; creds?: string }, requestedInstance);
   const { endpoint, instanceId: on } = selection;
@@ -105,7 +106,7 @@ export async function describeCmd(args: ParsedArgs, commandName = "describe"): P
       if (instanceId === undefined || !unansweredRequest(error) || !(error instanceof EpEnvelopeError)) throw error;
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `pinned instance ${instanceId} of ${endpoint} did not answer its contract read`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
-        remedy: verifyPinnedEndpoint(space, typeof args.values.server === "string" ? args.values.server : undefined),
+        remedy: verifyPinnedEndpoint(space, typeof args.values.server === "string" ? args.values.server : undefined, presentation),
       });
     });
     result = { kind: "endpoint-contract", contractSource: "fresh-native-resolution", endpoint: service.endpoint, owner: service.owner, responder: service.responder,
@@ -117,9 +118,9 @@ export async function describeCmd(args: ParsedArgs, commandName = "describe"): P
         input: command.contract.input.validate.schema, output: command.contract.output.validate.schema,
       })),
     };
-  } catch (error) { throw endpointFailure(error, target, false); }
+  } catch (error) { throw endpointFailure(error, target, false, presentation); }
   finally { try { if (connection) await connection.nc.close(); } finally { selection.release(); } }
-  writeResult(presentationOf(args.values), { command: commandName, target, result }, (data): Report => ({ sections: [
+  writeResult(presentation, { command: commandName, target, result }, (data): Report => ({ sections: [
     { title: "Verified endpoint contract", blocks: [{ kind: "fields", rows: [["Endpoint", data.endpoint], ["Owner", data.owner], ["Answering instance", data.responder.instanceId], ["Epoch", String(data.responder.epoch)]] }, data.commands.length ? { kind: "table", columns: [{ key: "command", label: "Command" }, { key: "capability", label: "Capability" }, { key: "class", label: "Class" }, { key: "target", label: "Target modes" }, ...(data.callerCredential ? [{ key: "scope", label: "File scope" }] : [])], rows: data.commands.map((command) => ({ command: { text: command.command, tone: "command" }, capability: command.capability, class: `${command.class}${command.action ? " · action" : ""}`, target: command.targeted ? command.modes.join(", ") : "untargeted", ...(command.callerFileScope ? { scope: command.callerFileScope === "native-synchronous-scope" ? "in file scope" : command.callerFileScope === "not-in-file-scope" ? "not in file" : "shape changed; unsupported" } : {}) })) } : { kind: "lines", lines: ["No commands in this caller's described surface."] }, { kind: "lines", lines: [{ text: "Contracts were fetched and digest-verified by the native resolver. Discovery grants no additional command authority and does not prove task completion.", tone: "hint" }] }] },
     ...(data.callerCredential ? [{ title: "Explicit caller", blocks: [{ kind: "fields" as const, rows: [["Private file", data.callerCredential.path], ["Caller", data.callerCredential.identity], ["Lifecycle", data.callerCredential.lifecycleUid], ["Broker admission", "connection established"], ["Local request", data.callerCredential.localRequestId], ["Scope", "native static out-of-band; class-one synchronous commands"]] as const }, { kind: "lines" as const, lines: ["The paired local intent supplies selection coordinates, not authority. Signed native permission rows and principal tags matched the native builder before connection. No generation, live lifecycle currency, operator identity or instance authority was inferred. Described methods can exceed this file's invocation scope."] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: data.callerCredential ? "cotal ep describe <target> --creds <same-private-file> --json" : "cotal ep describe <target> --json", description: "Read the returned contracts and their closure digests" }, { command: data.callerCredential ? "cotal ep invoke <target> <command> --creds <same-private-file> --args '<json>'" : "cotal ep invoke <target> <command> --args '<json>'", description: "Retain the same caller and native capability rules" }] }] },
@@ -130,6 +131,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   validateEndpointArguments(args, "invoke");
   refuseUnmappedHandle(args);
   const values = args.values as FlagValues<typeof invokeFlags>;
+  const presentation = presentationOf(values);
   const [selector, command] = args.positionals as [string, string];
   const input = parsedInput(values.args);
   const requestedInstance = values.on;
@@ -193,13 +195,13 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       if (instanceId !== undefined && unansweredRequest(error) && error instanceof EpEnvelopeError) {
         throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `pinned instance ${instanceId} of ${endpoint} did not answer its contract read within the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"}; no invocation was sent`, {
           native: { code: error.code, outcome: error.outcome }, cause: error,
-          remedy: `${verifyPinnedEndpoint(space, values.server)}, or ${longerTimeout} if you expect that instance to answer`,
+          remedy: `${verifyPinnedEndpoint(space, values.server, presentation)}, or ${longerTimeout} if you expect that instance to answer`,
         });
       }
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
-        remedy: `start the service that serves ${endpoint}, then run the command again, or ${longerTimeout}. ${codeSpan(`cotal service --space ${shellWord(selection.space)}`)} lists this space's services`,
+        remedy: `start the service that serves ${endpoint}, then run the command again, or ${longerTimeout}. ${serviceInventory(selection.space, presentation)} lists this space's services`,
       });
       throw new CommandFailure("failed", "OPERATION_FAILED", `the ${budgetMs}ms ${values.timeout === undefined ? "deadline" : "--timeout"} ran out during the endpoint contract read; no command was published`, {
         native: { code: error.code, outcome: error.outcome }, cause: error, remedy: longerTimeout,
@@ -277,7 +279,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       };
     }
   } catch (error) {
-    const refused = endpointFailure(error, { ...target, accepted: accepted ?? null }, mayHaveInvoked);
+    const refused = endpointFailure(error, { ...target, accepted: accepted ?? null }, mayHaveInvoked, presentation);
     const failure = pairedCaller && mayHaveInvoked ? withPairedCallerRemedy(refused, endpoint, { space: selection.space, ...(values.server === undefined ? {} : { server: values.server }) }) : refused;
     if (streamStarted) {
       writeStreamRecord(streamRecord("goal", "error", target, { outcome: failure.outcome, error: failure.detail(), accepted: accepted ?? null }));
@@ -295,9 +297,9 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     throw failure;
   }
   finally { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); try { if (connection) await connection.nc.close(); } finally { selection.release(); } }
-  if (result.kind === "endpoint-scatter") { writeEndpointScatter(presentationOf(values), commandName, target, result); return; }
+  if (result.kind === "endpoint-scatter") { writeEndpointScatter(presentation, commandName, target, result); return; }
   if (result.kind === "endpoint-cast") {
-    writeResult(presentationOf(values), { command: commandName, target, result }, (data): Report => ({ sections: [
+    writeResult(presentation, { command: commandName, target, result }, (data): Report => ({ sections: [
       { title: "Cast flushed to broker", blocks: [{ kind: "fields", rows: [["Endpoint", data.endpoint], ["Command", data.command], ["Request", data.requestId], ["Route", data.route], ["Describe binding", data.binding.instanceId], ["Binding epoch", String(data.binding.epoch)], ["Execution", { text: "not confirmed", tone: "waiting" }], ...(data.callerCredential ? ([["Caller file", data.callerCredential.path], ["Caller lifecycle", data.callerCredential.lifecycleUid]] as const) : [])] }, { kind: "lines", lines: [{ text: "The native publisher observed the broker flush without a publish denial. No endpoint reply was requested. This proves neither handler execution nor task completion, and a class cast is not repaired or retried after a binding mismatch.", tone: "hint" }] }] },
     ] }));
     return;
@@ -312,7 +314,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   }
   const output = result.dataPresent ? JSON.stringify(result.data, null, 2).split("\n") : ["No return value."];
   const shown = output.slice(0, 60);
-  writeResult(presentationOf(values), { command: commandName, target, result }, (data): Report => ({ sections: [
+  writeResult(presentation, { command: commandName, target, result }, (data): Report => ({ sections: [
     { title: data.waited ? "Native goal succeeded" : "Endpoint answered", blocks: [{ kind: "fields", rows: [["Endpoint", data.responder.endpoint], ["Command", data.command], ["Request", data.requestId], ["Answering instance", data.responder.instanceId], ["Epoch", String(data.responder.epoch)], ...(data.callerCredential ? ([["Caller file", data.callerCredential.path], ["Caller lifecycle", data.callerCredential.lifecycleUid]] as const) : [])] }, { kind: "lines", lines: [{ text: data.waited ? "The native helper observed the accepted goal succeed. Result content is endpoint-provided, not a secret-redacted log." : "The native command returned success. An action acceptance is not proof that its external work completed. Result content is endpoint-provided, not a secret-redacted log.", tone: "hint" }] }] },
     { title: "Native result", blocks: [{ kind: "lines", lines: shown }, ...(output.length > shown.length ? [{ kind: "lines" as const, lines: [`${output.length - shown.length} result lines are not shown in this report. Choose --json before invoking to retain the full value; do not resubmit a mutation just to view it.`] }] : [])] },
   ] }));

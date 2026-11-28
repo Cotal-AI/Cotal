@@ -860,7 +860,6 @@ try {
   console.log("\n13. invoke --timeout bounds the contract read of an endpoint nothing serves");
   const unservedMessage = "no instance of nosuch answered its contract read within the 1000ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short";
   const timeoutRemedy = "rerun the original command with `--timeout 10000`, keeping all other arguments and flags unchanged";
-  const unservedRemedy = `start the service that serves nosuch, then run the command again, or ${timeoutRemedy}. \`cotal service --space ${space}\` lists this space's services`;
   let startedAt = performance.now();
   const unserved = await cotal(["invoke", "nosuch", "ping", "--timeout", "1000", "--space", space], root1);
   const unservedMs = Math.round(performance.now() - startedAt);
@@ -883,7 +882,7 @@ try {
   const expectedEnv = {
     schemaVersion: 1, command: "invoke", target: { space, endpoint: "nosuch", command: "ping", requestedInstanceId: null, requestId: "<id>", accepted: null },
     outcome: "refused", completeness: "not-checked", result: null, warnings: [],
-    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: unservedRemedy, cause: { code: "deadline-exceeded" } },
+    error: { code: "TARGET_UNAVAILABLE", message: unservedMessage, remedy: `start the service that serves nosuch, then run the command again, or ${timeoutRemedy}. \`cotal service --space ${space} --json\` lists this space's services`, cause: { code: "deadline-exceeded" } },
   };
   check("...and its --json envelope keeps its shape, within 5s",
     unservedJson.status === 2 && unservedJsonMs < 5000 && typeof unservedEnv?.target?.requestId === "string" &&

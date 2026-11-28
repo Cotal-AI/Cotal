@@ -1,5 +1,5 @@
 import { BASELINE_LIFECYCLE_ENDPOINT, boundedValue, EpEnvelopeError, oneLine, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
-import { CommandFailure, brokerAddressForDisplay, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal } from "@cotal-ai/workspace";
+import { CommandFailure, brokerAddressForDisplay, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal, type Presentation } from "@cotal-ai/workspace";
 
 export class NativeReplyError extends Error {
   constructor(readonly response: EpAttributedReply, readonly phase: "invocation" | "target-inspection") { super("the native reply did not report success"); }
@@ -18,15 +18,20 @@ function refusalReason({ reply }: EpAttributedReply): string | undefined {
   return oneLine(boundedValue(safe, 4352));
 }
 
-export function endpointFailure(error: unknown, target: Record<string, unknown>, mayHaveInvoked: boolean): CommandFailure {
+const outputFlag = (output: Presentation): string => output === "rich" ? "" : ` --${output}`;
+
+export function serviceInventory(space: unknown, output: Presentation): string {
+  return codeSpan(`cotal service${typeof space === "string" ? ` --space ${shellWord(space)}` : ""}${outputFlag(output)}`);
+}
+
+export function endpointFailure(error: unknown, target: Record<string, unknown>, mayHaveInvoked: boolean, output: Presentation = "rich"): CommandFailure {
   if (isCommandFailure(error)) return error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target, ...(error.remedy ? { remedy: error.remedy } : {}), ...(error.native ? { native: error.native } : {}), ...(error.changed ? { changed: error.changed } : {}), cause: error }) : error;
   if (isConnectRefusal(error)) return error.failure();
   const native = error instanceof NativeReplyError ? { code: error.response.reply.error?.code, outcome: error.response.reply.error?.outcome, detail: { phase: error.phase, requestId: error.response.reply.id, responder: error.response.responder } } : error instanceof EpEnvelopeError ? { code: error.code, outcome: error.outcome } : undefined;
   // A contract read no instance answered: nothing serves the endpoint, or nothing reached this caller.
   if (!mayHaveInvoked && unansweredRequest(error)) {
     const endpoint = typeof target.endpoint === "string" ? target.endpoint : "the endpoint";
-    const space = typeof target.space === "string" ? ` --space ${shellWord(target.space)}` : "";
-    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; \`cotal service${space}\` lists this space's services`, cause: error });
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; ${serviceInventory(target.space, output)} lists this space's services`, cause: error });
   }
   const code = nativeEndpointRefusal(native?.code);
   if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) {
@@ -51,11 +56,10 @@ export const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(
  *  another option: `--allow-subscribe -x` refuses its own suggestion, so it prints `--allow-subscribe=-x`. */
 export const grantOption = (flag: string, value: string): string => `${flag}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
 
-export function verifyPinnedEndpoint(space: string, server: string | undefined): string {
-  const inventory = `cotal endpoint list --live --space ${shellWord(space)}`;
-  if (server === undefined) return `verify the full instance ID with ${codeSpan(inventory)}`;
-  if (brokerAddressForDisplay(server) === server) return `verify the full instance ID with ${codeSpan(`${inventory} --server ${shellWord(server)}`)}`;
-  return "verify the full instance ID against the same space and broker";
+export function verifyPinnedEndpoint(space: string, server: string | undefined, output: Presentation): string {
+  if (server !== undefined && brokerAddressForDisplay(server) !== server) return "verify the full instance ID against the same space and broker";
+  const broker = server === undefined ? "" : ` --server ${shellWord(server)}`;
+  return `verify the full instance ID with ${codeSpan(`cotal endpoint list --live --space ${shellWord(space)}${broker}${outputFlag(output)}`)}`;
 }
 
 /** The operator instrument holds request rows for the manager endpoint only, so the broker refuses
