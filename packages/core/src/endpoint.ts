@@ -1904,7 +1904,7 @@ export class CotalEndpoint extends EventEmitter {
     return this.consumers.storedBytes();
   }
 
-  /** Capture each channel's history frontier before opening its live subscription. */
+  /** Capture the legacy CHAT frontiers before opening live subscriptions. */
   private async armJoin(channels: string[]): Promise<Map<string, number>> {
     const frontiers = new Map<string, number>();
     for (const ch of channels) {

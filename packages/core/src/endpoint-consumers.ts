@@ -169,6 +169,7 @@ export class EndpointConsumers {
   /** A live core message has no stream sequence. Coalesce by authenticated subject and ID
    * instead of moving the recovery cursor past rows that might never have been delivered. */
   recordPluginReceipt(channel: string, subject: string, id: string): boolean {
+    if (id === "") return true;
     if (this.pluginReceiptEpoch !== this.conn.pluginChannelEpoch) {
       this.pluginReceiptEpoch = this.conn.pluginChannelEpoch;
       this.pluginReceipts.clear();
