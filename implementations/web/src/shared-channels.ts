@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { PLUGIN_CHANNEL_ROOT, type MembershipSnapshot, type Presence } from "@cotal-ai/core";
+import { AGENT_LABEL_META_KEY, AGENT_MODEL_SET_META_KEY, AGENT_NAMING_META_KEY, PLUGIN_CHANNEL_ROOT, type MembershipSnapshot, type Presence } from "@cotal-ai/core";
 
 type RoutingMode = "legacy" | "isolated" | undefined;
 
@@ -14,9 +14,9 @@ function rosterFields(row: Presence) {
   const { card, lifecycleUid, runtime, status, activity, condition, environment, attention, channelModes, prompts, agentEndpoint } = row;
   return {
     name: card.name,
-    label: card.meta?.["ai.cotal.label"],
-    naming: card.meta?.["ai.cotal.naming"],
-    modelSet: card.meta?.["ai.cotal.model-set"],
+    label: card.meta?.[AGENT_LABEL_META_KEY],
+    naming: card.meta?.[AGENT_NAMING_META_KEY],
+    modelSet: card.meta?.[AGENT_MODEL_SET_META_KEY],
     lifecycleUid,
     runtime: [runtime?.id, runtime?.startedAt, runtime?.source],
     status,
@@ -30,14 +30,23 @@ function rosterFields(row: Presence) {
   };
 }
 
+function rosterUpdate(current: Presence[], previous: Presence[]): Presence[] | undefined {
+  const prior = new Map(previous.map((row) => [row.card.id, row]));
+  let changed = current.length !== previous.length;
+  const payload = current.map((row, i) => {
+    const last = prior.get(row.card.id);
+    if (previous[i]?.card.id !== row.card.id) changed = true;
+    if (!last || !isDeepStrictEqual(rosterFields(last), rosterFields(row))) {
+      changed = true;
+      return row;
+    }
+    // A hidden write advances ts. Keep it from the last sent row, but send current display data.
+    return { ...row, ts: last.ts };
+  });
+  return changed ? payload : undefined;
+}
+
 function stabilizeFeed(event: string, data: unknown, previous: unknown): unknown {
-  if (event === "roster") {
-    const prior = new Map((previous as Presence[]).map((row) => [row.card.id, row]));
-    return (data as Presence[]).map((row) => {
-      const last = prior.get(row.card.id);
-      return last && isDeepStrictEqual(rosterFields(last), rosterFields(row)) ? last : row;
-    });
-  }
   if (event === "membership") {
     const { asOf, members } = data as MembershipSnapshot;
     const prior = new Map((previous as MembershipSnapshot).members.map((row) => [row.id, row]));
@@ -62,8 +71,15 @@ export function sharedFeedUpdates(mode: () => RoutingMode) {
     if (!updates) sent.set(viewer, updates = new Map());
     const previous = updates.get(event);
     const compare = !opening && mode() !== "legacy" && previous !== undefined;
-    const next = compare ? stabilizeFeed(event, data, previous) : data;
-    if (compare && isDeepStrictEqual(previous, next)) return undefined;
+    let next = data;
+    if (compare) {
+      if (event === "roster") next = rosterUpdate(data as Presence[], previous as Presence[]);
+      else {
+        next = stabilizeFeed(event, data, previous);
+        if (isDeepStrictEqual(previous, next)) return undefined;
+      }
+    }
+    if (next === undefined) return undefined;
     updates.set(event, next);
     return next;
   };

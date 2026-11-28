@@ -125,6 +125,8 @@ interface SharedViewCase {
   publishVerified(): Promise<CotalMessage>;
   updateAttention(mixed: boolean): Promise<number>;
   heartbeatThenPluginMode(): Promise<{ activeAt: number; ts: number }>;
+  updateQuietFieldsAndPluginMode(model: string): Promise<{ activeAt: number; ts: number }>;
+  updateReaderStatus(): Promise<void>;
   updateMembership(mixed: boolean): Promise<number>;
 }
 
@@ -210,6 +212,25 @@ async function checkMetadataUpdates(base: string, cookie: string, feeds: { event
   await waitForDashboardPeer(base, cookie, cell.pluginOnlyId, (row) => row.status === "working" && row.activeAt === working.activeAt && row.ts >= working.ts);
   await wait(400);
   assert.deepEqual(since(workingStart), [[], []], "a working peer's activity heartbeat and plugin-only mode change emit no metadata frame");
+
+  const model = "working-peer-current-model";
+  const payloadStart = checkpoints();
+  const quiet = await cell.updateQuietFieldsAndPluginMode(model);
+  await waitForDashboardPeer(base, cookie, cell.pluginOnlyId, (row) => row.activeAt === quiet.activeAt && row.card.meta?.model === model && row.ts >= quiet.ts);
+  await wait(400);
+  assert.deepEqual(since(payloadStart), [[], []], "quiet activity and model changes plus a plugin-only write emit no metadata frame");
+
+  await cell.updateReaderStatus();
+  await until(() => since(payloadStart).every((rows) => rows.some(({ event }) => event === "roster")), "both viewers receive the other peer's status change");
+  await wait(400);
+  for (const [i, frames] of since(payloadStart).entries()) {
+    assert.deepEqual(frames.map(({ event }) => event), ["roster"], "the visible status change emits one metadata frame");
+    const roster = frames[0].data as unknown as Presence[];
+    assert.equal(roster.find(({ card }) => card.id === cell.readerId)?.status, "working");
+    const peer = roster.find(({ card }) => card.id === cell.pluginOnlyId);
+    assert.deepEqual([peer?.activeAt, peer?.card.meta?.model, peer?.ts], [quiet.activeAt, model, baseline[i]], "the emitted roster carries current activity and model, with the prior heartbeat timestamp");
+    checkPluginOnlyPresence(roster, cell);
+  }
 
   const checkMembership = async (mixed: boolean) => {
     const starts = checkpoints();
@@ -340,6 +361,18 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
         await until(() => rawPeer()?.channelModes?.[channel] === "muted" && rawPeer()!.ts > heartbeatTs, "broker witnesses the plugin-only write after the activity heartbeat");
         return { activeAt, ts: rawPeer()!.ts };
       },
+      async updateQuietFieldsAndPluginMode(model) {
+        const activeAt = Date.now();
+        pluginOnly.noteActivity(activeAt);
+        await pluginOnly.setCardModel(model);
+        await pluginOnly.setChannelModes({ [channel]: "quiet" });
+        await until(() => rawPeer()?.activeAt === activeAt && rawPeer()?.card.meta?.model === model &&
+          rawPeer()?.channelModes?.[channel] === "quiet", "broker witnesses new activity, model and plugin attention together");
+        return { activeAt, ts: rawPeer()!.ts };
+      },
+      async updateReaderStatus() {
+        await reader.setStatus("working");
+      },
       async updateMembership(mixed) {
         const id = mixed ? readCred.principal : pluginOnlyCred.principal;
         const live = mixed ? [chatChannel, fixture.hiddenChannel] : [fixture.hiddenChannel];
@@ -395,7 +428,7 @@ try {
     await stopDashboard();
   }
   await checkEnabledSpace(frame as unknown as Part);
-  console.log("COTAL_SMOKE_SENTINEL cells=36 passed=36 failed=0");
+  console.log("COTAL_SMOKE_SENTINEL cells=37 passed=37 failed=0");
 } finally {
   await agent?.stop();
   await stopDashboard();
