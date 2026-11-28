@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -758,6 +758,31 @@ if (process.platform !== "win32") {
     assert.doesNotMatch(during.output, /getcwd\(\) failed|this folder no longer exists|update preflight failed|registry cannot be reached/i);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
+
+function stopRecordedStack(root: string): void {
+  const dir = join(root, ".cotal");
+  if (!existsSync(dir)) return;
+  const pids: number[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".pid")) continue;
+    let raw = "";
+    try { raw = readFileSync(join(dir, name), "utf8"); } catch { continue; }
+    const pid = Number(raw.trim());
+    if (Number.isInteger(pid) && pid > 1 && pid !== process.pid) pids.push(pid);
+  }
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+  }
+  const deadline = Date.now() + 3_000;
+  for (const pid of pids) {
+    while (Date.now() < deadline) {
+      try { process.kill(pid, 0); } catch { break; }
+      spawnSync("sleep", ["0.05"]);
+    }
+    try { process.kill(pid, "SIGKILL"); } catch { /* already exited */ }
+  }
+}
+
 if (process.platform === "linux") {
   const home = mkdtempSync(join(tmpdir(), "cotal-missing-inventory-"));
   try {
@@ -833,6 +858,14 @@ process.exit(real.status ?? 1);
     assert.notEqual(ordinary.status, 0, ordinary.stdout + ordinary.stderr);
     assert.match(ordinary.stdout + ordinary.stderr, /no space named/);
     assert.doesNotMatch(ordinary.stdout + ordinary.stderr, /inventory is missing|Reconciling built-in/);
+    const presentDep = join(extensions, "node_modules", "zod");
+    mkdirSync(presentDep, { recursive: true });
+    writeFileSync(join(presentDep, "package.json"), JSON.stringify({ name: "zod", version: "1.0.0" }));
+    const presentRemove = cli("ext", "remove", "zod");
+    assert.equal(presentRemove.status, 0, presentRemove.stdout + presentRemove.stderr);
+    assert.match(presentRemove.stdout, /already absent/);
+    assert.doesNotMatch(presentRemove.stdout, /files remain/);
+    rmSync(presentDep, { recursive: true, force: true });
     rmSync(manifest);
     const hinted = cli("space", "forget", "ghost");
     assert.notEqual(hinted.status, 0, hinted.stdout + hinted.stderr);
@@ -856,7 +889,8 @@ process.exit(real.status ?? 1);
     writeFileSync(join(zodDir, "package.json"), JSON.stringify({ name: "zod", version: "1.0.0" }));
     const packageDir = cli("ext", "remove", "zod");
     assert.equal(packageDir.status, 0, packageDir.stdout + packageDir.stderr);
-    assert.match(packageDir.stdout, /not registered, and its files remain/);
+    assert.match(packageDir.stdout, /already absent/);
+    assert.doesNotMatch(packageDir.stdout, /files remain/);
     rmSync(zodDir, { recursive: true, force: true });
     const listed = cli("ext", "list", "--json");
     assert.equal(listed.status, 4, listed.stdout + listed.stderr);
@@ -872,9 +906,15 @@ process.exit(real.status ?? 1);
     assert.equal(checkedReport.result.reconciliation.source, "manifest");
     assert.equal(checkedReport.result.extensions, null);
     assert.ok(checkedReport.warnings.some((warning) => warning.code === "EXTENSION_INVENTORY_UNREADABLE"));
+    const prefixPath = join(extensions, "package.json");
+    const prefixBefore = readFileSync(prefixPath, "utf8");
+    const prefixMeta = JSON.parse(prefixBefore) as { dependencies?: Record<string, string> };
+    prefixMeta.dependencies = { "@cotal-ai/tmux": "file:./node_modules/@cotal-ai/tmux" };
+    writeFileSync(prefixPath, JSON.stringify(prefixMeta));
     const removed = cli("ext", "remove", "@cotal-ai/tmux");
+    writeFileSync(prefixPath, prefixBefore);
     assert.equal(removed.status, 0, removed.stdout + removed.stderr);
-    assert.match(removed.stdout, /not registered/);
+    assert.match(removed.stdout, /not registered, and its files remain/);
     assert.equal(existsSync(join(extensions, "node_modules", "@cotal-ai", "tmux")), true);
     writeFileSync(npmFail, "");
     const failed = cli("update", "--self");
@@ -979,6 +1019,9 @@ process.exit(real.status ?? 1);
         assert.doesNotMatch(result.stdout + result.stderr, /ext seed --repair|extensions inventory is missing/);
       }
     } finally { chmodSync(extensions, 0o700); }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally {
+    stopRecordedStack(join(home, "project"));
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

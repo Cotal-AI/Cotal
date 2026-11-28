@@ -59,8 +59,9 @@ Self-update registers the built-in packages that are still on disk, or writes an
 inventory when none remain, and names a real `@cotal-ai` directory left on disk without a
 registration. Register one again with `cotal ext add` and its original spec.
 `cotal ext remove` says an unregistered extension package is not registered and leaves its
-files. A directory that is not an extension package, such as a dependency, keeps the answer
-it has when the package is absent.
+files only when the extensions prefix lists that package as its own dependency.
+A dependency of one of those packages, such as `zod`, keeps the answer it has when the
+package is absent.
 An ordinary command that still reconciles, such as `cotal space forget`, names
 `cotal ext seed --repair` and does not rebuild the inventory. A command that only reads, such as
 `cotal ext list`, says the inventory is missing and does not rebuild it. A prefix that was never seeded,

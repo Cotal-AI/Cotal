@@ -716,12 +716,26 @@ async function remove(pkg: string): Promise<void> {
   }
 }
 
+/** A package the extensions prefix lists as its own dependency, still present on disk. A dependency
+ *  inside one of those packages is not. */
+function prefixInstalledPackage(pkg: string): boolean {
+  let declared = false;
+  try {
+    const meta = JSON.parse(readFileSync(join(extensionsDir(), "package.json"), "utf8")) as { dependencies?: Record<string, unknown> };
+    declared = typeof meta.dependencies?.[pkg] === "string";
+  } catch {
+    declared = false;
+  }
+  if (!declared) return false;
+  return lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })?.isDirectory() === true
+    && installedExtensionPackage(pkg) !== undefined;
+}
+
 async function removeUnlocked(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
   if (!entry) {
-    const installed = lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })?.isDirectory() === true
-      && installedExtensionPackage(pkg) !== undefined;
+    const installed = prefixInstalledPackage(pkg);
     console.log(installed
       ? `${pkg} is not registered, and its files remain in ${extensionPackageDir(pkg)}. Nothing was removed. Run \`${displayCmd()} ext add\` with its original spec to register it.`
       : `${pkg} is already absent. Nothing was removed.`);
