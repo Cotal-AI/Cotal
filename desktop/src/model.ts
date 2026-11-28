@@ -177,7 +177,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
     // A failure inside this window, not on the computer: nothing changed, so trying again is the fix.
-    case "RETRY": return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
+    case "RETRY": return { title: "That didn't finish", description: "Cotal couldn't confirm the result. Try again. Details shows what the background service said.", action: "refresh", label: "Try again" };
     default: return repair("Something on this computer needs fixing", "Repair checks the background service, your sign-in and your spaces, and fixes what it finds.");
   }
 }

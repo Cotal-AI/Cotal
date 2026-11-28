@@ -1397,7 +1397,6 @@ el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
-el("settings-repair").addEventListener("click", () => { if (!busy) { settingsOpen = false; renderSettings(); void action(openRepair); } });
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
 el("account-cancel").addEventListener("click", closeAccountConfirmation);
 el("account-confirm").addEventListener("click", () => void runAccountAction());

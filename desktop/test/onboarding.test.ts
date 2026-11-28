@@ -395,10 +395,10 @@ test("a later status check keeps an error the status check did not raise", async
     await a.tick();
     a.arm();
     await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
     await a.tick();
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
   } finally { a.dom.window.close(); }
 });
@@ -558,7 +558,7 @@ test("another provider failure does not block successful sign-in", async () => {
   const a = await app({ installed: true, otherProviderFailed: true });
   try {
     await a.click("login"); await a.login();
-    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
+    assert.notEqual(a.node("connection-title").textContent, "That didn't finish");
     assert.match(a.node("notice").textContent ?? "", /hack\.cotal\.ai/);
   } finally { a.dom.window.close(); }
 });
@@ -567,7 +567,7 @@ test("an account switch signs in without a notice when every previous credential
   const a = await app({ installed: true, switched: true });
   try {
     await a.click("login"); await a.login();
-    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
+    assert.notEqual(a.node("connection-title").textContent, "That didn't finish");
     assert.equal(a.node("notice").textContent, "");
   } finally { a.dom.window.close(); }
 });
@@ -577,7 +577,7 @@ test("an account switch that kept credential files stays signed in and names eac
   const a = await app({ installed: true, credentialsKept: kept });
   try {
     await a.click("login"); await a.login();
-    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish", "the switched account is kept");
+    assert.notEqual(a.node("connection-title").textContent, "That didn't finish", "the switched account is kept");
     assert.equal(a.calls.filter(r => r.op === "spaces").length > 0, true, "it continues to the new account's spaces");
     const shown = a.node("notice").textContent ?? "";
     assert.match(shown, /could not be deleted/);
@@ -591,7 +591,7 @@ for (const option of ["ownProviderFailed", "oldDaemon"] as const) test(`${option
   const a = await app({ installed: true, [option]: true });
   try {
     await a.click("login"); await a.login();
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("connection-title").textContent, "That didn't finish");
     assert.match(a.node("refusal-detail").textContent ?? "", option === "ownProviderFailed" ? /cotal\.cloud/ : /Some space catalogs/);
   } finally { a.dom.window.close(); }
 });

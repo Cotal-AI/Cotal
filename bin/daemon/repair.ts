@@ -145,6 +145,8 @@ export function accountSteps(status: DaemonStatus | undefined): RepairStep[] {
     const removed = (item as { reason?: unknown }).reason === "computer-removed";
     let host = "your account";
     try { if (item.idpUrl) host = new URL(item.idpUrl).host; } catch { /* keep the generic name */ }
+    // Name the provider when it is known, the host otherwise.
+    if (host === "cotal.cloud" || host === "cloud.cotal.ai") host = "Cotal Cloud";
     return {
       step: "account", outcome: "needs-you", space: item.idpUrl,
       found: removed ? "This computer was removed from your account. Sign in to add it back." : `Sign in to ${host} again to keep using this computer from your spaces.`,
