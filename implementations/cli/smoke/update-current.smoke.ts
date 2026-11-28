@@ -9,7 +9,8 @@ import { pathToFileURL } from "node:url";
 import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
-import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
+import { installedUpdatePrefix, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
+import { DependencyCheckNoSpace, ReleaseNotAvailable, waitForReleasePreflight } from "../src/commands/update-release.js";
 import { npmInvocation, npmProjectDirectory, npmUpdateChildEnvironment } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
@@ -291,6 +292,109 @@ exec "${executable}" "$@"
 }
 
 await repairRuntimeEntry(assert);
+
+function globalConfigFallbacks(): void {
+  const root = mkdtempSync(join(tmpdir(), "cotal-npm-config-fallback-"));
+  const pin = ["install", "--prefix", join(root, "stage"), "fixture"];
+  const path = join(root, "operator settings", "npmrc");
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "registry=http://127.0.0.1:1/\nsave-dev=true\n");
+    for (const [name, script] of [
+      ["timeout", "while :; do :; done"],
+      ["nonzero", `printf '%s\\n' '${path}'; exit 7`],
+      ["empty", ":"],
+      ["relative", "printf '%s\\n' 'relative/npmrc'"],
+      ["absolute", `printf '%s\\n' '${path}'`],
+    ] as const) {
+      const tools = join(root, name);
+      mkdirSync(tools);
+      writeFileSync(join(tools, "npm"), `#!/bin/sh\nprintf '%s\\n' 'probe diagnostic' >&2\n${script}\n`, { mode: 0o700 });
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_globalconfig$/i.test(key)));
+      env.PATH = `${tools}${delimiter}${env.PATH ?? ""}`;
+      const ordinary = npmInvocation(env, []);
+      const expected = { ...ordinary, args: [...ordinary.args, ...pin] };
+      const check = () => {
+        const { config, ...invocation } = npmInvocation(env, pin, root);
+        try {
+          if (name !== "absolute") return assert.deepEqual(invocation, expected, name);
+          assert.ok(config);
+          assert.notEqual(config!.file, path);
+          assert.equal(readFileSync(config!.file, "utf8"), "registry=http://127.0.0.1:1/\n");
+          assert.deepEqual(invocation, { ...expected, args: [...expected.args, "--logs-max=0", "--timing=false"], env: { ...expected.env, npm_config_globalconfig: config!.file } });
+        } finally { config?.dispose(); }
+      };
+      check();
+      if (name === "absolute") assert.deepEqual(npmInvocation(env, pin, path), expected, "an unusable scratch folder keeps npm's original invocation");
+      const started = Date.now();
+      check();
+      if (name === "timeout") assert.ok(Date.now() - started < 2_000, "a timed-out probe is not repeated");
+    }
+    const keys = Object.keys(process.env).filter(key => /^npm_config_globalconfig$/i.test(key));
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, npm_config_prefix: join(root, "empty-prefix"), npm_config_userconfig: join(root, "empty-userconfig") };
+    for (const key of keys) delete env[key];
+    for (const args of [["root", "-g"], ["install", "@cotal-ai/fixture"], ["install", "-g", "cotal-ai@1.0.0"],
+      ["install", "-g", "cotal-ai@0.9.0"], ["remove", "fixture"]]) {
+      const ordinary = npmInvocation(env, args);
+      const prefixed = npmInvocation(env, [...args, "--prefix", join(root, "stage")]);
+      assert.deepEqual(prefixed, { ...ordinary, args: [...ordinary.args, "--prefix", join(root, "stage")] });
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+if (process.platform !== "win32") globalConfigFallbacks();
+
+async function projectedClosureDiagnostics(): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "cotal-closure-diagnostics-"));
+  const envBefore = { ...process.env };
+  const original = join(root, "original.npmrc"), name = "@cotal-ai/core", version = "99.0.0";
+  try {
+    for (const key of Object.keys(process.env)) if (/^npm_config_/i.test(key)) delete process.env[key];
+    process.env.PATH = `${root}${delimiter}${process.env.PATH ?? ""}`;
+    for (const [failure, user] of [["ETARGET", "cotal"], ["ENOSPC", "npm"]]) {
+      const token = failure === "ENOSPC" ? "code ENOSPC" : "No matching version found for";
+      process.env.FIXTURE_CLOSURE_TOKEN = token;
+      writeFileSync(original, `registry=http://127.0.0.1:1/\n//127.0.0.1:1/:username=${user}\n//127.0.0.1:1/:_password=eA==\n//127.0.0.1:1/:_authToken=\${FIXTURE_CLOSURE_TOKEN}\n`);
+      writeFileSync(join(root, "npm"), `#!${process.execPath}
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+if (process.argv[2] === 'config') { console.log(${JSON.stringify(original)}); process.exit(0); }
+assert(fs.readFileSync(process.env.npm_config_globalconfig, 'utf8').includes(':username=${user}'));
+console.error('npm error code ${failure}');
+console.error('npm error next fixture ' + process.env.FIXTURE_CLOSURE_TOKEN);
+console.log(JSON.stringify({error:{code:'${failure}',summary:'No matching version found for ${name}@${version}.'}}));
+process.exitCode = 1;
+`, { mode: 0o700 });
+      let now = 0;
+      const output: string[] = [];
+      const runtime: UpdateRuntime = { ...updateRuntime,
+        npm: runNpm, extensions: () => [{ pkg: name, version: "1.0.0", provides: [], commands: [] }],
+        npmAsync: async args => args[0] === "install" ? runNpmAsync(args) : args[0] === "view"
+          ? { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dist: { tarball: "http://127.0.0.1:1/fixture.tgz", integrity: "sha512-fixture" } }), stderr: "" }
+          : { status: 0, stdout: "", stderr: "" },
+        now: () => now, sleep: async () => { now = 10 * 60_000; }, out: line => output.push(line),
+      };
+      await assert.rejects(waitForReleasePreflight(version, "1.0.0", runtime, () => true), (error: Error) => {
+        assert.ok(!error.message.includes(token));
+        if (failure === "ETARGET") {
+          assert.ok(error instanceof ReleaseNotAvailable);
+          assert.equal(error.message, `${name}@${version} is not yet available in the registry`);
+          assert.ok(output.some(line => line.includes(`Waiting for an installed extension: ${name}@${version}`)));
+        } else {
+          assert.ok(error instanceof DependencyCheckNoSpace);
+          assert.match(error.message, /npm error \[redacted\]\nnpm error next fixture \[redacted\]/);
+        }
+        return true;
+      });
+    }
+  } finally {
+    for (const key of Object.keys(process.env)) if (!Object.hasOwn(envBefore, key)) delete process.env[key];
+    Object.assign(process.env, envBefore);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+if (process.platform !== "win32") await projectedClosureDiagnostics();
 
 async function npmNodeEngine(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));

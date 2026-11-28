@@ -1,0 +1,1551 @@
+{
+  "base": "fcf78b1af1bdcba744c0f69a5c2038e7f21f22a6",
+  "npmVersions": {
+    "10": "10.9.9",
+    "11": "11.19.0"
+  },
+  "10": [
+    {
+      "setting": "default",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "default",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "default",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "save-dev",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "save-dev",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "save-dev",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "save-optional",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "save-optional",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "save-optional",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "save-peer",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "save-peer",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "save-peer",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "linked",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "linked",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "linked",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "lockv1",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "lockv1",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "lockv1",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "legacy-peer-deps",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "legacy-peer-deps",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "legacy-peer-deps",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "strict-peer-deps",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "strict-peer-deps",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "strict-peer-deps",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "omit",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "omit",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "omit",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "global-style",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "global-style",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "global-style",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "lock",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "lock",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "lock",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    }
+  ],
+  "11": [
+    {
+      "setting": "default",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "default",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "default",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "save-dev",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "save-dev",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "save-dev",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "save-optional",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "save-optional",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "save-optional",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "save-peer",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "save-peer",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "save-peer",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "linked",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "linked",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "linked",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "lockv1",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "lockv1",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "lockv1",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "legacy-peer-deps",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "legacy-peer-deps",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "legacy-peer-deps",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "strict-peer-deps",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "strict-peer-deps",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "strict-peer-deps",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "omit",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "omit",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "omit",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "global-style",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "global-style",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "global-style",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    },
+    {
+      "setting": "lock",
+      "mode": "ext",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/global-config-smoke"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/global-config-smoke",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "packagePresent": true,
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 1
+    },
+    {
+      "setting": "lock",
+      "mode": "seed",
+      "code": 0,
+      "layout": {
+        "packages": [
+          "@cotal-ai/connector-claude-code",
+          "@cotal-ai/connector-codex",
+          "@cotal-ai/connector-hermes",
+          "@cotal-ai/connector-jcode",
+          "@cotal-ai/connector-opencode",
+          "@cotal-ai/pi",
+          "@cotal-ai/web"
+        ],
+        "lockVersion": 3,
+        "lockPackages": [
+          "",
+          "node_modules/@cotal-ai/connector-claude-code",
+          "node_modules/@cotal-ai/connector-codex",
+          "node_modules/@cotal-ai/connector-hermes",
+          "node_modules/@cotal-ai/connector-jcode",
+          "node_modules/@cotal-ai/connector-opencode",
+          "node_modules/@cotal-ai/pi",
+          "node_modules/@cotal-ai/web",
+          "node_modules/global-config-optional"
+        ],
+        "optional": true,
+        "links": []
+      },
+      "defaultCacheExists": false,
+      "staged": [],
+      "installs": 7
+    },
+    {
+      "setting": "lock",
+      "mode": "update",
+      "code": 0,
+      "version": "cotal-ai 99.0.0",
+      "defaultCacheExists": false,
+      "staged": [
+        {
+          "version": "99.0.0",
+          "link": false,
+          "optional": true
+        }
+      ],
+      "installs": 2
+    }
+  ]
+}

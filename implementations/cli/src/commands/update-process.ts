@@ -15,11 +15,29 @@ export interface CommandResult {
   readonly stderr: string;
   readonly error?: string;
   readonly errorCode?: string;
+  readonly scrub?: (text: string) => string;
+  readonly stagingFailure?: Error;
+  readonly missingVersion?: string | null;
 }
 
 export class RegistryUnavailable extends Error {}
 export class StagingTimeout extends Error {
-  constructor(readonly npmOutput: string) { super("Package staging reached its time limit"); }
+  constructor(npmOutput: string) {
+    super("Package staging reached its time limit");
+    stagingDiagnostic.set(this, npmOutput);
+  }
+}
+
+function stagingNpmFailure(result: CommandResult): Error {
+  const text = result.error || result.stderr.trim() || result.stdout.trim() || `npm exited ${result.status}`;
+  const error = new Error(`target staging failed: ${result.scrub?.(text) ?? text}`);
+  stagingDiagnostic.set(error, `target staging failed: ${text}`);
+  return error;
+}
+
+const stagingDiagnostic = new WeakMap<Error, string>();
+export function rawStagingDiagnostic(error: unknown): string {
+  return error instanceof Error ? stagingDiagnostic.get(error) ?? message(error) : message(error);
 }
 
 export function parseNpmVersion(output: string): string {
@@ -93,18 +111,36 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
 // exec keeps the published PID and the real child keeps its original argv and stdin.
 const npmChildGate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
 
+async function stopStagingGroup(pgid: number, grace: number, reap: number): Promise<void> {
+  const signal = (value: NodeJS.Signals) => {
+    try { process.kill(-pgid, value); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  signal("SIGTERM");
+  await new Promise(resolve => setTimeout(resolve, grace));
+  if (processGroupMembers(pgid).length) signal("SIGKILL");
+  const deadline = performance.now() + reap;
+  while (processGroupMembers(pgid).length) {
+    if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
-    const npm = npmInvocation(process.env, args);
+    const prefix = args.indexOf("--prefix");
+    npm = npmInvocation(process.env, args, args[0] === "install" && prefix >= 0 ? args[prefix + 1] : undefined);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", npmChildGate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, windowsHide: true,
-      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
+      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] }
+        : args[0] === "install" ? { stdio: ["ignore", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", cause => { error = cause.message; });
     if (gated) {
       const permit = child.stdio[3] as import("node:stream").Writable;
@@ -117,32 +153,39 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
         }
       } catch (cause) { error = message(cause); permit.end(); }
     }
-    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
-    return { status, stdout, stderr, ...(error ? { error } : {}) };
+    const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>(resolveClose =>
+      child.once("close", (status, signal) => resolveClose({ status, signal })));
+    return { status: closed.status, stdout, stderr, ...(error ? { error } : {}),
+      ...(args[0] === "install" && { signal: closed.signal }), ...(npm.config && { scrub: npm.config.scrub }) };
   } catch (error) {
-    return { status: null, stdout: "", stderr: "", error: message(error) };
-  }
+    return { status: null, stdout: "", stderr: "", error: message(error), scrub: npm?.config?.scrub };
+  } finally { npm?.config?.dispose(); }
 }
 
 export function runNpm(args: string[], inherit = false): CommandResult {
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
-    const npm = npmInvocation(process.env, args);
+    npm = npmInvocation(process.env, args);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true,
+      ...(inherit && !npm.config ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true,
     });
+    const scrub = npm.config?.scrub;
+    const stdout = String(result.stdout ?? ""), stderr = String(result.stderr ?? "");
+    if (inherit && scrub) { process.stdout.write(scrub(stdout)); process.stderr.write(scrub(stderr)); }
     return {
       status: result.status,
       signal: result.signal,
-      stdout: `${result.stdout ?? ""}`,
-      stderr: `${result.stderr ?? ""}`,
+      stdout: inherit ? "" : stdout,
+      stderr: inherit ? "" : stderr,
       error: result.error?.message,
       errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
+      ...(scrub && { scrub }),
     };
   } catch (e) {
-    return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
-  }
+    return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code, scrub: npm?.config?.scrub };
+  } finally { npm?.config?.dispose(); }
 }
 
 export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
@@ -159,9 +202,9 @@ export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv,
 export function runGlobalProcess(
   ...args: Parameters<typeof runGlobalChild>
 ): Promise<CommandResult> {
-  const [root, operation, file, argv, env, inherit = false, verbatim = false] = args;
+  const [root, operation, file, argv, env, inherit = false, verbatim = false, staging] = args;
   return process.platform === "win32" && operation === "install"
-    ? runWindowsInstall(root, file, argv, env, inherit, verbatim)
+    ? runWindowsInstall(root, file, argv, env, inherit, verbatim, staging)
     : runGlobalChild(...args);
 }
 
@@ -179,6 +222,7 @@ async function runGlobalChild(
   const mutation = beginGlobalUpdateChild(root, operation, gated);
   let cache: string | undefined;
   let lifecycle: ReturnType<typeof npmLifecycleEnvironment>;
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   let published = false;
   let preservePending = false;
   const watchers: FSWatcher[] = [];
@@ -187,11 +231,11 @@ async function runGlobalChild(
   let stopping: Promise<void> | undefined;
   try {
     if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
-    const pipeConsole = process.platform === "win32" && inherit;
-    const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
-    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const reconcileCache = gated && operation === "reconcile";
     cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
+    npm = operation === "install" && file === "npm" ? npmInvocation(env, args, staging ?? cache) : undefined;
+    const pipeConsole = process.platform === "win32" && inherit && !npm?.config;
+    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     if (npm) lifecycle = npmLifecycleEnvironment(npm, cache);
     let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
@@ -222,14 +266,14 @@ async function runGlobalChild(
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      stdio: updateChildStdio(gated, inherit, pipeConsole),
+      stdio: updateChildStdio(gated, inherit && !npm?.config, pipeConsole),
     }));
     const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     let error = "";
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk.toString(); });
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { if (pipeConsole) process.stdout.write(chunk); else stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { if (pipeConsole) process.stderr.write(chunk); else stderr += chunk; });
     child.once("error", (e) => { error = e.message; });
     permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
@@ -254,26 +298,13 @@ async function runGlobalChild(
     });
     if (staging !== undefined && child.pid !== undefined) {
       const pgid = child.pid;
-      const signalGroup = (signal: NodeJS.Signals) => {
-        try { process.kill(-pgid, signal); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      };
       const grace = 2000;
       const reap = 1000;
       const stop = () => {
         if (stopping) return;
         clearTimeout(elapsed);
         clearTimeout(idle);
-        stopping = (async () => {
-          signalGroup("SIGTERM");
-          await new Promise(resolve => setTimeout(resolve, grace));
-          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
-          const deadline = performance.now() + reap;
-          while (processGroupMembers(pgid).length) {
-            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
-            await new Promise(resolve => setTimeout(resolve, 25));
-          }
-        })();
+        stopping = stopStagingGroup(pgid, grace, reap);
         void stopping.catch(error => {
           child.stdin?.destroy();
           child.stdout?.destroy();
@@ -288,6 +319,8 @@ async function runGlobalChild(
       idle = setTimeout(stop, 50_000);
     }
     const closed = await close;
+    const scrub = npm?.config?.scrub;
+    if (inherit && scrub) { process.stdout.write(scrub(stdout)); process.stderr.write(scrub(stderr)); stdout = stderr = ""; }
     clearTimeout(elapsed);
     clearTimeout(idle);
     if (stopping) {
@@ -302,16 +335,18 @@ async function runGlobalChild(
         ? `${operation} child terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
-    return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
+    const result = { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}), ...(scrub && { scrub }) };
+    return staging && scrub && result.status !== 0 ? { ...result, stagingFailure: stagingNpmFailure(result) } : result;
   } catch (e) {
     if (e instanceof StagingTimeout) throw e;
-    return { status: null, stdout: "", stderr: "", error: message(e) };
+    return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(e)) ?? message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();
     clearTimeout(elapsed);
     clearTimeout(idle);
     if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
+    npm?.config?.dispose();
     if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
@@ -321,11 +356,13 @@ function updateChildStdio(gated: boolean, inherit: boolean, pipeConsole: boolean
   return pipeConsole ? ["ignore", "pipe", "pipe"] : inherit ? "inherit" : undefined;
 }
 
-async function runWindowsInstall(root: string, file: string, args: string[], env: NodeJS.ProcessEnv, inherit: boolean, verbatim: boolean): Promise<CommandResult> {
-  const npm = file === "npm" ? npmInvocation(env, args) : undefined;
-  if (npm) ({ file, args, windowsVerbatimArguments: verbatim } = cmdSpawnSpec(npm.file, npm.args, npm.env));
+async function runWindowsInstall(root: string, file: string, args: string[], env: NodeJS.ProcessEnv, inherit: boolean, verbatim: boolean, staging?: string): Promise<CommandResult> {
   const cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
+    npm = file === "npm" ? npmInvocation(env, args, staging ?? cache) : undefined;
+    const target = npm?.config ? args.find(arg => arg.startsWith("cotal-ai@"))?.slice("cotal-ai@".length) : undefined;
+    if (npm) ({ file, args, windowsVerbatimArguments: verbatim } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const mutation = beginGlobalUpdateChild(root, "install");
     let published = false;
     let error: string | undefined;
@@ -342,7 +379,7 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
         published = true;
         try {
           mutation.markLive(worker.pid);
-          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim });
+          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim, config: npm?.config?.file, target });
         } catch (cause) { error = message(cause); worker.disconnect?.(); }
       }
       const exit = await closed;
@@ -354,21 +391,23 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
       if (inherit && result.stdout) process.stdout.write(result.stdout);
       return inherit ? { ...result, stdout: "" } : result;
     } finally { if (!published) mutation.clear(); }
-  } catch (cause) { return { status: null, stdout: "", stderr: "", error: message(cause) }; }
-  finally { rmSync(cache, { recursive: true, force: true, maxRetries: 3 }); }
+  } catch (cause) { return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(cause)) ?? message(cause) }; }
+  finally { npm?.config?.dispose(); rmSync(cache, { recursive: true, force: true, maxRetries: 3 }); }
 }
 
 /** npm --json supplies the code, but its summary is the only field naming the missing spec. */
 export function latestNotAvailable(result: CommandResult, version: string): boolean {
   if (result.status === 0 || result.status === null || result.error) return false;
+  if (result.missingVersion !== undefined) return result.missingVersion === version;
   try {
     const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown } }).error;
     return error?.code === "ETARGET" && error.summary === `No matching version found for cotal-ai@${version}.`;
   } catch { return false; }
 }
 
-export function failure(result: CommandResult): string {
-  return [result.signal && `process terminated by ${result.signal}`, result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
+export function failure(result: CommandResult, raw = false): string {
+  const text = [result.signal && `process terminated by ${result.signal}`, result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
+  return raw ? text : result.scrub?.(text) ?? text;
 }
 
 export function message(value: unknown): string {
