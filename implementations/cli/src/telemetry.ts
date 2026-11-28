@@ -94,6 +94,8 @@ export function telemetryErrorText(command: string, error: unknown): ErrorText {
   if (isConnectRefusal(error) && isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") return { message: null, stack: null };
   // Help shows the requested topic and can suggest commands from local extensions.
   if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
+  // A manager's negative attach lookup names the agent and the answering instance.
+  if (command === "attach" && isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.native?.code === "not-found") return { message: null, stack: null };
   // A spawn diagnostic can include native terminal output or the original launch arguments.
   if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
       || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
