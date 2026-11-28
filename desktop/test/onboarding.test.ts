@@ -515,7 +515,7 @@ test("finding 6: a move whose agents cannot be read says any agents it runs stop
   try {
     await a.click("login"); await a.login();
     await a.emit("desktop-open-repair");
-    assert.equal(a.node("repair-consent").textContent, "The background service is now run by a command-line install of Cotal. Repair moves it to this app. Your spaces and sign-in stay as they are. Cotal could not list the agents it runs, so any agents it runs stop.");
+    assert.equal(a.node("repair-consent").textContent, "The background service is now run by a command-line install of Cotal. Repair moves it to this app, so that copy stops running it. Your spaces and sign-in stay as they are. Cotal could not list the agents it runs, so any agents it runs stop and don't start again by themselves.");
   } finally { a.dom.window.close(); }
 });
 
@@ -551,6 +551,47 @@ test("finding 9: a step that fails shows where Repair stopped, keeps the service
   } finally { a.dom.window.close(); }
 });
 
+test("W3: a service Repair can't verify offers one button that downloads the installer, never Repair again", async () => {
+  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [{ step: "service-owner", outcome: "cannot", action: "reinstall", found: "Cotal can't confirm the background service on this computer is the one it set up, so Repair won't change it. Download Cotal and install it again to replace the service." }] } });
+  try {
+    await a.click("login"); await a.login();
+    await a.emit("desktop-open-repair");
+    assert.equal(a.node("repair-apply").textContent, "Download installer");
+    const before = a.calls.length, opened = a.urls.length;
+    await a.click("repair-apply");
+    assert.equal(a.calls.slice(before).filter(call => call.op === "repair-plan" || call.op === "repair-apply").length, 0, "no Repair loop");
+    assert.equal(a.urls.length - opened, 1, "the installer page opens");
+  } finally { a.dom.window.close(); }
+});
+
+test("W6: one approval names every change it approves", async () => {
+  const move = { step: "service-owner", outcome: "fix", consent: "takeover", agents: [], owner: { kind: "app" }, found: "Another copy of the Cotal app runs the background service.", change: "Use this app for the background service." };
+  const left = { step: "stale-registration", outcome: "fix", consent: "remove-old-registration", space: "research", disconnected: true, found: "An old copy of this computer's agent host is still registered in research.", change: "Remove the old registration. This space stays disconnected from this computer." };
+  const hosted = { step: "stale-registration", outcome: "fix", consent: "remove-old-registration", space: "team", found: "An old copy of this computer's agent host is still registered in team.", change: "Remove the old registration and start the agent host again." };
+  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [move, left, hosted] } });
+  try {
+    await a.click("login"); await a.login();
+    await a.emit("desktop-open-repair");
+    assert.equal(a.node("repair-consent").textContent, "The background service is now run by another copy of the Cotal app. Repair moves it to this app, so that copy stops running it. Your spaces and sign-in stay as they are. Repair also removes this computer's old agent host registration in team and starts its agent host again, and in research, which stays disconnected from this computer. If an older copy still answers there, Repair leaves it alone.");
+  } finally { a.dom.window.close(); }
+});
+
+test("W8: after a move rolls back, the same plan is not offered again; the button is Done", async () => {
+  const move = { step: "service-owner", outcome: "fix", consent: "takeover", agents: [], owner: { kind: "cli" }, found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service." };
+  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [move] }, repairApply: { repaired: false, steps: [{ ...move, failed: "This app's service didn't start, so the other copy of Cotal runs the background service again. The agents it ran stopped and don't start again by themselves. Keep using the other copy for now, and update this app before trying again.", detail: "x" }] } });
+  try {
+    await a.click("login"); await a.login();
+    await a.emit("desktop-open-repair");
+    await a.click("repair-apply");
+    await a.click("repair-apply");
+    await a.emit("desktop-open-repair");
+    assert.equal(a.node("repair-apply").textContent, "Done", "the failed plan's apply button is not offered again unchanged");
+    const before = a.calls.length;
+    await a.click("repair-apply");
+    assert.equal(a.calls.slice(before).filter(call => call.op === "repair-apply").length, 0);
+  } finally { a.dom.window.close(); }
+});
+
 test("another installation's service offers Repair, which names the agent that stops and moves the service after one approval", async () => {
   const a = await app({ installed: true, recovery: true });
   try {
@@ -562,7 +603,7 @@ test("another installation's service offers Repair, which names the agent that s
     const before = a.calls.length;
     await a.click("recover");
     assert.deepEqual(a.calls.slice(before).map(call => call.op), ["repair-plan"], "opening Repair changes nothing");
-    assert.equal(a.node("repair-consent").textContent, "The background service is now run by a command-line install of Cotal. Repair moves it to this app. Your spaces and sign-in stay as they are. This agent stops:");
+    assert.equal(a.node("repair-consent").textContent, "The background service is now run by a command-line install of Cotal. Repair moves it to this app, so that copy stops running it. Your spaces and sign-in stay as they are. This agent stops and doesn't start again by itself:");
     assert.equal(a.node("repair-agents").textContent, "reviewer (Claude Code) in team");
     assert.equal(a.node("repair-apply").textContent, "Use this app");
     await a.click("repair-apply");

@@ -10,7 +10,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
-import { consents, readPlan, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
+import { consents, readPlan, reinstallNeeded, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
 import "./components.css";
@@ -863,11 +863,12 @@ let repairFailedDigest: string | undefined;
 async function openRepair(): Promise<void> {
   repairDone = false;
   repairPlan = readPlan(await request({ op: "repair-plan" }));
-  renderRepair(el("repair-panel"), repairPlan);
+  // The same plan already stopped at a step: say so, and don't offer its apply button again unchanged.
+  const retried = repairFailedDigest === repairPlan.digest;
+  renderRepair(el("repair-panel"), repairPlan, undefined, retried);
   el("repair-panel").hidden = false; el("recovery-panel").hidden = true;
   el("repair-title").focus();
-  // The same plan already stopped at a step: say so rather than offer it as if it were new.
-  if (repairFailedDigest === repairPlan.digest) notice("Repair tried this and could not finish. Details shows what the background service said.");
+  if (retried) notice("Repair tried this and could not finish. Details shows what the background service said.");
 }
 function closeRepair(): void {
   repairPlan = undefined; el("repair-panel").hidden = true;
@@ -877,12 +878,14 @@ el("repair-cancel").addEventListener("click", () => { if (!busy) closeRepair(); 
 el("repair-apply").addEventListener("click", () => {
   const plan = repairPlan;
   if (!plan || busy) return;
-  if (repairDone || !plan.steps.some(step => step.outcome === "fix")) {
+  if (repairDone || repairFailedDigest === plan.digest || !plan.steps.some(step => step.outcome === "fix")) {
     const signIn = !repairDone && signInNeeded(plan);
     const update = !repairDone && updateNeeded(plan);
+    const reinstall = !repairDone && reinstallNeeded(plan);
     closeRepair();
     if (signIn) { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
     else if (update) { openSettings(); void settingsAction({ op: "update-check" }); }
+    else if (reinstall) void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal);
     else void action(refresh);
     return;
   }

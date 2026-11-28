@@ -96,7 +96,7 @@ export function nativeStub(scenario) {
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...(state.serviceOwner && state.appManagement === "other-copy" ? { recovery: { reason: "another-installation", owner: { kind: state.serviceOwner.kind } } } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
       if (request.op === "status-watch") {
@@ -385,20 +385,24 @@ const appsScenarios = [
     assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).at(-1), true);
   } },
   ...[
-    ["agent-apps-install-other-owner", "app", "the Cotal app", "Open that copy and choose Check again in its Agent apps."],
-    ["agent-apps-install-command-line-owner", "cli", "a command-line install of Cotal", "Run setup again from that install."],
-  ].map(([name, kind, owner, step]) => ({ name, state: { ...connectedApps, agentApps: noApps, appManagement: "other-copy", serviceOwner: { kind, location: "/private/fixture" }, trackOwnerTimer: true }, act: openApps, expect: async page => {
-    await expectAppRecovery(page, `Another copy of Cotal runs the background service (${owner}). This copy can show your agent apps but can't change them. ${step}`, "Fix in Connection");
+    ["agent-apps-install-other-owner", "app", "the Cotal app"],
+    ["agent-apps-install-command-line-owner", "cli", "a command-line install of Cotal"],
+  ].map(([name, kind, owner]) => ({ name, state: { ...connectedApps, agentApps: noApps, appManagement: "other-copy", serviceOwner: { kind }, trackOwnerTimer: true }, act: openApps, expect: async page => {
+    const action = await expectAppRecovery(page, `Another copy of Cotal runs the background service (${owner}). This copy can show your agent apps but can't change them.`, "Fix in Connection");
     assert.equal(await page.locator("#apps-owner.warning").count(), 1);
     assert.equal(await page.locator("#app-list button:enabled").count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__renderState.appActions ?? []), []);
+    // One next step in both places: Fix in Connection lands on the card whose one button is Repair.
+    await action.click();
+    assert.equal(await page.locator("#connection-title").textContent(), "Another copy of Cotal runs the background service");
+    assert.equal(await page.locator("#recover").textContent(), "Repair");
   } })),
   { name: "agent-apps-install-other-owner-clears", state: { ...connectedApps, agentApps: noApps, ownerChangesOnInstall: true, trackOwnerTimer: true }, act: async page => {
     await openApps(page);
     await appButton(page, "Install: Claude Code").click();
     await page.locator("#apps-owner.warning").waitFor();
   }, expect: async page => {
-    const warning = "Claude Code is installed. Another copy of Cotal runs the background service (the Cotal app), so Claude Code can't be used yet. Open that copy and choose Check again in its Agent apps.";
+    const warning = "Claude Code is installed. Another copy of Cotal runs the background service (the Cotal app), so Claude Code can't be used yet.";
     const action = await expectAppRecovery(page, warning, "Fix in Connection");
     assert.equal(await page.locator("#apps-owner.warning").count(), 1);
     assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:claude"], "no sign-in replay to a new owner");

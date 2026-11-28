@@ -1316,7 +1316,9 @@ async function stopAndDeregister<T>(paths: DaemonPaths, daemonHome: string | und
  * service through the same verified path as uninstall, but keeps every record in the daemon home:
  * sign-in sessions, this computer's identity and every space's service records. Then it installs
  * this installation's unit and waits for it to answer at `version`. If this installation's service
- * cannot be published or does not answer, the previous unit is restored and started again.
+ * cannot be published or does not answer, the previous unit is restored and started again, and the
+ * move refuses `MOVE_ROLLED_BACK`. If that restore fails too, it refuses `MOVE_RESTORE_FAILED`: no
+ * service may run, and the next Repair finds the service not set up or not running and offers to fix it.
  *
  * The restore covers a failure this process sees. A process that dies after the previous unit is
  * removed and before this one is published leaves no unit; the next Repair finds the service not
@@ -1348,7 +1350,11 @@ export async function applyMove(paths: DaemonPaths, daemonHome: string | undefin
       await answeringAt(paths, expected.version, 60_000);
     } catch (error) {
       report?.("this installation's service did not start; restoring the previous one");
-      await restoreMovedUnit(paths, daemonHome, previous);
+      try { await restoreMovedUnit(paths, daemonHome, previous); }
+      catch (restore) {
+        // The restore itself failed: no service may run now. Say what is left, never the rollback sentence.
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}), and restoring the previous service failed (${(restore as Error).message}); no background service may be running, and the agents the previous service ran were stopped`, { native: { code: "MOVE_RESTORE_FAILED" } });
+      }
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}); the previous service was restored and started again, and the agents it ran were stopped and do not start again by themselves`, { native: { code: "MOVE_ROLLED_BACK" } });
     }
     return { state: "moved", unit, from: identity.installed, spaces };

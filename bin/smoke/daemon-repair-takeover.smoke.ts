@@ -178,6 +178,7 @@ process.exit(0)
     } else {
       assert.equal(applied.code, 2, applied.output);
       assert.equal(applied.json.error.cause.code, "MOVE_ROLLED_BACK");
+      assert.match(applied.json.error.message, /the previous service was restored and started again, and the agents it ran were stopped and do not start again by themselves/, "the rollback says what stopped");
       assert.equal(readFileSync(unitPath, "utf8"), source, "the previous unit was restored byte for byte");
       assert.ok(readFileSync(unitPath, "utf8").includes("other-install"), "the other installation runs the service again");
       console.log(`PASS a failed start restored the other installation's service and kept ${kept.length}/7 records`);

@@ -165,6 +165,8 @@ export interface HostedManager {
   readonly instanceId?: string;
   /** Registration cleanup is pending, or may have run and must be inspected before another request. */
   readonly registrationCleanup?: "pending" | "unknown";
+  /** This computer still means to host the space. A disconnect removes it before anything else. */
+  readonly hostingIntent?: boolean;
   readonly pid?: number;
   readonly restarts: number;
   readonly reason?: string;

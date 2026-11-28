@@ -245,7 +245,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   const status = (space: string): HostedManager => {
     const view = rawStatus(space);
-    return { ...view, ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
+    return { ...view, hostingIntent: existsSync(daemonManagerIntentFile(space, home)), ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
   };
   const rawStatus = (space: string): HostedManager => {
     const current = live.get(space);

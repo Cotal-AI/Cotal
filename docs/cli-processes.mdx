@@ -666,17 +666,30 @@ Three kinds of step ask first, and `--apply` refuses `LIFECYCLE_BLOCKED` with ca
 `CONSENT_REQUIRED` until they are approved: `takeover` (moving the service from another
 installation), `start-stopped` (starting a service that is not running, which the person may have
 stopped) and `remove-old-registration`. `--yes` approves all three. The spaces step starts only the
-spaces the plan named.
+spaces the plan named, and only those this computer still hosts: a space with a hosting intent and no
+registration removal pending or unconfirmed. A space the person disconnected is never started again.
+Each space's `manager-status` reply carries `hostingIntent`. The spaces step reports each space's
+result; a space that stays stopped fails the step with cause `SPACE_NOT_STARTED` and what its agent
+host said.
+
+Every step that changes the service (set-up, start, restart, move, space start and old-registration
+removal) runs while Repair holds the agent-app admission lock (`agent-app.lock`), so no agent-app
+install, sign-in or pickup runs across it. A held lock fails the first such step with
+`LIFECYCLE_BLOCKED` and changes nothing.
 
 With `--json`, the plan is `{digest, steps}`. Each step has `step`, `outcome` (`ok`, `fix`,
-`needs-you` or `cannot`) and `found`, and may have `change`, `consent`, `space`, `spaces`, `agents`,
-`agentsUnknown`, `owner` and `action`. `agentsUnknown: true` means the service's agents could not be
-read, so any agent it runs stops. `action: "update"` marks a `cannot` step that updating this app
-fixes. A step that fails stops the run, and the command refuses with that step's cause. The desktop
+`needs-you`, `cannot` or `unchecked`) and `found`, and may have `change`, `consent`, `space`, `spaces`,
+`agents`, `agentsUnknown`, `disconnected`, `owner` and `action`. `unchecked` marks a step Repair could
+not check yet because an earlier one must be fixed first. `agentsUnknown: true` means the service's
+agents could not be read, so any agent it runs stops. `disconnected: true` marks an old-registration
+step for a space that stays disconnected. `action: "update"` marks a `cannot` step that updating this
+app fixes, and `action: "reinstall"` one that installing Cotal again fixes: a service record that
+fails verification (`CONFLICT` or `TARGET_NOT_FOUND` while reading it) becomes that step rather than
+a refusal. A step that fails stops the run, and the command refuses with that step's cause. The desktop
 app instead receives `{steps, repaired, remaining}`: each step has `changed` or `failed` plus
 `detail`, steps after a failed one did not run, and `remaining` is what a new check still finds.
-`bin/daemon/repair.ts` exports `planRepair`, `applyRepair`, `planFrom`, `probeRepair`, `runSteps`,
-`startSpaces`, `pickupOutcome`, `accountSteps` and `compareVersions`.
+`bin/daemon/repair.ts` exports `planRepair`, `applyRepair`, `planFrom`, `probeRepair`, `probeFailure`,
+`runSteps`, `startSpaces`, `pickupOutcome`, `failedCopy`, `accountSteps` and `compareVersions`.
 
 The agent-apps step asks the bridge's agent-app routing for a fresh inventory with a pickup
 (`agent-apps {refresh: true}`), the same entry the Agent apps pane uses, which takes the agent-app
@@ -686,15 +699,18 @@ finish. Any other reply, including one without `serviceRefresh`, fails the step.
 
 When another Cotal installation runs the service, the plan moves it to this installation. A move
 needs consent `takeover` and lists the agents that stop. When the service's status or an agent row
-cannot be read, the plan says any agents it runs stop. A move never replaces a newer installation:
-when the service runs a later version than this one, the step is `cannot` and names updating this
+cannot be read, the plan says any agents it runs stop. A move never replaces a newer installation, or
+one whose version Repair cannot read or compare: the step is then `cannot` and names updating this
 app. A move stops the recorded service through the same verified path as `uninstall`, but keeps every
 record in the daemon home: sign-in, this computer's account identity and each space's service records.
 It then installs this installation's service and waits for it to answer. If that service does not
 answer, the move puts the previous service back, starts it, and refuses with cause
 `MOVE_ROLLED_BACK`; the agents the previous service ran were stopped and do not start again by
-themselves. When the previous service's shutdown cannot be confirmed, the move refuses
-`OPERATION_UNKNOWN` with cause `MOVE_UNCONFIRMED` and keeps the unit and receipt. A process that
+themselves, and the window says to keep using the other copy and update this app before trying again.
+If putting the previous service back fails too, the move refuses `MOVE_RESTORE_FAILED`: no service
+may be running, and the next Repair offers to set this app's service up. When the previous service's
+shutdown cannot be confirmed, the move refuses `OPERATION_UNKNOWN` with cause `MOVE_UNCONFIRMED` and
+keeps the unit and receipt. A process that
 dies after the previous unit is removed and before this one is published leaves no unit, and the
 next Repair offers to set the service up. `uninstall` still erases the space service records; use
 `repair` to move the service.
@@ -702,24 +718,29 @@ next Repair offers to set the service up. `uninstall` still erases the space ser
 When a hosted Manager's cleanup record names an older instance than the one this computer now runs,
 `service-disconnect` refuses ("Manager cleanup identity differs from its recorded instance"). The
 plan then offers one step per space to remove that old registration (consent
-`remove-old-registration`). Repair reads the space's hosting intent first, then asks the space to
+`remove-old-registration`). The plan reads the space's hosting intent, so its words say what apply
+does: "start the agent host again" for a space this computer hosts, "stays disconnected" for one the
+person disconnected. Repair reads the intent again before it asks the space to
 remove only the older instance, through the same guarded deregistration as disconnect and with the
 record's verified authority. While the older instance still answers, the space refuses and Repair
 leaves it alone. When the space confirms the removal, the record is rebound to the current instance.
 A space this computer still hosts starts its Manager again. A space the person disconnected stays
 disconnected: Repair finishes that disconnect, which removes the current instance through
-disconnect's own path. Any other answer keeps the record. Repair's own request never names the
+disconnect's own path. When the removal succeeded but that start or disconnect did not finish, the
+reply's `repair.state` is `removed-unfinished` and the step fails with cause `CLEANUP_UNFINISHED`,
+saying the old registration was removed and what is left. Any other answer keeps the record. Repair's own request never names the
 current instance. The daemon request is `manager-repair-cleanup {space}`.
 
-The desktop app offers Repair as the one button on every error screen whose cause it handles, and in
-the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`, and
+The desktop app offers Repair as the one button on the error screens whose cause it handles, and in
+the tray menu. One approval names every change it approves. After a step fails, opening the same
+plan again says so and does not offer its apply button again. Agent apps, when another copy runs the
+service, names that copy by kind and offers Fix in Connection, which leads to the same Repair. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`, and
 `repair-apply` sends `repair-progress {line}` events while it runs.
 Its `status` reply and each pushed `status-watch` status frame add `recovery: {reason: "another-installation", owner}`
 while another installation runs the service, so the window offers Repair without a manual refresh.
 `owner` is `{kind: "app" | "cli"}`; the owner's path is never sent.
-A move holds the agent-app admission lock (`agent-app.lock`) for the whole handoff and refuses
-`LIFECYCLE_BLOCKED` while an agent-app install, sign-in or pickup holds it, so none of those runs
-across the handoff. The new service's startup never takes that lock.
+The new service's startup never takes the admission lock, so waiting for it to answer during a move
+cannot deadlock.
 
 Daemon launches keep the invoked Node path when it resolves to the running Node in the same
 directory, including a distribution's stable `node` symlink. Links through another directory,
