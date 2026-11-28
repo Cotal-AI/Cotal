@@ -15,16 +15,16 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * stay separate commands; this one does not absorb them.
  */
 import { lstatSync } from "node:fs";
-import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
-import { normalizeIdpUrl } from "@cotal-ai/auth";
+import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, homeCotalDir, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
+import { listIdpAccounts, normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
-import { loginFromCli } from "./cli-login.js";
+import { loginBeforeInstall, loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installationOwner, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { applyInstall, installationOwner, installedDaemonIdentity, planInstall, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
 import { withAppMutation } from "./agent-app-admission.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
@@ -50,6 +50,7 @@ export interface SetupResult {
 }
 
 export interface InstallOptions {
+  readonly resumeAccountInstall?: boolean;
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
@@ -128,6 +129,14 @@ export function installedUnitForSetup(paths: DaemonPaths, home?: string): string
   }
 }
 
+async function refuseUnsupervisedDaemon(opts: InstallOptions): Promise<void> {
+  if (!await daemonAnswers(opts)) return;
+  throw new CommandFailure("refused", "CONFLICT", `a daemon already answers ${opts.paths.socket} and no installed unit is recorded for it, so this would install a second one that its lifetime lock refuses; nothing was installed`, {
+    remedy: opts.space ? `stop that daemon and run this again, or keep it and run ${codeSpan(daemonCommandCopy("register", opts.daemonHome, [["--space", opts.space]]))} and ${codeSpan(daemonCommandCopy("service-connect", opts.daemonHome, [["--space", opts.space]]))} by hand` : "stop that daemon and run this again to install its persistent service",
+    native: { code: "RUNNING_WITHOUT_UNIT" },
+  });
+}
+
 async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
   let unit = installedUnitForSetup(opts.paths, opts.daemonHome);
   let outcome: string, detail: string;
@@ -139,12 +148,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
     // some other way, by hand or by a container entrypoint, and installing now would start a
     // second one that the lifetime lock refuses. Say so instead of leaving a unit that cannot run,
     // and do not quietly use the running daemon either, because it is not a persistent service.
-    if (await daemonAnswers(opts)) {
-      throw new CommandFailure("refused", "CONFLICT", `a daemon already answers ${opts.paths.socket} and no installed unit is recorded for it, so this would install a second one that its lifetime lock refuses; nothing was installed`, {
-        remedy: opts.space ? `stop that daemon and run this again, or keep it and run ${codeSpan(daemonCommandCopy("register", opts.daemonHome, [["--space", opts.space]]))} and ${codeSpan(daemonCommandCopy("service-connect", opts.daemonHome, [["--space", opts.space]]))} by hand` : "stop that daemon and run this again to install its persistent service",
-        native: { code: "RUNNING_WITHOUT_UNIT" },
-      });
-    }
+    await refuseUnsupervisedDaemon(opts);
     const installed = applyInstall(opts.paths, opts.daemonHome, opts.omittedRelativePathEntries);
     unit = installed.unit;
     outcome = "installed";
@@ -152,7 +156,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
   }
   if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
     // A start failure is not evidence that no installation was recorded.
-    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts));
+    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts), opts.resumeAccountInstall);
     detail = `${unit} is already installed; its owned service received a start request`;
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);
@@ -269,9 +273,45 @@ function credentialsRemoved(r: LoginResult): void {
   throw new CommandFailure("partial", "OPERATION_PARTIAL", message, { remedy: `${remedy}, then run this setup again` });
 }
 
+function firstAccountSignInFailure(result: Extract<LoginResult, { outcome: "failed" }>): CommandFailure {
+  if (result.reason === "local-state-error") return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", result.message, { native: { code: "LOCAL-STATE-ERROR" }, remedy: result.remedy });
+  const native = { code: result.reason.toUpperCase().replaceAll("-", "_") };
+  if (result.reason === "denied" || result.reason === "expired") return new CommandFailure("refused", "PERMISSION_DENIED", result.message, { native });
+  if (result.reason !== "refused") return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", result.message, { native });
+  return new CommandFailure("refused", "AUTH_REQUIRED", result.message);
+}
+
+export function listSavedSetupAccounts(dir: string) {
+  const now = Math.floor(Date.now() / 1000);
+  try { return listIdpAccounts(dir).filter(account => account.expiresAt > now); }
+  catch {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no approval was requested", {
+      native: { code: "LOCAL-STATE-ERROR" }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
+    });
+  }
+}
+
 /** Connect this computer to an account without changing any space intent. */
 export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string; existingSignInOnly?: boolean }) {
   const steps: SetupStep[] = [];
+  const reportSignIn = (outcome: string, detail: string) => {
+    const step: SetupStep = { step: "sign-in", outcome, detail };
+    steps.push(step);
+    opts.report(`sign-in: ${detail}`, step);
+  };
+  let signedHere = false;
+  if (!opts.existingSignInOnly && installedUnitForSetup(opts.paths, opts.daemonHome) === undefined) {
+    await refuseUnsupervisedDaemon(opts);
+    planInstall(opts.paths, opts.daemonHome);
+    const sessionDir = opts.daemonHome ?? homeCotalDir();
+    if (opts.discoveryPins || !listSavedSetupAccounts(sessionDir).some(account => account.idp === opts.idp)) {
+      const signed = await loginBeforeInstall(opts, sessionDir);
+      if (signed.outcome === "failed") throw firstAccountSignInFailure(signed);
+      credentialsRemoved(signed);
+      reportSignIn("signed-in", `signed in as ${signed.label || signed.sub}`);
+      signedHere = true;
+    }
+  }
   const unit = await ensureInstalled(opts, steps);
   const beforeRefresh = await queryDaemon(opts);
   if (!beforeRefresh.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", beforeRefresh.error.message);
@@ -279,15 +319,14 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
   const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
-  if (!signedIn || opts.discoveryPins) {
+  if (!signedHere && (!signedIn || opts.discoveryPins)) {
     if (opts.existingSignInOnly) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
     const signed = await loginFromCli(opts);
     if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
     if (signed.result.outcome === "failed") throw new CommandFailure("refused", "AUTH_REQUIRED", signed.result.message);
     credentialsRemoved(signed.result);
-    steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
-  } else steps.push({ step: "sign-in", outcome: "already-signed-in", detail: "already signed in; no approval was needed" });
-  opts.report(`sign-in: ${steps.at(-1)!.detail}`, steps.at(-1));
+    reportSignIn("signed-in", `signed in as ${signed.result.label || signed.result.sub}`);
+  } else if (!signedHere) reportSignIn("already-signed-in", "already signed in; no approval was needed");
   const deadline = Date.now() + 60_000;
   for (;;) {
     const status = await queryDaemon(opts);

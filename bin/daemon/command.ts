@@ -35,7 +35,7 @@ import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
-import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
+import { installedUnitForSetup, listSavedSetupAccounts, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
@@ -463,6 +463,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   let idp = choice?.url;
   const { paths, home } = resolveTarget(args);
   let newSignIn = values.idp !== undefined || args.values.cloud === true;
+  let resumeAccountInstall = false;
   if (!space && !idp && installedUnitForSetup(paths, home) === undefined) {
     choice = await daemonAccountChoice(args);
     idp = choice?.url;
@@ -476,17 +477,28 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
     if (!idp) {
       let discovery;
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
-      catch {
-        const remedy = linuxAutostartWarning(paths, home);
-        throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account", remedy ? { remedy } : undefined);
+      catch (error) {
+        if (process.platform === "linux" && error instanceof EndpointRefusal && error.code === "NOT_RUNNING" && readReceipt(paths)) {
+          const providers = listSavedSetupAccounts(home ?? homeCotalDir());
+          if (providers.length === 1) {
+            idp = providers[0]!.idp;
+            resumeAccountInstall = true;
+          }
+        }
+        if (!idp) {
+          const remedy = linuxAutostartWarning(paths, home);
+          throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account", remedy ? { remedy } : undefined);
+        }
       }
-      if (!discovery.ok || "event" in discovery || !("signedInProviders" in discovery.result)) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account");
-      const providers = discovery.result.signedInProviders ?? [];
-      if (!providers.length) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
-      if (providers.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", `The daemon is signed in to several providers (${providers.join(", ")}); pass --idp <url> to choose one`);
-      idp = providers[0]!;
+      if (discovery) {
+        if (!discovery.ok || "event" in discovery || !("signedInProviders" in discovery.result)) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account");
+        const providers = discovery.result.signedInProviders ?? [];
+        if (!providers.length) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
+        if (providers.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", `The daemon is signed in to several providers (${providers.join(", ")}); pass --idp <url> to choose one`);
+        idp = providers[0]!;
+      }
     }
-    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, discoveryPins: choice?.discoveryPins, existingSignInOnly: !newSignIn,
+    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, discoveryPins: choice?.discoveryPins, existingSignInOnly: !newSignIn, resumeAccountInstall,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); openLoginBrowser(p.verificationUriComplete, args.values); },
     });

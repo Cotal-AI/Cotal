@@ -2441,18 +2441,73 @@ process.stdin.once('data', () => {
             await killAndAwaitExit(child, "SIGTERM");
             rmSync(pathUnit);
             rmSync(pathReceipt);
-            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
-            writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+            const enabledFlag = join(pathBin, "enabled");
+            writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(args.includes('--property=UnitFileState')){console.log(fs.existsSync(${JSON.stringify(enabledFlag)})?'enabled':'disabled');process.exit(0)}if(args.includes('enable'))fs.writeFileSync(${JSON.stringify(enabledFlag)},'');const op=args.includes('daemon-reload')||args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
             check("J0 clean setup starts with no installed service", !existsSync(pathUnit) && !existsSync(pathReceipt));
+            const cancelSetup = async (signal: NodeJS.Signals, ...args: string[]) => {
+              const proc = spawn(cliNode, [cliEntry, "daemon", "setup", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
+              let out = "", err = "", signalled = false;
+              proc.stdout.on("data", b => { out += String(b); });
+              proc.stderr.on("data", b => {
+                err += String(b);
+                if (!signalled && err.includes("Approval code:")) { signalled = true; proc.kill(signal); }
+              });
+              const code = await new Promise<number | null>((resolve, reject) => { proc.once("error", reject); proc.once("close", resolve); });
+              return { code, doc: JSON.parse(out) as Record<string, any>, prompted: signalled };
+            };
+            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nif(process.argv[2]==='show-user'){console.log('Linger=no');process.exit(0)}process.exit(99);\n`, { mode: 0o700 });
+            const noNativeChange = pathCalls.length;
+            const noNewService = () => !existsSync(pathUnit) && !existsSync(pathReceipt) && loadIdpSession(home, idpUrl) === undefined && pathCalls.length === noNativeChange;
+            for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+              const cancelled = await cancelSetup(signal);
+              check(`J0 ${signal} leaves a fresh account signed out and the service absent`, cancelled.code === 1 && cancelled.doc.error?.cause?.code === "CANCELLED" && cancelled.prompted && noNewService(), cancelled);
+            }
+            for (const failure of ["denied", "expired", "unreachable"] as const) {
+              deviceFailure = failure;
+              try {
+                const { code, doc } = await cli("setup");
+                check(`J0 ${failure} approval leaves a fresh account signed out and the service absent`, code === 2 && doc.error?.code === (failure === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED") && doc.error?.cause?.code === failure.toUpperCase() && noNewService(), { code, doc });
+              } finally { deviceFailure = undefined; }
+            }
             const before = deviceCodeRequests;
             // Other registered fixture spaces still identify this provider, even without a sign-in.
+            const { code: installCode, doc: installDoc } = await cli("setup");
+            check("J0 approved setup records the service but does not start it when linger fails", installCode === 2 && installDoc.error?.code === "PERMISSION_DENIED" && deviceCodeRequests === before + 1 && existsSync(pathUnit) && existsSync(pathReceipt) && !existsSync(enabledFlag) && loadIdpSession(home, idpUrl) !== undefined && pathCalls.length === noNativeChange, { code: installCode, error: installDoc.error });
+            const partialReceipt = readFileSync(pathReceipt, "utf8");
+            const { code: retryCode, doc: retryDoc } = await cli("setup");
+            check("J0 bare retry identifies the linger blocker without a second approval", retryCode === 2 && retryDoc.error?.code === "PERMISSION_DENIED" && retryDoc.error?.remedy.includes("sudo loginctl enable-linger") && !retryDoc.error?.message.includes("--idp") && deviceCodeRequests === before + 1 && !existsSync(enabledFlag) && pathCalls.length === noNativeChange, { code: retryCode, error: retryDoc.error });
+            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
+            const sessionFile = join(home, "idp-sessions.json");
+            const savedSession = readFileSync(sessionFile);
+            const recordedUnit = readFileSync(pathUnit);
+            const damagedSession = '{"fixture-marker":';
+            writeFileSync(sessionFile, damagedSession);
+            try {
+              const { code, doc, err } = await cli("setup");
+              check("J0 bare retry refuses an unreadable sign-in cache without changing local setup state",
+                code === 2 && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.cause?.code === "LOCAL-STATE-ERROR"
+                && doc.error?.message === "the local sign-in cache (idp-sessions.json) could not be read; no approval was requested"
+                && doc.error?.remedy === "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced"
+                && !(JSON.stringify(doc) + err).includes("fixture-marker") && readFileSync(sessionFile, "utf8") === damagedSession
+                && readFileSync(pathUnit).equals(recordedUnit) && readFileSync(pathReceipt, "utf8") === partialReceipt
+                && !existsSync(enabledFlag) && pathCalls.length === noNativeChange && deviceCodeRequests === before + 1,
+                { code, error: doc.error });
+            } finally { writeFileSync(sessionFile, savedSession); }
+            const resumed = await cli("setup");
+            check("J0 bare retry enables the recorded service and registers once linger is on", resumed.code === 0 && resumed.doc.target?.idp === idpUrl && deviceCodeRequests === before + 1 && existsSync(enabledFlag) && readFileSync(pathReceipt, "utf8") === partialReceipt && pathCalls.includes("/start"), { code: resumed.code, doc: resumed.doc });
+            await killAndAwaitExit(child, "SIGTERM");
+            rmSync(pathUnit);
+            rmSync(pathReceipt);
+            deleteIdpSession(home, idpUrl);
+            const beforeFresh = deviceCodeRequests;
             const fresh = await cli("setup");
-            check("J0a no installed daemon selects the sole known provider", fresh.code === 0 && fresh.doc.target?.idp === idpUrl && existsSync(pathUnit) && existsSync(pathReceipt), fresh);
-            check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string" && fresh.doc.result.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"), fresh);
+            check("J0a no installed daemon selects the sole known provider", fresh.code === 0 && fresh.doc.target?.idp === idpUrl && existsSync(pathUnit) && existsSync(pathReceipt), { code: fresh.code, doc: fresh.doc });
+            check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === beforeFresh + 1 && typeof fresh.doc.result?.machineId === "string" && fresh.doc.result.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"), { code: fresh.code, doc: fresh.doc });
+            check("J1 JSON reports approval before installation in the order they ran", fresh.doc.result?.steps?.map((step: { step: string }) => step.step).join(",") === "sign-in,install,register");
             const initial = (await cli("status")).doc.result;
             check("J2 account setup turns on no space", initial?.account?.hostSupport === "supported" && initial.account.spaces.length === 0 && !accountDesired, initial);
             const again = await cli("setup", "--idp", idpUrl);
-            check("J3 explicit provider reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId && again.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), again);
+            check("J3 explicit provider reuses approval and computer identity", again.code === 0 && deviceCodeRequests === beforeFresh + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId && again.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), again);
             const human = await plainCommand("setup", "--idp", idpUrl);
             check("J4 human output names account computer and provider dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in your provider's dashboard") && !human.out.includes("Account computers") && !human.out.includes("Machines page"), human);
             check("J4a zero-space JSON explains launch state and carries setup Next", fresh.doc.result.spaces.length === 0 && fresh.doc.result.message === "No space uses this computer yet, so no agents can be launched on it until you connect a space." && fresh.doc.result.next?.command === `cotal daemon setup --space '<space>' --idp '${idpUrl}'` && fresh.doc.result.next?.description.includes("Replace <space>") && fresh.doc.result.dashboard === "You can also choose spaces for this computer in your provider's dashboard.", fresh);
@@ -2473,13 +2528,13 @@ process.stdin.once('data', () => {
             const missing = await plainCommand("status");
             check("J6 no-application status provides install and setup Next", /Next:[\s\S]*Install an agent application/.test(missing.out) && missing.out.includes("cotal daemon setup"), missing);
             const hinted = await cli("setup");
-            check("J6a status setup hint works without arguments", hinted.code === 0 && deviceCodeRequests === before + 1, hinted);
+            check("J6a status setup hint works without arguments", hinted.code === 0 && deviceCodeRequests === beforeFresh + 1, hinted);
             const newApplicationBin = join(root, "new-application-bin");
             mkdirSync(newApplicationBin, { mode: 0o700 });
             writeFileSync(join(newApplicationBin, "cotal-owned-missing-harness"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
             env.PATH = `${newApplicationBin}:${env.PATH}`;
             const refreshed = await cli("setup");
-            check("J7 account rerun refreshes without approval", refreshed.code === 0 && deviceCodeRequests === before + 1, refreshed);
+            check("J7 account rerun refreshes without approval", refreshed.code === 0 && deviceCodeRequests === beforeFresh + 1, refreshed);
             let ready: Record<string, any> = {};
             for (let i = 0; i < 120; i++) {
               ready = (await cli("status")).doc.result ?? {};
@@ -2501,11 +2556,19 @@ process.stdin.once('data', () => {
             const otherProvider = `${idpUrl}/other`;
             saveIdpSession(home, otherProvider, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
             const multiple = await cli("setup");
-            check("J11 several providers require an explicit choice", multiple.code !== 0 && multiple.doc.error?.message.includes("--idp <url>") && multiple.doc.error.message.includes(idpUrl) && multiple.doc.error.message.includes(otherProvider) && deviceCodeRequests === before + 1, multiple);
+            check("J11 several providers require an explicit choice", multiple.code !== 0 && multiple.doc.error?.message.includes("--idp <url>") && multiple.doc.error.message.includes(idpUrl) && multiple.doc.error.message.includes(otherProvider) && deviceCodeRequests === beforeFresh + 1, multiple);
             deleteIdpSession(home, otherProvider);
             deleteIdpSession(home, idpUrl);
             const unsigned = await cli("setup");
-            check("J12 no sign-in names provider flag without approval", unsigned.code !== 0 && unsigned.doc.error?.message.includes("not signed in") && unsigned.doc.error.message.includes("--idp <url>") && deviceCodeRequests === before + 1, unsigned);
+            check("J12 no sign-in names provider flag without approval", unsigned.code !== 0 && unsigned.doc.error?.message.includes("not signed in") && unsigned.doc.error.message.includes("--idp <url>") && deviceCodeRequests === beforeFresh + 1, unsigned);
+            const callsWithService = pathCalls.length;
+            const installedReceipt = readFileSync(pathReceipt, "utf8");
+            const abandoned = await cancelSetup("SIGINT", "--idp", idpUrl);
+            check("J13 abandoned sign-in leaves a preexisting service unchanged", abandoned.code === 1 && abandoned.doc.error?.cause?.code === "CANCELLED" && existsSync(pathUnit) && readFileSync(pathReceipt, "utf8") === installedReceipt && pathCalls.length === callsWithService && (await cli("status")).doc.result?.pid === child.pid, abandoned);
+            const installedSource = readFileSync(pathUnit, "utf8");
+            await killAndAwaitExit(child, "SIGTERM");
+            const stopped = await cancelSetup("SIGINT", "--idp", idpUrl);
+            check("J14 setup starts an existing stopped service without replacing it", stopped.code === 1 && stopped.doc.error?.cause?.code === "CANCELLED" && readFileSync(pathUnit, "utf8") === installedSource && readFileSync(pathReceipt, "utf8") === installedReceipt && pathCalls.slice(callsWithService).join(",") === "/start" && (await cli("status")).doc.result?.pid === child.pid, stopped);
             return;
           }
           if (process.argv.includes("--account-setup-gaps")) {

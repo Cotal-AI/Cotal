@@ -555,15 +555,35 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   };
 }
 
+function resumeLinuxAccountInstall(unit: string): void {
+  const env = daemonUserServiceEnv();
+  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--property=UnitFileState", "--value"], env, 5000);
+  const state = read.status === 0 ? read.stdout.trim() : "";
+  if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the recorded service's enablement state could not be verified; it was not started", { remedy: linuxAutostartUnverified(unit) });
+  if (state !== "disabled") return;
+  const user = invokingUser();
+  const linger = readLinger(user);
+  if (linger === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the recorded service's linger setting could not be verified; it was not started", { remedy: linuxAutostartUnverified(unit, user) });
+  if (!linger) throw new CommandFailure("refused", "PERMISSION_DENIED", "linger is off, so the recorded service was not enabled or started", {
+    remedy: `Ask an administrator to run ${codeSpan(enableLingerCommand(user))}, then run setup again.`,
+  });
+  submitSystemdUnitRegistration("reload", unit, env);
+  submitSystemdUnitRegistration("enable", unit, env);
+}
+
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
-export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
+export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void, resumeAccountInstall?: boolean): Promise<UninstallPlan> {
   const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
   try {
   assertDesktopSetupComplete();
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
-  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+  const recorded = recordedUnit(paths, daemonHome);
+  const { receipt, plan, service } = recorded;
   if (service) service.start(receipt);
-  else submitSystemdUnitControl("start", plan.unit);
+  else {
+    if (resumeAccountInstall && recordedDaemonIdentity(recorded).same) resumeLinuxAccountInstall(plan.unit);
+    submitSystemdUnitControl("start", plan.unit);
+  }
   return plan;
   } finally { lock?.release(); }
 }
