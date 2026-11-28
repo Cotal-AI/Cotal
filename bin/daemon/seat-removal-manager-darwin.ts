@@ -1,10 +1,30 @@
 import type { ChildProcess } from "node:child_process";
 import { processBirth } from "./lifetime.js";
+import type { Live } from "./manager.js";
 
 type Identity = Readonly<{ pid: number; start: string; bootId: string; uid: number }>;
 export type DarwinRemovalTarget = Readonly<{ scope: string; id: string; host: Identity; root: Identity }>;
 export type DarwinManagerRemovalPhase = "prepare" | "stop" | "abort";
 const kind = "machine-hosted-pty-remove";
+
+export function holdDarwinRemovalManagers(live: ReadonlyMap<string, Live>, blocked: () => boolean, set: (held: boolean) => void) {
+  if (blocked() || [...live.values()].some(row => row.starting || row.refreshing || row.stopping || row.stopTask || row.healthTask))
+    throw new Error(`${kind}: hosted Manager custody is still settling`);
+  set(true);
+  let active = true;
+  const release = () => { if (active) { active = false; set(false); } };
+  return { pin(space: string) {
+    const row = live.get(space), child = row?.child;
+    if (!active || !row || !child || !row.view.instanceId || row.view.state !== "answering")
+      throw new Error(`${kind}: the incumbent Manager is unavailable`);
+    const pinned = pinDarwinRemovalManager(child);
+    const recheck = () => active && live.get(space) === row && row.child === child && !row.stopping && pinned.recheck();
+    return { ...pinned, recheck, request: (...args: Parameters<typeof pinned.request>) => {
+      if (!recheck()) throw new Error(`${kind}: the incumbent Manager changed`);
+      return pinned.request(...args);
+    } };
+  }, release };
+}
 
 export function pinDarwinRemovalManager(child: ChildProcess) {
   const pid = child.pid;

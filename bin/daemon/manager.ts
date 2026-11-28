@@ -24,6 +24,7 @@ import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthorit
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
+import { holdDarwinRemovalManagers } from "./seat-removal-manager-darwin.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -118,6 +119,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
   const live = new Map<string, Live>();
   let closed = false;
+  let removing = false;
   let generationPending = false;
   let generationPrepared = false;
   let generationTask = Promise.resolve();
@@ -286,6 +288,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     }
   };
   const refresh = async (space: string): Promise<HostedManager> => {
+    if (removing) return status(space);
     const l = live.get(space);
     if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: command(`wait for activation or read \`cotal daemon status --space ${space}\``) };
     if (!l?.child || !l.view.instanceId || l.stopping || l.starting || recordError(space)) return status(space);
@@ -312,12 +315,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   const observe = (l: Live) => {
     if (l.healthTimer) clearTimeout(l.healthTimer);
-    if (closed || generationPending || l.stopping || !l.child) return;
+    if (closed || removing || generationPending || l.stopping || !l.child) return;
     l.healthTimer = setTimeout(() => {
       l.healthTimer = undefined;
       const child = l.child;
-      if (!child || l.starting || closed || generationPending || l.stopping) { observe(l); return; }
-      const current = () => !closed && !generationPending && !l.stopping && l.child === child;
+      if (!child || l.starting || closed || removing || generationPending || l.stopping) { observe(l); return; }
+      const current = () => !closed && !removing && !generationPending && !l.stopping && l.child === child;
       l.healthTask = (async () => {
         try {
           const pending = generationAttempts.get(child);
@@ -377,7 +380,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const schedule = (l: Live) => {
     if (closed || l.stopping || l.view.state === "refused") return;
     l.view = { ...l.view, state: "restarting", pid: l.child?.pid };
-    if (generationPending) { notify(); return; }
+    if (removing || generationPending) { notify(); return; }
     l.view = { ...l.view, restarts: l.view.restarts + 1 };
     notify();
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(l.failures++, 5));
@@ -389,7 +392,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   async function launch(l: Live): Promise<HostedManager> {
     const space = l.view.space;
-    if (closed || generationPending || l.stopping) return l.view;
+    if (closed || removing || generationPending || l.stopping) return l.view;
     const entry = findMesh(space);
     if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`);
     if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use `cotal manager start` from the folder that hosts the space");
@@ -499,6 +502,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       env.COTAL_UPDATE_CLOSURE_START = recovery.owner.start;
       env.COTAL_UPDATE_CLOSURE_TRANSACTION = "1";
     }
+    if (closed || removing || generationPending || l.stopping) return l.view;
     const child = spawn(node!, [...argv, "__machine-manager", "--space", space, "--runtime", "pty", "--console-port", "0", "--session-directory", home, "--expected-connector-generation", version], {
       cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
@@ -613,7 +617,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return status(space);
   };
   const startRaw = async (space: string): Promise<HostedManager> => {
-    if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run \`cotal daemon setup --space ${space}\``));
+    if (closed || removing || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run \`cotal daemon setup --space ${space}\``));
     let l = live.get(space);
     if (!l) {
       const previous = status(space);
@@ -682,6 +686,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   return {
     start, status, refresh,
+    holdRemovalManagers: () => holdDarwinRemovalManagers(live, () => closed || removing || generationPending, value => {
+      removing = value;
+      if (!value && !closed) for (const row of live.values()) {
+        if (row.child) observe(row);
+        else if (!row.timer && !row.starting && row.view.state === "restarting") schedule(row);
+      }
+    }),
     ...hostedAgentActions(home, live),
     async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
@@ -729,6 +740,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       }));
     },
     prepareGenerationRestart(owner: string): Promise<void> {
+      if (removing) return Promise.reject(new Error("hosted PTY removal is in progress"));
       generationPending = true;
       generationOwners.add(owner);
       generationAcquisitions++;
@@ -800,6 +812,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     abortGenerationRestart,
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     async disconnect(space: string, options?: { account?: boolean }) {
+      if (removing) throw new Error("hosted PTY removal is in progress");
       // A crash during child shutdown must not restore a withdrawn hosting intent.
       const intent = daemonManagerIntentFile(space, home);
       const hadIntent = existsSync(intent);

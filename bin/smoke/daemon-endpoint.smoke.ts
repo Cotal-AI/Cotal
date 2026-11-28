@@ -22,7 +22,8 @@
  *  E12 per-line byte limits cover terminated lines, decoded tails and the newline budget, while
  *      exact-limit lines and multiple valid lines stay usable; oversized connections process no later request;
  *  E8  cross-uid (server side): a peer reported by the kernel as another uid is dropped with zero
- *      frames decoded. Needs an unprivileged user namespace; reported UNTESTED when unavailable;
+ *      frames decoded, including a private hosted removal request. Needs an unprivileged user
+ *      namespace; reported UNTESTED when unavailable;
  *  E9  cross-uid (client side): the client refuses a listener whose kernel uid differs, writing
  *      zero bytes. Same namespace requirement.
  *
@@ -352,7 +353,8 @@ try {
         "    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)",
         "    try:",
         "        c.connect(path); print('CONNECTED', flush=True)",
-        "        c.sendall(b'{\"v\":1,\"id\":\"x1\",\"op\":\"status\"}\\n'); time.sleep(1)",
+        "        c.sendall(b'{\"v\":1,\"id\":\"0123456789abcdef01234567\",\"op\":\"hosted-pty-remove\"}\\n')",
+        "        print('SENT-REMOVAL', flush=True); time.sleep(1)",
         "    except OSError as e: print('CONNECT-ERROR', e.errno, flush=True)",
       ].join("\n") + "\n");
       chmodSync(root, 0o711); chmodSync(helper, 0o644);
@@ -372,7 +374,8 @@ try {
         console.log(`  ○ UNTESTED E8 cross-uid server: namespaced client could not connect (${String(c8.stdout).trim()} ${String(c8.stderr).trim().slice(0, 120)})`);
       } else {
         await new Promise((r) => setTimeout(r, 200));
-        check("E8 a peer the kernel reports as another uid is dropped: 1 peer rejection, 0 accepted, 0 frames decoded, 0 statuses", d8.counters.peerRejected === 1 && d8.counters.accepted === 0 && d8.counters.framesDecoded === 0 && d8.counters.statusAnswered === 0, d8.counters);
+        check("E8 the namespaced peer submitted a hosted removal frame", String(c8.stdout).includes("SENT-REMOVAL"), c8.stdout);
+        check("E8 a hosted removal request from another kernel uid is dropped before decoding: 1 peer rejection, 0 accepted, 0 frames decoded, 0 statuses", d8.counters.peerRejected === 1 && d8.counters.accepted === 0 && d8.counters.framesDecoded === 0 && d8.counters.statusAnswered === 0, d8.counters);
       }
       await d8.close();
 

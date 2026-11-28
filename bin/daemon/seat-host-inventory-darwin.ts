@@ -21,7 +21,7 @@ type Corroborate = (
 
 /** Called only from the owned daemon. This joins the recorded sample to launchd and native socket
  * evidence, without claiming a writer, taking a launch fence or establishing installation coverage. */
-export async function observeRetainedDarwinSeatLineage(scope: DarwinSeatHostScope): Promise<Lineage> {
+export async function observeRetainedDarwinSeatLineage(scope: DarwinSeatHostScope, removalConsent?: () => boolean): Promise<Lineage> {
   if (process.platform !== "darwin") return { state: "unknown" };
   try {
     const fixed = Object.freeze({ ...scope });
@@ -31,6 +31,6 @@ export async function observeRetainedDarwinSeatLineage(scope: DarwinSeatHostScop
     const plan = (generation: string) => planRetainedDarwinSeatHost(fixed, generation);
     return await corroborateDarwinLineage(lineage,
       generation => { const { label, id } = plan(generation); return { scope: label, socket: darwinSeatHostSocket(id) }; },
-      generation => darwinSeatHostAuthority(plan(generation)));
+      generation => darwinSeatHostAuthority(plan(generation), removalConsent));
   } catch { return { state: "unknown" }; }
 }

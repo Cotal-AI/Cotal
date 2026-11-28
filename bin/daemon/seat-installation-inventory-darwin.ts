@@ -68,8 +68,8 @@ function enumerateRoots(path: string, stamps: Map<string, string | undefined>): 
   return roots;
 }
 
-function snapshot(installation: Installation) {
-  const jobs = listOwnedDarwinSeatHostJobs(installation);
+function snapshot(installation: Installation, removalConsent?: () => boolean) {
+  const jobs = listOwnedDarwinSeatHostJobs(installation, removalConsent);
   const boot = darwinBootSession();
   const home = installation.cotalHome;
   const base = join(home, "daemon");
@@ -94,12 +94,12 @@ function snapshot(installation: Installation) {
 
 /** Read-only coverage from the owned GUI daemon. The caller must separately supply the logical
  * installation identity and hold an admission fence before acting. This sample is not stop authority. */
-export async function observeRetainedDarwinSeatInstallation(installation: Installation): Promise<Observation> {
+export async function observeRetainedDarwinSeatInstallation(installation: Installation, removalConsent?: () => boolean): Promise<Observation> {
   if (process.platform !== "darwin") return { state: "unknown" };
   try {
     const fixed = Object.freeze({ ...installation });
     requireDarwinSeatInstallationScope(fixed);
-    const before = snapshot(fixed);
+    const before = snapshot(fixed, removalConsent);
     const bySpace = new Map<string, Receipt[]>();
     for (const receipt of before.receipts) {
       const { installedRoot, daemonHome, space } = receipt.scope;
@@ -110,7 +110,7 @@ export async function observeRetainedDarwinSeatInstallation(installation: Instal
     }
     const lineages = new Map<string, Lineage>();
     for (const [space, expected] of bySpace) {
-      const joined = await observeRetainedDarwinSeatLineage({ ...fixed, space });
+      const joined = await observeRetainedDarwinSeatLineage({ ...fixed, space }, removalConsent);
       if (joined.state !== "sampled" || joined.generations.length !== expected.length) return { state: "unknown" };
       for (const { generation, plan } of expected) {
         const found = joined.generations.find(entry => entry.generation === generation);
@@ -121,6 +121,6 @@ export async function observeRetainedDarwinSeatInstallation(installation: Instal
       }
       lineages.set(space, joined);
     }
-    return before.revision === snapshot(fixed).revision ? { state: "sampled", lineages } : { state: "unknown" };
+    return before.revision === snapshot(fixed, removalConsent).revision ? { state: "sampled", lineages } : { state: "unknown" };
   } catch { return { state: "unknown" }; }
 }

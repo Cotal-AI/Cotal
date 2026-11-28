@@ -8,7 +8,7 @@ import { darwinBootSession, darwinLaunchdJob, darwinUserCacheDir, localPeerCrede
 import { homeCotalDir, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSocketPathFits, checkDir, daemonPaths, daemonPathsFor, ensureDir } from "./endpoint.js";
 import { launchAgentLabel } from "./install-darwin.js";
-import { daemonStartedByOwnedService } from "./install.js";
+import * as install from "./install.js";
 import { xmlText } from "./install-xml.js";
 import { nativeRun } from "./install-native-run.js";
 import { launchUpdatePid } from "./update-launchd.js";
@@ -194,20 +194,22 @@ function observeJob(label: string): number | undefined {
   return launchUpdatePid(list.stdout, label);
 }
 
-function requireOwnedDaemon(plan: Pick<DarwinSeatHostPlan, "cotalHome" | "daemonHome">): void {
+function requireOwnedDaemon(plan: Pick<DarwinSeatHostPlan, "cotalHome" | "daemonHome">, removalConsent?: () => boolean): void {
   uid();
   if (plan.cotalHome !== realpathSync.native(homeCotalDir())) throw refusal();
   const home = plan.daemonHome;
   const paths = home === undefined ? daemonPaths(process.env, plan.cotalHome) : daemonPathsFor(home);
   const label = launchAgentLabel(home);
-  if (daemonStartedByOwnedService(paths, home).state !== "owned" || observeJob(label) !== process.pid) throw refusal();
+  if (removalConsent) install.verifiedDarwinRemovalReceipt(paths, home, removalConsent);
+  else if (install.daemonStartedByOwnedService(paths, home).state !== "owned") throw refusal();
+  if (observeJob(label) !== process.pid) throw refusal();
   const observed = darwinLaunchdJob(label);
   if (observed.state !== "loaded" || observed.job.label !== label || observed.job.pid !== process.pid) throw refusal();
 }
 
 /** Enumerate this GUI daemon's PTY jobs without treating a failed lookup as an empty list. */
-export function listOwnedDarwinSeatHostJobs(scope: Pick<DarwinSeatHostScope, "cotalHome" | "daemonHome">): ReadonlyMap<string, number> {
-  requireOwnedDaemon(scope);
+export function listOwnedDarwinSeatHostJobs(scope: Pick<DarwinSeatHostScope, "cotalHome" | "daemonHome">, removalConsent?: () => boolean): ReadonlyMap<string, number> {
+  requireOwnedDaemon(scope, removalConsent);
   const list = nativeRun(launchctl, ["list"], undefined, 1500);
   const rows = list.stdout.trim().split(/\r?\n/);
   if (list.status !== 0 || !/^PID\s+Status\s+Label$/.test(rows.shift() ?? "")) throw refusal();
@@ -267,8 +269,8 @@ export function admitDarwinSeatHost(plan: DarwinSeatHostPlan): void {
 }
 
 /** Inspect from the verified GUI daemon; the lookup is not an SSH cross-session proof. */
-export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeatHostLifetime {
-  requireOwnedDaemon(plan);
+export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan, removalConsent?: () => boolean): DarwinSeatHostLifetime {
+  requireOwnedDaemon(plan, removalConsent);
   checkReceipt(plan);
   const pid = verifiedDarwinSeatHostJobPid(plan);
   const start = processStartTime(pid);
@@ -276,31 +278,31 @@ export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeat
   return { pid, start, boot: darwinBootSession() };
 }
 
-function verifyDarwinSeatHostLifetime(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime): void {
-  const live = readDarwinSeatHostLifetime(plan);
+function verifyDarwinSeatHostLifetime(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, removalConsent?: () => boolean): void {
+  const live = readDarwinSeatHostLifetime(plan, removalConsent);
   if (live.pid !== expected.pid || live.start !== expected.start || live.boot !== expected.boot) throw refusal();
 }
 
 /** Only the owned GUI daemon can supply job proof. The dialer still checks its actual peer. */
-export function darwinSeatHostAuthority(plan: DarwinSeatHostPlan) {
-  requireOwnedDaemon(plan);
+export function darwinSeatHostAuthority(plan: DarwinSeatHostPlan, removalConsent?: () => boolean) {
+  requireOwnedDaemon(plan, removalConsent);
   const address = darwinSeatHostSocket(plan.id);
   return Object.freeze({ address, verify(identity: Readonly<{ pid: number; start: string; bootId: string; uid: number }>): void {
     if (identity.uid !== uid() || address !== darwinSeatHostSocket(plan.id)) throw refusal();
-    verifyDarwinSeatHostLifetime(plan, { pid: identity.pid, start: identity.start, boot: identity.bootId });
+    verifyDarwinSeatHostLifetime(plan, { pid: identity.pid, start: identity.start, boot: identity.bootId }, removalConsent);
   } });
 }
 
 /** The serving daemon checks the job and the actual socket before allowing native teardown. */
-export function verifyDarwinSeatHostPeer(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket): void {
+export function verifyDarwinSeatHostPeer(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket, removalConsent?: () => boolean): void {
   const peer = localPeerCredentials(socket);
   if (peer.uid !== uid() || peer.pid !== expected.pid) throw refusal();
-  verifyDarwinSeatHostLifetime(plan, expected);
+  verifyDarwinSeatHostLifetime(plan, expected, removalConsent);
 }
 
 /** The consented removal coordinator calls this with a fenced, authenticated live host. */
-export function bootoutVerifiedDarwinSeatHost(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket): void {
-  verifyDarwinSeatHostPeer(plan, expected, socket);
+export function bootoutVerifiedDarwinSeatHost(plan: DarwinSeatHostPlan, expected: DarwinSeatHostLifetime, socket: Socket, removalConsent?: () => boolean): void {
+  verifyDarwinSeatHostPeer(plan, expected, socket, removalConsent);
   if (nativeRun(launchctl, ["bootout", `gui/${uid()}/${plan.label}`], undefined, 5000).status !== 0) throw refusal();
   // Return only the native acknowledgement. The caller must still prove terminal outcomes.
 }

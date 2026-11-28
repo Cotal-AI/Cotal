@@ -55,6 +55,7 @@ import { daemonCommandCopy, windowsDaemonFirstStart } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
+import { darwinRemovalLockLabel, requestDarwinHostedRemoval, requireNoDarwinHostedEvidence } from "./seat-removal-consent-darwin.js";
 import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
@@ -1112,12 +1113,13 @@ interface UninstallResult extends UninstallPlan {
 /** Stop it, disable autostart, erase its service records under lifetime exclusion, remove the unit
  *  and receipt, and reload the user manager (on macOS and Windows, the adapter's deregistration). */
 export async function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
-  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
-  try { return await applyUninstallUnlocked(paths, daemonHome); }
+  const darwin = process.platform === "darwin";
+  const lock = darwin || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock"), darwin ? { label: darwinRemovalLockLabel } : undefined) : undefined;
+  try { return await applyUninstallUnlocked(paths, daemonHome, darwin ? lock?.nonce : undefined); }
   finally { lock?.release(); }
 }
 
-async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
+async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined, darwinAttempt?: string): Promise<UninstallResult> {
   const { receipt, plan, service, recovered } = recordedUnit(paths, daemonHome, nativeRun, true);
   if (recovered) {
     submitSystemdUnitControl("stop", plan.unit);
@@ -1139,7 +1141,14 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
       throw uncertain("the daemon lifetime changed while its endpoint was opened");
     if (owner?.start && processBirth(owner.pid) === owner.start && !socket)
       throw uncertain("the recorded daemon has no verified answering endpoint");
-    if (!socket) exclusion = excludeLifetime(paths.lock);
+    if (!socket) {
+      exclusion = excludeLifetime(paths.lock);
+      if (darwinAttempt) try { requireNoDarwinHostedEvidence(); } catch { throw uncertain("hosted-pty-remove cannot verify custody without the owned daemon"); }
+    }
+    if (darwinAttempt && socket) {
+      if (!owner?.start || processBirth(owner.pid) !== owner.start) throw uncertain("hosted-pty-remove lost the verified daemon lifetime");
+      await requestDarwinHostedRemoval(socket, darwinAttempt, uncertain);
+    }
     // The supervisor can close this connection during the synchronous native step.
     socket?.on("error", () => {});
     if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
@@ -1154,6 +1163,8 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
         if (processBirth(owner.pid) === owner.start) throw error;
       }
     }
+    if (darwinAttempt && socket && (socket.destroyed || socket.readableEnded || !socket.writable || !owner?.start || processBirth(owner.pid) !== owner.start))
+      throw uncertain("hosted-pty-remove lost its fenced daemon connection");
     if (service) service.remove(receipt, true);
     else {
       submitSystemdUnitControl("stop", plan.unit);
