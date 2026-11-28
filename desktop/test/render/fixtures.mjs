@@ -881,7 +881,12 @@ export const scenarios = [
     await page.click("#stop-service");
     await page.locator("#service-confirmation").waitFor();
   }, expect: async page => {
+    const confirmation = page.locator("#service-confirmation");
+    assert.equal(await confirmation.getByRole("heading", { name: "Stop background service?", exact: true }).count(), 1);
+    assert.equal(await confirmation.locator("p").textContent(), "Stopping the background service stops these agents:");
+    assert.deepEqual(await confirmation.getByRole("button").allTextContents(), ["Stop", "Cancel"]);
     assert.deepEqual(await page.locator("#service-confirm-agents li").allTextContents(), ["alpha", "beta"]);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
     await page.click("#service-cancel");
     await page.locator("#service-confirmation").waitFor({ state: "hidden" });
     assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
@@ -890,7 +895,13 @@ export const scenarios = [
     await page.click("#service-confirm");
     await page.locator("#service-confirm-agents li", { hasText: "gamma" }).waitFor();
     assert.deepEqual(await page.locator("#service-confirm-agents li").allTextContents(), ["alpha", "beta", "gamma"]);
-    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }, { op: "stop" }, { op: "stop", confirm: true, agents: ["alpha", "beta"] }]);
+    const before = [{ op: "stop" }, { op: "stop" }, { op: "stop", confirm: true, agents: ["alpha", "beta"] }];
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), before);
+    assert.equal(await page.evaluate(() => window.__renderState.stoppedByYou ?? false), false);
+    await confirmation.getByRole("button", { name: "Stop", exact: true }).click();
+    await page.locator("#settings-panel").waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [...before, { op: "stop", confirm: true, agents: ["alpha", "beta", "gamma"] }]);
+    assert.equal(await page.evaluate(() => window.__renderState.stoppedByYou), true);
   } },
   { name: "service-stop-refused", state: { installed: true, connected: true, signedIn: true, stopFails: true }, act: async page => {
     await page.evaluate(() => window.__emitTauri("desktop-stop-service"));
@@ -901,7 +912,9 @@ export const scenarios = [
     assert.equal(await page.locator("#stop-service").isVisible(), false);
     assert.equal(await page.locator("#service-stop-result p").textContent(), "Cotal couldn't confirm that the background service stopped.");
     const before = await page.evaluate(() => window.__renderState.statusRequests);
-    await page.click("#service-stop-check");
+    const checkAgain = page.getByRole("button", { name: "Check again", exact: true });
+    assert.equal(await checkAgain.count(), 1);
+    await checkAgain.click();
     await page.locator("#stop-service").waitFor();
     assert.equal(await page.evaluate(() => window.__renderState.statusRequests), before + 1);
     assert.deepEqual(await page.evaluate(() => window.__renderState.powerRequests), [{ op: "stop" }]);
