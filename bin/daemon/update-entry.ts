@@ -649,9 +649,9 @@ const composed: Command = { ...command, async run(args) {
   await update(args, runtime);
   if (runtime.connectorConfigDeferred) { refreshPinnedLauncher(); return; }
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
-  if (staged && standaloneReconcile && deferredConnectorReconciliation(logicalExecutionEntry()!, updateRuntime.version())) clearConnectorActivationDeferral(logicalExecutionEntry()!, updateRuntime.version());
   reconcileInstalledLinuxPolicy();
   if (packageCheck !== "current") await collectConnectorSets();
+  if (staged && standaloneReconcile && deferredConnectorReconciliation(logicalExecutionEntry()!, updateRuntime.version())) clearConnectorActivationDeferral(logicalExecutionEntry()!, updateRuntime.version());
   if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) refreshPinnedLauncher();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.

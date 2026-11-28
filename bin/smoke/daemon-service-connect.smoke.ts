@@ -126,6 +126,7 @@ const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
+const finishConnectorUpdate = process.argv.includes("--finish-connector-update");
 const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
 const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
 if (manualAdmissionRace && (!process.argv.includes("--hosting-only") || !process.argv.includes("--update-repro"))) throw new Error("manual admission repro requires --hosting-only --update-repro");
@@ -2218,7 +2219,7 @@ process.stdin.once('data', () => {
           writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart') && (${!process.argv.includes("--rollback-busy-repro")} || (fs.existsSync(${JSON.stringify(join(home, "update-recovery.json"))}) && JSON.parse(fs.readFileSync(${JSON.stringify(join(home, "update-recovery.json"))}, 'utf8'))?.phase === 'restoring'))) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
           Object.assign(env, { NODE_OPTIONS: `--require=${gate}` });
         }
-        seedUnitReceipt(cliEntry, true);
+        seedUnitReceipt(cliEntry, true, cliNode, join(root, finishConnectorUpdate ? "native-config" : "config"));
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
       if (retiredAppRuntime) {
@@ -2380,7 +2381,7 @@ process.stdin.once('data', () => {
         });
         await new Promise<void>((resolve) => upgradeControl!.listen(0, "127.0.0.1", resolve));
         const controlPort = (upgradeControl.address() as AddressInfo).port;
-        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
+        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, finishConnectorUpdate ? "native-config" : "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
         env.PATH = `${recorder}:${env.PATH}`;
       }
       if (pathRecording) {
@@ -4260,6 +4261,49 @@ process.exit(result.status ?? 93);
           return;
         }
         if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) {
+          if (finishConnectorUpdate) {
+            const config = join(root, "config");
+            const runUpdate = async (...flags: string[]) => {
+              const updater = spawn(cliNode, [cliEntry, "update", ...flags], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let output = "";
+              updater.stdout.on("data", b => { output += String(b); }); updater.stderr.on("data", b => { output += String(b); });
+              const code = await new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("close", resolve); });
+              return { code, output };
+            };
+            const oldPid = child.pid;
+            chmodSync(config, 0o777);
+            try {
+              const deferred = await runUpdate("--self", "--json");
+              assert.equal(deferred.code, 4, deferred.output);
+              assert.deepEqual(JSON.parse(deferred.output).result, { version: "0.151.3", releaseInstalled: true, reconciliation: "deferred" });
+              assert.equal((await cli("status")).doc.result.version, "0.151.2");
+              assert.equal(child.pid, oldPid);
+            } finally { chmodSync(config, 0o755); }
+            if (process.argv.includes("--finish-connector-update-manual")) {
+              const finished = await runUpdate();
+              assert.equal(finished.code, 0, finished.output);
+            }
+            let after: Awaited<ReturnType<typeof cli>> | undefined;
+            const deadline = Date.now() + 180_000;
+            while (Date.now() < deadline) {
+              after = await cli("status", "--space", ON).catch(() => undefined);
+              if (after?.doc.result?.version === "0.151.3" && after.doc.result.managers?.some((row: { state: string }) => row.state === "answering")) break;
+              await sleep(500);
+            }
+            assert.equal(after?.doc.result?.version, "0.151.3", JSON.stringify(after));
+            assert.equal(after?.doc.result?.managers?.some((row: { state: string }) => row.state === "answering"), true);
+            assert.notEqual(child.pid, oldPid);
+            const { deferredUpdateActivation } = await import("@cotal-ai/workspace");
+            assert.equal(deferredUpdateActivation(cliEntry, "0.151.3"), undefined);
+            const inventory = spawnSync(cliNode, [cliEntry, "ext", "list", "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+            assert.equal(inventory.status, 0, inventory.stderr);
+            const rows = JSON.parse(inventory.stdout).result.items as { seeded: boolean; version: string }[];
+            const builtins = rows.filter(e => e.seeded);
+            assert.equal(builtins.length, 7, inventory.stdout);
+            assert.ok(builtins.every(e => e.version === "0.151.3"), inventory.stdout);
+            console.log("  ✓ protection repair reconciles connectors and activates the new service without a deferral");
+            return;
+          }
           if (process.argv.includes("--prepare-abort-repro")) {
             const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
             const aborted = await ask(paths.socket, { op: "managers-abort-restart" });

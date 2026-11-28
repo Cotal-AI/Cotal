@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -152,19 +153,27 @@ if (!["linux", "darwin"].includes(process.platform)) {
         } else console.log("cotal-ai 0.5.0");
       `);
       writeExecutionDescriptor(root, describeExecutionGeneration(root, retainExecutionGeneration(root, source)));
-      const activated: string[] = [], messages: string[] = [];
-      fs.chmodSync(config, 0o777);
-      recordUpdateActivation(entry, "0.5.0", "Connector reconciliation and daemon activation are waiting: fixture config protection", true);
-      stop = watchDaemonGeneration("0.1.0", async version => {
-        assert.equal(fs.readFileSync(reconciliation, "utf8"), version);
-        activated.push(version);
-      }, message => { messages.push(message); });
-      await until(() => messages.some(message => message.includes("activation deferred")));
-      assert.equal(fs.existsSync(reconciliation), false);
-      fs.chmodSync(config, 0o755);
-      await until(() => activated.includes("0.5.0"));
-      assert.equal(deferredUpdateActivation(entry, "0.5.0"), undefined);
-      console.log("daemon generation poll: repaired config released activation");
+      for (const manual of [false, true]) {
+        fs.rmSync(reconciliation, { force: true });
+        fs.chmodSync(config, 0o777);
+        const activated: string[] = [], messages: string[] = [];
+        recordUpdateActivation(entry, "0.5.0", "Connector reconciliation and daemon activation are waiting: fixture config protection", true);
+        stop = watchDaemonGeneration("0.1.0", async version => {
+          assert.equal(fs.readFileSync(reconciliation, "utf8"), version);
+          activated.push(version);
+        }, message => { messages.push(message); });
+        await until(() => messages.some(message => message.includes("activation deferred")));
+        assert.equal(fs.existsSync(reconciliation), false);
+        fs.chmodSync(config, 0o755);
+        if (manual) {
+          const result = spawnSync(process.execPath, [entry, "update"], { encoding: "utf8", timeout: 15_000 });
+          assert.equal(result.status, 0, result.stderr);
+        }
+        await until(() => activated.includes("0.5.0"));
+        assert.equal(deferredUpdateActivation(entry, "0.5.0"), undefined);
+        stop();
+        console.log(`daemon generation poll: ${manual ? "chmod and update" : "chmod alone"} reconciled before releasing activation`);
+      }
     }
   } finally {
     stop();

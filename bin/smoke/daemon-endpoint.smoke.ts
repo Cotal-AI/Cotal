@@ -81,11 +81,21 @@ async function foreignConnectorRepair(base: string): Promise<void> {
   try {
     const problem = connectorConfigModeProblem();
     check("config protection diagnoses ownership and gives an actionable ownership remedy", problem?.owned === false && problem.failure.message.endsWith(`${folder} is owned by another account`) && problem.remedy === `ask an administrator to make ${folder} owned by your account or root`, problem);
+    const update = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "update", "--json"], { env: { ...process.env, COTAL_HOME: home, COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, cwd: rt, encoding: "utf8", timeout: 30_000 });
+    const deferred = JSON.parse(update.stdout);
+    check("update names foreign ownership in the partial outcome", update.status === 4 && deferred.error?.message?.includes(`${folder} is owned by another account`) && deferred.error.message.includes(`make ${folder} owned by your account or root`), deferred);
     const reply = await exchangeDesktopRequest({ paths: d.paths, peerUid }, { op: "connector-config-repair" });
     const after = lstatSync(folder);
     check("daemon refuses to repair a folder another account owns", !reply.ok && reply.error.code === "PERMISSION_DENIED" && reply.error.message.includes("owned by another account") && after.mode === before.mode && after.uid === before.uid && readdirSync(folder).length === 0, reply);
     if (uid === 0) chownSync(folder, uid, process.getgid!());
-    else { rmSync(folder, { recursive: true }); mkdirSync(folder, { mode: 0o755 }); }
+    else {
+      // Map the caller and the same subordinate UID into one namespace, then return the fixture to the caller.
+      chmodSync(base, 0o755);
+      try {
+        const repairedOwner = spawnSync("unshare", ["--user", "--map-auto", `--map-user=${uid}:0`, `--map-group=${process.getgid!()}:0`, "--setuid", "0", "--setgid", "0", "--", "chown", "0:0", folder], { encoding: "utf8", timeout: 15_000 });
+        if (repairedOwner.status !== 0) { rmSync(folder, { recursive: true }); mkdirSync(folder, { mode: 0o755 }); }
+      } finally { chmodSync(base, 0o700); }
+    }
     check("the same mode is accepted once the config folder is owned by this account", connectorConfigModeProblem() === undefined);
     const repaired = await exchangeDesktopRequest({ paths: d.paths, peerUid }, { op: "connector-config-repair" });
     check("repair is a no-op after the ownership requirement is met", repaired.ok && "result" in repaired && JSON.stringify(repaired.result) === '{"path":null,"mode":null}', repaired);

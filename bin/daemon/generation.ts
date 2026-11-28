@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { connectorConfigDir, connectorConfigModeProblem, deferredConnectorReconciliation, deferredUpdateActivation, installationWriter, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
+import { clearConnectorActivationDeferral, connectorConfigDir, connectorConfigModeProblem, deferredConnectorReconciliation, deferredUpdateActivation, installationWriter, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 import type { HostedManager } from "./protocol.js";
@@ -109,22 +109,23 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     try {
       next = observeExecutionVersion(dirname(file));
     } catch { return; }
-    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; probeMs = initialProbeMs; pending(undefined); return; }
     try {
       const deferred = deferredUpdateActivation(entry, next);
-      if (deferred) {
+      if (deferred && (next !== version || deferredConnectorReconciliation(entry, next))) {
         pending(next, deferred);
         announce(`daemon: installed CLI ${next} activation deferred: ${deferred}; current generation remains loaded`);
         if (activate && Date.now() >= retryAt && resumeConnectorActivation(entry, next)) {
           busy = true;
           void reconcileInstalledGeneration(true).then(() => {
-            if (deferredConnectorReconciliation(entry, next)) throw new Error("connector reconciliation did not clear its activation deferral");
+            if (installedGenerationVersion() !== next || connectorConfigModeProblem(true)) throw new Error("the installation or connector configuration changed during reconciliation");
+            clearConnectorActivationDeferral(entry, next);
             busy = false;
           }).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : String(error)); });
         }
         return;
       }
     } catch { pending(next, "activation authority is unreadable; current generation remains loaded"); return; }
+    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; probeMs = initialProbeMs; pending(undefined); return; }
     if (candidate !== next) {
       candidate = next; retryAt = 0; delay = 5000; probeMs = initialProbeMs;
       const reason = activate ? "verifying the installed entry" : "no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon";

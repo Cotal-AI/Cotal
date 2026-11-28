@@ -125,9 +125,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     }
     if (host.eligible() !== true || !status().automatic) return;
     if (closed) return;
-    if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
     const entry = logicalExecutionEntry();
-    if (entry && deferredConnectorReconciliation(entry, cached.latest)) return; // The generation watcher owns the finishing pass.
+    if (!retiring && entry && state.version && deferredConnectorReconciliation(entry, state.version)) return; // The generation watcher owns the finishing pass.
+    if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
     const reconciling = !retiring && !newerUpdate(cached.latest, host.version) && reconciliationPending(host.version);
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
     if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }

@@ -1,17 +1,17 @@
 import { dirname, isAbsolute } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { claimUpdateClosureAccess, clearUpdateRecovery, codeSpan, connectorConfigModeProblem, exitCode, logicalExecutionEntry, observeUpdateVersion, readUpdateRecovery, recordConnectorReconciliationDeferred, recordUpdateReleaseHold, updateClosureOwner, UPDATE_HOUR_MS, writeResult, writeUpdateRecovery, type UpdateRecovery } from "@cotal-ai/workspace";
+import { assertCotalHomeWriteProtection, claimUpdateClosureAccess, clearConnectorActivationDeferral, clearUpdateRecovery, codeSpan, CommandFailure, connectorConfigModeProblem, exitCode, logicalExecutionEntry, observeUpdateVersion, readUpdateRecovery, recordConnectorReconciliationDeferred, recordUpdateReleaseHold, updateClosureOwner, UPDATE_HOUR_MS, writeResult, writeUpdateRecovery, type UpdateRecovery } from "@cotal-ai/workspace";
 import { compareSemver } from "../seed/reconcile.js";
 import { checkReleaseArchives, deferStagingFailure, handleLatestVersionFailure, latestVersion, offlineUpdateMessage, registryNetworkFailure } from "../commands/update-release.js";
 import type { ExecutionReplacement, UpdateRuntime } from "../commands/update.js";
 import { displayCmd } from "./self-exec.js";
-import { CommandFailure, clearConnectorActivationDeferral } from "@cotal-ai/workspace";
 
 type ModeProblem = NonNullable<ReturnType<typeof connectorConfigModeProblem>>;
 
 export async function maybeUpdateWithoutConnectorConfig(args: ParsedArgs, rt: UpdateRuntime, recover: () => Promise<{ entry: string; version: string; resumed?: true } | undefined>): Promise<{ entry?: string } | undefined> {
   const gap = connectorConfigModeProblem();
   if (!gap) return;
+  assertCotalHomeWriteProtection();
   const restored = await recover();
   if (restored && (args.values.self !== true || restored.resumed)) return {};
   if (restored && restored.version !== rt.version()) return { entry: restored.entry };
@@ -26,8 +26,9 @@ async function updateWithoutConnectorConfig(args: ParsedArgs, rt: UpdateRuntime,
   const json = args.values.json === true;
   const human = json ? { ...rt, out: () => {}, err: () => {} } : rt;
   const report = (version: string, releaseInstalled = false) => {
-    if (json) writeResult("json", { command: "update", target: null, completeness: "partial", result: { version, releaseInstalled, reconciliation: "deferred" }, partial: { message: reason } }, () => ({ sections: [] }));
-    else { rt.err(reason); process.exitCode = exitCode("partial", "OPERATION_PARTIAL"); }
+    const partial: { message: string } | undefined = { message: reason };
+    if (json) writeResult("json", { command: "update", target: null, completeness: partial ? "partial" : "complete", result: { version, releaseInstalled, reconciliation: "deferred" }, partial }, () => ({ sections: [] }));
+    else { rt.err(reason); process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : 0; }
   };
   const current = rt.version();
   rt.connectorConfigDeferred = true;
@@ -79,9 +80,9 @@ async function updateWithoutConnectorConfig(args: ParsedArgs, rt: UpdateRuntime,
       if (entry) clearConnectorActivationDeferral(entry, version);
       throw error;
     }
+    recordConnectorReconciliationDeferred(version, true);
     clearUpdateRecovery();
     execution.complete?.();
-    recordConnectorReconciliationDeferred(version, true);
     human.out(`✓ cotal-ai@${version} installed`);
     report(version, true);
   } catch (error) {
@@ -100,6 +101,7 @@ export function isCliOnlyUpdate(record: UpdateRecovery): record is UpdateRecover
 }
 
 export function recoverUpdateWithoutConnectorConfig(rt: UpdateRuntime, observed: UpdateRecovery & { execution: string }): { entry: string; version: string } | undefined {
+  assertCotalHomeWriteProtection();
   const entry = logicalExecutionEntry();
   const root = rt.executionGlobalRoot?.() ?? (entry && dirname(dirname(dirname(entry))));
   if (!root || !rt.recoverExecution) throw new Error("cannot identify the interrupted CLI-only update");
