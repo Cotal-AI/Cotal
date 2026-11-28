@@ -89,8 +89,11 @@ On Linux, use a glibc distribution to start the built-in PTY manager. The defaul
 uses that manager. Alpine and other musl distributions cannot start it.
 
 If you already have Node.js 22.10 or newer, install as your own user, without sudo.
-On older Node.js versions, the npm postinstall check stops the installation and reports the running and required versions.
-Install a supported Node.js and retry, or use the [shell installer](#use-the-shell-installer) on macOS or Linux.
+Without `@latest`, npm can select an older release that matches your Node.js version. For example,
+Node.js 20 can get Cotal 0.14.1 even though npm reports a successful installation.
+Check `node --version` before installing. If it is older than 22.10, upgrade Node.js or use the
+[shell installer](#use-the-shell-installer) on macOS or Linux. If you already got an older Cotal
+release this way, upgrade Node.js and rerun the npm install command below instead of running `cotal update --self`.
 The npm global prefix must be writable by your user, and its executable directory must be on PATH.
 On macOS or Linux with distribution Node, the default prefix may be root-owned.
 Use the [shell installer](#use-the-shell-installer) above, or select a user-owned npm prefix before installing:
@@ -98,7 +101,7 @@ Use the [shell installer](#use-the-shell-installer) above, or select a user-owne
 ```bash
 npm config set prefix "$HOME/.npm-global"
 export PATH="$HOME/.npm-global/bin:$PATH"
-npm install -g cotal-ai
+npm install -g cotal-ai@latest
 ```
 
 The prefix setting applies to all future npm global installs, not just Cotal.
@@ -109,7 +112,7 @@ If an install fails with npm `EACCES`, use one of these routes instead of retryi
 On macOS or Linux, if your existing npm prefix is already user-writable and its executable directory is on PATH, run:
 
 ```bash
-npm install -g cotal-ai
+npm install -g cotal-ai@latest
 ```
 
 On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.

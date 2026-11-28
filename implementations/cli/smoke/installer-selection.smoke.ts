@@ -147,9 +147,11 @@ try {
   const npmSection = installation.split("## Install with npm")[1]?.split("## ")[0];
   const npmSteps = npmSection?.match(/```bash\n([^`]+)```/)?.[1];
   assert(npmSteps, "npm instructions include a shell command block");
+  const installLatest = "npm install -g cotal-ai@latest";
   assert(npmSteps.includes('npm config set prefix "$HOME/.npm-global"'), "npm instructions select a prefix separate from the shell launcher");
   assert(npmSteps.includes('export PATH="$HOME/.npm-global/bin:$PATH"'), "npm instructions put the prefix's bin directory first on PATH");
-  assert(npmSteps.includes("npm install -g cotal-ai"), "npm instructions retain the global install command");
+  assert.deepEqual(npmSection?.match(/^npm install -g cotal-ai.*$/gm), [installLatest, installLatest],
+    "both npm install routes select the latest tag explicitly so npm cannot silently pick a legacy release");
   const npmEnv = {
     HOME: npmHome, PATH: `${dirname(shellLauncher)}:${toolPath}`, CI: "1", NO_COLOR: "1",
     npm_config_userconfig: join(npmHome, ".npmrc"),
@@ -158,7 +160,7 @@ try {
     npm_config_registry: "http://127.0.0.1:9",
     FIXTURE_PACKAGE: npmPackage,
   };
-  const npmInstall = spawnSync("/bin/sh", ["-c", `set -eu\n${npmSteps.replace("npm install -g cotal-ai", 'archive=$(npm pack "$FIXTURE_PACKAGE" --offline --pack-destination "$HOME" --silent)\nnpm install -g "$HOME/$archive" --offline --no-audit --no-fund')}\ncotal --version`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
+  const npmInstall = spawnSync("/bin/sh", ["-c", `set -eu\n${npmSteps.replace(installLatest, 'archive=$(npm pack "$FIXTURE_PACKAGE" --offline --pack-destination "$HOME" --silent)\nnpm install -g "$HOME/$archive" --offline --no-audit --no-fund')}\ncotal --version`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
   assert.equal(npmInstall.status, 0, output(npmInstall));
   assert(output(npmInstall).includes("cotal-ai 0.0.0"), "the documented PATH selects npm's installed executable, including with spaces and quotes in HOME");
   const npmPrefix = spawnSync("npm", ["prefix", "-g"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
