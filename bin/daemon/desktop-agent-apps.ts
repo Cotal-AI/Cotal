@@ -2,7 +2,7 @@
  *  account's PATH finds it, and its maker's installer and sign-in. The webview names a connector and
  *  nothing else; every command comes from that connector's cached install declaration. */
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -173,29 +173,55 @@ function folder(binDir: string, home = userHome()): string {
   return win32.join(base, match![2]!);
 }
 
-function shippedInstallers(): { installers?: Record<string, Record<string, string>>; apps?: readonly Declared[] } | undefined {
+function validPosixBinDir(binDir: unknown): binDir is string {
+  return typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
+    && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+interface ShippedInstallers {
+  readonly installers: Record<string, Partial<Record<"darwin" | "linux", string>>>;
+  readonly apps?: readonly Declared[];
+}
+
+function shippedInstallers(): ShippedInstallers | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
   const parent = dirname(here);
   const binRoot = basename(parent) === "dist" ? dirname(parent) : parent;
   const file = join(binRoot, "dist", "daemon", "seeded-installers.json");
-  if (!existsSync(file)) return undefined;
-  const data = JSON.parse(readFileSync(file, "utf8")) as { v?: unknown; installers?: Record<string, Record<string, string>>; apps?: readonly Declared[] };
-  return data?.v === 1 ? data : undefined;
+  const corrupt = (cause?: unknown) => new CommandFailure(
+    "refused", "DEPENDENCY_UNAVAILABLE",
+    `the seeded connector installer list at ${file} is corrupt or unreadable. Reinstall Cotal and run the command again`,
+    { remedy: "reinstall this Cotal installation and run the command again", ...(cause === undefined ? {} : { cause }) },
+  );
+  let data: unknown;
+  try {
+    // lstat distinguishes a missing packaged file from a broken link.
+    if (!lstatSync(file, { throwIfNoEntry: false })) return undefined;
+    if (!statSync(file).isFile()) throw new Error("not a regular file");
+    data = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) { throw corrupt(error); }
+  if (!isRecord(data) || data.v !== 1 || !isRecord(data.installers)) throw corrupt();
+  const entries = Object.values(data.installers);
+  if (!entries.length || entries.some(entry => !isRecord(entry) || Object.entries(entry)
+    .some(([os, dir]) => (os !== "linux" && os !== "darwin") || !validPosixBinDir(dir)))) throw corrupt();
+  return { installers: data.installers as ShippedInstallers["installers"], ...(data.apps === undefined ? {} : { apps: data.apps as readonly Declared[] }) };
 }
 
 /** The absolute per-user installer folders declared by this OS's seeded and installed connectors. */
 export function serviceAgentAppBinDirs(os: "darwin" | "linux", home = userHome()): string[] {
-  const valid = (binDir: string | undefined): binDir is string => typeof binDir === "string" && /^~((?:\/[A-Za-z0-9._-]+)+)$/.test(binDir)
-    && !binDir.slice(2).split("/").some(part => part === "." || part === "..");
   const dirs: string[] = [];
   for (const installer of Object.values(shippedInstallers()?.installers ?? {})) {
     const binDir = installer[os];
-    if (valid(binDir)) dirs.push(folder(binDir, home));
+    if (binDir) dirs.push(folder(binDir, home));
   }
   try {
     for (const app of declaredApps()) {
       const binDir = app.install?.installers[os]?.binDir;
-      if (valid(binDir)) dirs.push(folder(binDir, home));
+      if (validPosixBinDir(binDir)) dirs.push(folder(binDir, home));
     }
   } catch { /* fall back to shipped declarations */ }
   return [...new Set(dirs.filter(dir => dir.startsWith("/") && dir.length <= 4096 && !/[\u0000-\u001f\u007f]/u.test(dir)))];
@@ -208,7 +234,7 @@ export function serviceAgentAppBinDirs(os: "darwin" | "linux", home = userHome()
  *  that checks the PATH it runs with does not stop to ask about it with no terminal. One that reads
  *  the stored user PATH (Codex on Windows) still adds its folder there itself.
  *  curl and the shell are still found on the account's own PATH. */
-async function runInstaller(installer: HarnessInstaller, path: string, emit: Emit): Promise<Ran> {
+async function runInstaller(installer: HarnessInstaller, path: string, emit?: Emit): Promise<Ran> {
   const env = { ...process.env, PATH: path, ...installer.env };
   const dir = folder(installer.binDir);
   const installerEnv = { ...env, PATH: process.platform === "win32" ? `${path.replace(/;+$/, "")};${dir}` : `${dir}:${path}` };
@@ -219,7 +245,7 @@ async function runInstaller(installer: HarnessInstaller, path: string, emit: Emi
     const powershell = win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     // A script that stops by throwing leaves its own sentence as the last line, not a PowerShell error record.
     const command = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); try { irm '${installer.script}' | iex } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
-    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { env: installerEnv, timeoutMs, emit });
+    return await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { env: installerEnv, timeoutMs, ...(emit ? { emit } : {}) });
   }
   const curl = resolveOnPath("curl", env);
   const shell = resolveOnPath(installer.shell ?? "sh", env);
@@ -228,7 +254,7 @@ async function runInstaller(installer: HarnessInstaller, path: string, emit: Emi
   let downloadError = "";
   download.stderr.on("data", (chunk: Buffer) => { downloadError = shownLine(chunk.toString("utf8")) || downloadError; });
   const downloaded = new Promise<number | null>(resolve => { download.once("error", () => resolve(-1)); download.once("close", resolve); });
-  const ran = await run(shell, [], { env: installerEnv, timeoutMs, emit, input: download.stdout });
+  const ran = await run(shell, [], { env: installerEnv, timeoutMs, ...(emit ? { emit } : {}), input: download.stdout });
   const code = await downloaded;
   if (code !== 0) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the installer could not be downloaded from ${installer.script}${downloadError ? `: ${downloadError}` : ""}`);
   return ran;
@@ -295,19 +321,9 @@ async function addToAccountPath(dir: string): Promise<string> {
   return startup.files.map(file => file.replace(`${homedir()}/`, "~/")).join(" and ");
 }
 
-export interface AgentAppInstalled {
-  readonly app: AgentApp;
-  /** Where the installer's folder was added to PATH, when the installer left it off. */
-  readonly pathAdded?: string;
-  /** The directory each required executable was found in, so the caller can make the service find it. */
-  readonly dirs: readonly string[];
-  /** The account PATH before the installer ran. */
-  readonly before: string;
-}
-
 /** Install one application with its maker's installer, then make sure this account's PATH finds it. */
-export async function installAgentApp(name: string, emit: Emit): Promise<AgentAppInstalled> {
-  const app = declared(name);
+async function installAgentApp(app: Declared, download: Emit, emit?: Emit) {
+  const { name } = app;
   const installer = system ? app.install?.installers[system] : undefined;
   if (!app.install || !installer) throw new CommandFailure("refused", "UNSUPPORTED", `${app.install?.title ?? name} has no installer for this operating system`);
   const before = await accountPath();
@@ -315,7 +331,7 @@ export async function installAgentApp(name: string, emit: Emit): Promise<AgentAp
   if (missingNeeds.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${app.install.title} installer needs ${missingNeeds.join(" and ")} on PATH`, { native: { code: "INSTALLER_NEEDS", detail: missingNeeds.join(",") } });
   // Name what is downloaded: Hermes runs through uv, so its installer is uv's.
   const installs = app.requires.every(command => command === app.name) ? app.install.title : new Intl.ListFormat("en", { type: "conjunction" }).format(app.requires);
-  emit(`Downloading the ${installs} installer from ${new URL(installer.script).host}`);
+  download(shownLine(`Downloading the ${installs} installer from ${new URL(installer.script).host}`));
   const ran = await runInstaller(installer, before, emit);
   if (ran.timedOut) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer did not finish within 15 minutes and was stopped`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
   // On Windows the last line is the reason the script gave; elsewhere the output is in Details.
@@ -329,16 +345,15 @@ export async function installAgentApp(name: string, emit: Emit): Promise<AgentAp
     const inFolder = unresolved().every(command => resolveOnPath(command, { ...process.env, PATH: dir }));
     if (!inFolder) throw new CommandFailure("failed", "OPERATION_FAILED", `the ${app.install.title} installer finished, but ${unresolved().join(" and ")} is not on PATH or in ${dir}`, { native: { code: "INSTALLER_FAILED", detail: ran.tail.join("\n") } });
     pathAdded = await addToAccountPath(dir);
-    emit(`Added ${dir} to PATH in ${pathAdded}`);
+    emit?.(`Added ${dir} to PATH in ${pathAdded}`);
     path = await accountPath();
     if (unresolved().length) throw new CommandFailure("failed", "OPERATION_FAILED", `${app.install.title} is installed in ${dir} and Cotal added it to PATH in ${pathAdded}, but your login shell still does not find it`, { remedy: `add ${dir} to PATH in the startup file your login shell reads, then choose Check again` });
   }
-  const dirs = app.requires.map(command => dirname(resolveOnPath(command, { ...process.env, PATH: path })!));
-  return { app: await row(app, path), ...(pathAdded ? { pathAdded } : {}), dirs, before };
+  return { app: await row(app, path), ...(pathAdded ? { pathAdded } : {}) };
 }
 
 /** Start the harness's own browser sign-in and wait for it to finish, then check it. */
-export async function signInAgentApp(name: string, emit: Emit, service = false): Promise<AgentApp> {
+async function signInAgentApp(name: string, emit: Emit, service: boolean): Promise<AgentApp> {
   const app = declared(name);
   const login = app.install?.signIn?.login;
   if (!login) throw new CommandFailure("refused", "UNSUPPORTED", `${app.install?.title ?? name} has no sign-in the app can start`);
@@ -354,9 +369,13 @@ export type AgentAppRequest =
   | { readonly op: "agent-apps"; readonly refresh?: boolean }
   | { readonly op: "agent-app-install"; readonly name: string }
   | { readonly op: "agent-app-sign-in"; readonly name: string };
-export type AppManagement = "service" | "local" | "other-copy" | "checking";
-export type AgentAppResult = { readonly apps: readonly AgentApp[]; readonly management: AppManagement }
-  | { readonly app: AgentApp; readonly pathAdded?: string };
+export type AppManagement = "service" | "local" | "other-copy" | "checking" | "foreground" | "unrecorded-service" | "no-user-services" | "version-conflict" | "older-service";
+type ServiceRefresh = { readonly state: "refreshed" } | { readonly state: "pending"; readonly reason: "agents-running" | "unconfirmed" };
+export type AgentAppResult = ({ readonly apps: readonly AgentApp[]; readonly management: AppManagement }
+  | { readonly app: AgentApp; readonly pathAdded?: string }) & { readonly serviceRefresh?: ServiceRefresh };
+
+/** Only the authenticated service tells the bridge what its running PATH does not yet find. */
+export type ServiceAppResult = AgentAppResult & { readonly serviceAppPickup?: true; readonly serviceRefreshNeeded?: true; readonly serviceAppDirs?: readonly string[] };
 
 /** The new daemon hop must not relay arbitrary child output. Keep only the two existing local
  * browser flows' known authorization addresses. Never accept a callback URL as an approval link. */
@@ -386,10 +405,34 @@ export function daemonAppApproval(name: string, line: string): string | undefine
   return undefined;
 }
 
-/** One host operation core. Neither entry point installs or restarts the background service. */
-export async function agentAppRequest(req: AgentAppRequest, management: "service" | "local", progress: Emit): Promise<AgentAppResult> {
-  if (req.op === "agent-apps") return { apps: await agentApps(), management };
+function serviceAppDirs(app: Declared, path: string): string[] {
+  return app.requires.flatMap(command => {
+    if (resolveOnPath(command)) return [];
+    const executable = resolveOnPath(command, { ...process.env, PATH: path });
+    return executable ? [dirname(executable)] : [];
+  });
+}
+
+function servicePickup(dirs: readonly string[]) {
+  return dirs.length ? { serviceRefreshNeeded: true as const, serviceAppDirs: [...new Set(dirs)] } : {};
+}
+
+/** One host operation core. The bridge may refresh the service after the terminal reply. */
+export async function agentAppRequest(req: AgentAppRequest, management: "service" | "local", progress: Emit): Promise<ServiceAppResult> {
+  if (req.op === "agent-apps") {
+    if (management === "local") return { apps: await agentApps(), management };
+    if (!req.refresh) return { apps: await agentApps(), management, serviceAppPickup: true };
+    const declared = declaredApps();
+    const path = await accountPath();
+    const apps = await Promise.all(declared.map(app => row(app, path)));
+    const dirs = declared.flatMap((app, i) => apps[i]!.state === "missing" ? [] : serviceAppDirs(app, path));
+    return { apps, management, serviceAppPickup: true, ...servicePickup(dirs) };
+  }
   if (req.op === "agent-app-sign-in") return { app: await signInAgentApp(req.name, progress, management === "service") };
-  const { app, pathAdded } = await installAgentApp(req.name, management === "service" ? () => {} : progress);
-  return { app, ...(pathAdded ? { pathAdded } : {}) };
+  try {
+    return await installAgentApp(declared(req.name), progress, management === "local" ? progress : undefined);
+  } catch (error) {
+    if (management === "local") throw error;
+    throw new CommandFailure("failed", "OPERATION_FAILED", "The agent app operation could not finish.");
+  }
 }
