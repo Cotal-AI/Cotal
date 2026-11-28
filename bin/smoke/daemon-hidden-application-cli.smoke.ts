@@ -4,9 +4,10 @@
  * The daemon holds a cached hosted-Manager refusal and one sign-in record. No network sign-in
  * happens. The sentence appears on `status` and on a non-local `setup` only while that record is
  * unexpired and the recorded unit pins this CLI. A second sign-in, an expired record, no unit, a
- * unit that pins another entry, no sign-in, and a local setup stay quiet, and the
- * application line stays. Once the unit gains this shell's folder and the cached row reads
- * available, the sentence is gone.
+ * unit that pins another entry, no sign-in, a relative PATH entry, an unfinished repair, and a
+ * local setup stay quiet, and the application line stays. Those two states name no command,
+ * because the command that repairs them is not `daemon setup`. Once the unit gains this shell's
+ * folder and the resolver on that PATH reports the application available, the sentence is gone.
  *
  * Run: tsx bin/smoke/daemon-hidden-application-cli.smoke.ts
  */
@@ -22,9 +23,11 @@ import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { spaceSegment } from "@cotal-ai/workspace";
 import { recordMesh, removeMesh } from "@cotal-ai/workspace";
+import { resolveHarness } from "../../implementations/manager/src/harness-resolution.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { refreshedDaemonPath } from "../daemon/install.js";
 import { serveDaemon } from "../daemon/server.js";
+import { serviceRepairFile } from "../daemon/service-repair.js";
 
 if (process.platform !== "linux") skipSuite("daemon-hidden-application-cli: the built CLI reads the Linux service socket");
 
@@ -133,13 +136,39 @@ try {
   const unsigned = await run(["status", "--plain"]);
   check("no sign-in stays quiet while the application line remains", quiet(unsigned));
   writeSecretFile(sessionFile, session(true));
+  const absolute = process.env.PATH ?? "";
+  process.env.PATH = `node_modules/.bin${delimiter}${absolute}`;
+  const relative = await run(["status", "--plain"]);
+  process.env.PATH = absolute;
+  check("a relative PATH entry names no command, and dropping it is the step that prints the sentence",
+    quiet(relative) && !relative.out.includes("daemon setup") && !relative.out.includes("daemon status"));
+  const restored = await run(["status", "--plain"]);
+  check("the sentence returns once PATH holds only absolute entries",
+    restored.code === 0 && lineOf(restored.out, "Agent applications:").includes(sentence) && restored.out.includes("daemon setup"));
+  const repairFile = serviceRepairFile(paths.state);
+  writeSecretFile(repairFile, `${JSON.stringify({
+    v: 1, receipt: JSON.parse(receipt(own)), previousSource: own, nextSource: own, enabled: true,
+    argv: [node, entry, "daemon", "serve"], version: "0.0.0-hidden-cli", hostedSpaces: ["seen"], phase: "prepared",
+  })}\n`);
+  const unfinished = await run(["status", "--plain"]);
+  check("an unfinished repair names no command",
+    quiet(unfinished) && !unfinished.out.includes("daemon setup") && !unfinished.out.includes("daemon status"));
+  rmSync(repairFile, { force: true });
+  const cleared = await run(["status", "--plain"]);
+  check("removing the unfinished repair is the step that prints the sentence",
+    cleared.code === 0 && lineOf(cleared.out, "Agent applications:").includes(sentence) && cleared.out.includes("daemon setup"));
   const narrow = readFileSync(unitPath, "utf8");
   const accountPath = `${bin}${delimiter}/usr/bin${delimiter}/bin`;
   const widened = refreshedDaemonPath("systemd-user", narrow, accountPath);
   if (!widened?.includes(bin)) throw new Error("the recorded unit did not gain this shell's application folder");
+  const pinned = /Environment=PATH="((?:\\.|[^"\\])*)"/.exec(widened)?.[1]?.replace(/\\([\\"])/g, "$1");
+  const savedPath = process.env.PATH;
+  process.env.PATH = pinned;
+  const seen = resolveHarness("aa", ["aa-bin"]);
+  process.env.PATH = savedPath;
   writeFileSync(unitPath, widened, { mode: 0o600 });
   writeSecretFile(join(paths.state, "service-unit.json"), receipt(widened));
-  writeFileSync(refusal, JSON.stringify({ space: "seen", state: "refused", restarts: 0, connectors: [{ agent: "aa", state: "available" }] }), { mode: 0o600 });
+  writeFileSync(refusal, JSON.stringify({ space: "seen", state: "refused", restarts: 0, connectors: [{ agent: "aa", state: seen.reason ? "unavailable" : "available", ...(seen.reason ? { reason: seen.reason } : {}) }] }), { mode: 0o600 });
   const served = daemon.status().managers?.flatMap((manager) => manager.connectors ?? []) ?? [];
   const repaired = await run(["status", "--plain"]);
   const repairedLine = lineOf(repaired.out, "Agent applications:");

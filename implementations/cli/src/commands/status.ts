@@ -70,7 +70,7 @@ import { deliveryResponderState, deliveryRowSuffix, type DeliveryResponderState 
 import { brokerStoreWrite, storeFull } from "../lib/broker-store-health.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { selectResetTarget } from "./reset-store-apply.js";
-import { displayCmd, applicationsHiddenFromService } from "../lib/self-exec.js";
+import { displayCmd, serviceHiddenApplicationNames } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas } from "../lib/personas.js";
 import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
@@ -328,7 +328,7 @@ export async function status(args: ParsedArgs): Promise<void> {
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
       seed, currentJournalUnreadable,
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
-      beyondService: applicationsHiddenFromService(),
+      beyondService: serviceHiddenApplicationNames(),
     }),
   );
   if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined, recoveryBroker, recoveryMembers);

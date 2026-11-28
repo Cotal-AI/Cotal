@@ -288,38 +288,25 @@ export function selfCotal(): string {
 }
 
 /**
- * Applications the background service reports missing that this shell can run. Empty unless the
- * composition root read that from the service's own cached status. A command never fills this
- * itself, and a missing or foreign service leaves it empty.
+ * The applications sentence for the background service, filled by the composition root from the
+ * service's own cached status. Empty unless that read found names and a command that can refresh
+ * this installation. A command never fills this itself.
  */
-let serviceHiddenApplications: readonly string[] = [];
+let serviceHiddenNote: { readonly command: string; readonly names: readonly string[] } | undefined;
 
-/** Record the applications the service's cached report says this shell can see and the service cannot. */
-export function noteServiceHiddenApplications(names: readonly string[]): void {
-  serviceHiddenApplications = Object.freeze([...new Set(names)].sort());
+/** Record the applications the service's cached report says this shell can see and the service cannot,
+ *  with the command that refreshes this installation. No command means the line stays as it is. */
+export function noteServiceHiddenApplications(command: string | undefined, names: readonly string[]): void {
+  serviceHiddenNote = command && names.length ? { command, names: Object.freeze([...new Set(names)].sort()) } : undefined;
 }
 
-/** The applications recorded by {@link noteServiceHiddenApplications}. */
-export function applicationsHiddenFromService(): readonly string[] {
-  return serviceHiddenApplications;
+/** The applications recorded by {@link noteServiceHiddenApplications}, or none. */
+export function serviceHiddenApplicationNames(): readonly string[] {
+  return serviceHiddenNote?.names ?? [];
 }
 
-/**
- * Applications a service report says this shell can run and the service cannot see.
- * Empty when there is no report or no unexpired local sign-in. The reason text is the one a hosted
- * Manager records, the same text `hasNewApplications` matches. This does not read the service.
- * A caller that has already read the local sign-in passes it: the report's account mode stays
- * signed out until a provider host answers, which a missing application does not wait for.
- */
-export function applicationsHiddenByReport(report: { readonly account?: { readonly mode?: string }; readonly managers?: readonly { readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[] }[] } | undefined, signedIn = report?.account?.mode !== undefined && report.account.mode !== "signed-out"): readonly string[] {
-  if (!report || !signedIn) return [];
-  const hidden = new Set<string>();
-  for (const manager of report.managers ?? []) {
-    for (const connector of manager.connectors ?? []) {
-      if (connector.state === "available") continue;
-      const missing = / harness needs (.+) on PATH/.exec(connector.reason ?? "")?.[1]?.split(", ") ?? [];
-      if (missing.length > 0 && missing.every((binary) => resolveOnPath(binary) !== undefined)) hidden.add(connector.agent);
-    }
-  }
-  return [...hidden].sort();
+/** The sentence suffix for one application the service cannot see, or empty when this command names none. */
+export function serviceHiddenApplicationSuffix(name: string): string {
+  if (!serviceHiddenNote || !serviceHiddenNote.names.includes(name)) return "";
+  return ` · the background service cannot see ${name}; run \`${displayCmd()} ${serviceHiddenNote.command}\` in this terminal`;
 }

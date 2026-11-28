@@ -101,21 +101,23 @@ await runCli(registry, argv, {
 });
 
 /** Names from a hosted Manager's cached connector rows that this shell can run and the service
- *  reports missing, and only when `cotal daemon setup` can refresh this installation. A signed-out
- *  account, no report, no such row, more or fewer than one unexpired sign-in, a missing unit, or a
- *  unit another installation recorded all leave the note empty. */
+ *  reports missing, and only when `cotal daemon setup` can refresh this installation. No unexpired
+ *  local sign-in, no report, no such row, more or fewer than one unexpired sign-in, a missing unit,
+ *  a unit another installation recorded, a relative PATH entry, or an unfinished repair all leave
+ *  the note empty. */
 async function noteHiddenApplications(): Promise<void> {
-  const { noteServiceHiddenApplications, applicationsHiddenByReport } = await import("@cotal-ai/cli/self-exec");
+  const { noteServiceHiddenApplications } = await import("@cotal-ai/cli/self-exec");
   try {
     const { cachedDaemonStatus } = await import("./daemon/client.js");
     const { daemonPaths } = await import("./daemon/endpoint.js");
-    const { recordedUnitPinsThisEntry } = await import("./daemon/install-identity.js");
+    const { applicationsHiddenByReport, serviceHiddenCommand } = await import("./daemon/service-hidden.js");
     const { listIdpAccounts } = await import("@cotal-ai/auth");
     const { homeCotalDir } = await import("@cotal-ai/workspace");
     const paths = daemonPaths();
     const now = Math.floor(Date.now() / 1000);
     const providers = listIdpAccounts(homeCotalDir()).filter((account) => account.expiresAt > now);
-    const hidden = applicationsHiddenByReport(await cachedDaemonStatus({ paths }), providers.length > 0);
-    if (hidden.length && providers.length === 1 && recordedUnitPinsThisEntry(paths)) noteServiceHiddenApplications(hidden);
+    const command = serviceHiddenCommand(paths);
+    const hidden = applicationsHiddenByReport(await cachedDaemonStatus({ paths }), providers.length === 1);
+    if (command && hidden.length) noteServiceHiddenApplications(command, hidden);
   } catch { /* no report, or a repair this command cannot run: the application line stays as it is */ }
 }

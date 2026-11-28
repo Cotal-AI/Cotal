@@ -16,7 +16,7 @@ import {
   spaceStreamsAbsent,
 } from "@cotal-ai/workspace";
 import { storeWriteRepair } from "../lib/broker-store-health.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, serviceHiddenApplicationSuffix } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { onRerun } from "../lib/control.js";
 import { rolledBackNotes } from "../lib/restore.js";
@@ -229,12 +229,13 @@ function setUpApplications(m: StatusResult["machine"]): string[] {
 }
 
 /** The applications line: the names that are set up, and how many more `cotal setup` would add.
- *  `beyondService` names those the background service's own cached report says it cannot see. */
+ *  A name the background service's own cached report says it cannot see adds the command that
+ *  refreshes this installation, and only while that command can. */
 function applicationsCell(m: StatusResult["machine"], interactive: boolean, beyondService: readonly string[] = []): Cell {
   if (m.connectors === null) return stateCell("could not be read", "failed");
   const setUp = setUpApplications(m), others = m.connectors.length - setUp.length;
   const hidden = beyondService.filter(name => setUp.includes(name));
-  const service = hidden.length ? ` · the background service cannot see ${hidden.join(", ")}; run \`${displayCmd()} daemon setup\` in this terminal` : "";
+  const service = hidden.map(serviceHiddenApplicationSuffix).join("");
   if (!interactive) return setUp.length ? stateCell(`${setUp.join(", ")}${others ? ` · ${others} not set up` : ""}${service}`, "ok") : stateCell("not set up", "hint");
   if (!setUp.length) return stateCell(`not set up · \`${displayCmd()} setup\` adds one`, "hint");
   return stateCell(`${setUp.join(", ")}${others ? ` · ${others} more with \`${displayCmd()} setup\`` : ""}${service}`, "ok");

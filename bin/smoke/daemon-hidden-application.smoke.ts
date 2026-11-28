@@ -21,7 +21,7 @@ import { cachedDaemonStatus } from "../daemon/client.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { refreshedDaemonPath } from "../daemon/install.js";
 import { serveDaemon } from "../daemon/server.js";
-import { applicationsHiddenByReport } from "../../implementations/cli/src/lib/self-exec.js";
+import { applicationsHiddenByReport } from "../daemon/service-hidden.js";
 
 if (process.platform !== "linux") skipSuite("daemon-hidden-application: the cached report is read on the Linux service socket");
 
@@ -57,13 +57,13 @@ try {
   const connector = manager?.connectors?.find((row) => row.agent === "aa");
   check("the first frame is the cached refusal and a signed-out account",
     frame?.account?.mode === "signed-out" && manager?.state === "refused" && connector?.state === "unavailable" && connector.reason === reason);
-  check("a signed-out report names no application", applicationsHiddenByReport(frame).length === 0);
+  check("a signed-out report names no application", applicationsHiddenByReport(frame, false).length === 0);
   const signedIn = { ...frame!, account: { ...frame!.account, mode: "account" } };
   check("the daemon's own row names the application when the account is not signed out",
-    applicationsHiddenByReport(signedIn).join() === "aa");
+    applicationsHiddenByReport(signedIn, true).join() === "aa");
   const available = { ...signedIn, managers: [{ connectors: [{ agent: "aa", state: "available", reason }] }] };
   check("an available row names nothing, which is the report after the service can see it",
-    applicationsHiddenByReport(available).length === 0);
+    applicationsHiddenByReport(available, true).length === 0);
   const unit = `[Service]\nEnvironment=PATH="/usr/bin:/bin"\nExecStart="/bin/true"\n`;
   const refreshed = refreshedDaemonPath("systemd-user", unit, `${bin}:/usr/bin:/bin`);
   const repaired = /Environment=PATH="((?:\\.|[^"\\])*)"/.exec(refreshed ?? "")?.[1]?.replace(/\\([\\"])/g, "$1");
@@ -73,7 +73,7 @@ try {
   process.env.PATH = savedPath;
   const afterRepair = { ...signedIn, managers: [{ connectors: [{ agent: "aa", state: seen.reason ? "unavailable" : "available", reason: seen.reason }] }] };
   check("the unit repair adds this shell's folder, and the sentence is gone once the service reports that PATH",
-    repaired?.split(":").includes(bin) === true && seen.reason === undefined && applicationsHiddenByReport(afterRepair).length === 0);
+    repaired?.split(":").includes(bin) === true && seen.reason === undefined && applicationsHiddenByReport(afterRepair, true).length === 0);
   const already = `[Service]\nEnvironment=PATH="${bin}:/usr/bin:/bin"\nExecStart="/bin/true"\n`;
   const kept = refreshedDaemonPath("systemd-user", already, `${bin}:/usr/bin:/bin`);
   const keptPath = /Environment=PATH="((?:\\.|[^"\\])*)"/.exec(kept ?? "")?.[1]?.replace(/\\([\\"])/g, "$1");
@@ -82,7 +82,7 @@ try {
   process.env.PATH = savedPath;
   const alreadyReported = { ...signedIn, managers: [{ connectors: [{ agent: "aa", state: alreadySeen.reason ? "unavailable" : "available", reason: alreadySeen.reason }] }] };
   check("a unit that already gives the service the folder is not reported missing",
-    keptPath?.split(":").includes(bin) === true && alreadySeen.reason === undefined && applicationsHiddenByReport(alreadyReported).length === 0);
+    keptPath?.split(":").includes(bin) === true && alreadySeen.reason === undefined && applicationsHiddenByReport(alreadyReported, true).length === 0);
 } finally {
   await daemon.close();
   process.env.PATH = previousPath;
