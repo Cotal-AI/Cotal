@@ -2,8 +2,9 @@
  * The artifact store binding and the store contract behind the `artifacts` endpoint (A2), against a
  * real nats-server with real minted credentials and the real delivery daemon.
  *
- * Every hosted context here enters through `../src/delivery.js`, never the package index, so the
- * default store this suite finds is the one the daemon module registers itself (E6).
+ * Every hosted context here enters through `../src/delivery.js`, never the package index, and the
+ * store module is imported only after the hosted cells, so the default store they find is the one the
+ * daemon module registers itself (E6). A cell checks that before anything else runs.
  *
  *  1. (BRIEF item 6) a space bound to a store nobody registered refuses at start, by name, and the
  *     broker's cumulative connection counter does not move: not even the unnamed reachability probe
@@ -18,8 +19,9 @@
  *     the received bytes equal to the fixture's suffix; on a second artifact, a stored chunk purged
  *     mid-fetch turns the next reply into `artifact expired` at the pinned offset;
  *  6. the jetstream store's ranged read answers any range inside the artifact (inside one block,
- *     across a boundary, to the end, one aligned block), undefined when a touched block is gone, and
- *     refuses a range past the artifact (E7, S4);
+ *     across a boundary, to the end, one aligned block), undefined when a block inside the artifact is
+ *     gone, and refuses a range past the end: one crossing a short final block, one crossing the end of
+ *     an artifact that ends on a full block, and one wholly past the end (E7, S4, E10);
  *  7. census: only the store module names the object stream, only the daemon module imports it, the
  *     default name is written once, the registry is resolved for the kind in one place, no served
  *     endpoint table holds a factory, and the core contract imports no NATS module.
@@ -45,10 +47,9 @@ import {
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/delivery.js";
-import { ArtifactObjects } from "../src/stores/jetstream-store.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 15;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -114,6 +115,11 @@ try {
   provisionerEp.on("error", () => {});
   endpoints.push(provisionerEp);
   await provisionerEp.start();
+
+  // ---- 0. the default store is registered by the daemon module alone ----
+  // Nothing in this file has imported the store module yet: importing `delivery.ts` is all it took.
+  check("importing the daemon module registers the default store, with no other import",
+    registry.has(ARTIFACT_STORE_KIND, "jetstream"));
 
   /** One hosted context's injected store, holding the material its issuer would write. */
   const material = async (binding?: string): Promise<MemoryStore> => {
@@ -197,7 +203,9 @@ try {
     return d;
   };
   const one = fixture(31, 7), two = fixture(17, 3);
-  const d1 = await attach(one, "one.bin"), d2 = await attach(two, "two.bin");
+  // A third artifact ends exactly on a stored block, so a read crossing its end finds no next block.
+  const full = new Uint8Array(3 * 65_536).map((_, i) => (i * 11 + 5) % 251);
+  const d1 = await attach(one, "one.bin"), d2 = await attach(two, "two.bin"), d3 = await attach(full, "full.bin");
   /** fetch-chunk from FROM until complete or refused; `between` runs after the first reply. */
   const walk = async (d: string, between?: () => Promise<void>): Promise<{ steps: Step[]; bytes: Buffer }> => {
     const steps: Step[] = [], parts: Buffer[] = [];
@@ -245,6 +253,8 @@ try {
     JSON.stringify(missing.steps) === JSON.stringify(A1_MISSING), missing.steps);
 
   // ---- 6. the jetstream store's ranged read, called directly ----
+  // The store module is imported only now, after every hosted cell (E11).
+  const { ArtifactObjects } = await import("../src/stores/jetstream-store.js");
   const data = await dial(servers, (await boundStore.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_DATA_CREDS_KIND)))!);
   conns.push(data);
   const objects = new ArtifactObjects(data, space, sweeper);
@@ -253,10 +263,19 @@ try {
   check("the store's ranged read answers inside a block, across a block boundary, to the end, and one aligned block, byte for byte",
     Object.values(ranges).every(Boolean), ranges);
   const gone = await objects.read(d2, 131_000, 1_000), still = Buffer.from((await objects.read(d2, 70_000, 100)) ?? []).equals(Buffer.from(two.subarray(70_000, 70_100)));
-  let past = "";
-  try { await objects.read(d1, SIZE - 10, 20); past = "read"; } catch (e) { past = (e as Error).message; }
-  check("a range touching a purged block reads as gone, a range beside it still answers, and a range past the artifact refuses",
-    gone === undefined && still && /the range is past the artifact/.test(past), { gone: gone?.byteLength, still, past });
+  check("a range inside the artifact that touches a purged block reads as gone, and a range beside it still answers",
+    gone === undefined && still, { gone: gone?.byteLength, still });
+  const refusal = async (d: string, offset: number, length: number) => {
+    try { const r = await objects.read(d, offset, length); return r === undefined ? "gone" : `read ${r.byteLength}`; } catch (e) { return (e as Error).message; }
+  };
+  const past = {
+    shortFinal: await refusal(d1, SIZE - 10, 20),
+    fullBlockEnd: await refusal(d3, full.byteLength - 10, 20),
+    wholly: await refusal(d1, 262_144, 1),
+    whollyOnGone: await refusal(d2, 262_144, 1),
+  };
+  check("a range past the end refuses: across a short final block, across the end of a full-block artifact, wholly past it, and on an artifact with a block gone",
+    Object.values(past).every((m) => /the range is past the artifact/.test(m)), past);
 
   // ---- 7. census ----
   const src = resolve(import.meta.dirname, "../src");

@@ -119,21 +119,27 @@ export class ArtifactObjects implements ArtifactStoreSpace {
 
   /** Bytes `[offset, offset + length)` of `digest`: one direct get per stored chunk the range touches,
    *  sliced and joined, or `undefined` as soon as one is gone. A range that is not a positive length
-   *  of at most 1 MiB at a non-negative offset refuses. The caller bounds the range by the artifact's
-   *  size (the handler checks the offset against `stat` first); a range that runs past the artifact's
-   *  short final chunk refuses rather than returning fewer bytes. A range wholly past the last chunk
-   *  finds no chunk and reads as gone, which is why the caller bounds it. */
+   *  of at most 1 MiB at a non-negative offset refuses, and so does a range past the artifact's end.
+   *  The end is known without an extra read while the chunks are there: a chunk shorter than the
+   *  range needs is the last one. Only when a chunk is missing does the store read the commit record,
+   *  to tell a range past the end (refused) from bytes that are gone (`undefined`). So the handler's
+   *  aligned read stays one direct get. */
   async read(digest: string, offset: number, length: number): Promise<Uint8Array | undefined> {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length <= 0 || length > ARTIFACT_STORE_MAX_BLOCK_BYTES)
       throw new Error(`artifacts: the jetstream store cannot read ${length} bytes at offset ${offset}`);
+    const pastEnd = () => new Error(`artifacts: ${digest} ends before byte ${offset + length}; the range is past the artifact`);
     const first = Math.floor(offset / ARTIFACT_STORE_CHUNK_BYTES), last = Math.floor((offset + length - 1) / ARTIFACT_STORE_CHUNK_BYTES);
     const parts: Uint8Array[] = [];
     for (let i = first; i <= last; i++) {
       const c = await this.readChunk(digest, i);
-      if (c === undefined) return undefined;
+      if (c === undefined) {
+        const meta = await this.stat(digest);
+        if (meta !== undefined && offset + length > meta.size) throw pastEnd();
+        return undefined;
+      }
       const from = i === first ? offset - i * ARTIFACT_STORE_CHUNK_BYTES : 0;
       const to = i === last ? offset + length - i * ARTIFACT_STORE_CHUNK_BYTES : c.byteLength;
-      if (to > c.byteLength || (i < last && c.byteLength !== ARTIFACT_STORE_CHUNK_BYTES)) throw new Error(`artifacts: ${digest} ends before byte ${offset + length}; the range is past the artifact`);
+      if (to > c.byteLength || (i < last && c.byteLength !== ARTIFACT_STORE_CHUNK_BYTES)) throw pastEnd();
       parts.push(from === 0 && to === c.byteLength ? c : c.subarray(from, to));
     }
     return parts.length === 1 ? parts[0]! : Buffer.concat(parts);
