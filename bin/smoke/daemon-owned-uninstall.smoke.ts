@@ -5,12 +5,15 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { acquireLock } from "@cotal-ai/core";
 import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
-import { daemonPaths } from "../daemon/endpoint.js";
-import { queryDaemon } from "../daemon/client.js";
+import { daemonPaths, type DaemonPaths } from "../daemon/endpoint.js";
+import { managerViaDaemon, openVerified, queryDaemon } from "../daemon/client.js";
+import { requestInstalledDaemon } from "../daemon/install.js";
 import { excludeLifetime, holdLifetime } from "../daemon/lifetime.js";
+import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
 
 if (process.platform !== "linux") skipSuite("owned uninstall: recording Linux supervisor required");
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -29,6 +32,65 @@ try {
   assert.equal(readFileSync(barrierPath, "utf8"), before, "exclusion never writes a holder record");
 } finally { exclusion.release(); }
 console.log("PASS native lifetime exclusion blocks starters and preserves records");
+
+async function checkRepairLock(paths: DaemonPaths, pid: number, env: NodeJS.ProcessEnv) {
+  const path = join(paths.state, "service-repair.lock");
+  const stop = async (commit = false) => {
+    const socket = await openVerified({ paths });
+    try { return await requestInstalledDaemon(socket, "daemon-stop", commit); }
+    finally { socket.destroy(); }
+  };
+  const own = acquireLock(path);
+  try { assert.equal((await stop()).pid, pid, "the lock owner's stop is prepared but not committed"); }
+  finally { own.release(); }
+
+  const advisory = pathToFileURL(join(repo, "packages/core/dist/advisory-lock.js")).href;
+  const repair = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { acquireLock } from ${JSON.stringify(advisory)};
+    const held = acquireLock(process.argv[1]);
+    process.stdin.resume();
+    process.stdin.once('end', () => held.release());
+  `, path], { env, stdio: ["pipe", "ignore", "inherit"] });
+  const exited = new Promise<number | null>(resolve => repair.once("close", resolve));
+  try {
+    for (let i = 0; !existsSync(path); i++) {
+      assert.ok(i < 200 && repair.exitCode === null, "a different process acquired the repair lock");
+      await delay(25);
+    }
+    const record = readFileSync(path, "utf8");
+    assert.equal(JSON.parse(record).pid, repair.pid);
+    assert.ok(!existsSync(join(paths.state, "service-repair.json")));
+    assert.ok(!existsSync(join(paths.state, "service-policy-repair.json")));
+    await assert.rejects(stop(), /provenance is still unknown/);
+    await assert.rejects(stop(true), /no verified native launch provenance/);
+    console.log("PASS a different repair lock owner prevents stop and the daemon does not cache the owner's earlier approval");
+
+    await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    try {
+      const ready = await queryDaemon({ paths });
+      assert.ok(ready.ok && ready.result.update?.restartEvidence?.prepared);
+      const { COTAL_HOME, XDG_RUNTIME_DIR } = process.env;
+      process.env.COTAL_HOME = env.COTAL_HOME!;
+      process.env.XDG_RUNTIME_DIR = env.XDG_RUNTIME_DIR!;
+      try {
+        // The installed-service preflight has already passed; exercise the actual activation wait and stop handshake.
+        await assert.rejects(waitForInstalledDaemonGeneration("0.0.0-update", {
+          installed: () => true, restartPrepared: true, timeoutMs: 10_000, quiet: true,
+        }), /pinned daemon refused daemon-stop: DEPENDENCY_UNAVAILABLE: .*provenance is still unknown/);
+      } finally {
+        if (COTAL_HOME === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = COTAL_HOME;
+        if (XDG_RUNTIME_DIR === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = XDG_RUNTIME_DIR;
+      }
+      const after = await queryDaemon({ paths });
+      assert.ok(after.ok && after.result.pid === pid && after.result.update?.restartEvidence?.prepared);
+      assert.equal(readFileSync(path, "utf8"), record, "neither stop caller changed the repair lock");
+      console.log("PASS prepared update activation refuses a foreign repair lock and leaves the original daemon answering");
+    } finally { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
+  } finally {
+    repair.stdin.end();
+    assert.equal(await exited, 0);
+  }
+}
 
 type Mode = "owned" | "native-stop" | "stopped" | "foreground" | "changed-source" | "foreign-receipt" | "native-refusal";
 for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-source", "foreign-receipt", "native-refusal"] as const satisfies readonly Mode[]) {
@@ -69,6 +131,12 @@ for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-so
       }
     }
     writeFileSync(pidFile, String(pid));
+    if (mode === "owned") {
+      await checkRepairLock(paths, pid, env);
+      assert.equal(readFileSync(unitPath, "utf8"), source);
+      assert.equal(readFileSync(receiptFile, "utf8"), JSON.stringify(receipt));
+      assert.ok(!existsSync(effects), "foreign repair lock refusals leave the native service unchanged");
+    }
     if (mode === "stopped") await killAndAwaitExit(daemon, "SIGTERM");
     if (mode === "changed-source") writeFileSync(unitPath, `${source}# changed\n`);
     if (mode === "foreign-receipt") writeFileSync(receiptFile, JSON.stringify({ ...receipt, unit: "foreign.service" }));
