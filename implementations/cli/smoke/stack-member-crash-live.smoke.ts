@@ -387,6 +387,7 @@ try {
   const blockedStack = cli("down", "--space", "crash", "--yes", "--with-agents", "--json");
   check("the blocked stack stop keeps its space, agent policy, confirmation and format for the retry",
     blockedStack.status === 2 && doc(blockedStack)?.error?.code === "LIFECYCLE_BLOCKED" &&
+      doc(blockedStack)?.error?.remedy?.includes(`svc stop idle --instance ${idle} --space crash --yes --json\``) === true &&
       /`(?:pnpm )?cotal down --with-agents --yes --space crash --json`/.test(doc(blockedStack)?.error?.remedy ?? ""), blockedStack.out);
   const idleStop = cli("service", "stop", "idle", "--instance", String(idle), "--space", "crash", "--yes", "--json");
   check("the named service stop stops it", idleStop.status === 0, idleStop.out);
