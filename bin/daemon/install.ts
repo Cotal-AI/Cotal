@@ -234,9 +234,14 @@ function loginctl(args: readonly string[]): { status: number | null; stdout: str
 }
 
 function lingerEnabled(user: string): boolean {
+  return readLinger(user) === true;
+}
+
+function readLinger(user: string): boolean | undefined {
   const read = loginctl(["show-user", user, "--property=Linger"]);
-  // An unknown user (never logged in, no session) answers nonzero; that is "not lingering".
-  return read.status === 0 && read.stdout.split("\n").includes("Linger=yes");
+  if (read.status !== 0) return;
+  const state = read.stdout.trim();
+  if (state === "Linger=yes" || state === "Linger=no") return state === "Linger=yes";
 }
 
 /** The user whose manager this install targets, read from the environment and never from argv. */
@@ -250,25 +255,35 @@ function enableLingerCommand(user: string): string {
   return `sudo loginctl enable-linger ${user}`;
 }
 
+function enableUnitCommand(unit: string): string {
+  return `systemctl --user enable --now ${unit}`;
+}
+
+function lingerRepair(user: string, unit: string): string {
+  return `Ask an administrator to run ${codeSpan(enableLingerCommand(user))}, then run ${codeSpan(enableUnitCommand(unit))} yourself.`;
+}
+
+export function linuxAutostartUnverified(unit: string, user = '"$USER"'): string {
+  return `The recorded service's autostart could not be verified. Check it with ${codeSpan(`loginctl show-user ${user} --property=Linger`)} and ${codeSpan(`systemctl --user is-enabled ${unit}`)}.`;
+}
+
 /** A receipt records ownership, not autostart. Null means the recorded service could not be checked. */
-export function linuxAutostartWarning(paths: DaemonPaths, daemonHome?: string): string | null | undefined {
+export function linuxAutostartWarning(paths: DaemonPaths, daemonHome?: string, setupUnit?: string): string | null | undefined {
   if (process.platform !== "linux") return;
   const receipt = readReceipt(paths);
-  if (!receipt || (receipt.mechanism !== undefined && receipt.mechanism !== "systemd-user")) return;
+  if (!receipt || (receipt.mechanism !== undefined && receipt.mechanism !== "systemd-user")) return setupUnit === undefined ? undefined : null;
+  if (setupUnit !== undefined && receipt.unit !== setupUnit) return null;
   if (!existsSync(receipt.unitPath)) return null;
   try {
     assertLinuxRecordedUnit(paths, daemonHome, receipt);
     const user = invokingUser();
-    const lingerRead = loginctl(["show-user", user, "--property=Linger"]);
-    const lingerState = lingerRead.stdout.trim();
-    if (lingerRead.status !== 0 || (lingerState !== "Linger=yes" && lingerState !== "Linger=no")) return null;
-    const linger = lingerState === "Linger=yes";
+    const linger = readLinger(user);
+    if (linger === undefined) return null;
     const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", receipt.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv(), 5000);
     const state = result.status === 0 ? result.stdout.trim() : undefined;
     if (linger && state === "enabled") return;
-    const enable = `systemctl --user enable --now ${receipt.unit}`;
     if (state === "disabled" || state === "enabled-runtime") {
-      return `The service is not enabled at boot and will not start automatically after a restart.${linger ? "" : " Linger is off, so it will not keep running after logout."} Run ${codeSpan(linger ? enable : `${enableLingerCommand(user)} && ${enable}`)}.`;
+      return `The service is not enabled at boot and will not start automatically after a restart.${linger ? ` Run ${codeSpan(enableUnitCommand(receipt.unit))}.` : ` Linger is off, so it will not keep running after logout. ${lingerRepair(user, receipt.unit)}`}`;
     }
     if (!linger && state === "enabled") return `Linger is off, so the service will not keep running after logout or start at boot before you log in. Ask an administrator to run ${codeSpan(enableLingerCommand(user))}.`;
   } catch { /* A failed read does not prove autostart and must not change the command's outcome. */ }
@@ -408,8 +423,9 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
   writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
   if (!plan.lingerAlready) {
     const enabled = loginctl(["enable-linger", plan.user]);
-    if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started`, {
-      remedy: `run ${codeSpan(`${enableLingerCommand(plan.user)} && systemctl --user enable --now ${plan.unit}`)} to enable linger with administrator privileges and start the recorded service`,
+    const linger = enabled.status === 0 ? readLinger(plan.user) : false;
+    if (!linger) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be ${linger === undefined ? "verified" : "enabled"} for ${plan.user}, so the recorded unit was not enabled or started`, {
+      remedy: linger === undefined ? linuxAutostartUnverified(plan.unit, plan.user) : lingerRepair(plan.user, plan.unit),
     });
   }
   assertSystemdSource(rendered.unitPath, rendered.sha256);

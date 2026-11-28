@@ -1118,9 +1118,10 @@ a system unit, a LaunchDaemon or a Windows service account, is not offered.
 On Linux it is a systemd user service. It writes one unit to the user manager's own
 configuration directory, enables it, and starts it. The unit starts at login, restarts the daemon
 when it dies, and keeps running after you log out, which on a headless server is what linger
-provides. `install` enables linger for the invoking user and says so in its receipt. A linger it
-cannot enable fails the install, naming `loginctl enable-linger <user>`, because a unit without it
-stops at logout. The unit sets `OOMPolicy=continue`, so an out-of-memory kill of one seat child
+provides. If `install` cannot enable linger, it keeps the unit and its receipt and refuses.
+The refusal asks an administrator to run `sudo loginctl enable-linger <user>`. Then run
+`systemctl --user enable --now <unit>` from your own session. The unit sets `OOMPolicy=continue`,
+so an out-of-memory kill of one seat child
 process does not cause systemd to stop the daemon, Manager, or other running seats. On Linux, `cotal update`
 reconciles the default daemon home's recorded user unit (`cotal-daemon.service` under `~/.cotal/daemon`) when it
 belongs to the same installation, is unmodified, has no systemd drop-ins and no loaded user unit has a pending reload, adding
