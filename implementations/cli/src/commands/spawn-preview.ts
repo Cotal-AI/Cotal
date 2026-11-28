@@ -1,10 +1,11 @@
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, resolveReadAcl, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, previewPersonaReader, projectTrustForPreview, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchModes, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, directSpawnCwd, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { spawnReadAcl } from "../lib/channel-flags.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
 import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
@@ -14,15 +15,6 @@ import { refuseUnmintableName } from "./spawn-managed-launch.js";
 import type { spawnFlags, validateSpawnArguments } from "./spawn.js";
 
 type Channels = ReturnType<typeof validateSpawnArguments>;
-
-function checkPreviewSubscriptions(definition: AgentDef, channels: Channels): void {
-  try { resolveReadAcl(channels.subscribe ?? definition.subscribe ?? [], channels["allow-subscribe"] ?? definition.allowSubscribe); }
-  catch (error) {
-    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, {
-      remedy: "omit the conflicting channel override or choose subscriptions within the effective allowSubscribe list", selfContained: true,
-    });
-  }
-}
 
 function readPreviewConfig(root: string, target: { space: string; path: string }, trusted: ReturnType<typeof projectTrustForPreview>) {
   try { return loadCotalConfig(root, trusted); }
@@ -145,7 +137,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
-  checkPreviewSubscriptions(definition, channels);
+  spawnReadAcl(channels.subscribe ?? definition.subscribe ?? [], channels["allow-subscribe"] ?? definition.allowSubscribe);
   const config = readPreviewConfig(root, { ...target, path }, trusted);
   const cwd = directSpawnCwd(values.cwd ?? ".", space);
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });

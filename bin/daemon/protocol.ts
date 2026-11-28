@@ -145,6 +145,14 @@ export type HostedAgents = { readonly space: string; readonly observedAt: string
   | { readonly state: "unreadable"; readonly message: string }
 );
 
+/** A hosted Manager whose connection to its space is down. `offline`: this computer cannot look up the
+ *  space's host, so it has no working internet connection. `unreachable`: it can, and the space is not
+ *  answering. The Manager reconnects by itself, and the daemon clears this once it has. */
+export interface ManagerConnection {
+  readonly state: "offline" | "unreachable";
+  readonly reason: string;
+}
+
 export interface HostedManager {
   readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[];
   readonly space: string;
@@ -161,6 +169,7 @@ export interface HostedManager {
   readonly observedAt?: string;
   readonly lastExit?: string;
   readonly logError?: string;
+  readonly connection?: ManagerConnection;
 }
 
 /** What a person needs to approve the sign-in, and when the code stops working. */

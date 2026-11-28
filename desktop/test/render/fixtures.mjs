@@ -38,7 +38,8 @@ export function nativeStub(scenario) {
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
-      if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
+      if (command === "set_connection_state") { state.tray = [...(state.tray ?? []), args]; return null; }
+      if (command === "open_browser" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
@@ -197,6 +198,7 @@ export function nativeStub(scenario) {
           window.__advanceSetup = () => progress("applications", "available", "connectors: available", { applications: ["Claude Code", "Codex"] });
           await new Promise(() => {});
         }
+        if (state.otherInstallation) return fail("CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it");
         if (state.setupError) return fail("LIFECYCLE_BLOCKED", `Setup could not proceed: ${state.setupError}. Stop active sessions before retrying.`, state.setupError);
         if (state.serviceBehind) {
           // An older background service restarts into the app's version only when no agent runs, as the daemon's idle fence does.
@@ -489,6 +491,23 @@ export const scenarios = [
   { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
   } },
+  ...[
+    ["offline", "No internet connection", "Cotal reconnects by itself when this computer is back online.", "Offline", "offline", "this computer cannot look up cotal.cloud (ENOTFOUND)", "No internet connection"],
+    ["unreachable", "Can't reach your space", "Cotal reconnects by itself when the space answers again.", "Can't connect", "warning", "cotal.cloud is not answering", "Can't reach this space"],
+  ].map(([kind, title, description, pill, icon, reason, row]) => ({
+    name: `account-connection-${kind}`,
+    state: { installed: true, signedIn: true, connected: true, managers: [{ space: "research", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }], connection: { state: kind, reason } }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: kind }] } },
+    expect: async page => {
+      assert.equal(await page.locator("#connection-title").textContent(), title, "a lost connection must not claim Connected or Starting");
+      assert.equal(await page.locator("#connection-description").textContent(), description);
+      assert.equal(await page.locator("#tray-label").textContent(), pill);
+      assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.tray?.at(-1)), { connected: false, label: pill }, "the tray tooltip must use the pill's words");
+      assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), icon);
+      assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+      assert.equal(await page.locator('[data-space="research"] small').last().textContent(), `${row}: ${reason}`);
+    },
+  })),
 
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
@@ -953,6 +972,11 @@ export const scenarios = [
   { name: "personal", state: { multiple: true, personal: true }, act: signIn },
   { name: "add-space", state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); await page.selectOption('#space', 'research'); } },
   { name: "connecting", state: { connecting: true }, act: connect },
+  { name: "other-installation", state: { otherInstallation: true }, act: connect, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Another Cotal installation runs the background service");
+    assert.equal(await page.locator("#recover").isHidden(), true, "no button offers a setup that cannot succeed");
+    assert.equal(/\/|`/.test(await page.locator("#refusal-detail").textContent()), false, "Details shows no command line");
+  } },
   { name: "ready", state: {}, act: connect },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
