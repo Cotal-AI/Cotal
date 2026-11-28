@@ -124,6 +124,7 @@ interface SharedViewCase {
   retained: CotalMessage;
   publishVerified(): Promise<CotalMessage>;
   updateAttention(mixed: boolean): Promise<number>;
+  heartbeatThenPluginMode(): Promise<{ activeAt: number; ts: number }>;
   updateMembership(mixed: boolean): Promise<number>;
 }
 
@@ -166,6 +167,17 @@ function hasMessage(events: FeedEvent[], event: string, id: string, channel?: st
   return events.some((row) => row.event === event && row.data.msg?.id === id && (channel === undefined || row.data.channel === channel));
 }
 
+async function waitForDashboardPeer(base: string, cookie: string, id: string, check: (row: Presence) => boolean): Promise<void> {
+  const untilRead = Date.now() + 10_000;
+  for (;;) {
+    const roster = await fetch(`${base}/api/roster`, { headers: { cookie }, signal: AbortSignal.timeout(10_000) });
+    assert.equal(roster.status, 200);
+    if ((await roster.json() as Presence[]).some((row) => row.card.id === id && check(row))) return;
+    assert.ok(Date.now() < untilRead, "dashboard receives the hidden attention write");
+    await wait(25);
+  }
+}
+
 async function checkMetadataUpdates(base: string, cookie: string, feeds: { events: FeedEvent[] }[], cell: SharedViewCase): Promise<void> {
   const metadata = (rows: FeedEvent[]) => rows.filter(({ event }) => ["roster", "presence-view", "membership", "membership-read-failed"].includes(event));
   const baseline = feeds.map(({ events }) => {
@@ -178,14 +190,7 @@ async function checkMetadataUpdates(base: string, cookie: string, feeds: { event
   const ts = await cell.updateAttention(false);
   // HTTP returns the live roster without SSE dedup, so the changed raw timestamp proves the web
   // observer has consumed the update before we allow its debounced broadcast to settle.
-  const untilRead = Date.now() + 10_000;
-  for (;;) {
-    const roster = await fetch(`${base}/api/roster`, { headers: { cookie }, signal: AbortSignal.timeout(10_000) });
-    assert.equal(roster.status, 200);
-    if ((await roster.json() as Presence[]).some((row) => row.card.id === cell.pluginOnlyId && row.ts >= ts)) break;
-    assert.ok(Date.now() < untilRead, "dashboard receives the hidden attention write");
-    await wait(25);
-  }
+  await waitForDashboardPeer(base, cookie, cell.pluginOnlyId, (row) => row.ts >= ts);
   await wait(400);
   assert.deepEqual(since(attentionStart), [[], []], "plugin-only attention changes emit no metadata frame");
 
@@ -199,6 +204,12 @@ async function checkMetadataUpdates(base: string, cookie: string, feeds: { event
     assert.deepEqual(reader?.channelModes, { [cell.ordinaryChannel]: "muted" }, "only the visible attention change is sent");
     assert.equal(roster.find(({ card }) => card.id === cell.pluginOnlyId)?.ts, baseline[i], "unchanged peer timestamp does not expose the prior hidden write");
   }
+
+  const workingStart = checkpoints();
+  const working = await cell.heartbeatThenPluginMode();
+  await waitForDashboardPeer(base, cookie, cell.pluginOnlyId, (row) => row.status === "working" && row.activeAt === working.activeAt && row.ts >= working.ts);
+  await wait(400);
+  assert.deepEqual(since(workingStart), [[], []], "a working peer's activity heartbeat and plugin-only mode change emit no metadata frame");
 
   const checkMembership = async (mixed: boolean) => {
     const starts = checkpoints();
@@ -280,6 +291,7 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
     assert.ok([reader, writer].every((ep) => ep.channelRoutingMode() === "isolated"), "fixture agents admit the isolated route");
     await reader.setChannelModes({ [channel]: "quiet", [chatChannel]: "quiet" });
     await pluginOnly.setChannelModes({ [channel]: "quiet" });
+    await pluginOnly.setStatus("working");
     const retained = await writer.multicast("retained plugin post", { channel });
     assert.ok((await reader.channelHistory(channel, { limit: 10 })).some(({ id }) => id === retained.id), "the scoped reader sees retained plugin history before the dashboard reads");
     assert.ok((await reader.listChannels()).some((row) => row.channel === channel), "the scoped reader can discover the plugin channel");
@@ -295,7 +307,7 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
     const rawPluginOnly = members.find(({ id }) => id === pluginOnly.card.id);
     assert.deepEqual([rawPluginOnly?.live, rawPluginOnly?.durable], [[channel], [channel]], "the fixture seeded a plugin-only member in the real broker snapshot");
     const rawPeer = () => observer.getRoster().find(({ card }) => card.id === pluginOnly.card.id);
-    await until(() => rawPeer()?.channelModes?.[channel] === "quiet", "the broker watch receives the plugin-only attention setting");
+    await until(() => rawPeer()?.status === "working" && rawPeer()?.channelModes?.[channel] === "quiet", "the broker watch receives the working peer's plugin-only attention setting");
     assert.deepEqual(rawPeer()?.channelModes, { [channel]: "quiet" }, "the real broker roster contains the plugin-only attention map before filtering");
     writeFileSync(credsPath, observerCreds, { mode: 0o600 });
     const dashboard = await launchDashboard({ servers: fixture.servers, space: fixture.space, credsPath });
@@ -317,6 +329,16 @@ async function checkEnabledSpace(frame: Part): Promise<void> {
         const peer = () => observer.getRoster().find(({ card }) => card.id === agent.card.id);
         await until(() => !!peer() && (peer()?.channelModes?.[channel] ?? "normal") === mode, "raw broker observer witnesses the changed plugin attention setting");
         return peer()!.ts;
+      },
+      async heartbeatThenPluginMode() {
+        const activeAt = Date.now();
+        pluginOnly.noteActivity(activeAt);
+        await until(() => rawPeer()?.status === "working" && rawPeer()?.activeAt === activeAt, "a broker heartbeat carries the working peer's activity before the mode change");
+        assert.equal(rawPeer()?.channelModes, undefined, "the heartbeat arrives before the plugin-only mode is set");
+        const heartbeatTs = rawPeer()!.ts;
+        await pluginOnly.setChannelModes({ [channel]: "muted" });
+        await until(() => rawPeer()?.channelModes?.[channel] === "muted" && rawPeer()!.ts > heartbeatTs, "broker witnesses the plugin-only write after the activity heartbeat");
+        return { activeAt, ts: rawPeer()!.ts };
       },
       async updateMembership(mixed) {
         const id = mixed ? readCred.principal : pluginOnlyCred.principal;
@@ -373,7 +395,7 @@ try {
     await stopDashboard();
   }
   await checkEnabledSpace(frame as unknown as Part);
-  console.log("COTAL_SMOKE_SENTINEL cells=35 passed=35 failed=0");
+  console.log("COTAL_SMOKE_SENTINEL cells=36 passed=36 failed=0");
 } finally {
   await agent?.stop();
   await stopDashboard();

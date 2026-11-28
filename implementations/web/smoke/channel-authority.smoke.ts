@@ -644,6 +644,15 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
   const viewer = {};
   const other = {};
   const send = (event: string, payload: unknown, opening = false) => update(viewer, event, payload, opening);
+  const roster = [{ ...pluginOnlyPresence, status: "working" as const }];
+  const quietPeer = { ...roster[0], ts: 20, activeAt: 20, card: { ...roster[0].card, meta: { model: "reported-model", cwd: "/workspace" } } };
+  send("roster", roster, true);
+  check("filtered roster ignores activity and quiet card metadata from a working peer's heartbeat", send("roster", [quietPeer]) === undefined);
+  for (const [key, value] of Object.entries({ "ai.cotal.label": "label", "ai.cotal.naming": "manual", "ai.cotal.model-set": { model: "chosen-model" } })) {
+    send("roster", roster, true);
+    const changed = { ...quietPeer, card: { ...quietPeer.card, meta: { ...quietPeer.card.meta, [key]: value } } };
+    check(`filtered roster still emits a change to ${key}`, (send("roster", [changed]) as Presence[] | undefined)?.[0] === changed);
+  }
   const first = { id: "local.first", observedAt: 10, live: [ordinary], durable: [] };
   const second = { ...first, id: "local.second" };
   const visibleMembers = { asOf: 10, members: [first, second] };
@@ -659,6 +668,7 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
   check("membership refusal remains visible and permits a recovery frame with the same snapshot", send("membership-read-failed", refusal) === refusal && send("membership", heartbeat) === heartbeat);
   mode = "legacy";
   check("legacy feed passes unchanged snapshots through", send("membership", heartbeat) === heartbeat && send("membership", heartbeat) === heartbeat);
+  check("legacy roster bypasses the shared comparison", (send("roster", [quietPeer]) as Presence[])[0] === quietPeer);
 }
 
 console.log(`\nweb channel-authority smoke: ${pass} checks passed`);

@@ -9,8 +9,25 @@ function sharedChannelVisible(mode: RoutingMode, channel: string): boolean {
   return mode === "legacy" || (channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
 }
 
-function rosterFields({ ts: _ts, channelModes, ...row }: Presence) {
-  return { ...row, channelModes };
+function rosterFields(row: Presence) {
+  // Match EndpointPresence.applyPresence in core: quiet heartbeat fields do not trigger an update.
+  const { card, lifecycleUid, runtime, status, activity, condition, environment, attention, channelModes, prompts, agentEndpoint } = row;
+  return {
+    name: card.name,
+    label: card.meta?.["ai.cotal.label"],
+    naming: card.meta?.["ai.cotal.naming"],
+    modelSet: card.meta?.["ai.cotal.model-set"],
+    lifecycleUid,
+    runtime: [runtime?.id, runtime?.startedAt, runtime?.source],
+    status,
+    activity,
+    condition: [condition?.code, condition?.source, condition?.message, condition?.since],
+    environment,
+    attention,
+    channelModes: channelModes ?? {},
+    prompts: [prompts?.open, prompts?.seq],
+    agentEndpoint: [agentEndpoint?.interrupt, agentEndpoint?.turn, agentEndpoint?.images, agentEndpoint?.usage, agentEndpoint?.setModel],
+  };
 }
 
 function stabilizeFeed(event: string, data: unknown, previous: unknown): unknown {
