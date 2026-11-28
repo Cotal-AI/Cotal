@@ -66,8 +66,9 @@ function logoutErrorResponse(id: string, idp: string, error: unknown, onCleared:
   return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "OPERATION_UNKNOWN", outcome: "unknown", message: "the sign-out outcome could not be confirmed; no success is assumed" } };
 }
 
-function spacesErrorResponse(id: string, error: unknown): DaemonResponse {
-  if (isCommandFailure(error)) return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } };
+function spacesErrorResponse(id: string, op: "spaces" | "space-conflict-resolve", error: unknown): DaemonResponse {
+  if (isCommandFailure(error) && (op === "space-conflict-resolve" || error.code === "DEPENDENCY_UNAVAILABLE"))
+    return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } };
   return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } };
 }
 
@@ -420,17 +421,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "spaces" || req.op === "space-conflict-resolve") {
-        const task = req.op === "spaces" ? desktopSpaces(machineHome, req.refresh === true)
-          : reconciler.serial(async () => {
-              const disc = services.disconnect(req.space); void disc.catch(() => {});
-              try { await managers.disconnect(req.space); } finally { await disc.catch(() => {}); }
-              return resolveSpaceConflict(machineHome, req.space, req.idp);
-            });
+        const disconnectSpace = async () => { const disc = services.disconnect(req.space); void disc.catch(() => {}); try { await managers.disconnect(req.space); } finally { await disc.catch(() => {}); } };
+        const task = req.op === "spaces" ? desktopSpaces(machineHome, req.refresh === true) : reconciler.serial(() => resolveSpaceConflict(machineHome, req.space, req.idp, disconnectSpace));
         replyTask(task.then((result) => {
           counters.spacesAnswered++;
           if (req.op === "space-conflict-resolve") { account.signedIn(); notifyStatusWatchers(); }
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        }, (error: unknown) => { counters.requestsRefused++; return write(spacesErrorResponse(req.id, error)); }));
+        }, (error: unknown) => { counters.requestsRefused++; return write(spacesErrorResponse(req.id, req.op, error)); }));
         return;
       }
       if (req.op === "space-recover") {

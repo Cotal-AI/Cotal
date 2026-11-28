@@ -239,6 +239,7 @@ export interface SpaceCollision {
   readonly catalogIdp: string;
   readonly existingOrigin: "manual" | "catalog" | "up";
   readonly existingIdp?: string;
+  readonly existingSignedIn?: boolean;
 }
 
 export interface EndorsedMigration {

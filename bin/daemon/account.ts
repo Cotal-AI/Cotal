@@ -165,7 +165,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   };
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
-    async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
+    async start() { await reconciler.adoptEndorsedMigrations(); run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
     recover: (space: string, candidate: string, holder: string) => recoverAccountSpace(home, reconciler, contexts, tick, space, candidate, holder).then(notify),
     vitals: () => vitals,
     vitalsError: () => vitalsError,
@@ -185,7 +185,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     },
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); notify(); run(); },
     status: (): AccountComputerStatus => {
-      const ordered = [...contexts.values()].sort((a, b) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? ""));
+      const ordered = [...contexts.entries()].sort(([aOwner, a], [bOwner, b]) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || Number(reconciler.isSupersededOwner(aOwner)) - Number(reconciler.isSupersededOwner(bOwner)) || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? "")).map(([, context]) => context);
       const computers = new Map<string | undefined, typeof ordered[number]>();
       for (const context of ordered) if (!computers.has(context.state.machineId)) computers.set(context.state.machineId, context);
       return { ...(ordered[0]?.state ?? state), accounts: [...computers.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };

@@ -1,20 +1,30 @@
 /** Space-name conflicts and provider-endorsed account moves in the desktop shell. */
 import { icon } from "./icons";
-import { parseEndorsedMigration, parseSpaceCollisions, shownSpaceLabel, type EndorsedMigration, type SpaceCollision } from "./model";
+import { canonicalProvider, parseEndorsedMigration, parseSpaceCollisions, shownSpaceLabel, type EndorsedMigration, type SpaceCollision } from "./model";
 
 function hostOf(url: string | undefined): string {
   if (!url) return "another account";
   try { return new URL(url).host; } catch { return url; }
 }
 
+function normIdp(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try { return canonicalProvider(url); } catch { return url; }
+}
+
 export function existingRegistrationCopy(item: SpaceCollision): string {
-  if (item.existingOrigin === "catalog") return `Currently registered under ${hostOf(item.existingIdp)}.`;
+  if (item.existingOrigin === "catalog") {
+    return item.existingSignedIn === false
+      ? `Currently registered under ${hostOf(item.existingIdp)} (not signed in on this computer).`
+      : `Currently registered under ${hostOf(item.existingIdp)}.`;
+  }
   if (item.existingOrigin === "up") return "Currently registered from a local space on this computer.";
   return `Currently saved manually${item.existingIdp ? ` (${hostOf(item.existingIdp)})` : ""} on this computer.`;
 }
 
 export interface SpaceConflictsHost {
   openPanel(): void;
+  confirm(message: string): boolean;
   moveAccount(migration: EndorsedMigration): Promise<void>;
   replaceSpace(item: SpaceCollision): Promise<void>;
   signOutProvider(idp: string): Promise<void>;
@@ -24,6 +34,7 @@ export interface SpaceConflictsHost {
 export class SpaceConflicts {
   collisions: SpaceCollision[] = [];
   migration: EndorsedMigration | undefined;
+  private readonly catalogSpacesByIdp = new Map<string, string[]>();
   private readonly kept = new Set<string>();
   private readonly errors = new Map<string, string>();
   private busySpace: string | undefined;
@@ -48,6 +59,21 @@ export class SpaceConflicts {
     if (resetKept) this.kept.clear();
     this.collisions = parseSpaceCollisions(result);
     this.migration = parseEndorsedMigration(result);
+    this.catalogSpacesByIdp.clear();
+    const byIdp = new Map<string, Set<string>>();
+    const addSpace = (idp: string | undefined, space: string) => {
+      const key = normIdp(idp);
+      if (!key) return;
+      let set = byIdp.get(key);
+      if (!set) { set = new Set(); byIdp.set(key, set); }
+      set.add(space);
+    };
+    for (const raw of Array.isArray(result.spaces) ? result.spaces : []) {
+      if (raw && typeof raw === "object" && typeof (raw as Record<string, unknown>).space === "string" && typeof (raw as Record<string, unknown>).idp === "string" && typeof (raw as Record<string, unknown>).catalogId === "string")
+        addSpace((raw as Record<string, string>).idp, (raw as Record<string, string>).space!);
+    }
+    for (const c of this.collisions) if (c.existingOrigin === "catalog") addSpace(c.existingIdp, c.space);
+    for (const [key, set] of byIdp) this.catalogSpacesByIdp.set(key, [...set].sort());
     const currentKeys = new Set(this.collisions.map(item => `${item.catalogIdp}:${item.space}`));
     for (const key of this.kept) if (!currentKeys.has(key)) this.kept.delete(key);
     for (const key of this.errors.keys()) if (!currentKeys.has(key)) this.errors.delete(key);
@@ -65,6 +91,9 @@ export class SpaceConflicts {
 
   async replaceWithCatalog(item: SpaceCollision): Promise<void> {
     if (this.busy) return;
+    const label = shownSpaceLabel(item.catalogLabel, item.space);
+    const toHost = hostOf(item.catalogIdp);
+    if (!this.host.confirm(`Use ${toHost} for ${label}? This removes the existing registration for ${item.space} on this computer, along with its saved preferences, chat sessions, and local stack definitions.`)) return;
     const key = `${item.catalogIdp}:${item.space}`;
     this.busySpace = key;
     this.errors.delete(key);
@@ -74,7 +103,7 @@ export class SpaceConflicts {
     try {
       await this.host.replaceSpace(item);
       this.kept.delete(key);
-      this.message = `Now using ${hostOf(item.catalogIdp)} for ${shownSpaceLabel(item.catalogLabel, item.space)}.`;
+      this.message = `Now using ${toHost} for ${label}.`;
       this.messageError = false;
     } catch (error) {
       const text = error instanceof Error ? error.message.split("\n")[0] ?? error.message : String(error);
@@ -89,6 +118,12 @@ export class SpaceConflicts {
 
   async signOutOther(idp: string): Promise<void> {
     if (this.busy) return;
+    const fromHost = hostOf(idp);
+    const owned = this.catalogSpacesByIdp.get(normIdp(idp) ?? idp) ?? [];
+    const removedCopy = owned.length
+      ? `its catalog space ${owned.length === 1 ? "registration" : "registrations"} on this computer (${owned.join(", ")})`
+      : "its catalog space registrations on this computer";
+    if (!this.host.confirm(`Sign out of ${fromHost}? This revokes that sign-in and removes ${removedCopy}.`)) return;
     this.busySpace = `signout:${idp}`;
     this.message = "";
     this.messageError = false;
@@ -215,8 +250,8 @@ export class SpaceConflicts {
 
       const actions = document.createElement("div");
       actions.className = "conflict-actions";
-      if (item.existingOrigin === "catalog") {
-        if (!this.migration && item.existingIdp) {
+      if (item.existingOrigin === "catalog" && item.existingSignedIn !== false) {
+        if (item.existingIdp) {
           const signOut = document.createElement("button");
           signOut.type = "button";
           signOut.className = "button secondary";

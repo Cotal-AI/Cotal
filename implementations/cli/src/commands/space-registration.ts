@@ -772,8 +772,11 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...damagedWarnings, ...warnings, ...keptWarnings(name, release.kept)]);
 }
 
-/** Remove a non-catalog registration using the same running-stack and cleanup rules as `cotal space forget`. */
-export async function forgetLocalSpaceRegistration(name: string): Promise<{ origin: MeshEntry["origin"] | "prepared" | null }> {
+/** Remove a non-catalog (or orphaned signed-out catalog) registration, checking all refusals before `beforeRemove`. */
+export async function forgetLocalSpaceRegistration(
+  name: string,
+  options?: { allowOrphanCatalog?: boolean; beforeRemove?: () => Promise<void> },
+): Promise<{ origin: MeshEntry["origin"] | "prepared" | null }> {
   const target = { space: name };
   const preferencesRevision = readPreferences().revision;
   const registry = readMeshRegistry();
@@ -806,12 +809,14 @@ export async function forgetLocalSpaceRegistration(name: string): Promise<{ orig
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
       if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
       if (e.refusal === "PERMISSION_DENIED") throw e;
+      await options?.beforeRemove?.();
       removeDamaged();
       removePreparedSpace(name);
       return finish("prepared");
     }
     if (!p) {
       if (!damaged.length) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { requested: name });
+      await options?.beforeRemove?.();
       removeDamaged();
       removeMesh(name);
       return finish(null);
@@ -824,13 +829,21 @@ export async function forgetLocalSpaceRegistration(name: string): Promise<{ orig
       throw refuse("PERMISSION_DENIED", "this account cannot check whether the prepared space is running; nothing was forgotten", { ...target, root: p.root });
     }
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target);
+    await options?.beforeRemove?.();
     const release = releaseStackDefinitions(p.root, name);
     removeDamaged();
     removeMesh(name);
     removePreparedSpace(name);
     return finish("prepared", release);
   }
-  if (m.origin === "catalog") throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target);
+  if (m.origin === "catalog") {
+    if (!options?.allowOrphanCatalog)
+      throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target);
+    await options.beforeRemove?.();
+    removeDamaged();
+    removeMesh(name);
+    return finish("catalog");
+  }
   if (m.origin !== "manual") {
     const obstructed = m.stoppedByDown === true && projectRootProblem(m.root) === "not-directory";
     let running: string | undefined;
@@ -839,6 +852,7 @@ export async function forgetLocalSpaceRegistration(name: string): Promise<{ orig
     if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target);
     if (obstructed || !existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
   }
+  await options?.beforeRemove?.();
   const release = releaseStackDefinitions(m.root, name);
   removeDamaged();
   removeMesh(name);

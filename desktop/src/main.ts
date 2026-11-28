@@ -73,6 +73,7 @@ el("computer-name-form").addEventListener("submit", event => {
 });
 let initialized = false;
 let retrySignIn = false;
+let activeMove: { provider: string; migrateFrom: string } | undefined;
 let approvalExpires = 0;
 let countdown: ReturnType<typeof setInterval> | undefined;
 let stage: Stage = "welcome";
@@ -86,6 +87,7 @@ let conflictsOpen = false;
 let conflictsOpener: HTMLElement | undefined;
 const spaceConflicts = new SpaceConflicts({
   openPanel: () => openConflicts(),
+  confirm: message => window.confirm(message),
   moveAccount: migration => runEndorsedMove(migration),
   replaceSpace: async item => {
     const result = await request({ op: "space-conflict-resolve", space: item.space, idp: item.catalogIdp });
@@ -430,8 +432,10 @@ function notice(message: string, error = false): void {
   if (message) announce(message);
 }
 let agentActionProblem = false;
+let refusalSummary: string | undefined;
 function clearDetails(): void {
   problem = undefined;
+  refusalSummary = undefined;
   statusProblem = false;
   agentActionProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
@@ -449,6 +453,9 @@ function refusal(error: unknown, fromStatus = false): void {
   agentActionProblem = false;
   showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  refusalSummary = error instanceof DaemonRefusal && (error.code === "MOVE_REFUSED" || error.code === "LOCAL_STATE_ERROR")
+    ? [error.message.split("\n")[0] ?? "", error.remedy].filter(Boolean).join(" ")
+    : undefined;
   statusProblem = fromStatus;
   notice("", true);
   showStage(stage);
@@ -558,7 +565,7 @@ function showStage(next: Stage, focus = false): void {
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
   const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
-  const recovery = issue ? refusalView(issue, applications) : undefined;
+  const recovery = issue ? refusalView(issue, applications, refusalSummary) : undefined;
   const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
   if (recovery && !lost) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery || Boolean(lost);
@@ -785,7 +792,7 @@ function renderConnections(): void {
         return;
       }
       if (rowRefusal?.action === "recover" && recovery) {
-        if (!window.confirm(`Move ${name.textContent} to the account you're signed in with?`)) return;
+        if (!window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
         void rowAction(space, false, recovery);
         return;
       }
@@ -1170,7 +1177,11 @@ async function action(fn: () => Promise<void>): Promise<void> {
   try { await fn(); } catch (error) { refusal(error); }
   finally {
     refreshGeneration++; busy = false; showStage(stage);
-    if (retrySignIn) { retrySignIn = false; beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+    if (retrySignIn) {
+      retrySignIn = false;
+      if (activeMove) { const m = activeMove; void action(() => runSignInFlow(m.provider, m.migrateFrom)); }
+      else { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+    }
   }
 }
 function nextAfterSignIn(): void {
@@ -1184,13 +1195,20 @@ function nextAfterSignIn(): void {
   }
 }
 async function runSignInFlow(provider: string, migrateFrom?: string): Promise<void> {
+  activeMove = migrateFrom ? { provider, migrateFrom } : undefined;
   conflictsOpen = false;
   loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
   try {
     if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
     const result = await request({ op: "login", idp: provider, ...(migrateFrom ? { migrateFrom } : {}) });
-    problem = undefined;
-    if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
+    problem = undefined; refusalSummary = undefined;
+    if (result.outcome !== "signed-in") {
+      const baseCode = String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_");
+      const code = migrateFrom && baseCode === "LOCAL_STATE_ERROR" ? "MOVE_REFUSED" : baseCode;
+      const remedy = typeof result.remedy === "string" && !/[`]|\/|\\/.test(result.remedy) ? result.remedy : undefined;
+      throw new DaemonRefusal(code, [String(result.message ?? "Sign-in was not completed."), remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), undefined, remedy);
+    }
+    activeMove = undefined;
     signedInProvider = provider;
     for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
     if (migrateFrom) signedOutProviders.add(canonicalProvider(migrateFrom));
@@ -1208,8 +1226,8 @@ function runEndorsedMove(migration: EndorsedMigration): Promise<void> {
   return action(() => runSignInFlow(canonicalProvider(migration.toIdp), canonicalProvider(migration.fromIdp)));
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
-el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
-el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
+el("other-host").addEventListener("click", () => { activeMove = undefined; customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
+el("cloud-host").addEventListener("click", () => { activeMove = undefined; customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
 el("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void action(() => runSignInFlow(canonicalProvider(el<HTMLInputElement>("provider").value.trim())));
@@ -1219,11 +1237,24 @@ el("recover").addEventListener("click", () => {
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
   const recovery = el("recover").dataset.action;
   const keepNotAnswering = problem === "NOT_ANSWERING" && recovery === "refresh";
-  if (!keepNotAnswering) problem = undefined;
+  if (!keepNotAnswering) { problem = undefined; refusalSummary = undefined; }
   notice("");
-  if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  if (recovery === "login") {
+    if (activeMove) { const m = activeMove; void action(() => runSignInFlow(m.provider, m.migrateFrom)); }
+    else { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
-  else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "spaces") {
+    activeMove = undefined;
+    void action(async () => {
+      await spaces(true);
+      await refresh();
+      if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
+        editing = false; completedSetup = true; listOpened = true; showStage("finished");
+      } else nextAfterSignIn();
+      if (spaceConflicts.hasUnresolved) openConflicts();
+    });
+  }
   else if (recovery === "install") void action(async () => {
     clearDetails();
     await startService();

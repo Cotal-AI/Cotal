@@ -66,51 +66,83 @@ export interface LoginCoordinator {
   close(): Promise<void>;
 }
 
+const localMigrationRefusal = (message: string, remedy: string): CommandFailure =>
+  new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, { remedy });
+
+function translateMigrationError(e: unknown): unknown {
+  if (e instanceof IdpLoginCancelled || e instanceof IdpUnreachableError || e instanceof IdpDeviceAuthorizationRefusedError || isCommandFailure(e)) return e;
+  const msg = e instanceof Error ? e.message : "";
+  if (msg.startsWith("idp login: the sign-in was denied at the verification page") || msg.startsWith("idp login: the device code expired")) return e;
+  if (msg.startsWith("idp login: the approved account does not match") || msg === "catalog migration requires the same issuer and subject")
+    return localMigrationRefusal("The account approved in your browser does not match the previous sign-in, so nothing was moved.", "Approve with the same account, or open Space conflicts to sign out of the previous provider.");
+  if (msg.startsWith("idp login: the old account sign-in or catalog state changed during approval") || msg === "catalog migration registry changed after preparation")
+    return localMigrationRefusal("Your saved sign-in or space registrations changed while waiting for approval, so nothing was moved.", "Refresh spaces and try the move again.");
+  if (msg === "catalog migration requires an undamaged registry")
+    return localMigrationRefusal("Some local space registrations could not be read, so nothing was moved.", "Repair the damaged registration records and try again.");
+  if (msg === "catalog migration cannot migrate an unavailable owned space")
+    return localMigrationRefusal("One of your spaces is currently unavailable at the new provider, so nothing was moved.", "Wait until all of your spaces are available and try the move again.");
+  if (msg === "catalog migration must preserve the owned space ID set" || msg === "catalog migration must preserve owned space IDs and slugs" || msg === "catalog migration requires unique catalog-owned stable space IDs" || msg === "catalog migration repeats a space ID")
+    return localMigrationRefusal("Your spaces at the new address do not match the spaces saved under the previous address, so nothing was moved.", "Open Space conflicts to sign out of the previous provider or keep individual registrations.");
+  if (msg.startsWith("catalog migration "))
+    return localMigrationRefusal("The saved space registrations could not be verified for an automatic move, so nothing was changed.", "Refresh spaces, or open Space conflicts to sign out of the previous provider.");
+  return e;
+}
+
 async function runEndorsedMigration(sessionDir: string, id: string, abort: AbortController, req: LoginStart): Promise<LoginResult> {
   if (resolve(sessionDir) !== resolve(homeCotalDir()))
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Account migration requires the default Cotal home.");
+    throw localMigrationRefusal("Account migration requires the default Cotal home.", "Run the desktop app with the default Cotal home and try again.");
   const oldUrl = normalizeIdpUrl(req.migrateFrom!);
   const targetUrl = normalizeIdpUrl(req.idp);
   const entries = loadMeshes().filter((entry) => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === oldUrl);
   const pins = new Map(entries.map((entry) => [JSON.stringify([entry.userAuth!.idp.issuer, entry.userAuth!.idp.audience]), entry.userAuth!.idp]));
   if (!entries.length || pins.size !== 1)
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "No single trusted catalog account was found at the previous provider address.");
+    throw localMigrationRefusal("No single trusted account registration was found at the previous provider address.", "Open Space conflicts to sign out of that provider or keep the existing registrations.");
   const trusted = [...pins.values()][0]!;
   const accounts = signedInMachineAccounts(sessionDir).filter((account) => account.idpUrl === oldUrl);
   const oldAccount = accounts[0];
   if (accounts.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || entries.some((entry) => entry.catalogOwner !== oldAccount.ownerKey))
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "The previous provider account is no longer signed in on this computer.");
+    throw localMigrationRefusal("The previous provider account is not signed in on this computer.", "Refresh spaces and open Space conflicts to replace or keep the existing registrations.");
   const consumer = resolveSpaceCatalogConsumer();
   if (!consumer.prepareMigration)
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Space catalog migration is unavailable in this daemon.");
-  const resolution = await resolveNativeMigration({ url: oldUrl, issuer: trusted.issuer, audience: trusted.audience });
+    throw localMigrationRefusal("Space catalog migration is unavailable in this daemon.", "Restart the background service and try again.");
+  let resolution: Awaited<ReturnType<typeof resolveNativeMigration>>;
+  try {
+    resolution = await resolveNativeMigration({ url: oldUrl, issuer: trusted.issuer, audience: trusted.audience });
+  } catch (e) {
+    if (e instanceof IdpUnreachableError) throw e;
+    throw localMigrationRefusal("The previous provider address could not be verified as endorsing this move.", "Refresh spaces and open Space conflicts to sign out of the previous provider or keep the existing registrations.");
+  }
   const idp = normalizeIdpUrl(resolution.bundle.userAuth.idp.url);
   if (idp !== targetUrl)
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "The previous provider address does not endorse moving to the selected provider.");
-  const candidate = await stageIdpSession({
-    dir: sessionDir,
-    idpUrl: idp,
-    migrationFrom: oldUrl,
-    clientId: req.clientId ?? DEFAULT_CLIENT_ID,
-    expectedPins: { idpUrl: idp, issuer: trusted.issuer, audience: trusted.audience, sub: oldAccount.sub },
-    signal: abort.signal,
-    onPrompt: (p) => req.onPrompt(id, {
-      verificationUri: p.verificationUri,
-      verificationUriComplete: p.verificationUriComplete,
-      userCode: p.userCode,
-      expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
-    }),
-  });
-  if (abort.signal.aborted) throw new IdpLoginCancelled();
-  const catalog = await fetchStagedIdpSpaceCatalog(candidate, consumer.validate);
-  if (abort.signal.aborted) throw new IdpLoginCancelled();
-  let committed: ReturnType<typeof commitStagedIdpSession> | undefined;
-  await withProjectTrustMigration(true, false, async () => {
-    const commit = consumer.prepareMigration!(oldAccount, catalog.account, catalog.snapshot);
-    committed = commitStagedIdpSession(candidate);
-    commit();
-  });
-  return { outcome: "signed-in", idp, sub: candidate.sub, ...(committed?.label ? { label: committed.label } : {}) };
+    throw localMigrationRefusal("The previous provider address does not endorse moving to the selected provider.", "Open Space conflicts to sign out of the previous provider or keep the existing registrations.");
+  try {
+    const candidate = await stageIdpSession({
+      dir: sessionDir,
+      idpUrl: idp,
+      migrationFrom: oldUrl,
+      clientId: req.clientId ?? DEFAULT_CLIENT_ID,
+      expectedPins: { idpUrl: idp, issuer: trusted.issuer, audience: trusted.audience, sub: oldAccount.sub },
+      signal: abort.signal,
+      onPrompt: (p) => req.onPrompt(id, {
+        verificationUri: p.verificationUri,
+        verificationUriComplete: p.verificationUriComplete,
+        userCode: p.userCode,
+        expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
+      }),
+    });
+    if (abort.signal.aborted) throw new IdpLoginCancelled();
+    const catalog = await fetchStagedIdpSpaceCatalog(candidate, consumer.validate);
+    if (abort.signal.aborted) throw new IdpLoginCancelled();
+    let committed: ReturnType<typeof commitStagedIdpSession> | undefined;
+    await withProjectTrustMigration(true, false, async () => {
+      const commit = consumer.prepareMigration!(oldAccount, catalog.account, catalog.snapshot);
+      committed = commitStagedIdpSession(candidate);
+      commit();
+    });
+    return { outcome: "signed-in", idp, sub: candidate.sub, ...(committed?.label ? { label: committed.label } : {}) };
+  } catch (e) {
+    throw translateMigrationError(e);
+  }
 }
 
 export function createLoginCoordinator(opts: { readonly sessionDir: string; readonly establish?: Establish }): LoginCoordinator {

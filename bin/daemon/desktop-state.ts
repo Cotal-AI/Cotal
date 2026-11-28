@@ -3,15 +3,16 @@ import { resolve } from "node:path";
 import type { AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { forgetLocalSpaceRegistration, prepareCatalogTargets, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import { CommandFailure, homeCotalDir, isCommandFailure, readMeshRegistry, resolveNativeMigration, withProjectTrustMigration, type MeshEntry } from "@cotal-ai/workspace";
-import { listIdpAccounts, normalizeIdpUrl } from "@cotal-ai/auth";
+import { listIdpAccounts, normalizeIdpUrl, signedInMachineAccounts } from "@cotal-ai/auth";
 import { isDaemonSpaceName, type DaemonSpaces, type EndorsedMigration, type SpaceCollision } from "./protocol.js";
 
 function originOf(entry: MeshEntry): "manual" | "catalog" | "up" {
   return entry.origin === "manual" || entry.origin === "catalog" ? entry.origin : "up";
 }
 
-function collectCollisions(results: readonly AuthSpaceCatalogResult[], entries: readonly MeshEntry[]): SpaceCollision[] {
+function collectCollisions(sessionDir: string, results: readonly AuthSpaceCatalogResult[], entries: readonly MeshEntry[]): SpaceCollision[] {
   const bySpace = new Map(entries.map((entry) => [entry.space, entry]));
+  const signedOwners = new Set(signedInMachineAccounts(sessionDir).map((account) => account.ownerKey));
   const details: SpaceCollision[] = [];
   for (const r of results) {
     const spaces = (r.snapshot as SpaceCatalogSnapshot | undefined)?.spaces ?? [];
@@ -26,32 +27,48 @@ function collectCollisions(results: readonly AuthSpaceCatalogResult[], entries: 
         catalogIdp: r.account.idpUrl,
         existingOrigin: originOf(existing),
         ...(existing.userAuth?.idp.url ? { existingIdp: existing.userAuth.idp.url } : {}),
+        ...(existing.origin === "catalog" ? { existingSignedIn: Boolean(existing.catalogOwner && signedOwners.has(existing.catalogOwner)) } : {}),
       });
     }
   }
   return details.sort((a, b) => a.space.localeCompare(b.space) || a.catalogIdp.localeCompare(b.catalogIdp));
 }
 
-async function detectEndorsedMigration(collisionDetails: readonly SpaceCollision[], entries: readonly MeshEntry[]): Promise<EndorsedMigration | undefined> {
-  const pair = collisionDetails.find((c) => c.existingOrigin === "catalog" && c.existingIdp && c.existingIdp !== c.catalogIdp && c.existingIdp.startsWith("https://") && c.catalogIdp.startsWith("https://"));
-  if (!pair?.existingIdp) return undefined;
-  const fromIdp = pair.existingIdp;
-  const toIdp = pair.catalogIdp;
-  const endorsement = await readEndorsedTarget(fromIdp, entries);
-  if (!endorsement || endorsement !== normalizeIdpUrl(toIdp)) return undefined;
-  const spaces = collisionDetails.filter((c) => c.existingOrigin === "catalog" && c.existingIdp === fromIdp && c.catalogIdp === toIdp).map((c) => c.space);
-  return spaces.length ? { fromIdp: normalizeIdpUrl(fromIdp), toIdp: endorsement, spaces } : undefined;
-}
-
-async function readEndorsedTarget(fromIdp: string, entries: readonly MeshEntry[]): Promise<string | undefined> {
-  const oldEntries = entries.filter((entry) => entry.origin === "catalog" && entry.userAuth && entry.userAuth.idp.url === fromIdp);
+async function verifiedMigrationFrom(sessionDir: string, fromIdp: string, entries: readonly MeshEntry[], expectedToIdp?: string): Promise<EndorsedMigration | undefined> {
+  if (!fromIdp.startsWith("https://") || (expectedToIdp !== undefined && !expectedToIdp.startsWith("https://"))) return undefined;
+  const fromUrl = normalizeIdpUrl(fromIdp);
+  const oldEntries = entries.filter((entry) => entry.origin === "catalog" && entry.catalogId && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === fromUrl);
   const pins = new Map(oldEntries.map((entry) => [JSON.stringify([entry.userAuth!.idp.issuer, entry.userAuth!.idp.audience]), entry.userAuth!.idp]));
   if (!oldEntries.length || pins.size !== 1) return undefined;
   const trusted = [...pins.values()][0]!;
+  const accounts = signedInMachineAccounts(sessionDir);
+  const oldMatches = accounts.filter((account) => account.idpUrl === fromUrl);
+  const oldAccount = oldMatches[0];
+  if (oldMatches.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || oldEntries.some((entry) => entry.catalogOwner !== oldAccount.ownerKey)) return undefined;
   try {
-    const resolution = await resolveNativeMigration({ url: normalizeIdpUrl(fromIdp), issuer: trusted.issuer, audience: trusted.audience });
-    return normalizeIdpUrl(resolution.bundle.userAuth.idp.url);
+    const resolution = await resolveNativeMigration({ url: fromUrl, issuer: trusted.issuer, audience: trusted.audience });
+    const toUrl = normalizeIdpUrl(resolution.bundle.userAuth.idp.url);
+    if (toUrl === fromUrl || (expectedToIdp !== undefined && toUrl !== normalizeIdpUrl(expectedToIdp))) return undefined;
+    const newAccount = accounts.find((account) => account.idpUrl === toUrl);
+    if (newAccount && newAccount.sub !== oldAccount.sub) return undefined;
+    return { fromIdp: fromUrl, toIdp: toUrl, spaces: oldEntries.map((entry) => entry.space).sort() };
   } catch { return undefined; }
+}
+
+async function detectEndorsedMigration(sessionDir: string, collisionDetails: readonly SpaceCollision[], entries: readonly MeshEntry[]): Promise<EndorsedMigration | undefined> {
+  const seen = new Set<string>();
+  for (const c of collisionDetails) {
+    if (c.existingOrigin !== "catalog" || !c.existingIdp) continue;
+    const key = `${c.existingIdp}\0${c.catalogIdp}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const migration = await verifiedMigrationFrom(sessionDir, c.existingIdp, entries, c.catalogIdp);
+    if (migration) {
+      const spaces = collisionDetails.filter((item) => item.existingOrigin === "catalog" && item.existingIdp && normalizeIdpUrl(item.existingIdp) === migration.fromIdp && normalizeIdpUrl(item.catalogIdp) === migration.toIdp).map((item) => item.space);
+      if (spaces.length) return { ...migration, spaces };
+    }
+  }
+  return undefined;
 }
 
 async function filterSupersededAccounts(results: readonly AuthSpaceCatalogResult[], diffs: readonly { collisions: string[] }[], entries: readonly MeshEntry[]) {
@@ -82,17 +99,12 @@ async function filterSupersededAccounts(results: readonly AuthSpaceCatalogResult
   };
 }
 
-async function detectSignedInMigration(signedInProviders: readonly string[], entries: readonly MeshEntry[]): Promise<EndorsedMigration | undefined> {
+async function detectSignedInMigration(sessionDir: string, signedInProviders: readonly string[], entries: readonly MeshEntry[]): Promise<EndorsedMigration | undefined> {
   if (signedInProviders.length < 2) return undefined;
   const signedInSet = new Set(signedInProviders.map((url) => normalizeIdpUrl(url)));
   for (const fromUrl of signedInSet) {
-    if (!fromUrl.startsWith("https://")) continue;
-    const oldSpaces = entries.filter((entry) => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === fromUrl).map((entry) => entry.space);
-    if (!oldSpaces.length) continue;
-    const endorsement = await readEndorsedTarget(fromUrl, entries);
-    if (endorsement && endorsement !== fromUrl && signedInSet.has(endorsement)) {
-      return { fromIdp: fromUrl, toIdp: endorsement, spaces: oldSpaces.sort() };
-    }
+    const migration = await verifiedMigrationFrom(sessionDir, fromUrl, entries);
+    if (migration && signedInSet.has(migration.toIdp)) return migration;
   }
   return undefined;
 }
@@ -115,8 +127,8 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
   }
   const { entries, unusable } = readMeshRegistry();
   const signedInProviders = listIdpAccounts(sessionDir).filter((account) => account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp);
-  const collisionDetails = collisions ? collectCollisions(refreshResults, entries) : [];
-  const migration = collisionDetails.length ? await detectEndorsedMigration(collisionDetails, entries) : await detectSignedInMigration(signedInProviders, entries);
+  const collisionDetails = collisions ? collectCollisions(sessionDir, refreshResults, entries) : [];
+  const migration = collisionDetails.length ? await detectEndorsedMigration(sessionDir, collisionDetails, entries) : await detectSignedInMigration(sessionDir, signedInProviders, entries);
   const addressable = entries.filter((entry) => isDaemonSpaceName(entry.space));
   return {
     kind: "spaces",
@@ -139,27 +151,31 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
   };
 }
 
-/** Replace one non-catalog registration with a signed-in account's catalog entry when no local stack runs it. */
-export async function resolveSpaceConflict(sessionDir: string, space: string, idp: string): Promise<DaemonSpaces> {
+/** Replace one non-catalog (or orphaned signed-out catalog) registration when no local stack runs it, checking every refusal before `disconnect`. */
+export async function resolveSpaceConflict(sessionDir: string, space: string, idp: string, disconnect?: () => Promise<void>): Promise<DaemonSpaces> {
   if (resolve(sessionDir) !== resolve(homeCotalDir()))
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Space registrations can only be changed in the default Cotal home.");
+  const targetIdp = normalizeIdpUrl(idp);
+  const signedIn = signedInMachineAccounts(sessionDir);
+  if (!signedIn.some((account) => account.idpUrl === targetIdp))
+    throw new CommandFailure("refused", "AUTH_REQUIRED", `Sign in to ${new URL(targetIdp).host} before replacing "${space}".`);
   const { entries } = readMeshRegistry();
   const existing = entries.find((entry) => entry.space === space);
   if (!existing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `No space named "${space}" is registered on this computer.`);
-  if (existing.origin === "catalog") {
+  const ownerSignedIn = existing.origin === "catalog" && Boolean(existing.catalogOwner && signedIn.some((account) => account.ownerKey === existing.catalogOwner));
+  if (ownerSignedIn) {
     const source = existing.userAuth?.idp.url ?? "another signed-in account";
     throw new CommandFailure("refused", "CONFLICT", `"${space}" belongs to ${source}. Move or sign out of that account instead of replacing one space.`);
   }
   await withProjectTrustMigration(true, false, async () => {
     try {
-      await forgetLocalSpaceRegistration(space);
+      await forgetLocalSpaceRegistration(space, { allowOrphanCatalog: existing.origin === "catalog", beforeRemove: disconnect });
     } catch (e) {
       if (isCommandFailure(e) && e.code === "LIFECYCLE_BLOCKED")
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${space}" is currently running on this computer. Stop that local space first, or keep the local registration.`);
-      if (isCommandFailure(e)) throw e;
       throw e;
     }
-    await prepareCatalogTargets({ sessionDir, idpUrl: idp, force: true });
+    await prepareCatalogTargets({ sessionDir, idpUrl: targetIdp, force: true });
   });
   return desktopSpaces(sessionDir, true);
 }
