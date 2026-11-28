@@ -8,6 +8,7 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import type { RuntimeReplay } from "./endpoint-history.js";
+import { CONNECTION_RECOVERY_MS, withDeadline } from "./deadline.js";
 import { ClosedConnectionError, TimeoutError } from "@nats-io/transport-node";
 import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
@@ -118,7 +119,7 @@ export class EndpointSubscriptions {
     const retry = this.replays.get(channel);
     const replay = retry ?? { through: (await this.armJoin([channel])).get(channel)!, beganAt: Date.now(), seq: 0, liveIds: new Set<string>() };
     const startSeq = replay.seq;
-    const nc = this.conn.nc;
+    const originalNc = this.conn.nc;
     this.replays.set(channel, replay);
     // Live read (SPEC v0.3): open the native core subscription — MANAGER-FREE, broker-enforced by
     // sub.allow. This is what lets an agent join a channel's live feed on its own. The sub.allow
@@ -126,28 +127,24 @@ export class EndpointSubscriptions {
     // ALSO drops a channel on ANY refusal (incl. a late one), so this is not a timing gamble (#13).
     let backfilled = 0;
     const pending = () => !this.lifecycle.stopped && this.replays.get(channel) === replay;
+    const rememberLive = (id: string) => { if (pending()) replay.liveIds.add(id); };
     let confirmed = false;
     try {
-      this.parts.consumers.subscribeChat(channel, id => {
-        if (pending()) replay.liveIds.add(id);
-      });
+      this.parts.consumers.subscribeChat(channel, rememberLive);
       await this.confirmJoin(channel);
       confirmed = true;
       this.confirmedJoins.add(channel);
-      // The registry handle belongs to the connection. Read policy after the replacement binds.
-      const rebuild = this.lifecycle.rebuildPromise;
-      if (rebuild && pending()) await rebuild;
-      if (retry && pending()) replay.through = (await this.armJoin([channel])).get(channel)!;
+      // Bind the live tail on the same epoch that supplies the replay policy and frontier.
+      if (pending() && (this.lifecycle.rebuildPromise || this.conn.nc !== originalNc || originalNc?.isClosed()))
+        await this.restoreConfirmedJoin(channel, pending, rememberLive);
+      const nc = this.conn.nc;
+      if ((retry || nc !== originalNc) && pending()) replay.through = (await this.armJoin([channel])).get(channel)!;
       if (pending()) backfilled = await this.parts.history.backfillRuntimeJoin(channel, replay, pending);
       if (pending() && (this.lifecycle.rebuildPromise || this.conn.nc !== nc || nc?.isClosed())) {
         if (retry || replay.seq !== startSeq)
           throw new Error(`channel history replay did not complete. Delivered ${backfilled} messages before the read ended.`);
         // An empty or disabled replay has no state to recover. Restore its confirmed live join.
-        await this.lifecycle.rebuildPromise;
-        if (pending()) {
-          this.parts.consumers.subscribeChat(channel);
-          await this.confirmJoin(channel);
-        }
+        await this.restoreConfirmedJoin(channel, pending, rememberLive);
       }
       if (pending() && this.delivery.chatSubDenied.has(channel))
         throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
@@ -164,6 +161,23 @@ export class EndpointSubscriptions {
     replay.liveIds.clear();
     if (commit) this.identity.channels.push(channel);
     return this.joinResult(channel, backfilled, commit);
+  }
+
+  private async restoreConfirmedJoin(channel: string, pending: () => boolean, onLive: (id: string) => void): Promise<void> {
+    const rebuild = this.lifecycle.rebuildPromise;
+    if (rebuild || this.lifecycle.reestablishing || !this.conn.nc || this.conn.nc.isClosed()) {
+      const ready = async () => {
+        const bound = rebuild ? await rebuild.then(() => true, () => false) : !this.lifecycle.reestablishing;
+        if (pending() && (!bound || !this.conn.nc || this.conn.nc.isClosed() || !this.conn.jsm))
+          await this.parts.connection.reestablishLoop();
+      };
+      await withDeadline(ready(), CONNECTION_RECOVERY_MS, () => new Error(this.notLiveMsg()));
+    }
+    if (pending()) {
+      if (!this.conn.nc || this.conn.nc.isClosed() || !this.conn.jsm) throw new Error(this.notLiveMsg());
+      this.parts.consumers.subscribeChat(channel, onLive);
+      await this.confirmJoin(channel);
+    }
   }
 
   private async confirmJoin(channel: string): Promise<void> {

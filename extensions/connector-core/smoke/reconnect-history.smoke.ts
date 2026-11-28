@@ -250,13 +250,21 @@ async function checkPendingJoin(
   await agent.stop();
 }
 
-async function checkJoinDuringRebuild(manager: CotalEndpoint, publisher: CotalEndpoint) {
-  const channel = "replay.control.inflight";
-  const agent = await wideReader(manager, "join-inflight", []);
+async function checkJoinDuringRebuild(
+  manager: CotalEndpoint, publisher: CotalEndpoint, variant: "inflight" | "failed-dial" | "retained",
+) {
+  const channel = `replay.control.${variant}`;
+  const retained: string[] = [];
+  if (variant === "retained") {
+    for (let i = 0; i < 5; i++) retained.push((await publisher.multicast(`retained ${i}`, { channel })).id);
+  }
+  const agent = await wideReader(manager, `join-${variant}`, []);
   await agent.start();
-  assert.equal(agent.channelInfo(channel).replay, false);
+  assert.equal(agent.channelInfo(channel).replay, variant === "retained");
   const consumers = agent.ep["consumers"];
   const credentials = agent.ep["credentials"];
+  const connection = agent.ep["connection"];
+  const bind = connection.connectAndBind.bind(connection);
   const confirm = consumers.confirmChatSub.bind(consumers);
   const close = credentials.closeWithoutLibraryReconnect.bind(credentials);
   let enterNullWindow!: () => void;
@@ -268,11 +276,18 @@ async function checkJoinDuringRebuild(manager: CotalEndpoint, publisher: CotalEn
     await releaseRebuild;
     await close(nc);
   };
-  let rebuild: Promise<void> | undefined;
+  const failedDial = new Error("probe: first dial refused");
+  if (variant === "failed-dial") {
+    connection.connectAndBind = async () => {
+      connection.connectAndBind = bind;
+      throw failedDial;
+    };
+  }
+  let rebuild: Promise<unknown> | undefined;
   consumers.confirmChatSub = async () => {
     await confirm();
     consumers.confirmChatSub = confirm;
-    rebuild = agent.ep.reconnect();
+    rebuild = agent.ep.reconnect().catch((error: unknown) => error);
     await nullWindow;
   };
   const deliveries: { id: string; historical: boolean }[] = [];
@@ -294,18 +309,24 @@ async function checkJoinDuringRebuild(manager: CotalEndpoint, publisher: CotalEn
     resumeRebuild();
     credentials.closeWithoutLibraryReconnect = close;
   }
-  await rebuild;
+  assert(rebuild);
+  assert.equal(await rebuild, variant === "failed-dial" ? failedDial : undefined);
   const result = await joining;
-  console.log(`join during held rebuild: ${JSON.stringify({ settledWhileHeld, result, joined: agent.joinedChannels() })}`);
-  assert(!result.isError && result.text.startsWith(`Joined #${channel} (live).`), result.text);
-  assert(!settledWhileHeld, "the join must wait for the replacement connection");
-  assert(!result.text.includes("Backfilled") && agent.joinedChannels().includes(channel));
+  console.log(`join during held rebuild ${variant}: ${JSON.stringify({ settledWhileHeld, result, joined: agent.joinedChannels(), historical: deliveries.length })}`);
+  const expectedBackfill = retained.length ? `Backfilled ${retained.length} earlier messages` : "Backfilled";
+  const joined = !result.isError && result.text.startsWith(`Joined #${channel} (live).`) && agent.joinedChannels().includes(channel);
+  const backfillMatches = result.text.includes(expectedBackfill) === Boolean(retained.length);
+  if (!joined || settledWhileHeld || !backfillMatches) {
+    await agent.stop();
+    return result.text;
+  }
   const post = await publisher.multicast("live after held rebuild", { channel });
   const marker = await publisher.multicast("live delivery marker", { channel });
   await until(() => deliveries.some(item => item.id === marker.id), "the restored subscription must receive live traffic");
-  assert.deepEqual(deliveries, [{ id: post.id, historical: false }, { id: marker.id, historical: false }]);
-  console.log("held rebuild live deliveries: 2, no duplicates");
+  assert.deepEqual(deliveries, [...retained.map(id => ({ id, historical: true })), { id: post.id, historical: false }, { id: marker.id, historical: false }]);
+  console.log(`held rebuild ${variant} deliveries: ${retained.length} retained, 2 live, no duplicates`);
   await agent.stop();
+  return undefined;
 }
 
 try {
@@ -438,11 +459,18 @@ try {
   await seedChannelRegistry({ servers, space, creds, file: { defaults: { replay: true }, channels: {
     "replay.control.rebuild": { deliveryClass: "live" },
     "replay.control.inflight": { deliveryClass: "live", replay: false },
+    "replay.control.failed-dial": { deliveryClass: "live", replay: false },
+    "replay.control.retained": { deliveryClass: "live", replay: true },
     "replay.control.stop": { deliveryClass: "live", replay: false },
     "replay.control.leave": { deliveryClass: "live", replay: false },
   } } });
   for (const action of ["rebuild", "stop", "leave"] as const) await checkPendingJoin(manager, publisher, action);
-  await checkJoinDuringRebuild(manager, publisher);
+  const rebuildFailures = [];
+  for (const variant of ["inflight", "failed-dial", "retained"] as const) {
+    const failure = await checkJoinDuringRebuild(manager, publisher, variant);
+    if (failure) rebuildFailures.push(failure);
+  }
+  assert.deepEqual(rebuildFailures, [], "held rebuild joins must succeed on the replacement connection");
   await checkWideReplay(manager, publisher);
   await checkInterruptedReplay(manager, publisher);
   await checkOverlappingWindows(manager, publisher, creds);
@@ -452,4 +480,4 @@ try {
   await killAndAwaitExit(broker);
   release();
 }
-emitSentinel({ passed: 13, failed: 0 });
+emitSentinel({ passed: 15, failed: 0 });
