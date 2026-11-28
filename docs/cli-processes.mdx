@@ -646,7 +646,7 @@ search permission to group and other accounts, such as an owned `.config` direct
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
 Relative paths, control characters and malformed quoting are refused.
 
-On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
+On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation. It leaves the unit, receipt and running daemon unchanged. It reports `Already installed` when the unit is enabled and linger is on. Otherwise, it reports why autostart is unavailable or could not be verified. `cotal daemon status` reports confirmed autostart problems even when the daemon is running. A modified source or another installation still refuses installation.
 
 On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
 installation reports a conflict and leaves the running daemon alone.
@@ -1230,6 +1230,10 @@ before linger is enabled. Publication checks the directory again before any ling
 After the linger calls, installation verifies the published unit's digest and directory protection
 again before submitting reload, enable or start. A changed source or unsafe path stops registration
 and keeps the source and receipt for inspection.
+If logind denies linger, the unit and receipt remain so you can recover without reinstalling.
+The refusal names the command to enable linger with administrator privileges and then enable and
+start the service as the original user. Until then, manually starting the daemon does not make
+it survive logout or start after a reboot.
 
 `serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
 resuming connections. The value must be whole milliseconds from `1` to `2147483647`.

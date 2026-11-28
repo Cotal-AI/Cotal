@@ -33,7 +33,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
@@ -191,7 +191,7 @@ async function status(args: ParsedArgs): Promise<void> {
     const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
     if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+        remedy: linuxAutostartWarning(paths, home) ?? `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },
       });
     }
@@ -209,7 +209,8 @@ async function status(args: ParsedArgs): Promise<void> {
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
-  writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
+  const warning = linuxAutostartWarning(paths, home);
+  writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result, ...(warning ? { warnings: [{ code: "TARGET_UNAVAILABLE", target: null, message: warning }] } : {}) }, statusView);
 }
 
 /** Select the provider before approval or native setup effects. */
@@ -399,12 +400,15 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
       return;
     }
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
-    writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
-      { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
-        { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
+    const warning = dry ? undefined : linuxAutostartWarning(paths, home);
+    const autostart = warning === null ? "The recorded service's autostart could not be verified." : warning;
+    const target = { unit: r.unit };
+    writeResult(presentation, { command: "daemon install", target, result: r, ...(autostart && presentation === "json" ? { warnings: [{ code: "TARGET_UNAVAILABLE", target, message: autostart }] } : {}) }, () => ({ sections: [
+      { title: autostart ? "Service recorded" : r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
+        { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : ("lingerEnabled" in r && r.lingerEnabled) ? "enabled by this install" : "not enabled"] as [string, string]] : []), ["Restart", r.restart], [autostart ? "Configured target" : "Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
-          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
+          : autostart ?? `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
       ] },
     ] }));
     return;
@@ -460,7 +464,10 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
     if (!idp) {
       let discovery;
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
-      catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account"); }
+      catch {
+        const remedy = linuxAutostartWarning(paths, home);
+        throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account", remedy ? { remedy } : undefined);
+      }
       if (!discovery.ok || "event" in discovery || !("signedInProviders" in discovery.result)) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon cannot report its sign-in; pass --idp <url> to connect an account");
       const providers = discovery.result.signedInProviders ?? [];
       if (!providers.length) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");

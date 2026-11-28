@@ -29,10 +29,15 @@ if (basename(process.argv[1]) === "loginctl") {
   operation = "directory-read";
   console.log(context.environmentOutput ?? `HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
 } else if (args.includes("show")) {
-  operation = "unit-read";
   const unit = args[args.indexOf("show") + 1];
   if (!context.units.includes(unit)) process.exit(89);
-  console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=\nNeedDaemonReload=no`);
+  if (args.includes("--property=UnitFileState") && args.includes("--value")) {
+    operation = "autostart-read";
+    console.log(context.unitFileState ?? (context.denyLinger ? "disabled" : "enabled"));
+  } else {
+    operation = "unit-read";
+    console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=\nNeedDaemonReload=no`);
+  }
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);

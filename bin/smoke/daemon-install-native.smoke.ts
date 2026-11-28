@@ -769,7 +769,7 @@ try {
         const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string; unit?: string; alreadyInstalled?: boolean }; error?: { code: string; remedy?: string } };
         return { status: child.status, doc, out: child.stdout, err: child.stderr };
       };
-      const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
+      const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read", "autostart-read"].includes(c.operation)).length : 0;
       const home = kind === "default" || kind === "unrecorded-default" ? undefined : a;
       const receiptFile = join(home ?? join(dir, "cotal", "daemon"), "service-unit.json");
       if (kind.startsWith("unrecorded-")) {
@@ -1004,7 +1004,7 @@ try {
         return { status: child.status, output: child.stdout + child.stderr };
       };
       const operations = (): string[] => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => (JSON.parse(line) as { operation: string }).operation) : [];
-      const effects = () => operations().filter((operation) => !["directory-read", "linger-read"].includes(operation));
+      const effects = () => operations().filter((operation) => !["directory-read", "linger-read", "autostart-read"].includes(operation));
       const unsafe = ["world-ancestor", "symlink", "file-ancestor"].includes(kind) || kind === "group-ancestor" && reachable(config) || kind === "group-leaf" && reachable(unitDir);
       const directoryExisted = existsSync(unitDir);
       const previewRefusal = kind === "existing-unit" ? "CONFLICT" : kind === "file-ancestor" ? "TARGET_UNAVAILABLE" : unsafe ? "PERMISSION_DENIED" : undefined;
@@ -1031,7 +1031,29 @@ try {
         const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
         check(`N8 ${kind} publication matches its receipt`, receipt.unitPath === unitPath && receipt.unitSha256 === sha(readFileSync(unitPath)) && (lstatSync(unitPath).mode & 0o777) === 0o600);
         check(`N8 ${kind} native ordering`, effects().join(",") === (kind === "linger-denied" ? "enable-linger" : "enable-linger,daemon-reload,enable,start"), operations());
-        if (kind === "linger-denied") check("N8 linger refusal names retained unit recovery", /recorded unit was not enabled or started/.test(installed.output) && /cotal daemon uninstall/.test(installed.output));
+        if (kind === "linger-denied") {
+          const repair = "sudo loginctl enable-linger smoke && systemctl --user enable --now cotal-daemon.service";
+          check("N8 linger refusal names administrator recovery without discarding the receipt", installed.output.includes("recorded unit was not enabled or started") && installed.output.includes(repair), installed);
+          const plain = call("install", ["--plain"]);
+          const repeated = call("install", ["--json"]);
+          const status = call("status", ["--json"]);
+          check("N8 retry completes without claiming the service is enabled", plain.status === 0 && plain.output.includes("Service recorded") && plain.output.includes("not enabled") && plain.output.includes(repair) && !plain.output.includes("Already installed"), plain);
+          check("N8 retry carries the warning in the existing JSON result envelope", repeated.status === 0 && JSON.parse(repeated.output).result.lingerEnabled === false && JSON.parse(repeated.output).warnings.some((warning: { message: string }) => warning.message.includes(repair)), repeated);
+          check("N8 stopped status retains NOT_RUNNING and diagnoses autostart", status.status === 2 && JSON.parse(status.output).error.cause.code === "NOT_RUNNING" && JSON.parse(status.output).error.remedy.includes(repair), status);
+          for (const [unitFileState, linger, note, command] of [
+            ["enabled", "no", "will not keep running after logout", "sudo loginctl enable-linger smoke`"],
+            ["enabled-runtime", "yes", "will not start automatically after a restart", "`systemctl --user enable --now cotal-daemon.service`"],
+            ["masked", "yes", "autostart could not be verified", ""],
+            ["enabled", "unknown", "autostart could not be verified", ""],
+          ] as const) {
+            writeFileSync(configFile, JSON.stringify({ ...context, unitFileState }));
+            writeFileSync(lingerFile, `Linger=${linger}\n`);
+            const retry = call("install", ["--plain"]);
+            check(`N8 ${unitFileState} with linger ${linger} does not claim autostart`, retry.status === 0 && retry.output.includes(note) && retry.output.includes(command) && !retry.output.includes("keeps running after you log out"), retry);
+          }
+          writeFileSync(lingerFile, "Linger=no\n");
+          check("N8 retry and status leave the recorded service unchanged", effects().join(",") === "enable-linger" && readFileSync(lingerFile, "utf8") === "Linger=no\n" && sha(readFileSync(unitPath)) === receipt.unitSha256, operations());
+        }
         const removed = call("uninstall", ["--yes", "--json"]);
         check(`N8 ${kind} uninstall recovers recorded installation`, removed.status === 0 && !existsSync(unitPath) && !existsSync(receiptFile), removed);
       }
