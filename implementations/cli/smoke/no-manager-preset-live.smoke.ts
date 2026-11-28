@@ -131,6 +131,10 @@ try {
   check("an ordinary retry from another folder names the requested stack",
     rooted.status === 2 && rooted.env?.error?.code === "LIFECYCLE_BLOCKED" && launcher !== undefined
       && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)} --json`)} again`, shown(rooted));
+  const pinnedStart = from(home, "up", "--root", root, "--space", space, "--server", server, "--json");
+  check("the service refusal retains the original startup when it also pins the broker address",
+    pinnedStart.status === 2 && pinnedStart.env?.error?.code === "LIFECYCLE_BLOCKED" &&
+      pinnedStart.env.error.remedy === `${stop}, then repeat your original startup command from the same folder with the same options`, shown(pinnedStart));
   const intake = await openTelemetryIntake();
   try {
     const measured = (words: string[]) => new Promise<{ status: unknown; stderr: string }>(resolve => {

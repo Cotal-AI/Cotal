@@ -204,6 +204,32 @@ for (const level of ["regular", "minimal"]) {
     event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
 }
 
+{
+  const s = sandbox(), marker = "fixture-credential-name", file = join(s.home, `ordinary ${marker}`);
+  writeFileSync(file, "invalid fixture text", { mode: 0o600 });
+  for (const [path, code, status] of [[file, "SCHEMA_INVALID", 1], [`${file}-missing`, "TARGET_NOT_FOUND", 2]] as const) {
+    const r = await s.run(["send", "--to", "fixture", "fixture", "--server", "nats://127.0.0.1:1", "--creds", path, "--json"]);
+    const event = r.sent.find(row => row.event === "command");
+    check(`a credential file refusal keeps its path local for ${code}`, r.status === status && r.stdout.includes(marker) &&
+      event?.errorCode === code && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
+}
+
+{
+  const s = sandbox(), marker = "fixture-service-reference", ref = join(s.home, `sample ${marker}`);
+  const executable = join(s.home, "unused.exe"), spec = join(s.project, "service.json");
+  writeFileSync(executable, "fixture", { mode: 0o700 });
+  writeFileSync(ref, "fixture", { mode: 0o600 });
+  writeFileSync(spec, JSON.stringify({ schemaVersion: 1, space: "refcheck", launch: { type: "process", executable, args: [], cwd: s.project },
+    readiness: { type: "process", timeoutMs: 10000 }, credentialRef: { kind: "file", path: ref } }));
+  const created = await s.run(["space", "create", "refcheck", "--root", s.project, "--json"]);
+  const added = await s.run(["service", "add", "idle", "--file", spec, "--space", "refcheck", "--json"]);
+  renameSync(ref, `${ref}.saved`);
+  const r = await s.run(["service", "start", "idle", "--space", "refcheck", "--json"]), event = r.sent.find(row => row.event === "command");
+  check("a missing saved service credential reference names its file only locally", created.status === 0 && added.status === 0 && r.status === 2 &&
+    r.stdout.includes(marker) && event?.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
@@ -316,6 +342,12 @@ for (const level of ["regular", "minimal"]) {
     check("a file in the requested store path is named only locally", r.status === 1 && r.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
       && event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
+  const blockedStore = join(s.project, `private ${marker}`, ".cotal", "data");
+  for (const args of [["up"], ["backup", "restore", "artifact"], ["up", "--restore", "artifact"]]) {
+    const r = await s.run([...args, "--store-dir", blockedStore, "--json"]), event = r.sent.find(body => body.event === "command");
+    check(`${args.join(" ")} keeps a refused control-directory store local`, r.status === 1 && r.stdout.includes(marker) && !existsSync(blockedStore) &&
+      event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
   const records = join(s.home, ".cotal", "meshes"), record = join(records, "relative.json");
   mkdirSync(records, { recursive: true });
   const legacy = JSON.stringify({ space: "relative", root: `../folder ${marker}`, origin: "up", mode: "auth", server: "nats://127.0.0.1:4222", ts: new Date(0).toISOString() });
@@ -329,6 +361,13 @@ for (const level of ["regular", "minimal"]) {
   check("a project path with a control character is named only locally", refused.status === 1 && refused.stdout.includes(marker) && refused.stdout.includes("a tab") && !existsSync(odd)
     && reported.length === 1 && reported[0]?.errorCode === "USAGE_INVALID" && reported[0].errorMessage === null && reported[0].errorStack === null && !JSON.stringify(refused.sent).includes(marker), shown(refused));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  const badPersona = join(s.project, `sample ${marker}.md`);
+  writeFileSync(badPersona, "---\nname: [unfinished\n---\n");
+  const preview = await s.run(["spawn", "--foreground", "--dry-run", "--space", space, "--file", badPersona, "--json"]);
+  const invalidPersona = preview.sent.find(body => body.event === "command");
+  check("a malformed foreground persona stays in the local preview diagnostic", prepared.status === 0 && preview.status === 1 &&
+    preview.stdout.includes(badPersona) && invalidPersona?.errorCode === "SCHEMA_INVALID" && invalidPersona.errorMessage === null &&
+    invalidPersona.errorStack === null && !JSON.stringify(preview.sent).includes(marker), shown(preview));
   const other = "fixture-tenant-marker", store = join(s.project, `store ${marker}`), stream = `CHAT_${other}`;
   mkdirSync(join(store, "jetstream", "$G", "streams", stream), { recursive: true, mode: 0o700 });
   const occupied = await s.run(["up", "--space", space, "--store-dir", store, "--server", "nats://127.0.0.1:1", "--open", "--no-manager", "--json"]);
