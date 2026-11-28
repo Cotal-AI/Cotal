@@ -223,6 +223,8 @@ before its process exists records the instance as failed. Its refusal names the 
 space that is prepared but not started. `start` can then try again on the same instance, and
 `stop`, `remove` and `cotal down` find nothing to stop.
 
+Changing a running preset service's start options requires stopping it first. If you asked for a dry run, the refusal suggests a read-only preview of the stop. The suggested stop keeps the service's space and your `--plain` or `--json` output format.
+
 A definition starts only in the root it was added in. One a forgotten space of the same name left in
 another folder refuses `start`, `restart` and `install` `CONFLICT` (exit 2) before anything launches.
 The refusal names the root it was added in and `cotal service remove <name> --space <space> --yes`,

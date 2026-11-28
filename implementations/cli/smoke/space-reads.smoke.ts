@@ -446,10 +446,13 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const clearText = run(["use", "beta"]) && run(["use", "--clear"]);
   check("its receipt says what was cleared", clearText.status === 0 && /cleared the selection \(was beta\)/.test(clearText.stdout), shown(clearText));
   const none = json(["use", "none"]);
-  check("with nothing selected, an unknown name's refusal does not name --clear", none.status === 2 && none.env?.error?.remedy === "see the registered and prepared spaces with `cotal space`", shown(none));
+  check("with nothing selected, an unknown name offers the JSON inventory only", none.status === 2 && none.env?.error?.remedy === "see the registered and prepared spaces with `cotal space --json`", shown(none));
   run(["use", "alpha"]);
   const kept = json(["use", "none"]);
-  check("with a space selected, an unknown name's refusal names --clear", kept.status === 2 && /cotal use --clear/.test(kept.env?.error?.remedy ?? "") && getCurrent() === "alpha", shown(kept));
+  const keptPlain = run(["use", "none", "--plain"]);
+  for (const [format, advice] of [["--json", kept.env?.error?.remedy ?? ""], ["--plain", keptPlain.stderr]] as const) {
+    check(`with a selection, both suggested commands retain ${format}`, kept.status === 2 && keptPlain.status === 2 && advice.includes(`cotal space ${format}\``) && advice.includes(`cotal use --clear ${format}\``) && getCurrent() === "alpha", advice);
+  }
   // A name of any length is looked up whole. The refusal repeats its first 128 characters and its
   // length, so one over-long argument does not print a line as long as itself.
   const long = "x".repeat(100_000);

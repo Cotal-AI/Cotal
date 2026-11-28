@@ -82,6 +82,7 @@ import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensure
 import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
 import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
+import { localDiagnostic } from "../telemetry.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
 import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
@@ -367,7 +368,7 @@ function assertNewStorePath(target: string, source: string): void {
   if (!statSync(dirname(target), { throwIfNoEntry: false })?.isDirectory()) throw missingRestoreStoreParent(target);
   const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
   if (target !== source && lstatSync(target, { throwIfNoEntry: false }))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
+    throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy }));
 }
 
 function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {

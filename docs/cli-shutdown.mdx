@@ -66,7 +66,7 @@ removed its credential. Duplicate names and `--instance` with multiple names are
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
 `TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Its next step is the folder
-where `cotal up` started a stack, or, when this machine has no stack started or registered at all,
+where `cotal up` started the intended stack. Repeat your original command there with its options unchanged. When this machine has no stack started or registered at all, the next step is
 `cotal up` in a project, as `cotal status` says. A bare `down` in such a folder refuses the same
 way, including with `--json` or `--plain`. Its JSON target names the current root rather than
 replacing the missing-stack diagnosis with an unsupported-output refusal. A root whose stack is

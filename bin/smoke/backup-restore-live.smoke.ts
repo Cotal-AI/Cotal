@@ -12,6 +12,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DeliverPolicy, jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
+import { openTelemetryIntake } from "../../implementations/cli/smoke/_telemetry-intake.js";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
   acquireMaintenanceLock,
@@ -188,6 +189,20 @@ function assertOverlappingRestoreTarget(root: string, artifact: string, run: Ret
   assert.deepEqual(readdirSync(attempts).sort(), attemptsBefore);
 }
 
+async function checkRestoreTelemetry(root: string, env: NodeJS.ProcessEnv, cases: [string[], number, string][]): Promise<void> {
+  const intake = await openTelemetryIntake();
+  try {
+    for (const [args, status, code] of cases) {
+      const before = intake.received.length;
+      const child = spawn(tsx, [cliPath, ...args], { cwd: root, stdio: "ignore", timeout: 30_000,
+        env: { ...env, DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url } });
+      const exit = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+      const events = intake.received.slice(before).filter(body => body.event === "command");
+      assert.deepEqual([exit, events.map(body => [body.command, body.errorCode, body.errorMessage === null, body.errorStack === null])], [status, [[args[0], code, true, true]]]);
+    }
+  } finally { intake.server.close(); }
+}
+
 async function scenario(mode: "open" | "auth"): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-backup-restore-${mode}-root-`)));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-backup-restore-${mode}-home-`)));
@@ -262,6 +277,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
     if (mode === "open") {
       must("verify registry backup inside maintenance", run("backup", "verify", registryArtifact, "--plain"));
+      const existing = mkdtempSync(join(root, "existing restore target "));
+      await checkRestoreTelemetry(root, env, [
+        [["backup", "restore", registryArtifact, "--json", "--store-dir", existing], 1, "USAGE_INVALID"],
+        [["backup", "restore", registryArtifact, "--json", "--store-dir", join(existing, "missing parent", "target")], 1, "USAGE_INVALID"],
+      ]);
+      assert.deepEqual(readdirSync(existing), []);
       const cold = mkdtempSync(join(tmpdir(), "cotal-backup-restore-cold-"));
       try {
         const project = join(cold, "project"), config = join(cold, "config");
@@ -554,6 +575,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     // above. The registry restore leaves out the payload stream and the full restore leaves out
     // the post sent after the legacy restore.
     assert.equal(active.launch?.previousCutNewer, true, `${mode} restore journals that the cut it replaced is newer than its artifact`);
+    if (mode === "open") await checkRestoreTelemetry(root, env, [
+      [["up", "--space", space, "--server", server, "--detach"], 2, "CONFLICT"],
+      [["backup", "cleanup-fallback", active.restore.attemptId, "--json"], 1, "USAGE_INVALID"],
+    ]);
     const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer space state";
     // The receipt previews cleanup and names the separate consent that deletion needs.
     assert.ok(restored.stdout.includes(`✓ restored the backup ${restoreArtifact === registryArtifact ? "registry" : "in full"} as restore attempt ${active.restore.attemptId}`), `${mode} up --restore names its attempt\n${restored.stdout}`);
@@ -652,6 +677,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       // A file put into the previous store after the restore is no store's, so neither cleanup deletes
       // that store until it is moved out.
       writeFileSync(join(previous, "notes.txt"), "kept");
+      if (mode === "open") await checkRestoreTelemetry(root, env, [[["backup", "cleanup-fallback", active.restore.attemptId, "--json"], 2, "CONFLICT"]]);
       const cleanupRetry = `backup cleanup-fallback ${active.restore.attemptId} --yes`;
       const foreignWithoutConsent = run("backup", "cleanup-fallback", active.restore.attemptId, "--yes", "--plain");
       assert.equal(foreignWithoutConsent.status, 2, foreignWithoutConsent.stderr);

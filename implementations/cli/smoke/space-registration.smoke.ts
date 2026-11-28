@@ -280,7 +280,7 @@ setCurrent("keep");
   const beforeSend = registryFiles();
   const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
   check("send to an unreachable registration refuses with space forget in its JSON remedy",
-    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "check the address and connection to the host; start the broker there if it is stopped. To unregister this space, run `cotal space forget open1`", shown(offline));
   const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
   check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
     offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
