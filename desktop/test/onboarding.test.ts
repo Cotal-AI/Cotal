@@ -34,7 +34,9 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   let clock: (() => void) | undefined;
   let now = Date.now();
   win.Date.now = () => now;
-  win.setTimeout = (fn: () => Promise<void>) => { tick = fn; return 1; }; win.clearTimeout = () => {};
+  // The renderer arms several timers (idle poll, watch keepalive); the harness keeps the latest
+  // 60 s poll as `tick` and lets a later same-delay timer replace it, as one poll slot does.
+  win.setTimeout = (fn: () => Promise<void>, ms: number) => { if (ms === undefined || ms >= 60_000) tick = fn; return 1; }; win.clearTimeout = () => {};
   win.setInterval = (fn: () => void) => { clock = fn; return 2; }; win.clearInterval = () => { clock = undefined; };
   let copied = "";
   Object.defineProperty(win.navigator, "clipboard", { value: { writeText: async (value: string) => { copied = value; } } });
