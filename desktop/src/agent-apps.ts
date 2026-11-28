@@ -123,7 +123,7 @@ export class AgentApps {
   private readonly activity = new Map<string, Activity>();
   private message = "";
   /** An install the service could not pick up while agents ran. Checked again once they stop. */
-  waitingForAgents = false;
+  private waitingForAgents = false;
   private lastIdlePickup = -Infinity;
   /** The message says the service has not picked an install up; a refresh that succeeds clears it. */
   private servicePending = false;
