@@ -118,7 +118,8 @@ async function proveAppendRecovery(home: string, root: string): Promise<void> {
     } finally {
       await managers.close();
     }
-    if (pid !== undefined) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    const stoppedPid = pid;
+    if (stoppedPid !== undefined) assert.throws(() => process.kill(stoppedPid, 0), { code: "ESRCH" });
   }
   console.log("PASS genuine hosted child: ENOSPC, preserved log and same-child recovery");
 }
