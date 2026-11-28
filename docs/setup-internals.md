@@ -460,6 +460,10 @@ record:
 - It brings any still-installed first-party operator extension (`@cotal-ai/*`) to the running
   generation through the staged prefix installer, and refuses with `cotal update --self` if that
   install cannot complete.
+- During an automatic version upgrade, it leaves absent first-party operator packages out of the
+  built-in npm installs and tries them separately. An npm offline cache miss in that separate install
+  leaves the operator entries and the old generation stamp in place, with no failed seed cursor.
+  The invoking command can run and the upgrade can retry.
 - It leaves a deliberately removed built-in removed.
 
 `cotal update` runs the verify mode instead of `--force`:

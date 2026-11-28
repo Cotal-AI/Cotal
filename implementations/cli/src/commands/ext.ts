@@ -15,7 +15,7 @@ import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
-import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
+import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, SEEDED_EXTENSIONS, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
 import { displayCmd, selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -341,11 +341,13 @@ export async function installExtensionSet(
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
     const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
-    if (existsSync(mutationPath)) stage.retain();
+    const pendingMutation = existsSync(mutationPath);
+    if (pendingMutation) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
       const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
-      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`,
+        result.status !== null && !pendingMutation ? { cause: result.output } : undefined);
     }
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
@@ -448,7 +450,9 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
   const manifest = loadExtensionsManifest();
   // npm installs in-place and may replace the package plus shared dependency/lock state before we
   // can validate it. A failed update must restore the previously working prefix byte-for-byte.
-  const updating = manifest.extensions.some((entry) => entry.pkg === pkg) || existsSync(extensionPackageDir(pkg));
+  const deferred = seeding && process.env.COTAL_SEED_UPGRADE === "1"
+    ? manifest.extensions.filter(absentOfficialOperatorExtension).map(entry => entry.pkg) : [];
+  const updating = deferred.length > 0 || manifest.extensions.some((entry) => entry.pkg === pkg) || existsSync(extensionPackageDir(pkg));
   const staging = !seeding && expectedPkg === undefined && !updating && !existsSync(extensionPackageDir(pkg));
   const rollbackRoot = updating ? mkdtempSync(join(dirname(liveDir), ".extensions.rollback-")) : undefined;
   const stageRoot = staging ? mkdtempSync(join(dirname(liveDir), ".extensions.stage-")) : undefined;
@@ -477,6 +481,7 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
   process.once("SIGTERM", interrupt);
   let added: string[];
   try {
+    if (deferred.length) omitSeedUpgradeDependencies(liveDir, deferred);
     // The existing writer lock remains held while workspace helpers resolve into the stage.
     if (stageRoot) process.env.XDG_CONFIG_HOME = stageRoot;
     try {
@@ -532,6 +537,27 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
     rmSync(rollbackRoot, { recursive: true, force: true });
   } catch (e) {
     console.error(c.yellow(`! could not remove the previous copy of the extensions at ${rollbackRoot} (${(e as Error).message}); remove it by hand`));
+  }
+}
+
+/** Only absent, operator-managed first-party packages can wait for their own upgrade install. */
+export function absentOfficialOperatorExtension(entry: InstalledExtension): boolean {
+  return entry.pkg.startsWith("@cotal-ai/") && !Object.values(SEEDED_EXTENSIONS).some(builtIn => builtIn.pkg === entry.pkg) &&
+    lstatSync(extensionPackageDir(entry.pkg), { throwIfNoEntry: false }) === undefined;
+}
+
+/** Leave the extension inventory intact. npm's root dependencies for this seed contain only
+ * packages it can keep or install independently of the missing operator packages. */
+function omitSeedUpgradeDependencies(prefix: string, absent: readonly string[]): void {
+  type NpmMetadata = { dependencies?: Record<string, string>; packages?: Record<string, { dependencies?: Record<string, string> }> };
+  for (const name of ["package.json", "package-lock.json"]) {
+    const path = join(prefix, name);
+    if (!existsSync(path)) continue;
+    const value = JSON.parse(readFileSync(path, "utf8")) as NpmMetadata;
+    const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
+    if (!dependencies || !absent.some(pkg => Object.hasOwn(dependencies, pkg))) continue;
+    for (const pkg of absent) delete dependencies[pkg];
+    writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
   }
 }
 
