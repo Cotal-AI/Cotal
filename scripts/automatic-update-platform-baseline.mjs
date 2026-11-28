@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createServer } from 'node:http';
@@ -366,11 +366,20 @@ function npmCommand() {
   assert(existsSync(cli), `npm CLI missing: ${cli}; no shell fallback`);
   return [process.execPath, [cli]];
 }
+function localMatrixRoot() {
+  if (process.platform !== 'linux') return '/var/tmp/upgrade-matrix';
+  const uid = process.getuid();
+  const root = `/var/tmp/upgrade-matrix-${uid}`;
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(root);
+  assert(stat.isDirectory() && stat.uid === uid, 'private root must be a directory owned by the current account');
+  assert.equal(stat.mode & 0o777, 0o700, 'private root must be mode 700');
+  return root;
+}
 function safeRoot(output) {
-  const parent = hosted ? process.env.RUNNER_TEMP : '/var/tmp/upgrade-matrix';
-  assert(parent && (hosted || process.platform === 'linux'), 'local runs require Linux private homes');
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  if (!hosted) assert.equal(statSync(parent).mode & 0o777, 0o700, 'private root must be mode 700');
+  assert(hosted ? process.env.RUNNER_TEMP : process.platform === 'linux', 'local runs require Linux private homes');
+  const parent = hosted ? process.env.RUNNER_TEMP : localMatrixRoot();
+  if (hosted) mkdirSync(parent, { recursive: true, mode: 0o700 });
   const disk = statfsSync(parent);
   assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation');
   mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -407,7 +416,7 @@ export async function matrixCell(options) {
   if (publishedLaunchd) assert(!options.candidate && macTransitionSource(source, expectedTarget, launchdProof), 'published launchd proof requires stable source >=0.164.6 below expected target transition');
   if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && macTransitionSource(source, expectedTarget, launchdProof))) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
-  const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
+  const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? localMatrixRoot(), 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stopped-daemon-before-update'] === 'true' ? 'stopped-daemon' : '', options['disabled-daemon-before-update'] === 'true' ? 'disabled-daemon' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['other-home-auth'] === 'true' ? 'other-home-auth' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
   const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}${interruptedSnapshot ? '-interrupted-snapshot-copy' : ''}`;
   const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };

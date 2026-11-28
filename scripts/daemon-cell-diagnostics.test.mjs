@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync, chmodSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -21,7 +22,7 @@ test('only the observed native macOS /var/folders alias is canonicalized', () =>
 });
 
 function fixture() {
-  const home = mkdtempSync('/var/tmp/upgrade-matrix/daemon-diagnostics-');
+  const home = mkdtempSync(join(tmpdir(), 'daemon-diagnostics-'));
   const dirs = Object.fromEntries(['cotalHome', 'daemonHome', 'config', 'output', 'pkg', 'tmp', 'globalRoot'].map(key => [key, join(home, key)]));
   for (const path of Object.values(dirs)) mkdirSync(path, { mode: 0o700 });
   const env = { PATH: '/usr/bin:/bin', HOME: home, USERPROFILE: home, COTAL_HOME: dirs.cotalHome, XDG_CONFIG_HOME: dirs.config, TMPDIR: dirs.tmp, TMP: dirs.tmp, TEMP: dirs.tmp };
@@ -246,7 +247,7 @@ test('native supervisor adapter failures do not prevent independent public statu
 });
 
 test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and fails closed on mixed state', () => {
-  const root = mkdtempSync('/var/tmp/upgrade-matrix/route-inspect-');
+  const root = mkdtempSync(join(tmpdir(), 'route-inspect-'));
   const libDir = join(root, 'lib');
   const modulesDir = join(libDir, 'node_modules');
   const pkgRoot = join(modulesDir, 'cotal-ai');

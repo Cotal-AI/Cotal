@@ -177,6 +177,10 @@ if (process.platform === "linux") {
   const relativeChild = spawn(process.execPath, ["entry.mjs", "supervise", "--space", "relative-proof", "--server", "nats://127.0.0.1:9", otherEntry], { cwd: relativeRoot, stdio: "ignore" });
   try {
     await once(relativeChild, "spawn");
+    const commandReady = () => { try { return readFileSync(`/proc/${relativeChild.pid}/cmdline`).length > 0; } catch { return false; } };
+    const commandDeadline = Date.now() + 5_000;
+    while (relativeChild.exitCode === null && Date.now() < commandDeadline && !commandReady()) await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(commandReady(), true, "the relative fixture command is readable before the census");
     const { localUpdateManagers } = await import("../src/lib/update-managers.js");
     assert.throws(() => localUpdateManagers({ space: "relative-proof" }, relativeEntry), /missing identity/, "relative same-install entry is resolved before another absolute CLI argument can exclude it");
   } finally {
@@ -210,9 +214,9 @@ if (process.platform === "linux") {
 
 async function checkRenamedManagerInstall(): Promise<void> {
   const { spawn } = await import("node:child_process");
-  const { copyFileSync, cpSync, existsSync, readdirSync, renameSync, realpathSync, symlinkSync } = await import("node:fs");
+  const { copyFileSync, cpSync, existsSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
-  const { dirname } = await import("node:path");
+  const { dirname, relative } = await import("node:path");
   const { localUpdateManagers } = await import("../src/lib/update-managers.js");
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-update-mapped-install-")));
   const repo = join(import.meta.dirname, "../../..");
@@ -248,7 +252,17 @@ async function checkRenamedManagerInstall(): Promise<void> {
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = join(root, "updater");
   try {
-    const own = stage("own"), foreign = stage("foreign");
+    const own = stage("own"), foreign = stage("foreign"), generated = stage("generated");
+    const generationId = "0123456789abcdef0123456789abcdef";
+    const logicalPkg = join(generated.prefix, "lib/node_modules/cotal-ai");
+    const retained = join(generated.prefix, "lib/.cotal-generations", generationId, "cotal-ai");
+    mkdirSync(dirname(retained), { recursive: true });
+    renameSync(logicalPkg, retained);
+    symlinkSync(join("..", ".cotal-generations", generationId, "cotal-ai"), logicalPkg);
+    const current = join(dirname(dirname(retained)), "fedcba9876543210fedcba9876543210", "cotal-ai");
+    mkdirSync(dirname(current), { recursive: true });
+    cpSync(retained, current, { recursive: true, verbatimSymlinks: true });
+    const generatedMapping = join(retained, "node_modules", archPackage, ptyFile);
     const alias = join(root, "alias"), aliasEntry = join(alias, "lib/node_modules/cotal-ai/dist/cotal.js");
     symlinkSync(own.prefix, alias);
     const space = "mapped-manager-install", port = await freePort(), server = `nats://127.0.0.1:${port}`;
@@ -257,7 +271,7 @@ async function checkRenamedManagerInstall(): Promise<void> {
     const releaseBroker = teardownOnSignal(broker, store);
     try {
       await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
-      for (const [entry, mapping, mode] of [[foreign.entry, foreign.mapping, "foreign"], [aliasEntry, own.mapping, "local"]] as const) {
+      for (const [entry, mapping, mode] of [[foreign.entry, foreign.mapping, "foreign"], [generated.entry, generatedMapping, "generation"], [aliasEntry, own.mapping, "local"]] as const) {
         const child = spawn(process.execPath, [entry, "supervise", "--space", space, "--server", server], { cwd: join(root, "project"), env, stdio: ["ignore", "pipe", "pipe"] });
         const releaseChild = teardownOnSignal(child);
         let output = "";
@@ -265,14 +279,52 @@ async function checkRenamedManagerInstall(): Promise<void> {
         child.stderr.on("data", chunk => { output += chunk; });
         try {
           await once(child, "spawn");
-          const deadline = Date.now() + 15_000;
+          let deadline = Date.now() + 15_000;
           const maps = `/proc/${child.pid}/maps`;
-          const mapped = () => existsSync(maps) && readFileSync(maps, "utf8").includes(mapping);
-          while (child.exitCode === null && Date.now() < deadline && !mapped()) await new Promise(resolve => setTimeout(resolve, 25));
-          assert.ok(mapped(), `real Manager mapped its own PTY dependency: ${output}`);
-          if (mode === "foreign") {
-            renameSync(foreign.prefix, `${foreign.prefix}.moved`);
+          const mapped = (path = mapping) => existsSync(maps) && readFileSync(maps, "utf8").includes(path);
+          const exeReady = () => { try { statSync(`/proc/${child.pid}/exe`); return true; } catch { return false; } };
+          // The first map line and a readable exe can both vanish again while the process is still starting.
+          const settled = async (path = mapping) => {
+            let stable = false;
+            while (child.exitCode === null && Date.now() < deadline && !stable) {
+              stable = mapped(path) && exeReady();
+              await new Promise(resolve => setTimeout(resolve, 25));
+              stable &&= mapped(path) && exeReady();
+            }
+            return stable;
+          };
+          assert.ok(await settled(), `real Manager mapped its own PTY dependency: ${output}`);
+          if (mode === "foreign" || mode === "generation") {
+            if (mode === "generation") {
+              assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a self-updated foreign Manager does not block while its launch entry resolves");
+              const badId = join(generated.prefix, "lib/.cotal-generations/not-a-generation-id/cotal-ai");
+              mkdirSync(dirname(badId), { recursive: true });
+              renameSync(retained, badId);
+              assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a retained package whose generation id is not 32 hex digits stays unproven");
+              const elsewhere = join(root, "elsewhere/.cotal-generations", generationId, "cotal-ai");
+              mkdirSync(dirname(elsewhere), { recursive: true });
+              renameSync(badId, elsewhere);
+              const movedMapping = join(elsewhere, "node_modules", archPackage, ptyFile);
+              deadline = Date.now() + 15_000;
+              assert.ok(await settled(movedMapping), "maps show the retained package under its different parent");
+              assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a retained package under a different parent stays unproven");
+              renameSync(elsewhere, retained);
+              rmdirSync(dirname(badId));
+              rmdirSync(dirname(elsewhere));
+              rmdirSync(dirname(dirname(elsewhere)));
+            }
+            const prefix = mode === "foreign" ? foreign.prefix : generated.prefix;
+            renameSync(prefix, `${prefix}.moved`);
+            if (mode === "generation") {
+              mkdirSync(prefix);
+              assert.throws(() => localUpdateManagers({ space }, own.entry), new RegExp(`local Manager continuity cannot be established: Manager pid ${child.pid}`), "a directory at the old prefix is not inferred as a rename");
+              rmdirSync(prefix);
+            }
             assert.deepEqual(localUpdateManagers({ space }, own.entry), [], "a foreign Manager with a missing launch entry does not block");
+            if (mode === "generation") {
+              const currentEntry = join(`${prefix}.moved`, relative(prefix, current), "dist/cotal.js");
+              assert.throws(() => localUpdateManagers({ space }, currentEntry), new RegExp(`Manager pid ${child.pid}.*has no proven CLI entry`), "an older own generation cannot be skipped as foreign");
+            }
           } else {
             assert.ok(localUpdateManagers({ space }, own.entry).some(manager => manager.pid === child.pid), "a resolvable symlink into the installation retains Manager custody");
             renameSync(alias, `${alias}.moved`);
