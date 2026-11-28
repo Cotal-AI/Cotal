@@ -460,7 +460,8 @@ const composed: Command = { ...command, async run(args) {
         if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
       }
     };
-  }, waitForInstalledGeneration: async (version: string) => {
+  }, waitForInstalledGeneration: async (version: string, verifyOnly = false) => {
+    if (verifyOnly) return waitForInstalledDaemonGeneration(version, { installed: () => true, quiet: true });
     if (admission?.disposition === "deferred") {
       // The reconcile child must finish successfully. The publishing parent owns the final outcome.
       if (!systemdActivationDeferred() || !targetReceipt?.daemon) return;

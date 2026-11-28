@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
-import { claimUpdateClosureAccess, inspectGlobalUpdateChild, readUpdateRecovery } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, inspectGlobalUpdateChild, isWaitingRestore, readUpdateRecovery } from "@cotal-ai/workspace";
 import { updateRuntime } from "@cotal-ai/cli/update";
 import { queryDaemon } from "./client.js";
 import { daemonPaths } from "./endpoint.js";
@@ -60,6 +60,11 @@ export async function adoptAutomaticUpdateChild(): Promise<boolean | void> {
     await pause();
   }
   const paths = daemonPaths();
+  if (isWaitingRestore(readUpdateRecovery())) {
+    const current = await queryDaemon({ paths });
+    // This branch never requests a restart. The parent still verifies daemon readiness.
+    if (current.ok && current.result.version === updateRuntime.version() && authenticate()) return false;
+  }
   const receipt = readFileSync(unitReceiptFile(paths), "utf8");
   const plan = planUninstall(paths, process.env.COTAL_DAEMON_HOME);
   if (plan.mechanism !== "systemd-user" || !installedDaemonIdentity(paths, process.env.COTAL_DAEMON_HOME).same) throw new Error("automatic update does not own this systemd installation");

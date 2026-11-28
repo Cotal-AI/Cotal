@@ -222,7 +222,11 @@ async function exerciseRestoreWait(opts: {
     process.kill(managerPid, "SIGCONT"); suspended = false;
     const result = await launching;
     check("The contending launch did not start a seat", !result.ok, result);
-    await waitFor("automatic restore to clear the journal", () => !readUpdateRecovery(), 150_000);
+    await waitFor("automatic restore to clear the journal", () => {
+      const recovery = readUpdateRecovery();
+      if (recovery?.phase === "paused") throw new Error(`automatic restore paused: ${recovery.reason}\n${readFileSync(join(home, "update-attempt.log"), "utf8").slice(-3000)}`);
+      return !recovery;
+    }, 150_000);
     const log = readFileSync(join(home, "update-attempt.log"), "utf8");
     check("The automatic update run completed the restore without a command", log.includes("Restored cotal-ai@0.151.2 after an interrupted update.") && !existsSync(pending!.snapshot!), log);
   } finally {

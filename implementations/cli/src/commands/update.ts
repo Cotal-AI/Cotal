@@ -166,7 +166,7 @@ export interface UpdateRuntime {
   /** Authenticate and retain an installed same-version repair before its connector writes. */
   prepareReconciliation?(target: Record<string, unknown>): Promise<void>;
   /** Wait for the replacement, or return why native daemon activation remains incomplete. */
-  waitForInstalledGeneration?(version: string): Promise<string | void>;
+  waitForInstalledGeneration?(version: string, verifyOnly?: boolean): Promise<string | void>;
   /** Explain whether the machine daemon can act on the saved automatic-update preference. */
   automaticUpdateAdvice(): Promise<string | undefined>;
   extensions(): readonly InstalledExtension[];
@@ -503,12 +503,14 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           writeUpdateRecovery({ ...recovery, preparedRestart: rt.preparedRestart?.() ?? false });
         }
         const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid), ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
-        const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
+        const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, !isWaitingRestore(record));
+        if (reconciled.stderr) rt.stderr(reconciled.stderr);
+        if (reconciled.stdout) rt.stdout(reconciled.stdout);
         if (reconciled.status !== 0) throw new Error(failure(reconciled));
         if (!startup && (rt.env.COTAL_AUTO_UPDATE !== "1" || isWaitingRestore(record))) {
           const currentRecovery = readUpdateRecovery();
           if (currentRecovery && currentRecovery.phase !== "verified-ready") writeUpdateRecovery({ ...currentRecovery, installed: record.previous, phase: "verified-ready" });
-          await rt.waitForInstalledGeneration?.(record.previous);
+          await rt.waitForInstalledGeneration?.(record.previous, isWaitingRestore(record) && rt.env.COTAL_AUTO_UPDATE === "1");
         }
         snapshot.discard();
         clearUpdateRecovery();
