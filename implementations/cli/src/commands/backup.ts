@@ -376,14 +376,20 @@ function canonicalFuturePath(path: string): string {
 /** Project missing components from the closest existing ancestor, unless it is a dangling link. */
 function canonicalMissingBackupPath(path: string): string | undefined {
   let ancestor = dirname(path);
-  while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
+  let entry = lstatSync(ancestor, { throwIfNoEntry: false });
+  while (!entry) {
     const parent = dirname(ancestor);
     if (parent === ancestor) return undefined;
     ancestor = parent;
+    entry = lstatSync(ancestor, { throwIfNoEntry: false });
   }
   try { return join(realpathSync.native(ancestor), relative(ancestor, path)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (entry.isSymbolicLink()) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the backup destination passes through ${codeSpan(shellWord(ancestor))}, a link whose target does not exist; nothing was written`, {
+      target: { directory: path, folder: dirname(path), missing: "folder", link: ancestor }, native: { code: "ENOENT" },
+      remedy: "repair the linked folder or choose a destination in an existing directory",
+    });
     return undefined;
   }
 }
@@ -416,8 +422,7 @@ function assertDestinationTraversable(destinationPath: string, folder: string): 
 
 /** Refuse a destination restore would refuse: the journal directory and both lock paths.
  *  A sibling directly under `.cotal/maintenance` is not one of those paths. */
-function assertReservedMaintenanceDestination(root: string, destinationPath: string, missingFolder: boolean): void {
-  const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
+function assertReservedMaintenanceDestination(root: string, destinationPath: string, artifact: string | undefined): void {
   if (!artifact) return;
   const { versionDir, lock, reaper } = maintenancePaths(root);
   const reserved = [
@@ -644,8 +649,8 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
   const missingFolder = missingBackupPath(destinationPath) === "folder";
-  assertReservedMaintenanceDestination(root, destinationPath, missingFolder);
   const artifact = missingFolder ? canonicalMissingBackupPath(destinationPath) : canonicalFuturePath(destinationPath);
+  assertReservedMaintenanceDestination(root, destinationPath, artifact);
   // A destination the preserved store holds, or one in a folder this account cannot write, is refused
   // here, before the lock, so it leaves no attempt behind.
   const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
