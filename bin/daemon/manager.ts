@@ -20,7 +20,8 @@ import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager, HostedAgents } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
-import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
+import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile, rebindRemovedManagerCleanup } from "./manager-cleanup.js";
+import { repairStaleCleanup, type StaleCleanup, type StaleCleanupOutcome } from "./manager-stale-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
@@ -798,6 +799,47 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     abortGenerationRestart,
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
+    /** Remove this computer's own stale Manager registration that disconnect refuses ("cleanup
+     *  identity differs"), then rebind the record to the current instance and start the Manager. */
+    async repairCleanup(space: string): Promise<HostedManager & { readonly repair: StaleCleanupOutcome }> {
+      const { remoteManagerClient } = await import("@cotal-ai/manager");
+      const read = (): StaleCleanup | undefined => {
+        const cleanup = readManagerCleanup(home, space);
+        const recorded = cleanup?.instanceId;
+        if (!cleanup || !recorded) return undefined;
+        let current: string | undefined;
+        try { current = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space); }
+        catch { return undefined; }
+        return current && current !== recorded ? { space, recorded, current } : undefined;
+      };
+      const cleanup = readManagerCleanup(home, space);
+      const outcome = await repairStaleCleanup({
+        read,
+        verifyAuthority: () => {
+          if (!cleanup) throw new Error("the Manager cleanup record is gone; nothing was changed");
+          validateManagerCleanupAuthority(cleanup);
+          const entry = findMesh(space);
+          if (!entry || entry.mode !== "user" || !entry.userAuth || entry.root !== cleanup.root || entry.userAuth.provider !== cleanup.provider)
+            throw new Error("the Manager cleanup authority no longer matches this space; nothing was changed");
+        },
+        deregister: async (request) => {
+          const provider = registry.has("auth-provider", cleanup!.provider) ? registry.resolve<AuthProvider>("auth-provider", cleanup!.provider) : undefined;
+          if (!provider?.deregisterEndpoint) throw new Error("guarded removal is unsupported for this space's provider; nothing was changed");
+          const deregister = provider.deregisterEndpoint.bind(provider);
+          return parseRemoteEndpointDeregisterResult(await withIdpSessionDir(home, () => deregister({
+            store: workspaceSecretStore(cleanup!.root), dir: userAuthStateDir(cleanup!.root, space, { readOnly: true }), request,
+          })), request);
+        },
+        rebind: (current) => {
+          rebindRemovedManagerCleanup(home, cleanup!, current);
+          rmSync(refusalFile(space), { force: true });
+          live.delete(space);
+        },
+        start: async () => { await start(space); },
+      });
+      notify();
+      return { ...status(space), repair: outcome };
+    },
     async disconnect(space: string, options?: { account?: boolean }) {
       // A crash during child shutdown must not restore a withdrawn hosting intent.
       const intent = daemonManagerIntentFile(space, home);

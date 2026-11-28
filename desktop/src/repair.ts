@@ -2,7 +2,7 @@
  *  that stops agents or moves the background service, then run that plan and nothing else. */
 import type { Request } from "./model";
 
-export interface RepairStepView { step: string; outcome: "ok" | "fix" | "needs-you" | "cannot"; found: string; change?: string; changed?: string; consent?: "takeover" | "start-stopped"; agents?: { space: string; name: string; application: string }[]; owner?: { kind: "app" | "cli"; location: string } }
+export interface RepairStepView { step: string; outcome: "ok" | "fix" | "needs-you" | "cannot"; found: string; change?: string; changed?: string; consent?: "takeover" | "start-stopped" | "remove-old-registration"; space?: string; agents?: { space: string; name: string; application: string }[]; owner?: { kind: "app" | "cli"; location: string } }
 export interface RepairPlanView { digest: string; steps: RepairStepView[] }
 
 /** The approval line for a step that needs one, in plain words. Empty when nothing needs asking. */
@@ -14,6 +14,8 @@ export function consentCopy(plan: RepairPlanView): string {
     return `The background service is now run by ${copy}. Repair moves it to this app. Your spaces and sign-in stay as they are.${count ? ` ${count === 1 ? "This agent stops" : `These ${count} agents stop`}:` : ""}`;
   }
   if (plan.steps.some(step => step.outcome === "fix" && step.consent === "start-stopped")) return "The background service was stopped on this computer. Repair starts it again.";
+  const stale = plan.steps.filter(step => step.outcome === "fix" && step.consent === "remove-old-registration").map(step => step.space).filter(Boolean);
+  if (stale.length) return `Repair removes this computer's old agent host registration in ${new Intl.ListFormat("en", { type: "conjunction" }).format(stale as string[])}. If an older copy still answers there, Repair leaves it alone.`;
   return "";
 }
 
@@ -24,7 +26,7 @@ export function applyLabel(plan: RepairPlanView): string {
 }
 
 /** Consents the person gives by choosing the apply button. */
-export function consents(plan: RepairPlanView): ("takeover" | "start-stopped")[] {
+export function consents(plan: RepairPlanView): NonNullable<RepairStepView["consent"]>[] {
   return [...new Set(plan.steps.flatMap(step => step.outcome === "fix" && step.consent ? [step.consent] : []))];
 }
 

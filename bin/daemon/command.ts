@@ -36,7 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
-import { applyRepair, planRepair } from "./repair.js";
+import { applyRepair, planRepair, REPAIR_CONSENTS } from "./repair.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
@@ -444,7 +444,7 @@ async function repairCommand(args: ParsedArgs): Promise<void> {
     return;
   }
   if (!/^[0-9a-f]{64}$/.test(values.apply)) throw new CommandFailure("refused", "USAGE_INVALID", "--apply needs the 64-character plan digest that `cotal daemon repair` printed");
-  const result = await applyRepair({ ...opts, digest: values.apply, consent: values.yes === true ? ["takeover", "start-stopped"] : [] });
+  const result = await applyRepair({ ...opts, digest: values.apply, consent: values.yes === true ? [...REPAIR_CONSENTS] : [] });
   writeResult(presentation, { command: "daemon repair", target: null, result }, () => ({ sections: [
     { title: result.repaired ? "Repaired" : "Repaired in part", blocks: [{ kind: "fields", rows: result.steps.map((step): [string, string] => [step.step, step.changed ?? step.found]) }] },
   ] }));

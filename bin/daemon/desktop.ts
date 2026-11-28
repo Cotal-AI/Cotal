@@ -13,7 +13,7 @@ import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, p
 import { nativeDaemonLog, previousNativeDaemonLog } from "./native-log.js";
 import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
-import { applyRepair, planRepair } from "./repair.js";
+import { applyRepair, planRepair, REPAIR_CONSENTS, type RepairConsent } from "./repair.js";
 import { serviceOwner, type ServiceOwner } from "./service-owner.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
@@ -35,7 +35,7 @@ export type DesktopRequest =
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
   | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string }
   | { readonly op: "repair-plan" }
-  | { readonly op: "repair-apply"; readonly digest: string; readonly consent: readonly ("takeover" | "start-stopped")[] }
+  | { readonly op: "repair-apply"; readonly digest: string; readonly consent: readonly RepairConsent[] }
   | AgentAppRequest;
 
 /** No renderer-supplied command, path, credentials or arbitrary arguments cross this boundary. */
@@ -52,8 +52,8 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   }
   if (o.op === "repair-apply") {
     if (Object.keys(o).some(key => !["op", "digest", "consent"].includes(key)) || typeof o.digest !== "string" || !/^[0-9a-f]{64}$/.test(o.digest)
-      || !Array.isArray(o.consent) || o.consent.length > 2 || !o.consent.every(item => item === "takeover" || item === "start-stopped")) throw new Error("invalid repair approval");
-    return { op: "repair-apply", digest: o.digest, consent: [...new Set(o.consent as ("takeover" | "start-stopped")[])] };
+      || !Array.isArray(o.consent) || o.consent.length > REPAIR_CONSENTS.length || !o.consent.every(item => (REPAIR_CONSENTS as readonly unknown[]).includes(item))) throw new Error("invalid repair approval");
+    return { op: "repair-apply", digest: o.digest, consent: [...new Set(o.consent as RepairConsent[])] };
   }
   const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));

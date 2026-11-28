@@ -3,7 +3,7 @@
  *
  * `planRepair` reads and changes nothing. It returns each step with what it found and what it would
  * change, plus a digest of the plan. `applyRepair` takes that digest and refuses `PLAN_CHANGED` when
- * the computer no longer matches it, so a person always approves exactly what runs.
+ * the computer does not match it, so a person always approves what runs and nothing else.
  *
  * A step needs consent when it stops something the person may be using: moving the background
  * service from another Cotal installation, which stops every agent it runs, and starting a
@@ -21,13 +21,15 @@ import { managerViaDaemon, queryDaemon } from "./client.js";
 import { applyInstall, applyMove, installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startInstalled } from "./install.js";
 import { unitReceiptFile } from "./install-receipt.js";
 import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
-import type { DaemonStatus } from "./protocol.js";
+import type { DaemonStatus, HostedManager } from "./protocol.js";
 import { serviceOwner, type ServiceOwner } from "./service-owner.js";
 import { withAppMutation } from "./agent-app-admission.js";
 
 export { serviceOwner, type ServiceOwner };
 
-export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "spaces";
+export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "spaces" | "stale-registration";
+export const REPAIR_CONSENTS = ["takeover", "start-stopped", "remove-old-registration"] as const;
+export type RepairConsent = (typeof REPAIR_CONSENTS)[number];
 export type RepairOutcome = "ok" | "fix" | "needs-you" | "cannot";
 
 export interface RepairStep {
@@ -37,8 +39,10 @@ export interface RepairStep {
   readonly found: string;
   /** What applying the plan would change. Present only when `outcome` is "fix". */
   readonly change?: string;
-  /** A fix that stops something the person may be using. Apply must name it in `consent`. */
-  readonly consent?: "takeover" | "start-stopped";
+  /** A fix that stops something the person may be using or removes a registration. Apply must name it in `consent`. */
+  readonly consent?: RepairConsent;
+  /** The space a per-space step acts on. */
+  readonly space?: string;
   /** Agents the change stops, by space, name and agent app. */
   readonly agents?: readonly { readonly space: string; readonly name: string; readonly application: string }[];
   readonly owner?: ServiceOwner;
@@ -113,26 +117,38 @@ function appsStep(status: DaemonStatus | undefined): RepairStep {
 }
 
 function spacesStep(status: DaemonStatus | undefined): RepairStep {
-  const refused = (status?.managers ?? []).filter(manager => manager.state === "refused");
+  const refused = (status?.managers ?? []).filter(manager => manager.state === "refused" && !staleCleanup(manager));
   if (!status) return { step: "spaces", outcome: "ok", found: "Checked after the service is running." };
   if (refused.length) return { step: "spaces", outcome: "fix", found: `${refused.length === 1 ? "1 space has" : `${refused.length} spaces have`} stopped on this computer.`, change: "Start those spaces again." };
   return { step: "spaces", outcome: "ok", found: "Every space on this computer is running." };
 }
 
+/** Disconnect's refusal when the cleanup record names an older instance than the current one. */
+const staleCleanup = (manager: HostedManager): boolean => /Manager cleanup identity differs from its recorded instance/.test(`${manager.reason ?? ""} ${manager.lastRefusal ?? ""}`);
+
+/** One step per space with an old registration of this computer's agent host left in it. */
+function staleCleanupSteps(status: DaemonStatus | undefined): RepairStep[] {
+  return (status?.managers ?? []).filter(staleCleanup).map(manager => ({
+    step: "stale-registration", outcome: "fix", consent: "remove-old-registration", space: manager.space,
+    found: `An old copy of this computer's agent host is still registered in ${manager.space}.`,
+    change: "Remove the old registration and start the agent host again.",
+  }));
+}
+
 function digestOf(steps: readonly RepairStep[]): string {
-  return createHash("sha256").update(JSON.stringify(steps.map(({ step, outcome, consent, owner, agents }) => ({ step, outcome, consent, owner, agents })))).digest("hex");
+  return createHash("sha256").update(JSON.stringify(steps.map(({ step, outcome, consent, owner, agents, space }) => ({ step, outcome, consent, owner, agents, space })))).digest("hex");
 }
 
 /** Read this computer and say what Repair would do. Changes nothing. */
 export async function planRepair(opts: RepairOptions): Promise<RepairPlan> {
   const status = await readStatus(opts);
   const owner = ownerStep(opts, status);
-  const steps = [owner, runningStep(opts, status, owner), appsStep(status), spacesStep(status)];
+  const steps = [owner, runningStep(opts, status, owner), appsStep(status), spacesStep(status), ...staleCleanupSteps(status)];
   return { digest: digestOf(steps), steps };
 }
 
 /** Run the plan the person approved. Refuses when the computer changed since that plan. */
-export async function applyRepair(opts: RepairOptions & { readonly digest: string; readonly consent: readonly ("takeover" | "start-stopped")[] }): Promise<RepairResult> {
+export async function applyRepair(opts: RepairOptions & { readonly digest: string; readonly consent: readonly RepairConsent[] }): Promise<RepairResult> {
   const plan = await planRepair(opts);
   if (plan.digest !== opts.digest) throw new CommandFailure("refused", "CONFLICT", "this computer changed since Repair checked it; nothing was changed", { native: { code: "PLAN_CHANGED" } });
   const missing = plan.steps.find(step => step.outcome === "fix" && step.consent && !opts.consent.includes(step.consent));
@@ -182,6 +198,10 @@ async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
   if (step.step === "agent-apps") {
     const outcome = await refreshServiceForApplication(install, []);
     return outcome === "refreshed" ? "The background service looked for your agent apps again." : "Nothing needed to change.";
+  }
+  if (step.step === "stale-registration") {
+    const result = await managerViaDaemon(opts, { op: "manager-repair-cleanup", space: step.space! }) as HostedManager & { repair?: { message?: unknown } };
+    return typeof result.repair?.message === "string" ? result.repair.message : "The space did not confirm removing the old registration, so Repair left it as it was.";
   }
   const status = await readStatus(opts);
   for (const manager of (status?.managers ?? []).filter(item => item.state === "refused")) await managerViaDaemon(opts, { op: "manager-start", space: manager.space });

@@ -668,6 +668,16 @@ this installation's service and waits for it to answer. If that service does not
 the previous service back, starts it, and refuses with cause `MOVE_ROLLED_BACK`. `uninstall` still
 erases the space service records; use `repair` to move the service.
 
+When a hosted Manager's cleanup record names an older instance than the one this computer now runs,
+`service-disconnect` refuses ("Manager cleanup identity differs from its recorded instance"). The
+plan then offers one step per space to remove that old registration; it needs `--yes` (consent
+`remove-old-registration`). Repair asks the space to remove only the older instance, through the same
+guarded deregistration as disconnect and with the record's verified authority. While the older
+instance still answers, the space refuses and Repair leaves it alone. When the space confirms the
+removal, the record is rebound to the current instance and the space's Manager starts again. Any other
+answer keeps the record. The current instance is never removed. The daemon request is
+`manager-repair-cleanup {space}`.
+
 The desktop app offers Repair as the one button on every error screen whose cause it handles, in
 Settings and in the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`.
 Its `status` reply and every `status-watch` frame add `recovery: {reason: "another-installation", owner}`

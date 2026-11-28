@@ -157,8 +157,8 @@ impl DesktopRequest {
         if let Self::RepairApply { digest, consent } = self {
             if digest.len() != 64
                 || !digest.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-                || consent.len() > 2
-                || !consent.iter().all(|item| item == "takeover" || item == "start-stopped")
+                || consent.len() > 3
+                || !consent.iter().all(|item| item == "takeover" || item == "start-stopped" || item == "remove-old-registration")
             {
                 return Err("Invalid repair approval.".into());
             }
@@ -290,7 +290,7 @@ mod tests {
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"repair-plan"}"#).unwrap().validate().is_ok());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"repair-plan","path":"/foreign"}"#).is_err());
         let digest = "a".repeat(64);
-        for (consent, valid) in [(vec![], true), (vec!["takeover"], true), (vec!["takeover", "start-stopped"], true), (vec!["uninstall"], false), (vec!["takeover"; 3], false)] {
+        for (consent, valid) in [(vec![], true), (vec!["takeover"], true), (vec!["takeover", "start-stopped"], true), (vec!["remove-old-registration"], true), (vec!["uninstall"], false), (vec!["takeover"; 4], false)] {
             let request = DesktopRequest::RepairApply { digest: digest.clone(), consent: consent.iter().map(|item| item.to_string()).collect() };
             assert_eq!(request.validate().is_ok(), valid, "{consent:?}");
         }
