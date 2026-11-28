@@ -275,6 +275,16 @@ for (const level of ["regular", "minimal"]) {
   }
 }
 
+{
+  const s = sandbox(), marker = "private-conflict-fixture", root = join(s.project, `folder ${marker}`);
+  const made = await s.run(["space", "create", "existing", "--root", root], { DO_NOT_TRACK: "1" });
+  for (const [name, at] of [["existing", s.project], ["another", root]] as const) {
+    const r = await s.run(["space", "create", name, "--root", at, "--json"]), event = r.sent.find(body => body.event === "command");
+    check(`preparation conflict for ${name} keeps the existing path local`, made.status === 0 && r.status === 2 && r.stdout.includes(marker) && r.stdout.includes("space show existing --json")
+      && event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
+}
+
 for (const level of ["regular", "minimal"]) {
   const s = sandbox();
   const r = await s.run(["status", "--components", "--space", "missing-fixture-space"], { COTAL_TELEMETRY: level });
