@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.185.0
+
+### Patch Changes
+
+- fb22c12: Keep connector executable paths pinned across availability rechecks instead of switching to another copy on `PATH`, name any replacement copy now on `PATH` so operators know to restart the Manager, recheck connector binaries in batch `resume-preserved` launches and supervised crash restarts, include `--on` guidance on instance-pinned wire launch refusals, and keep class spawn subscriptions aligned across closed or redialing serve connections.
+- Updated dependencies [4def782]
+- Updated dependencies [9708a08]
+- Updated dependencies [658b202]
+  - @cotal-ai/workspace@0.185.0
+  - @cotal-ai/core@0.185.0
+  - @cotal-ai/seat@0.185.0
+
 ## 0.184.1
 
 ### Patch Changes

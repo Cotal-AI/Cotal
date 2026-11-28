@@ -11,7 +11,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,15 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const r = await s.run(["run", "validate", file, "--json"]), event = r.sent.find(row => row.event === "command");
   check("invalid workflow findings stay local while telemetry matches the refusal", r.status === 1 && r.envelope?.outcome === "refused" && r.stdout.includes("SCHEMA_INVALID") && r.stdout.includes(file) &&
     event?.outcome === "refused" && event.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(file), shown(r));
+}
+
+if (process.platform !== "win32") {
+  const s = sandbox(), cfg = join(s.home, "fixture-update-config");
+  mkdirSync(cfg);
+  chmodSync(cfg, 0o707);
+  const r = await s.run(["update"], { XDG_CONFIG_HOME: cfg }), event = r.sent.find(row => row.event === "command");
+  check("update reports a config folder permission refusal without collecting its path", r.status === 1 && r.stderr.includes("config folder protection:") && r.stderr.includes("chmod o-w") && r.stderr.includes("fixture-update-config") &&
+    event?.outcome === "refused" && event.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes("fixture-update-config"), shown(r));
 }
 
 // ---- regular: the first command of the day sends the install event, then its own ----
@@ -236,6 +245,20 @@ for (const level of ["regular", "minimal"]) {
     check(`last-store conflict keeps its path local with ${args.length ? "a missing" : "no"} store option`, r.status === 2 && r.stderr.replace(/\s+/g, " ").includes(`--store-dir '${store}'`) && !existsSync(missing) &&
       event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
+}
+
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const marker = "fixture-existing-store", s = sandbox(`project ${marker}`), space = "storeaccess";
+  const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"]);
+  const store = join(s.project, ".cotal", "nats", "jetstream");
+  mkdirSync(store, { recursive: true, mode: 0o700 }); chmodSync(store, 0o500);
+  try {
+    for (const args of [["ps"], ["up", "--server", "nats://127.0.0.1:1"]]) {
+      const r = await s.run([...args, "--space", space, "--json"]), event = r.sent.find(row => row.event === "command");
+      check(`${args[0]} keeps an existing store permission diagnostic local`, prepared.status === 0 && r.status === 2 && r.stdout.includes(marker) && r.stdout.includes("chmod") &&
+        event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+    }
+  } finally { chmodSync(store, 0o700); }
 }
 
 {

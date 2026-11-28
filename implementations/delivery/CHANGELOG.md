@@ -1,5 +1,16 @@
 # @cotal-ai/delivery
 
+## 0.185.0
+
+### Patch Changes
+
+- 658b202: When a registered broker does not answer from this machine, report the connection failure without claiming the remote mesh is down. CLI commands and the delivery daemon now share the same guidance for manual and catalog registrations.
+- Updated dependencies [4def782]
+- Updated dependencies [9708a08]
+- Updated dependencies [658b202]
+  - @cotal-ai/workspace@0.185.0
+  - @cotal-ai/core@0.185.0
+
 ## 0.184.1
 
 ### Patch Changes

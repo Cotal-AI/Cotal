@@ -1,5 +1,14 @@
 # @cotal-ai/workspace
 
+## 0.185.0
+
+### Patch Changes
+
+- 4def782: Report an invalid offline workflow as a validation refusal in command telemetry. The file name and detailed findings stay in the local report.
+- 9708a08: Keep the preferences file path and validation details out of command telemetry. The local error still identifies the file and how to repair it.
+- 658b202: When a registered broker does not answer from this machine, report the connection failure without claiming the remote mesh is down. CLI commands and the delivery daemon now share the same guidance for manual and catalog registrations.
+- @cotal-ai/core@0.185.0
+
 ## 0.184.1
 
 ### Patch Changes

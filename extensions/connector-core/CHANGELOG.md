@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.185.0
+
+### Patch Changes
+
+- a378fe7: Document the Linux distributions tested with the desktop `.deb` and `.rpm` packages, the EPEL and CRB setup for Enterprise Linux 10, and the command-line install for RHEL, AlmaLinux, and Rocky Linux 9.
+
 ## 0.184.1
 
 No changes in this release.

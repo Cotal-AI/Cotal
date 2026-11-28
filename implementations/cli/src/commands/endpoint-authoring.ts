@@ -50,7 +50,8 @@ function directory(path: string): string | null {
   for (const segment of path.slice(root.length).split(sep).filter(Boolean)) {
     const component = join(parent, segment);
     try { if (!realDirNoSymlink(parent, segment)) return null; }
-    catch {
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENAMETOOLONG") throw error;
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the scaffold directory is blocked at ${codeSpan(shellWord(component))}; no existing file was overwritten`, {
         target: { path: component },
         remedy: "retry with --dir set to a real directory path that does not cross a symlink or non-directory",
@@ -100,7 +101,12 @@ function refuseContractDirectory(path: string, presentation: Presentation): void
 }
 function missing(path: string, name: string, presentation: Presentation): void {
   try { lstatSync(path); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the scaffold target cannot be inspected", { target: { path } }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
+    if (code === "ENAMETOOLONG") throw error;
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the scaffold target cannot be inspected", { target: { path } });
+  }
   throw new CommandFailure("refused", "CONFLICT", "a scaffold target already exists; it was not overwritten", {
     target: { path },
     remedy: `run ${codeSpan(`cotal endpoint init ${shellWord(name)} --dir <new-directory>${presentation === "rich" ? "" : ` --${presentation}`}`)} with an unused directory`,
@@ -139,12 +145,11 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   const destination = resolve(typeof args.values.dir === "string" ? args.values.dir : name);
   const source = endpointContractTemplate(name);
   parseEndpointContract(JSON.stringify(source));
-  const existing = directory(destination);
   const files = [{ path: join(destination, CONTRACT_FILE), bytes: JSON.stringify(source, null, 2) + "\n", mode: 0o600 }, { path: join(destination, "handler.mjs"), bytes: HANDLER, mode: 0o700 }];
-  if (existing) for (const file of files) missing(file.path, name, presentation);
   const changed: ScaffoldChange[] = [];
   try {
-    if (!existing) createDirectories(destination, changed);
+    if (directory(destination)) for (const file of files) missing(file.path, name, presentation);
+    else createDirectories(destination, changed);
     for (const file of files) {
       if (!directory(destination)) throw new CommandFailure("refused", "CONFLICT", "the scaffold directory disappeared before file creation");
       const fd = openSync(file.path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, file.mode);
@@ -152,7 +157,18 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
       try { writeFileSync(fd, file.bytes); fsyncSync(fd); receipt.complete = true; } finally { closeSync(fd); }
     }
   } catch (error) {
-    if (changed.length) throw new CommandFailure("partial", "OPERATION_PARTIAL", "scaffolding stopped after creating the named local material; nothing was overwritten or launched", { target: { path: destination }, changed, remedy: "inspect the created paths before choosing a different destination; no automatic deletion was attempted" });
+    const code = (error as NodeJS.ErrnoException).code;
+    const tooLong = code === "ENAMETOOLONG";
+    const lengthMessage = "the scaffold path is too long for this filesystem";
+    const retry = "choose a shorter path with --dir, including shorter directory names";
+    if (changed.length) {
+      const paths = changed.map(item => `${codeSpan(shellWord(item.path))}${item.complete ? "" : " (incomplete)"}`).join(", ");
+      throw new CommandFailure("partial", "OPERATION_PARTIAL", `${tooLong ? `${lengthMessage}; ` : ""}scaffolding stopped after creating the named local material; nothing was overwritten or launched`, {
+        target: { path: destination }, changed, ...(tooLong ? { native: { code } } : {}),
+        remedy: `inspect ${paths}, then ${tooLong ? retry : "choose a different destination"}; no automatic deletion was attempted`,
+      });
+    }
+    if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${lengthMessage}; nothing was created`, { native: { code }, target: { path: destination }, remedy: retry, selfContained: true });
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", "the scaffold files could not be created exclusively; no handler or service was started");
   }
