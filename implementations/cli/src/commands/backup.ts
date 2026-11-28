@@ -437,15 +437,18 @@ function assertReservedMaintenanceDestination(root: string, destinationPath: str
   throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${relation} ${what}${relation === "is" ? "" : ` ${path}`}; nothing was written`, { target: { directory: destinationPath, overlaps: path }, remedy: `name a destination outside ${path}`, selfContained: true });
 }
 
-function assertBackupPaths(root: string, source: string, destinationPath: string): void {
-  const artifact = canonicalFuturePath(destinationPath);
-  const attempts = resolve(root, ".cotal", "maintenance", "attempts");
-  if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
-  if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
+function assertOutsideAttempts(artifact: string, attempts: string, destinationPath: string): void {
   if (overlaps(artifact, attempts))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} overlaps the maintenance attempt directory ${attempts}. No backup was created.`, {
       target: { directory: destinationPath, attemptId: null, priorClaimAttemptId: null }, remedy: `name a destination outside ${attempts}`, selfContained: true,
     });
+}
+
+function assertBackupPaths(attempts: string, source: string, destinationPath: string): void {
+  const artifact = canonicalFuturePath(destinationPath);
+  if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
+  if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
+  assertOutsideAttempts(artifact, attempts, destinationPath);
 }
 
 async function snapshotStream(
@@ -662,6 +665,8 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     .find((path) => overlaps(artifact, path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
+  const attempts = resolve(canonicalRoot(root), ".cotal", "maintenance", "attempts");
+  if (artifact) assertOutsideAttempts(artifact, attempts, destinationPath);
   if (missingFolder)
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
@@ -712,7 +717,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       observed.mutationAttempted = true;
     }
     ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
-    assertBackupPaths(root, ready.source.path, destinationPath);
+    assertBackupPaths(attempts, ready.source.path, destinationPath);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
