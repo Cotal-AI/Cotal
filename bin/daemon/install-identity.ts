@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
+import { logicalExecutionEntry } from "@cotal-ai/workspace";
 import { CommandFailure } from "@cotal-ai/workspace/local-observation";
+import { daemonArgv } from "@cotal-ai/cli/self-exec";
+import { readReceipt } from "./install-receipt.js";
+import type { DaemonPaths } from "./endpoint.js";
 import type { ServiceMechanism, UnitReceipt } from "./install.js";
 
 export function recordedSystemdArgv(source: string): string[] {
@@ -43,4 +48,22 @@ export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceM
   if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
   const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
   return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, installedEntry: installed.entry, current: `${current.executable} ${current.entry}` };
+}
+
+/** True when the recorded unit pins this CLI's entry. A missing receipt, an unreadable unit, or a
+ *  unit whose bytes no longer match its receipt is false. This reads those two files only, so a
+ *  quiet user manager cannot hide the sentence or show it for another installation. */
+export function recordedUnitPinsThisEntry(paths: Pick<DaemonPaths, "state">): boolean {
+  const receipt = readReceipt(paths);
+  if (!receipt) return false;
+  let bytes: Buffer;
+  try { bytes = readFileSync(receipt.unitPath); }
+  catch { return false; }
+  if (createHash("sha256").update(bytes).digest("hex") !== receipt.unitSha256) return false;
+  const entry = logicalExecutionEntry() ?? process.argv[1];
+  if (!entry) return false;
+  try {
+    const pinned = recordedSourceIdentity(receipt, receipt.mechanism ?? "systemd-user", () => [...daemonArgv().slice(0, -1), entry, "daemon", "serve"]);
+    return pinned.same;
+  } catch { return false; }
 }

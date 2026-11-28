@@ -1149,6 +1149,7 @@
     "smoke:daemon-update-startup": "tsx bin/smoke/daemon-update-startup.smoke.ts",
     "smoke:daemon-setup-path-report": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-setup-path-report.smoke.ts",
     "smoke:daemon-hidden-application": "tsx bin/smoke/daemon-hidden-application.smoke.ts",
+    "smoke:daemon-hidden-application-cli": "tsx bin/smoke/daemon-hidden-application-cli.smoke.ts",
     "smoke:daemon-update-no-runtime": "tsx bin/smoke/daemon-update-no-runtime.smoke.ts",
     "smoke:daemon-paused-update": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-paused-update.smoke.ts",
     "smoke:daemon-update-connect-rate": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-update-connect-rate.smoke.ts",

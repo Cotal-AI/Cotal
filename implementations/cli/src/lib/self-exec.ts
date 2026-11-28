@@ -306,11 +306,13 @@ export function applicationsHiddenFromService(): readonly string[] {
 
 /**
  * Applications a service report says this shell can run and the service cannot see.
- * Empty when there is no report or the account is signed out. The reason text is the one a hosted
+ * Empty when there is no report or no unexpired local sign-in. The reason text is the one a hosted
  * Manager records, the same text `hasNewApplications` matches. This does not read the service.
+ * A caller that has already read the local sign-in passes it: the report's account mode stays
+ * signed out until a provider host answers, which a missing application does not wait for.
  */
-export function applicationsHiddenByReport(report: { readonly account?: { readonly mode?: string }; readonly managers?: readonly { readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[] }[] } | undefined): readonly string[] {
-  if (!report || report.account?.mode === "signed-out") return [];
+export function applicationsHiddenByReport(report: { readonly account?: { readonly mode?: string }; readonly managers?: readonly { readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[] }[] } | undefined, signedIn = report?.account?.mode !== undefined && report.account.mode !== "signed-out"): readonly string[] {
+  if (!report || !signedIn) return [];
   const hidden = new Set<string>();
   for (const manager of report.managers ?? []) {
     for (const connector of manager.connectors ?? []) {

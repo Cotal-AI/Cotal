@@ -648,7 +648,7 @@ Relative paths, control characters and malformed quoting are refused.
 
 On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
 
-When the running service's own cached report says an application is missing, and this shell can run that application, `cotal status` and `cotal setup` say the background service cannot see it and name `cotal daemon setup`. The report is the service's first status-watch frame, which does not probe. No report, a signed-out account, a service this installation does not hold, or a local setup destination stays quiet. The report itself changes nothing.
+When the running service's own cached report says an application is missing, and this shell can run that application, `cotal status` and `cotal setup` say the background service cannot see it and name `cotal daemon setup`. The report is the service's first status-watch frame, which does not probe. They stay quiet with no report, a signed-out account, more than one sign-in, an expired sign-in, no recorded unit, a unit another installation recorded, or a local setup destination. The report itself changes nothing.
 
 On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
 installation reports a conflict and leaves the running daemon alone.
