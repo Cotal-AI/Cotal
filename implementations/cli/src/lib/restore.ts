@@ -64,6 +64,7 @@ import {
   type MaintenanceClaim,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
+  type Presentation,
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
@@ -722,7 +723,7 @@ export function restoreLaunch(root: string, flags: RestoreFlags, journal: Mainte
 
 /** Recheck the validated launch under the operation lock, before staging. `progress` receives the
  *  seat admission lines, which `backup restore` routes to stderr to keep stdout for its receipt. */
-export async function prepareRestore(root: string, flags: RestoreFlags, validateLaunch?: (launch: RestoreLaunch, controller: boolean) => Promise<void>, progress?: (line: string) => void): Promise<PreparedRestore> {
+export async function prepareRestore(root: string, flags: RestoreFlags, validateLaunch?: (launch: RestoreLaunch, controller: boolean) => Promise<void>, { progress, presentation = "rich" }: { progress?: (line: string) => void; presentation?: Presentation } = {}): Promise<PreparedRestore> {
   const attemptId = `restore-${randomUUID()}`;
   const serverNonce = randomUUID().replaceAll("-", "");
   const serverName = `${attemptId}-${serverNonce}`;
@@ -836,7 +837,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       const denied = artifactReadRefusal(error, artifactPath, root);
       if (denied) throw denied;
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
+      const verify = codeSpan(`cotal backup verify ${shellPath(artifactPath)}${presentation === "rich" ? "" : ` --${presentation}`}`);
+      throw localDiagnostic(new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${verify}, or restore another copy of the same artifact; the preserved cut is unchanged` }));
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);

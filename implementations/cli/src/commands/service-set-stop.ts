@@ -1,16 +1,15 @@
 import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, codeSpan, oneLine, presentationOf, renderReport, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
 import { STACK_DEFINITION, stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { shellWord } from "../lib/endpoint-errors.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { nativeImpactView, unsavedServiceStep } from "./service-actions.js";
-import { resolvePresetService, stopPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { resolvePresetService, stopPreviewStep, wholeStackPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { announcePresetTarget, recordedProcessRefusal } from "./service-registry.js";
 
 type Hold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
@@ -37,10 +36,9 @@ const BROKER_NAMES = new Set(["nats", "broker", STACK_DEFINITION.broker]);
 
 /** A set never stops the broker. Its whole-stack alternative is a preview in the selected project. */
 function brokerMember(space: string, root: string, name: string, values: ParsedArgs["values"]): CommandFailure {
-  const preview = codeSpan(`cotal down --dry-run --space=${shellWord(space)}${values.json ? " --json" : values.plain ? " --plain" : ""}`);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no service a set of names can stop in space ${oneLine(space)}; no service was stopped`, {
     target: { space, name },
-    remedy: `a set of names never stops the broker; to preview stopping the whole stack, run ${preview} in ${oneLine(root)}`,
+    remedy: `a set of names never stops the broker; ${wholeStackPreviewStep(space, root, presentationOf(values))}`,
   });
 }
 
@@ -104,7 +102,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   for (const requested of args.positionals) {
     // A preset name reaches the service built on it, as a single named down does.
     const resolved = resolvePresetService(space, root, requested, "stop", args.values);
-    if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, "down");
+    if (resolved?.recorded) throw recordedProcessRefusal(requested, resolved.recorded, space, root, "down", presentation);
     const name = resolved?.name ?? requested, definition = store.read(name);
     if (!definition) throw unmatchedMember(space, name, args.values);
     const same = members.find((member) => member.definition.name === name);

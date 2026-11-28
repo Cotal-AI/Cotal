@@ -283,6 +283,20 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         [["backup", "restore", registryArtifact, "--json", "--store-dir", join(existing, "missing parent", "target")], 1, "USAGE_INVALID"],
       ]);
       assert.deepEqual(readdirSync(existing), []);
+      const copy = join(root, "backup copy");
+      cpSync(registryArtifact, copy, { recursive: true });
+      if (process.getuid?.() !== 0) {
+        const member = join(copy, readdirSync(copy).find(name => name.endsWith(".snap"))!);
+        chmodSync(member, 0);
+        try { await checkRestoreTelemetry(root, env, [[["backup", "verify", copy, "--json"], 2, "PERMISSION_DENIED"]]); }
+        finally { chmodSync(member, 0o600); }
+      }
+      writeFileSync(join(copy, "operator-note.txt"), "kept");
+      await checkRestoreTelemetry(root, env, [
+        [["backup", "inspect", copy, "--json"], 1, "SCHEMA_INVALID"],
+        [["backup", "restore", copy, "--json"], 1, "SCHEMA_INVALID"],
+      ]);
+      assert.equal(readFileSync(join(copy, "operator-note.txt"), "utf8"), "kept");
       const cold = mkdtempSync(join(tmpdir(), "cotal-backup-restore-cold-"));
       try {
         const project = join(cold, "project"), config = join(cold, "config");
@@ -378,7 +392,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
           const remedy = JSON.parse(refused.stdout).error?.remedy as string;
           const commandText = /`(cotal backup verify .*?)`/.exec(remedy)?.[1];
           assert.ok(commandText, "restore verification remedy includes the artifact directory");
-          const verified = spawnSync("sh", ["-c", commandText.replace(/^cotal /, '"$COTAL_TEST_TSX" "$COTAL_TEST_CLI" ') + " --json"], { cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8" });
+          const verified = spawnSync("sh", ["-c", commandText.replace(/^cotal /, '"$COTAL_TEST_TSX" "$COTAL_TEST_CLI" ')], { cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8" });
           assert.equal(verified.status, 1, "the printed verify command reports damaged integrity");
           assert.equal(JSON.parse(verified.stdout).target?.fault, "mismatch", "the printed command checks the quoted artifact, not usage");
         }

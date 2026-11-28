@@ -21,7 +21,7 @@ import type { UnconfirmedConversation } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 import type { AgentAppRequest, AgentAppResult } from "./desktop-agent-apps.js";
 
-const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "manager-repair-cleanup", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -41,6 +41,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "status-watch": { required: [], optional: [] },
   "manager-start": { required: ["space"], optional: [] },
   "manager-status": { required: ["space"], optional: [] },
+  "manager-repair-cleanup": { required: ["space"], optional: [] },
   "managers-stop": { required: [], optional: [] },
   "managers-prepare-restart": { required: [], optional: [] },
   "managers-abort-restart": { required: [], optional: [] },
@@ -79,6 +80,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-repair-cleanup"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-prepare-restart" }
@@ -163,6 +165,8 @@ export interface HostedManager {
   readonly instanceId?: string;
   /** Registration cleanup is pending, or may have run and must be inspected before another request. */
   readonly registrationCleanup?: "pending" | "unknown";
+  /** This computer still means to host the space. A disconnect removes it before anything else. */
+  readonly hostingIntent?: boolean;
   readonly pid?: number;
   readonly restarts: number;
   readonly reason?: string;
@@ -338,7 +342,7 @@ export function parseRequest(line: string): ParsedRequest {
     if (typeof obj.attempt !== "string" || !ATTEMPT_PATTERN.test(obj.attempt)) return bad(id, "attempt must be the 22-character attempt id from login-prompt");
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
   }
-  if (op === "manager-start" || op === "manager-status" || op === "connect-check" || op === "register" || op === "service-connect" || op === "service-disconnect" || op === "service-status") {
+  if (op === "manager-start" || op === "manager-status" || op === "manager-repair-cleanup" || op === "connect-check" || op === "register" || op === "service-connect" || op === "service-disconnect" || op === "service-status") {
     if (!isDaemonSpaceName(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
     return { ok: true, request: { v, id, op, space: obj.space } };
   }

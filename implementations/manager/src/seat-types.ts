@@ -118,8 +118,8 @@ export interface StartAgentOpts {
   cwd?: string;
   /** Internal resolved-manifest provenance used by the preservation inventory. */
   launchRef?: { runId: string; requested: string; hash: string };
-  /** The §13.2 rail this spawn rode. Class-rail harness refusals name `--on`; instance-pinned
-   *  refusals stay local. Direct `startAgent` (roster / `--spawn`) is not a class request. */
+  /** The §13.2 rail this spawn rode. Wire harness refusals name `--on`; direct in-process
+   *  `startAgent` (roster / `--spawn`, `route` undefined) keeps the local reason only. */
   route?: "one" | "all" | "inst";
   /** The terminal runtime this one seat launches on. Absent uses this manager's own runtime, the
    *  same choice `cotal up --runtime` made. A named runtime is resolved once and reused for every
