@@ -63,6 +63,39 @@ test('foreign service bootstraps historical dependencies without shielding the c
   assert.doesNotMatch(workflow, /GITHUB_ENV[^\n]*before|before[^\n]*GITHUB_ENV/i);
 });
 
+test('welcome page comes forward when the app window is already open', () => {
+  execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
+  const source = readText('installer.nsi');
+  const show = source.indexOf('!define MUI_PAGE_CUSTOMFUNCTION_SHOW WelcomeShow');
+  const welcome = source.indexOf('!insertmacro MUI_PAGE_WELCOME');
+  assert.ok(show > 0 && show < welcome);
+  const body = source.slice(source.indexOf('Function WelcomePlace'), source.indexOf('FunctionEnd', source.indexOf('Function WelcomeShow')));
+  const place = body.indexOf('Function WelcomePlace');
+  const kill = body.indexOf('nsDialogs::KillTimer $0');
+  const above = body.indexOf('SetWindowPos(p $HWNDPARENT, p -1, i 0, i 0, i 0, i 0, i 0x13)');
+  const clear = body.indexOf('SetWindowPos(p $HWNDPARENT, p -2, i 0, i 0, i 0, i 0, i 0x13)');
+  const guard = body.indexOf('${If} $PassiveMode <> 1');
+  const quiet = body.indexOf('${AndIfNot} ${Silent}');
+  const shown = body.indexOf('Function WelcomeShow');
+  const timer = body.indexOf('nsDialogs::CreateTimer $0 1');
+  assert.ok(place >= 0 && kill > place && guard > kill && quiet > guard && above > quiet && clear > above && shown > clear && timer > shown);
+  assert.equal(body.indexOf('FindWindow'), -1);
+  assert.equal(body.indexOf('AttachThreadInput'), -1);
+  assert.equal(body.indexOf('RunAsUser'), -1);
+  const confirm = source.indexOf('Function un.ConfirmShow');
+  const confirmBody = source.slice(confirm, source.indexOf('FunctionEnd', confirm));
+  const confirmGuard = confirmBody.indexOf('${If} $PassiveMode <> 1');
+  const confirmQuiet = confirmBody.indexOf('${AndIfNot} ${Silent}');
+  const confirmRaise = confirmBody.indexOf('SetWindowPos(p $HWNDPARENT, p -1, i 0, i 0, i 0, i 0, i 0x13)');
+  const confirmClear = confirmBody.indexOf('SetWindowPos(p $HWNDPARENT, p -2, i 0, i 0, i 0, i 0, i 0x13)');
+  assert.ok(confirmGuard > 0 && confirmQuiet > confirmGuard && confirmRaise > confirmQuiet && confirmClear > confirmRaise);
+  assert.equal(source.split('SetWindowPos(p $HWNDPARENT, p -1').length, 3);
+  const laterShow = source.indexOf('MUI_PAGE_CUSTOMFUNCTION_SHOW', welcome + 1);
+  const later = source.slice(laterShow).split('\n', 1)[0];
+  assert.equal(later, 'MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow');
+  assert.equal(source.split('MUI_PAGE_CUSTOMFUNCTION_SHOW').length, 3);
+});
+
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
   execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
   const source = readText('installer.nsi');
