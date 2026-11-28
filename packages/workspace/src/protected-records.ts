@@ -285,10 +285,9 @@ type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "
  *  extended ACL, unless the directory is below an ancestor other accounts cannot search. World
  *  write is never accepted. An `ancestor` walk also accepts a root-owned sticky directory such as /tmp. */
 function protectionGap(path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy; privateAncestor?: boolean }): ProtectionGap | undefined {
-  const uid = options.policy?.uid ?? process.getuid!();
-  const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix, owned: stat.uid === uid });
+  const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix, owned: stat.uid === (options.policy?.uid ?? process.getuid?.()) });
   if (stat.isSymbolicLink()) return gap("is a symbolic link", "physical");
-  if (stat.uid !== 0 && stat.uid !== uid) return gap("is owned by another account", "physical");
+  if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) return gap("is owned by another account", "physical");
   if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return undefined;
   // An entry its group can write too would be refused again for that after `chmod o-w`, so its one
   // step removes both.
@@ -434,7 +433,6 @@ function checkConfigLink(entry: string, stat: Stats, parent: string, what: strin
 /** Link traversal and ownership-sensitive remedies for preferences and trust files only. */
 export const configLinkChecks: ProtectedLinkChecks = {
   resolved: (path, what) => resolveProtectedDirectory(path, what, true),
-  entry: (path, what) => checkLocalEntry(path, what, true),
   spelled: (path, what) => checkLocalDirectory(path, what, true),
 };
 

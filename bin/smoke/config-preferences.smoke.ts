@@ -23,7 +23,10 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { meshFile, recordMesh, removeMesh } from "@cotal-ai/workspace";
+import {
+  assertPreferencesFolderProtected, assertProtectedEntry, isCommandFailure, localWriterGap, meshFile,
+  recordMesh, removeMesh, removeSpacePreferences, trustProject, writePreference,
+} from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -643,6 +646,7 @@ if (process.platform !== "win32") {
   mkdirSync(stickyTarget, { mode: 0o700 });
   const stickyLink = join(sticky, "link");
   symlinkSync(stickyTarget, stickyLink);
+  const stickyLeaf = join(stickyTarget, "cotal");
   // Supply only the ownership metadata that needs privilege. The CLI still walks and writes the
   // real link and private target, and the fixture never plants a link in a shared directory.
   const statFixture = join(sticky, "owner-fixture.cjs");
@@ -650,7 +654,8 @@ if (process.platform !== "win32") {
 const lstat = fs.lstatSync;
 fs.lstatSync = (path, options) => {
   const stat = lstat(path, options);
-  if (stat && path === ${JSON.stringify(sticky)} && process.env.FOREIGN_LINK !== "home") {
+  if (stat && ((path === ${JSON.stringify(sticky)} && process.env.FOREIGN_LINK !== "home") ||
+    (path === ${JSON.stringify(stickyLeaf)} && process.env.FOREIGN_LINK === "sticky-leaf"))) {
     stat.uid = 0;
     stat.mode = (stat.mode & ~0o7777) | 0o1777;
   }
@@ -674,6 +679,25 @@ require("node:module").syncBuiltinESMExports();
   const stickyWrite = run(["config", "set", "color", "never", "--json"], { ...stickyEnv, FOREIGN_LINK: undefined });
   check("an owned link in a root-owned sticky folder completes, and the file is in the physical folder",
     stickyWrite.status === 0 && existsSync(join(stickyTarget, "cotal", "preferences.json")), shown(stickyWrite));
+  const leafEnv = { ...stickyEnv, XDG_CONFIG_HOME: stickyTarget, FOREIGN_LINK: "sticky-leaf" };
+  const leafWrite = run(["config", "set", "editor", "vi", "--json"], leafEnv);
+  const leafRead = run(["config", "--json"], leafEnv);
+  check("config set updates the caller's preferences in a root-owned sticky config folder and config reads without warning",
+    leafWrite.status === 0 && leafRead.status === 0 && settingOf(leafRead, "editor")?.value === "vi" &&
+    leafRead.envelope?.warnings.every((w) => w.code !== "PREFERENCES_FOLDER_UNPROTECTED") === true,
+    { write: shown(leafWrite), read: shown(leafRead) });
+  const leafTrust = run(["trust", project, "--json"], leafEnv);
+  const leafTrustFile = join(stickyLeaf, "trusted-projects.json");
+  check("trust writes the trusted root in a root-owned sticky config folder",
+    leafTrust.status === 0 && existsSync(leafTrustFile) &&
+    (JSON.parse(readFileSync(leafTrustFile, "utf8")) as { roots: string[] }).roots.includes(realpathSync(project)), shown(leafTrust));
+  const linkedLeafXdg = join(sticky, "linked-leaf");
+  mkdirSync(linkedLeafXdg, { mode: 0o700 });
+  symlinkSync(stickyLeaf, join(linkedLeafXdg, "cotal"));
+  const linkedLeaf = run(["config", "set", "editor", "ed", "--json"], { XDG_CONFIG_HOME: linkedLeafXdg });
+  check("a symbolic link at the final config folder is still refused",
+    linkedLeaf.status === 2 && linkedLeaf.envelope?.error?.code === "PERMISSION_DENIED" &&
+    linkedLeaf.envelope.error.message.includes(`${join(linkedLeafXdg, "cotal")} is a symbolic link`), shown(linkedLeaf));
   const rootLink = run(["config", "set", "color", "always", "--json"], { ...stickyEnv, XDG_CONFIG_HOME: "link", FOREIGN_LINK: "root" }, sticky);
   check("a root-owned relative link is refused with the physical-path remedy",
     rootLink.status === 2 && rootLink.envelope?.error?.code === "PERMISSION_DENIED" &&
@@ -746,6 +770,59 @@ else if (args.join(" ") === "plugin marketplace list --json") {
       setupMissing.status === 2 && setupMissing.envelope?.error?.code === "PERMISSION_DENIED" &&
       setupMissing.envelope.error.message.includes(`${link} is a symbolic link to ${target}, which does not exist`) &&
       !existsSync(target), shown(setupMissing));
+  }
+  const unsafeXdg = mkdtempSync(join(home, "unsafe-setup-"));
+  chmodSync(unsafeXdg, 0o777);
+  const setupUnsafe = run(setupArgs, { XDG_CONFIG_HOME: unsafeXdg, COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: "1" });
+  check("setup refuses an unsafe non-link config path before seeding with a preferences-folder diagnostic",
+    setupUnsafe.status === 2 && setupUnsafe.envelope?.error?.code === "PERMISSION_DENIED" &&
+    setupUnsafe.envelope.error.message.startsWith(`the preferences folder is not protected against other local writers: ${unsafeXdg}`) &&
+    readdirSync(unsafeXdg).length === 0, shown(setupUnsafe));
+}
+
+// The library must protect writes even without the CLI's earlier platform check.
+if (process.platform !== "win32") {
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const getuid = process.getuid;
+  const link = join(home, "unsupported-platform-link");
+  symlinkSync(project, link);
+  const linkStat = lstatSync(link);
+  const calls = {
+    assertPreferencesFolderProtected,
+    writePreference: () => writePreference({}, "editor", "vi", 0),
+    trustProject: () => trustProject(project),
+  };
+  const savedXdg = mkdtempSync(join(home, "unsupported-saved-"));
+  const savedDir = join(savedXdg, "cotal");
+  mkdirSync(savedDir, { mode: 0o700 });
+  const savedFile = join(savedDir, "preferences.json");
+  const savedText = JSON.stringify({ schemaVersion: 1, revision: 1, defaults: {}, spaces: { demo: { persona: "default" } } });
+  writeFileSync(savedFile, savedText, { mode: 0o600 });
+  const unsupported = (error: unknown): boolean => isCommandFailure(error) && error.code === "UNSUPPORTED" &&
+    error.message.includes("no weaker file access was substituted");
+  try {
+    process.getuid = undefined;
+    for (const [name, call] of Object.entries(calls)) {
+      const dir = mkdtempSync(join(home, "unsupported-config-"));
+      process.env.XDG_CONFIG_HOME = dir;
+      let failure: unknown;
+      try { call(); } catch (error) { failure = error; }
+      check(`${name} refuses UNSUPPORTED without creating a config directory or lock`,
+        unsupported(failure) && readdirSync(dir).length === 0, String(failure));
+    }
+    process.env.XDG_CONFIG_HOME = savedXdg;
+    let removeFailure: unknown;
+    try { removeSpacePreferences("demo", 1); } catch (error) { removeFailure = error; }
+    check("removeSpacePreferences refuses UNSUPPORTED without changing the saved file or creating a lock",
+      unsupported(removeFailure) && readFileSync(savedFile, "utf8") === savedText && readdirSync(savedDir).length === 1, String(removeFailure));
+    check("localWriterGap still identifies a symbolic link without getuid", localWriterGap(link, linkStat)?.reason === "is a symbolic link");
+    let failure: unknown;
+    try { assertProtectedEntry("the path", link, linkStat); } catch (error) { failure = error; }
+    check("assertProtectedEntry still refuses a symbolic link without getuid",
+      isCommandFailure(failure) && failure.code === "PERMISSION_DENIED" && failure.message.includes(`${link} is a symbolic link`), String(failure));
+  } finally {
+    process.getuid = getuid;
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = priorXdg;
   }
 }
 

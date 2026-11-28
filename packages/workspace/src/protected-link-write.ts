@@ -7,7 +7,6 @@ import { localRecordAccess } from "./local-record-source.js";
  *  that defines them. */
 export interface ProtectedLinkChecks {
   readonly resolved: (path: string, what: string) => string;
-  readonly entry: (path: string, what: string) => void;
   readonly spelled: (path: string, what: string) => void;
 }
 
@@ -16,22 +15,21 @@ export interface ProtectedLinkChecks {
  *  physical directory the later lock, read and write use, so a link swapped after the check cannot
  *  move them. A folder not made yet is checked from the nearest one above it that exists, and the
  *  returned path is the spelled one. A relative path gets the same spelled-chain check a path that is
- *  not a link gets, and is returned unchanged so the later write uses the spelled path. Windows keeps
- *  its access-list model, so only POSIX checks. `suffix` is appended to a refusal, such as "nothing
- *  was written". */
+ *  not a link gets, and is returned unchanged so the later write uses the spelled path. Only POSIX
+ *  follows links here. Other platforms use the spelled-chain check with their existing access model.
+ *  `suffix` is appended to a refusal, such as "nothing was written". */
 export function assertProtectedLinkWrite(path: string, what: string, checks: ProtectedLinkChecks, suffix = "nothing was written"): string {
-  if (localRecordAccess() !== "posix") return path;
   let dir = path;
   while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
   try {
-    if (!isAbsolute(path)) {
+    if (localRecordAccess() !== "posix" || !isAbsolute(path)) {
       checks.spelled(dir, what);
       return path;
     }
     if (dir === path) {
-      const parent = checks.resolved(dirname(path), what);
-      checks.entry(join(parent, basename(path)), what);
-      return join(parent, basename(path));
+      const physical = join(checks.resolved(dirname(path), what), basename(path));
+      checks.spelled(physical, what);
+      return physical;
     }
     const physical = checks.resolved(dir, what);
     const rest = relative(dir, path);
