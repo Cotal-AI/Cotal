@@ -519,6 +519,10 @@ test("a Manager that is still starting shows the Starting card and no Repair", a
     assert.equal(a.node("sidebar-status-word").textContent, "Starting");
     assert.equal(a.node("connection-title").textContent, "This computer is starting");
     assert.equal(a.node("recovery-panel").hidden, true, "a start still inside its bound is not a failure");
+    assert.match(a.node("refusal-detail").textContent ?? "", /waiting for the hosted Manager to initialize and register/, "Details keeps the reason while the card stays Starting");
+    a.options.managerStarting = undefined;
+    await a.push();
+    assert.equal(a.node("refusal-detail").textContent, "", "the next status that no longer reports the reason clears it");
   } finally { a.dom.window.close(); }
 });
 
