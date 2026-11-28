@@ -40,13 +40,7 @@ check("the parent usage lists stop beside start", parentUsage.includes("<name|")
 
 if (process.platform === "linux") {
   const root = mkdtempSync(join(tmpdir(), "daemon-stop-"));
-  const daemon = join(root, "daemon-entry.mjs");
-  writeFileSync(daemon, [
-    `import { registry } from "@cotal-ai/core";`,
-    `import { runCli } from "@cotal-ai/cli";`,
-    `await import(${JSON.stringify(fileURLToPath(new URL("../dist/daemon/command.js", import.meta.url)))});`,
-    `await runCli(registry, ["daemon", ...process.argv.slice(2)], { extensions: false });`,
-  ].join("\n"), { mode: 0o600 });
+  const daemon = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
   const fixture = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
   const cotal = join(root, "cotal");
   const home = join(cotal, "daemon");
@@ -75,14 +69,14 @@ if (process.platform === "linux") {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
   Object.assign(env, {
     HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(root, "cotal"),
-    XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(root, "rt"), XDG_STATE_HOME: join(root, "state"),
+    XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(root, "rt"), XDG_STATE_HOME: join(root, "state"), COTAL_SKIP_CONNECTOR_SEED: "1",
     PATH: `${join(root, "native")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: contextFile, DO_NOT_TRACK: "1", NO_COLOR: "1",
   });
   const operations = (): string[] => existsSync(calls)
     ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { operation: string }).operation)
     : [];
   const run = (verb: string, extra: string[] = []) => {
-    const result = spawnSync(process.execPath, [daemon, verb, "--daemon-home", home, "--json", ...extra], {
+    const result = spawnSync(process.execPath, [daemon, "daemon", verb, "--daemon-home", home, "--json", ...extra], {
       cwd: root, env, encoding: "utf8", timeout: 30_000,
     });
     const doc = result.stdout ? JSON.parse(result.stdout) as { result?: { state?: string }; error?: { message?: string; remedy?: string } } : undefined;
@@ -107,7 +101,7 @@ if (process.platform === "linux") {
   check("start turns automatic start back on and then starts", resumed.status === 0
     && resumedOps.indexOf("enable") >= 0 && resumedOps.indexOf("enable") < resumedOps.lastIndexOf("start"), resumedOps);
   const desktop = (body: Record<string, unknown>) => {
-    const result = spawnSync(process.execPath, [daemon, "desktop", "--daemon-home", home], {
+    const result = spawnSync(process.execPath, [daemon, "daemon", "desktop", "--daemon-home", home], {
       cwd: root, env, encoding: "utf8", timeout: 30_000, input: `${JSON.stringify(body)}\n`,
     });
     const frames = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { event?: string; ok?: boolean; result?: { state?: string; agents?: string[] }; error?: { code?: string; detail?: { installed?: boolean; stopped?: string } } });
