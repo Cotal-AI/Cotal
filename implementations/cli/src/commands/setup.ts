@@ -50,7 +50,7 @@ import {
   type Report,
 } from "@cotal-ai/workspace";
 import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
-import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
+import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, validateAgentSkillsManifest, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
@@ -292,6 +292,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
  *  then reconcile `~/.agents/skills`. Does not seed personas, offer a global install, or write the
  *  onboarded stamp. */
 async function runSkillsOnly(): Promise<void> {
+  validateAgentSkillsManifest();
   await reconcileConnectorSkills();
   seedAgentSkills();
 }
@@ -661,6 +662,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
   if (opts.demo) checkDemoPersonaPaths(inputs);
+  validateAgentSkillsManifest();
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });

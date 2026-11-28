@@ -17,9 +17,17 @@ import {
   anycastServeFilter, dmDurable, isPrincipalOwnerToken, assertInboxConnId, principalTags,
   principalFromTags, patternCovers, patternInAllow, DEV_OWNER,
 } from "../src/index.js";
+import { subjectMatches } from "../src/subject-grammar.js";
+import {
+  PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, classifyChannel, legacyPluginChannelFilters,
+  parsePluginChannelSubject, pluginChannelFilter, pluginChannelStream, pluginChannelSubject,
+} from "../src/plugin-channel-route.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n); } };
+const rejects = (fn: () => unknown): boolean => {
+  try { fn(); return false; } catch { return true; }
+};
 
 // A literal in-grammar lifecycle uid ([a-z0-9]{26,32}) — dm/dlv/dinbox resources are lifecycle-keyed
 // (SPEC §13.1), so the durable-name / subject builders now carry it.
@@ -30,6 +38,71 @@ const cs = chatSubject("demo", "u_abc", "act1", "team.backend");
 c("chat build", cs === "cotal.demo.chat.u_abc.act1.team.backend");
 const pc = parseSubject(cs)!;
 c("chat parse owner/actor/sender/rest", pc.owner === "u_abc" && pc.actor === "act1" && pc.sender === "u_abc.act1" && pc.rest === "team.backend");
+const familyRoot = PLUGIN_CHANNEL_ROOT;
+const linear = `${familyRoot}.linear`;
+const pluginWire = `cotal.demo.${familyRoot}`;
+const issue = `${linear}.agtec-6270.thread`;
+const pluginSubject = pluginChannelSubject("demo", "u_abc", "act1", issue);
+c("plugin subject pins owner then actor", pluginSubject === `${pluginWire}.u_abc.act1.linear.agtec-6270.thread`);
+const parsedPlugin = parsePluginChannelSubject(pluginSubject);
+c("plugin parser restores the logical channel", parsedPlugin?.kind === familyRoot && parsedPlugin.space === "demo" &&
+  parsedPlugin.owner === "u_abc" && parsedPlugin.actor === "act1" && parsedPlugin.sender === "u_abc.act1" && parsedPlugin.rest === issue);
+c("existing parser does not dispatch the isolated family", parseSubject(pluginSubject) === null);
+c("plugin parser leaves ordinary chat alone", parsePluginChannelSubject(cs) === null);
+const legacyPlugin = chatSubject("demo", "u_abc", "act1", `${linear}.inbox`);
+c("legacy plugin address remains chat", parseSubject(legacyPlugin)?.kind === "chat" && parsePluginChannelSubject(legacyPlugin) === null);
+for (const resource of [">", "*", "agtec-6270.>"]) {
+  const pattern = `${linear}.${resource}`;
+  const family = classifyChannel(pattern);
+  const filter = pluginChannelSubject("demo", "*", "*", pattern);
+  const parsed = parsePluginChannelSubject(filter);
+  c(`plugin filter round trip: ${pattern}`, family.kind === familyRoot && family.plugin === "linear" &&
+    filter === `${pluginWire}.*.*.linear.${resource}` && family.resource === resource && parsed?.owner === "*" &&
+    parsed.actor === "*" && parsed.rest === pattern);
+}
+for (const ordinary of [">", "*", "*.linear.>", `team.${linear}`, `${familyRoot.toUpperCase()}.linear.inbox`, `${familyRoot}-other.linear.inbox`]) {
+  c(`only the literal reserved root selects the plugin family: ${ordinary}`, classifyChannel(ordinary).kind === "chat");
+}
+for (const invalid of [familyRoot, linear, `${familyRoot}.>`, `${familyRoot}.*.>`, `${linear}.>.extra`, `${linear}.a/b`, `${linear}..inbox`]) {
+  c(`channel classifier rejects ${invalid}`, rejects(() => classifyChannel(invalid)));
+  c(`plugin subject builder rejects ${invalid}`, rejects(() => pluginChannelSubject("demo", "u_abc", "act1", invalid)));
+}
+for (const bad of [`${pluginWire}.u_abc.act1.linear`, `${pluginWire}.u_abc.act1.*.inbox`,
+  `${pluginWire}.u_abc.act-1.linear.inbox`, `cotal..${familyRoot}.u_abc.act1.linear.inbox`,
+  `${pluginWire}.u_abc.act1.linear.>.inbox`, `${pluginWire}.u_abc.act1.linear.in box`]) {
+  c(`plugin parser rejects ${bad}`, parsePluginChannelSubject(bad) === null);
+}
+c("plugin subject builder rejects an ordinary channel", rejects(() => pluginChannelSubject("demo", "u_abc", "act1", "team.backend")));
+c("plugin subject builder rejects a dotted owner", rejects(() => pluginChannelSubject("demo", "u_abc.extra", "act1", `${linear}.inbox`)));
+c("plugin subject builder rejects a partial actor wildcard", rejects(() => pluginChannelSubject("demo", "u_abc", "act*", `${linear}.inbox`)));
+for (const channel of [issue, familyRoot, linear, `${familyRoot}.>`, `${familyRoot}.*.>`]) {
+  const legacy = channelRoute("demo", "u_abc", "act1", channel, "legacy");
+  c(`off-space route preserves CHAT for ${channel}`, legacy.rail.kind === "chat" && legacy.stream === "CHAT_demo" &&
+    legacy.subject === chatSubject("demo", "u_abc", "act1", channel));
+}
+for (const pattern of [">", "*", "*.linear.>", "team.>"]) {
+  const route = channelRoute("demo", "*", "*", pattern, "isolated");
+  c(`ordinary filter stays CHAT: ${pattern}`, route.rail.kind === "chat" && route.stream === "CHAT_demo" &&
+    route.subject === chatSubject("demo", "*", "*", pattern) && !subjectMatches(route.subject, pluginSubject));
+}
+const routedFilter = channelRoute("demo", "*", "*", `${linear}.>`, "isolated");
+c("named plugin subtree routes to plugin history", routedFilter.rail.kind === familyRoot && routedFilter.stream === pluginChannelStream("demo") &&
+  routedFilter.subject === `${pluginWire}.*.*.linear.>` && subjectMatches(routedFilter.subject, pluginSubject));
+c("isolated mode rejects a wide reserved-root filter", rejects(() => channelRoute("demo", "*", "*", `${familyRoot}.>`, "isolated")));
+c("legacy mode still validates channel grammar", rejects(() => channelRoute("demo", "*", "*", `${linear}..inbox`, "legacy")));
+c("plugin history stream and fan-out name are stable", pluginChannelStream("demo") === "EXT_demo" && PLUGIN_FANOUT_DURABLE === "fanout");
+const anotherPluginPost = pluginChannelSubject("demo", "u_abc", "act1", `${familyRoot}.other.inbox`);
+c("history capture includes both plugins but not CHAT", pluginChannelFilter("demo") === `${pluginWire}.*.*.*.>` &&
+  subjectMatches(pluginChannelFilter("demo"), anotherPluginPost) && !subjectMatches(pluginChannelFilter("demo"), legacyPlugin));
+c("plugin history purge covers only the selected plugin", subjectMatches(pluginChannelFilter("demo", "linear"), pluginSubject) &&
+  !subjectMatches(pluginChannelFilter("demo", "linear"), anotherPluginPost));
+c("privileged history purge refuses explicit wildcard plugin IDs", ["*", ">", "linear.other"].every((id) => rejects(() => pluginChannelFilter("demo", id))));
+const legacyDeny = legacyPluginChannelFilters("demo");
+c("legacy deny filters cover the bare reserved root and all descendants only", legacyDeny.length === 2 &&
+  legacyDeny[0] === `cotal.demo.chat.*.*.${familyRoot}` && legacyDeny[1] === `cotal.demo.chat.*.*.${familyRoot}.>` &&
+  legacyDeny.some((filter) => subjectMatches(filter, chatSubject("demo", "u_abc", "act1", familyRoot))) &&
+  legacyDeny.some((filter) => subjectMatches(filter, legacyPlugin)) &&
+  !legacyDeny.some((filter) => [cs, pluginSubject].some((subject) => subjectMatches(filter, subject))));
 const is = unicastSubject("demo", "u_r", "ra", "u_s", "sa");
 c("inst build (4-token)", is === "cotal.demo.inst.u_r.ra.u_s.sa");
 const pi = parseSubject(is)!;

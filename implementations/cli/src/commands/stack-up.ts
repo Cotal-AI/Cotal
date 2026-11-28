@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
+import { localDiagnostic } from "../telemetry.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -285,6 +286,20 @@ function holdsBrokerAccount(root: string): boolean {
 
 const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open", user: "user auth" };
 
+/** The broker already has a journal. Repeat only the target and the settings for the unstarted manager. */
+function stackLoginRetry(request: StackUpRequest): string {
+  const bare = "run bare `cotal up` again";
+  if (request.manifest) return bare;
+  const { root, space, runtime, managerName, managerSeatCap, maxSessions, foreground, presentation } = request;
+  const options = [
+    ...(runtime !== "pty" ? ["--runtime", shellWord(runtime)] : []), ...(managerName ? ["--manager-name", shellWord(managerName)] : []),
+    ...(managerSeatCap !== undefined ? ["--seat-cap", String(managerSeatCap)] : []), ...(maxSessions !== undefined ? ["--max-sessions", String(maxSessions)] : []),
+    ...(foreground ? ["--foreground"] : []), ...(presentation === "rich" ? [] : [`--${presentation}`]),
+  ];
+  if (!options.length && (!request.invokedRoot || request.invokedRoot === root)) return bare;
+  return `run ${codeSpan([presentation === "json" ? "cotal" : displayCmd(), "up", "--root", shellWord(root), "--space", shellWord(space), ...options].join(" "))} again`;
+}
+
 /** The next step when an explicit mode is not the one a root's first whole-stack `up` recorded.
  *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
  *  records it. So the step keeps that mode, or starts the requested one in another folder. */
@@ -405,11 +420,12 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
-    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry)} again`;
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
+    const format = request.presentation === "rich" ? "" : ` --${request.presentation}`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry + format)} again`;
+    throw localDiagnostic(new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
-    });
+    }));
   }
   if (legacy.length || brokerPidfile) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", brokerPidfile?.message ?? "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy }, remedy: brokerPidfile?.remedy });
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== space)) throw new CommandFailure("refused", "CONFLICT", "another locally started space uses this root; a single-space controller stack cannot share its broker", { target: { root, space } });
@@ -1255,7 +1271,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // as `manager start` confirms it. Without a signed-in, granted login, or with one the IdP
     // rejects, it is not attempted; nothing is launched for it.
     if (!request.noManager && mode === "user") {
-      try { await assertManagerLogin(root, space, "run bare `cotal up` again"); }
+      try { await assertManagerLogin(root, space, () => stackLoginRetry(request)); }
       catch (error) {
         if (!isCommandFailure(error) || error.code !== "AUTH_REQUIRED") throw error;
         loginBlock = error;

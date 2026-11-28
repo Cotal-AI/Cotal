@@ -525,8 +525,8 @@ function showStage(next: Stage, focus = false): void {
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
     const summary = computerSummary(rows, anyConnected);
-    title = summary === "connected" ? connectionView("launch-ready").title : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
-    description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
+    title = summary === "connected" ? connectionView("launch-ready").title : summary === "offline" ? "No internet connection" : summary === "unreachable" ? "Can't reach your space" : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
+    description = summary === "offline" ? "Cotal reconnects by itself when this computer is back online." : summary === "unreachable" ? "Cotal reconnects by itself when the space answers again." : rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
   else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
@@ -587,13 +587,14 @@ function showStage(next: Stage, focus = false): void {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
     const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
-    text("tray-label", signInRequired ? "Sign in required" : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
+    const lost = summary === "offline" || summary === "unreachable";
+    text("tray-label", signInRequired ? "Sign in required" : summary === "connected" ? "Connected" : summary === "offline" ? "Offline" : summary === "unreachable" ? "Can't connect" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
     el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
-    el("tray-indicator").classList.toggle("error", signInRequired || summary === "attention");
+    el("tray-indicator").classList.toggle("error", signInRequired || lost || summary === "attention");
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired || summary === "attention" ? "error" : summary === "starting" ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : summary === "attention" ? "warning" : summary === "starting" ? "clock" : empty ? "check" : "computer");
+      el("connection-icon").dataset.tone = signInRequired || lost || summary === "attention" ? "error" : summary === "starting" ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), signInRequired ? "browser" : summary === "offline" ? "offline" : summary === "unreachable" || summary === "attention" ? "warning" : summary === "starting" ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = connections.size === 0;
   document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
@@ -735,7 +736,7 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal || accountRow.observed === "offline" || accountRow.observed === "unreachable" ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const recovery = accountRow?.custodyRecovery;
@@ -944,7 +945,10 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   if (typeof status.computer === "string") renderComputerName(status.computer);
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
   managerReasons.clear();
-  if (Array.isArray(status.managers)) for (const item of status.managers) if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
+  if (Array.isArray(status.managers)) for (const item of status.managers) {
+    if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
+    else if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
+  }
   const space = selectedSpace();
   computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   if (computerAccount?.hostSupport === "supported") {
@@ -977,6 +981,11 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
     if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
     instances.delete(space);
+    if (manager?.connection) {
+      state("connected", space);
+      refusal(new DaemonRefusal(manager.connection.state === "offline" ? "OFFLINE" : "SPACE_UNREACHABLE", String(manager.connection.reason)), true);
+      buttons(); return;
+    }
     const service = await request({ op: "service-status", space });
     if (!current()) return;
     state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
