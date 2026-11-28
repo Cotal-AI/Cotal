@@ -1400,8 +1400,10 @@ async function globalConfigExtensionCell(setting) {
     bytes = readFileSync(archive);
     const cert = join(root, 'ca.pem'), key = join(root, 'loopback.key');
     if (tls) {
+      const config = join(root, 'loopback.cnf');
+      writeFileSync(config, '[req]\nprompt=no\ndistinguished_name=subject\nx509_extensions=loopback\n[subject]\nCN=127.0.0.1\n[loopback]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\n');
       const generated = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-        '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', key, '-out', cert], { env, encoding: 'utf8' });
+        '-config', config, '-keyout', key, '-out', cert], { env, encoding: 'utf8' });
       assert.equal(generated.status, 0, generated.error?.message ?? generated.stderr);
     }
     server = tls ? createHttpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, serve) : createServer(serve);
