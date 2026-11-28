@@ -1,5 +1,32 @@
 # @cotal-ai/manager
 
+## 0.184.0
+
+### Minor Changes
+
+- 68fc37d: A launch now runs only an effort level or mode its harness lists for the model, and is refused before launch otherwise. A model catalog row can name its default variant, the harness's default model, and modes such as a fast tier, which `cotal models` prints and `cotal spawn --mode id=value` chooses. The Manager's `spawn` takes `modes` (Manager revision 58) and checks a variant or modes against the last catalog it read for that connector, reading one only when it holds none. A mode the account cannot use is listed with an `unavailable` reason, which `cotal models` prints, and a launch that turns it on is refused with that reason. A launch that sets it off, `false` or the choice's default, still runs. A connector declares `supportsModes` to render them, and a resumed seat launches with the modes it was spawned with. A variant on a connector without a catalog, or on a model its catalog does not list, is now refused rather than launched at a setting the harness picks.
+
+### Patch Changes
+
+- 13ce458: The desktop app now notices when this computer goes offline or a space stops answering. It used to keep showing Connected. A hosted Manager tells the machine daemon whether its connection to the space is up, on the health check that already runs every five seconds, and the daemon reports a loss once two checks in a row see it, so a drop the Manager recovers from within seconds shows nothing. The Manager now pings its connection every ten seconds, as agents already do, so a network that goes away without a word, as Wi-Fi does, is found within about 45 seconds rather than several minutes. When the connection drops, `cotal daemon status` and the app's live status show a `connection` problem. It reads `offline` when this computer cannot look up the space's host, and `unreachable` when it can but the space is not answering. The app says "No internet connection" or "Can't reach your space", and the tray says "Offline" or "Can't connect". The problem clears by itself once the Manager reconnects, and a Manager that a status read during the loss left `starting` is read again until it answers, at once and then at growing intervals of up to 30 seconds, so the app returns to Connected without anyone asking. `cotal daemon service-status` for a space with a hosted Manager succeeds only while that Manager answers with no lost connection; otherwise it refuses with the code `OFFLINE` or `SPACE_UNREACHABLE` for a lost connection, or `MANAGER_<STATE>` (such as `MANAGER_STARTING`) for the Manager's own state. The daemon logs each loss and reconnect once.
+- 2c2f1f4: A running Manager now stops offering an agent application as soon as it is uninstalled, without restarting the background service. Every status read, model lookup, command listing, resume and launch verifies that an available connector's recorded executables still exist and still resolve on `PATH`. When one is missing, the connector row becomes `unavailable` with `<name> harness needs <bin> on PATH - not found`, launches are refused before reserving a name or capacity, and class `spawn` and `launch` subscriptions update when no available application remains.
+- Updated dependencies [68fc37d]
+- Updated dependencies [14aa844]
+- Updated dependencies [f9301f2]
+- Updated dependencies [ed3a284]
+- Updated dependencies [902f3c3]
+- Updated dependencies [50b7040]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [5efbfdc]
+- Updated dependencies [274a820]
+- Updated dependencies [aa7d8a2]
+- Updated dependencies [ec3c29f]
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/seat@0.184.0
+
 ## 0.183.1
 
 ### Patch Changes
@@ -15,9 +42,9 @@
 ### Minor Changes
 
 - 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
-  
+
   SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
-  
+
   The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
 
 ### Patch Changes
@@ -101,7 +128,7 @@
 ### Minor Changes
 
 - b05f907: In ACP clients such as T3 Code, choosing another model or reasoning level on a running thread now switches its agent from the next turn, with no `/despawn`.
-  
+
   - The `agent` endpoint advances to revision 6 with the owner-only `set-model`, and presence `agentEndpoint` gains `setModel`. Reconnect clients after the auth callout is updated, so their sign-in carries the new command.
   - Codex switches with `thread/settings/update`, OpenCode with the model each prompt carries (1.x) or its session model route (2.x), pi 0.84.3 or later with its session setters, Jcode with its model and effort calls, and Claude Code through its command mod for later turns of the session alone. Each checks the model against its own list first. Hermes does not switch yet, and the thread says to use `/despawn`.
   - A Manager keeps the switch and restarts or resumes the agent on it.
@@ -138,7 +165,7 @@
 ### Minor Changes
 
 - 3b5bde1: T3 Code and other ACP clients now get from every Cotal agent what that harness's own provider shows: replies streamed as they are written, tool calls with their arguments, results and diffs, plans, approvals, questions, the agent's own commands, cancel, later prompts with images, context usage, reasoning, and the model and effort pickers.
-  
+
   - Core: the `agent` endpoint is at revision 5, with `turn` (the owner's next prompt, with images) and `usage` (context and cost). Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, which says what a process serves now, so a caller picks one path per agent before it sends anything. `ModelCatalogOpts.envAllow` gives a model catalog read the `spawn.env` names a launch receives.
   - Manager: cluster revision 56. `spawn` takes the opt-in `askPermissions` (ask before tool use) and `reasoningEvents` (publish the model's reasoning), and every `status.connectors` row says whether its connector takes them. Update Managers and their callers together. `@cotal-ai/workspace` carries the two fields in a managed launch and in the cached connector rows.
   - connector-core: a delta journal beside each thread's journal streams harness text and reasoning before the harness saves it, merged into the durable source, and a connector may journal records of its own there. `JsonlFileSource.holdsSync` tells whether a cursor is on the file at the path now. A tool result marker may leave out `isError`, and `web` reads one without it.
@@ -150,6 +177,7 @@
   - Pi: tool arguments and results on the payload rail, turns and usage, `askPermissions`, streamed replies, thinking with `reasoningEvents`, and the model catalog read with the launch's `spawn.env` names.
   - `cotal acp`: picks each agent's cancel, prompt, image and usage path from its presence; sends a turn's usage before the prompt answers; gives each model's reasoning choices in the session's model state, so T3 shows the effort picker before a thread runs; launches with the two fields where the connector takes them; shows tool details, plans, Codex's change approvals as diffs, and the agent's own commands; asks an agent's approvals and questions, also ones it opens between the thread's turns, and asks a prompt again when its first read fails; keeps a prompt queued behind the agent's other work open until the agent runs it, and a cancel takes it out of the queue; never defaults a thread to another computer's manager; offers a short persona and channel select plus `/persona` and `/join` where the lists are too long for a select; and says what it cannot replay when an agent's tool details cannot be read.
   - `cli`: the Hermes model remedy no longer suggests `--no-events`.
+
 - 0413abe: A new agent can now label itself from the first message it gets, using its own session's model, while it keeps its launch name as the name people mention and message. The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, which reaches the seat as `COTAL_AUTO_NAME=1` (`LaunchOpts.autoName`) and is refused on a `once` spawn and on a delegated runtime. The seat's connector makes one tool-less request to its own model, outside its conversation, about the launch prompt or else the first live direct message or mention from the seat's own owner, and shows the cleaned reply as the card's `meta["ai.cotal.label"]` (`AGENT_LABEL_META_KEY`), at most 40 code points. `card.name` never changes, so mentions, direct messages and name lookups keep resolving the launch name, and readers show `meta["ai.cotal.label"] ?? name`. The card carries `meta["ai.cotal.naming"] = "pending"` until naming settles, whatever the outcome, and the label and the key's removal reach presence in one record. An owner `set-name` still changes the name, ends naming when it is out, and drops the label in the record that carries the new name. A failed naming shows no label. Claude Code, Codex and OpenCode 2.x seats have the request; Hermes, Jcode, pi and OpenCode 1.x seats show no label and never show the key. A relaunch never labels the seat again, `COTAL_DISPLAY_NAME` turns naming off, and an agent file cannot set either key. `CotalEndpoint.setCardMeta` sets or removes card meta keys in one presence record, and `setCardName` takes meta changes for the record that carries the new name.
 - c7f487b: Agents on static spaces and open meshes now answer their owner's prompts, commands, turns, interrupts, usage reads and renames, as they do where people sign in. A static `agent` credential now carries the serve rows for the `agent` endpoint and no caller row. A renewal keeps the rows its first issuance recorded, so an agent an older release started keeps running without the endpoint until it is respawned, and its connector says so. Core adds the static `agent-caller` profile: the owner's calls to the agents under its own owner, their replies and its inbox, never minted by the auth callout. `openAgentCaller` in `@cotal-ai/workspace` opens it. `CotalEndpoint.servePrincipal` and `MeshAgent` serve on every mesh mode. On an open mesh any client may call, outside the security claims. The Manager's `status.connectors[].prompts` is the connector's declaration on every mesh mode, with the same schema and cluster revision. Codex accepts an asking `approval_policy` on every space. `cotal acp` calls agents through an in-memory `agent-caller` on a static space and through its observer elsewhere, so questions, the agent's commands, images and `/name` work in a thread on every space. The Manager now accepts a spawn's `firstCommand` on static spaces and open meshes too, and the agent runs it there as its first turn.
 
@@ -330,11 +358,11 @@
 ### Minor Changes
 
 - e91ed5b: T3 Code, Zed and other Agent Client Protocol clients can now spawn and drive Cotal agents through the new `@cotal-ai/acp` extension and its `cotal acp` command.
-  
+
   `cotal acp` serves ACP v1 on standard input and output. A client thread is one managed agent: its first prompt spawns the agent through the space's manager in the thread's folder, with the model, reasoning variant, persona, channel and machine the thread chose, and the agent keeps running when the client closes. The thread follows the agent's event channel, so an application without an event plane is not offered. Session list shows the managed agents in a folder, loading one replays what its event channel still holds, deleting one hides that run, and `/despawn`, `/roster` and `/channels` answer in the thread. A later prompt is typed into the agent's terminal through the manager's `input` command, so it arrives as the user's own words, and its turn ends once the agent has started working and stopped again. An agent whose runtime owns no terminal input, such as tmux, refuses it, and the prompt fails with the manager's reason. A client that runs terminals is offered a sign-in that runs `cotal login` or, with no space recorded, `cotal setup`. Stopping a turn interrupts the agent through the manager's new `interrupt` command, and the turn ends as cancelled, also when the agent cannot be stopped. Forwarding an agent's questions is not available yet. `@cotal-ai/cli` names the package when `cotal acp` runs before the extension is added, and `@cotal-ai/workspace` records `acp` as a Cotal home entry and offers the `input` and `interrupt` control calls.
-  
+
   The manager serves a new targeted `interrupt` command, contract revision 53. It writes the key a seat's connector declares in the new `Connector.interruptKey` into the seat's terminal, and it is granted as `input` is. The Claude Code and Pi connectors declare Escape.
-  
+
   On a space where people sign in, a person now controls every agent under their own owner without the `admin` scope. Their manager view carries `inspect` and `ps` and owner-mode `input`, `interrupt`, `despawn` and `attach`, whatever their scope, and their sign-in reads those agents' event channels live and through its own history reader. These rights come from the ledger row being a person's, never from a scope token, so no agent credential holds them. They ride the person's sign-in, so a program running as that person where they are signed in can use them. `cotal acp` reads through that sign-in, takes your managers from the auth service's `/manager-instances` list, reads your agents from every live one, sends each agent's commands to the manager that holds it, and names each agent `acp_<id>`, a valid actor name there. A thread loaded without a grant that may spawn offers only the agent's own model and cannot start another, and `cotal acp` stops, sending nothing, when the machine's sign-in is granted again or changes account. `@cotal-ai/core` adds a `publisher` filter to `channelHistoryPage` and an optional `AuthProvider.listManagerInstances`, which `@cotal-ai/auth` implements. `@cotal-ai/workspace` adds `ownManagerInstances`, `userSignInAuth`, `signInChange`, an observer `lifecycleUid` option, and a `gone` list on the `ps` reply for registrations whose host is gone. A control call whose own chosen run was replaced is now reported as refused before submission, with `preSubmitRefusal` and `selectedSeatChanged`, so a picker `cotal attach` exits as a refusal (`TARGET_NOT_FOUND`) and `cotal team agent remove` reports refused where they reported a failure or an unknown outcome; nothing was ever sent in that case.
 
 ### Patch Changes
@@ -488,7 +516,7 @@
 ### Minor Changes
 
 - de93c7e: A Claude Code seat that Cotal launches on a signed-in space now lets its owner answer Claude's tool permissions from another session, while Claude's own dialog stays open.
-  
+
   The plugin registers `PermissionRequest` and `SubagentStop`. The hook relay holds a `PermissionRequest` past its 2-second deadline once a proven connector has it, and the control server passes each handler a signal that aborts when the hook's connection closes. The connector opens each permission as a prompt on the agent's own `agent` endpoint, offered for 7 days, and hands Claude the remote allow or deny. It settles a prompt from what Claude reports later: a closed hook connection, a batch that ran a call with the same scope, tool and input, or the end of that scope's turn. A call the remote deny refused is listed in Claude's batch with the deny's message as its result, and it does not count as a call that ran. `AskUserQuestion` and `ExitPlanMode` stay with Claude's dialog. On Windows the hook answers each permission itself with no decision and the connector warns once. `MeshAgent.prompts` exposes the agent's prompt desk to a connector. A connector can declare `prompts`, and every Manager `status.connectors` row now carries `prompts`, true when the connector declares it and the mesh is user-auth. The Manager cluster advances to revision 52, whose closed status schema a revision-51 reader rejects. `HookHandle` takes a third argument, the hook's connection context, so code that calls a handler typed as `HookHandle` passes one.
 
 ### Patch Changes
@@ -661,9 +689,9 @@
 ### Minor Changes
 
 - a59864f: A connector's local control endpoint no longer trusts whoever holds its name, and sessions launched before this release must be restarted. A hook used to send the endpoint key in its first frame and print whatever came back, so another local user who took the socket or pipe name after the connector's server exited received the key and could answer the hook. Each connection now runs the control exchange: the client and the server each prove with HMAC-SHA256 over fresh nonces that they hold the key, the reply carries a MAC, the hook's delivery receipt carries a MAC over that reply, and neither side sends the key. Every line is bounded in bytes before it is parsed, every reply included. The lifecycle hooks, the Manager's cooperative stop and session calls, and the Hermes Python hooks all move to it. The Hermes bridge adapter now presents a token derived from the key (HMAC-SHA256 over `cotal-hermes-bridge/1`) in place of the key. A client waits at most 1 second for the server's proof, and a server drops a connection that proves nothing within 5 seconds.
-  
+
   The exchange has a version, `CONTROL_PROTOCOL_VERSION` (1), that travels with the key: `LaunchSpec.control` is now `{ path, token, version }`. The key moves to new carrier names: the launch material carries `controlKey` and `controlVersion`, and a hand-driven session sets `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION=1`. A hook or connector from an earlier release finds no key in a new launch, so one that requires a control endpoint refuses to start, and this release refuses the old `controlToken` and `COTAL_CONTROL_TOKEN`. An earlier Hermes launcher mints its own key and keeps running its own sidecar and gateway. A key without a version, a version a build does not speak, and a peer of another version are all refused, with no fallback. A hand-set key with whitespace around it and a version set without a key are refused, by the TypeScript and Python readers alike. A Claude Code session that reloads its plugin after the upgrade re-reads launch material written before it, which has no version, so it refuses until the session is restarted. `materialEnv` takes `control` (the endpoint) in place of `controlToken`, and `controlEndpoint` takes the launch's artifact list as its third argument.
-  
+
   Off Windows each launch's control socket now sits in a directory of its own, `cotal-ctl-<id>` under the temp directory, named from the key. Minting the endpoint creates it with mode 0700 and refuses one that already exists, the server checks its owner and mode before it binds and never creates it, every client checks it before it connects, and the launcher removes it with the launch's other artifacts. A directory that is missing or fails the check counts as no endpoint, so a hand-driven `COTAL_CONTROL_SOCKET` must point into a private directory that exists. A Hermes stop now waits for the gateway to exit in every mode before it removes that directory, and keeps the directory when it cannot prove the exit. Hermes standalone mode keeps its own `cotal-hermes-*` directory instead, which nothing removes. The Hermes bridge socket moves beside the control socket, and a Hermes adapter whose bridge directory is not private reports a permanent error instead of a connected platform that drops its replies. `@cotal-ai/core` exports the exchange (`clientExchange`, `serverExchange`, `controlCall`, `checkControlSocketDir`, `assertControlSocketDir`, `assertControlEndpoint`), and `clientExchange` and `controlCall` require `maxReplyBytes` as a finite, non-negative whole number; `tokenMatches`, `AUTH_DEADLINE_MS`, `MAX_FRAME_BYTES` and `HANDOFF_RECEIPT` are no longer exported by `@cotal-ai/connector-core`.
 
 ### Patch Changes
@@ -716,8 +744,9 @@
 - 818992b: Move the manager instance liveness lease into its own module. Behaviour and the package exports are unchanged; `ManagerInstanceLeaseHeld` is still exported from the package entry.
 - f60af89: Keep manager name reservations and capacity accounting in one internal component while preserving spawn, resume and slot-release behavior.
 - bd5b41b: The dashboard and manager console restrict browser scripts to their own assets and omit referrers.
-  
+
   Both surfaces send Content-Security-Policy and X-Content-Type-Options headers. Dashboard launch links retain their single-use exchange. The manager console removes its launch token from the address bar after its page scripts load.
+
 - Updated dependencies [4ad482d]
 - Updated dependencies [6546892]
 - Updated dependencies [97a8f1a]
@@ -868,17 +897,19 @@
 ### Minor Changes
 
 - 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
-  
+
   The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
 
 ### Patch Changes
 
 - 1b5a7ed: An attached terminal now reports that the agent exited when the agent's own process ends, instead of reporting that it was stopped.
-  
+
   The manager ended every live attach session with `target-despawn` when it freed a seat, and its exit watcher runs before the session sees the process exit, so a natural exit reached the caller as a stop. A seat that exits on its own, including the last exit of a spent restart budget, now ends its sessions with `process-exit`. A stop, a reap and a failed restart still end them with `target-despawn`, and a child the manager stops because its parent exited is logged as reaped instead of as exiting on its own. The session also sends the seat's last output before its end frame, which the coalescing buffer used to drop when the exit watcher ended the session first.
+
 - 7ecfa90: Restore named inspection, model-pin audits and helper shutdown for managed static control sessions on their holding manager.
-  
+
   Keep instance reads within the spawner's issued authority, preserve workflow starter ceilings without adding implicit reads to run-spawned helpers, and renew each seat with its original issued scope.
+
 - Updated dependencies [6c77c15]
 - Updated dependencies [8325513]
 - Updated dependencies [e3777e8]
@@ -1000,11 +1031,13 @@
 ### Patch Changes
 
 - 1c18181: Keep remote Manager registrations protected while their registration executor is connected.
-  
+
   Host reconciliation now requires complete liveness evidence that both the target's serving principal and its separate registration executor are gone before changing its credential family or reopening its gate. The executor identity comes from the target gate, including for cross-owner recovery. Abandoned registrations remain recoverable, and incomplete evidence refuses recovery.
+
 - ddf8ced: Make strict package-manager installations load all required runtime dependencies.
-  
+
   Declare the delivery transport and Manager console codec as production dependencies. Check every published package's built JavaScript for undeclared runtime imports in the existing dependency census.
+
 - Updated dependencies [38947c4]
 - Updated dependencies [1c18181]
   - @cotal-ai/workspace@0.164.7
@@ -1077,9 +1110,9 @@
 ### Minor Changes
 
 - 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
-  
+
   Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
-  
+
   Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
 
 ### Patch Changes
@@ -1098,8 +1131,9 @@
 
 - d8607d7: A static mesh's refusal for another agent's event channel names `cotal auth mint`. `cotal mint` no longer issues a credential.
 - aa9d3c8: Agents launched on a second computer use a numbered name when that computer cannot continue the requested name's retained transcript.
-  
+
   The manager and connector share the acknowledged transcript startup check. Unreadable state or retained counts refuse the launch before provisioning, and pinned names are never silently renamed. Supervisor credentials can read CHAT subject counts for this check without reading message bodies. On older hosts that deny this metadata read, the manager logs the permission gap and leaves the agent's existing startup check in charge. Delegated runtimes are unchanged.
+
 - Updated dependencies [a1cef07]
 - Updated dependencies [23e3171]
 - Updated dependencies [aa9d3c8]
@@ -1249,8 +1283,9 @@
 - 0cbf6e4: Connection teardown no longer hangs when the broker closes a connection during its drain.
   Use the shared `drainAndClose` helper to end the drain wait on terminal closure or a short grace period, then close the connection.
 - 94313d0: Keep recovery commands copyable in narrow terminals and command help examples concise.
-  
+
   Mark embedded commands as code spans in daemon diagnostics, update notices, and operator guidance so the terminal renderer keeps each command together.
+
 - Updated dependencies [0cbf6e4]
 - Updated dependencies [94313d0]
   - @cotal-ai/core@0.160.3
@@ -1314,8 +1349,9 @@
 ### Patch Changes
 
 - 884b619: Participant managers now resume large startup registrations after the five-minute executor expires and report revocation counts.
-  
+
   Fresh prepare authority keeps the same account, lifecycle and executor identity while the existing frozen operation preserves completed revocations and verified-holder progress. Non-expiry failures and refused host requests still stop startup, including eviction or reconciliation failures that overlap executor expiry. Prepare connections close without a drain round trip, so expiry cannot leave startup waiting for teardown.
+
 - Updated dependencies [884b619]
   - @cotal-ai/core@0.158.1
   - @cotal-ai/workspace@0.158.1
@@ -1326,7 +1362,7 @@
 ### Minor Changes
 
 - f7f5cc6: Remove departed Manager registrations in user-auth spaces through the governing auth service.
-  
+
   The command verifies the account that registered the Manager and reuses the static path's broker-absence and revision guards. The embedded authority also provides a trusted space-operator door for hosted computer removal. Census hints name the command, and hosts without the operation refuse without borrowing a local signer.
 
 ### Patch Changes
@@ -1358,8 +1394,9 @@
 ### Patch Changes
 
 - f93e549: Retrying a managed launch after an enrollment or bearer preflight failure no longer loses the agent name.
-  
+
   Participant managers retain the unlaunched enrollment's token and request identity in their secret store and replay them for the same caller and persona authority. Each retry carries fresh observed-spawn authorization so an uncommitted attempt can recover after the earlier observation expires. Changed authority is refused with a recovery message instead of replacing the pending token.
+
 - @cotal-ai/core@0.157.7
   - @cotal-ai/seat@0.157.7
   - @cotal-ai/workspace@0.157.7
@@ -1513,20 +1550,21 @@
   Endpoint limit refusals stop parsing immediately and allow already accepted finite replies a bounded
   flush before closing the connection.
 - 27c1356: An agent can now give a helper it spawns endpoint commands it holds itself, by listing them in the helper's persona under `endpoints`.
-  
+
   Each entry names an endpoint and its commands, such as `{ endpoint: com.example.orders, commands: [list] }`, and may add `instanceId` to hand on the commands on one instance of the endpoint only. The field works in a persona file, in the inline persona on `cotal_spawn`, in `cotal_persona`, and in a cotal-lang inline `spawn`. On a static mesh the manager measures every command against the spawner's own issued credential and refuses, by name, any command the spawner cannot call. A workflow run's spawn is measured against what the run's starter held when the run was admitted. The helper's credential carries the commands from its first mint, and every renewal keeps them. `cotal spawn --foreground` mints them for the operator's own seat. The orientation card lists the commands a seat was handed. `cotal_describe` and `cotal_invoke` take an optional `instance`, so an agent handed a command on one instance can call that instance and no other.
-  
+
   For third-party endpoints, an issued static agent credential carries only untargeted, unjournaled commands, and the mint refuses any other shape, because a static despawn has no step that settles accepted work keyed to the retired agent. A despawn revokes the helper's ledger rows and evicts its live connections, but a credential copied off disk before then still works until it expires, as every static credential does.
-  
+
   A per-user auth mesh refuses a persona that names `endpoints`, an empty list included, and the refusal points to `cotal service-endpoint grant`, which is how endpoint access is granted there. A manifest launch also refuses such a persona and points to `cotal spawn --detach`. Single-label endpoints such as `manager` and the `describe` and `cancel` commands are refused.
-  
+
   A persona file whose `endpoints` key is not a valid list now fails to load, where the key used to be ignored. The manager cluster contract moves to revision 47, which adds `endpoints` to the `spawn` persona record and to `define-persona`. `@cotal-ai/core` exports `parsePersonaEndpoints`, `lowerPersonaEndpoints`, `copyPersonaEndpoints` and the `PersonaEndpoint` type, and `LaunchOpts` gains `endpoints`, which connectors forward to the session as `COTAL_ENDPOINTS`.
 
 ### Patch Changes
 
 - ed8962e: Hosted Managers refuse new launches when first-party connector generations differ from their running generation.
-  
+
   The daemon checks for a replaced installation before trusting the seed stamp. Refusals name the cause and the restart step for the recorded service or foreground daemon. Existing seats and stock Manager connector loading remain unchanged.
+
 - Updated dependencies [71dbfad]
 - Updated dependencies [ed8962e]
 - Updated dependencies [27c1356]
@@ -1750,8 +1788,9 @@
 ### Patch Changes
 
 - f3cc268: Keep a stopped seat's runtime custody reference during manager shutdown.
-  
+
   Shutdown now passes the same owned handle reference into retirement as per-agent teardown, so the runtime reaper can address recorded work before footprint cleanup. Runtime exit and ownership checks are unchanged.
+
 - Updated dependencies [b8b0ff4]
   - @cotal-ai/core@0.147.0
   - @cotal-ai/workspace@0.147.0
@@ -1763,9 +1802,9 @@
 
 - d312807: The shared listener proof type is `ListenerProof`, and its `target` is the store the attempt binds.
 - 4536cfe: Automatic restarts now require proof that the previous seat's local work has ended.
-  
+
   The built-in PTY runtime cannot prove detached tools have stopped, so it refuses explicit `supervise` requests before launch. Pi crash recovery and recovery of older supervised records also refuse without authoritative work closure. Ordinary launches remain supported. This is a breaking safety restriction; it does not kill surviving tools or cancel remote effects.
-  
+
   Runtime adapters can declare `supportsWorkClosure` and provide each handle's `waitForWorkExit`. Recovery after a manager crash additionally needs a durable reference and `reapWork`. Missing, failed or timed-out proof never permits a replacement. Outstanding turns retain their existing deadline semantics rather than receiving a fabricated successful or cancelled result.
 
 ### Patch Changes
@@ -1829,8 +1868,9 @@
 
 - d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
 - 28b2628: Runtime integration tests now use the manager's actual command schemas.
-  
+
   Share the spawn, stop, inspect and cancel schemas from core beside the turn contracts, preserving the manager's served contract digests. Runtime stand-ins no longer accept blank spawn fields that the manager refuses. The shared schema objects are deeply frozen so importing a schema cannot change the manager's validation.
+
 - Updated dependencies [d389b22]
 - Updated dependencies [28b2628]
   - @cotal-ai/core@0.141.11
@@ -1930,11 +1970,11 @@
 ### Minor Changes
 
 - bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
-  
+
   A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
-  
+
   A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
-  
+
   Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
 
 ### Patch Changes
@@ -2343,16 +2383,17 @@
 ### Minor Changes
 
 - a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
-  
+
   `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
-  
+
   An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
-  
+
   `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+
 - e7fbeb8: `cotal_spawn` takes `once: true` with a `prompt` to start a helper for one task. The manager relays the prompt to the helper as its only turn and stops the helper when that turn ends or when the deadline passes. The deadline is one hour unless `deadline` sets another, and `-1` sets none. A spawn that succeeds names the task's goal in its result, and `goal-result` reads how it ended. A task that ends without the helper ending its turn may have run in part or in full, and nothing runs it again. A once spawn needs no `run` capability.
-  
+
   The manager's `spawn` command takes `once: { deadlineMs }`, and the manager contract revision is 44. The task is served only after the spawn's succeeded terminal is written, so a manager that restarts before then cancels the task as never served. A seat hands a once task to its harness at most once. When it cannot confirm the harness took the task, it reports that with the new self-mode `turn-unconfirmed` command, which fails the task with `delivery-unconfirmed` and stops the seat. A manager that inherits a once seat it cannot hold ends the task without serving it, says so in the outcome, and answers that seat's every `turn-pending` with `stop` while its debt stays recorded.
-  
+
   A connector declares `supportsTurnRelay` to take a once task: Jcode, OpenCode, pi and Claude Code do. A connector whose seat needs a confirmed startup declares `onceNeedsConfirmed`, and the manager serves its task only when the runtime reports the startup watch ended `confirmed`. Claude Code needs it: a once launch waits for Claude's development-channels prompt and then its `confirmNotice`, the line saying `server:cotal` messages reach the session. A runtime declares `reportsStartupOutcome` and its handles report `startupOutcome()`; the built-in pty runtime, tmux, cmux, herdr and orca do. A connector may declare `turnFrameLimit`, and a once prompt whose task does not fit it is refused at admission. A once exit registered with `registerOnceExit` may answer false to decline, and the seat then keeps reporting instead of exiting. A connector whose seat launches processes outside its own implements `retireAfterExit`, and the manager keeps the task's debt until that hook proves them gone. Jcode records each native launch of a once seat under the seat's uid for that proof, and a Jcode once seat always starts a fresh session, never one an earlier seat of the same name left in its home.
 
 ### Patch Changes
@@ -2381,7 +2422,7 @@
   broker or the endpoint can still refuse a listed command, and the answer says so. On a user-auth
   mesh, `view: "manager"` lists what the agent's manager-call credential can call, asked over that
   credential. A listing drops the agent's cached `describe` of each endpoint it lists.
-  
+
   To ask, a credential on the legacy rail now carries a listing generation: one `ep.v1` request row
   that reaches only the registry's `endpoints` command, its reply row, and the read of its own
   accepted row. The auth callout issues one for an agent connection and an unissued `manager-caller`
@@ -2391,8 +2432,9 @@
   An issued `manager-caller` view that reconnects under the same nonce keeps the ceiling it was issued
   with.
   The new `@cotal-ai/registry` package holds the registry's answer and reads.
+
 - 136a640: `cotal_spawn` takes `join`: concrete channels the new peer joins at start, on top of what its persona file lists. Each is checked against the caller's own read ACL before the request is sent, so a spawn never hands on a channel the caller may not read. The request also carries the caller's read and post ACL as `callerAcl`; the manager consults it only for a persona that names no channel field at all, so such a helper is scoped to its spawner, never wider, and the spawner's event channel is never part of it. The joined set is not copied from the spawner: without `join`, a channel-less persona still starts on no channel. The manager's `spawn` operation accepts both fields; a manifest launch rejects them like the other imperative overrides.
-  
+
   A `cotal_send` with no channel and no default is now refused with the channels the agent may post to and the exact next call (`cotal_send` with `channel`, or `cotal_join` to make one the default), instead of pointing at the orientation card. The orientation card lists the concrete channels in the read ACL the agent is not on yet, each with its registry note. The briefing's channel paragraph leads with the model (information moves through channels; subscribe to what you need, publish what others need), then the rule (the channel for work, a mention only to make one peer act now, a DM only for what one peer alone needs), then the mechanics, and says a spawned helper needs `join`.
 
 ### Patch Changes
@@ -2893,8 +2935,9 @@
 ### Patch Changes
 
 - f97b910: An open mesh's manager no longer mints credentials from a static stack's accounts left in the same folder. After a static `cotal up`, the first `cotal up --open` there ran its manager on those accounts and recorded the credentials it minted. The next open boot had to prove them gone through a delivery daemon, which an open mesh does not run, so it exited 1 after about a minute with `! control plane degraded:` and no manager. The manager now follows the mesh's recorded mode, so static and open boots can alternate in one folder.
-  
+
   This prevents new affected stores. An older build may already have staged credential families in the open account; upgrading does not remove them or unfreeze their registration gates. Open startup in such a folder can still refuse, and the existing reconcile command cannot establish liveness without the required delivery authority. Keep the store intact; this change does not provide an in-place recovery for that state.
+
 - @cotal-ai/core@0.127.2
   - @cotal-ai/seat@0.127.2
   - @cotal-ai/workspace@0.127.2
@@ -3172,8 +3215,9 @@
 ### Patch Changes
 
 - 4c61283: A manager that fails while it starts now ends its line in a next step the operator can take, and the refusal that quotes the line keeps that step.
-  
+
   The service controller quoted the last line a failed service logged cut at 400 characters, so the line of a manager that did not trust a local CA, over 500 characters long, lost its `; next:` part. The quote now holds a line up to 1000 characters whole, and a longer line keeps its start and its last `; next:` step, with its length where the middle was cut. When the error a manager's startup fails on ends in a certificate this machine does not trust, such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, the line keeps Node's message as the cause and its next step is to set `NODE_EXTRA_CA_CERTS` for the command that starts the manager. A seat-cap record that cannot be read names its path, and the line gives one next step, to remove or repair that record. The generic step the startup failure's message repeated is gone. Under `--foreground` on a terminal, the manager's line wraps at the terminal's width as the CLI's own lines do; in its log it stays on one line.
+
 - 068cecc: `cotal supervise --space <space>` for a static space this machine hosts in another folder, run from a folder that holds no signer for it, is now refused with `PERMISSION_DENIED` before anything is written, and Next names the folder that hosts the space. It used to write a new manager instance and execution record into that folder, or into the `.cotal` of a parent folder that holds an unrelated space, and was then refused by the broker. A user-auth space was already refused this way. A bare `cotal supervise` in a folder that holds no space, with nothing selected, is now refused with `TARGET_NOT_FOUND`, and Next names `cotal supervise --space <name>` or `cotal use <name>` for a space hosted elsewhere, and `cotal up` to host one here. It used to print a timestamped line about a `main` space nobody made and exit 1.
 - Updated dependencies [4c61283]
   - @cotal-ai/workspace@0.119.2
@@ -3200,8 +3244,9 @@
 ### Patch Changes
 
 - ba731fe: Keep a command wider than the terminal line on one line, so a copied line is the whole command.
-  
+
   On an 80-column terminal the exec-endpoint `next:` of `cotal service` broke before `--handler <file>`, and the remedy of `cotal service add <name> --preset exec-endpoint` broke before its last `<file>`, both in the refusal line and in the `--plain` report's Next. Copying the first line gave a command without its last option, and copying both ran two commands. A command cell now overflows the line as one line, and so does a remedy that is one whole command: `CommandFailure` takes `remedyIsCommand`, which every terminal remedy path honours. A remedy that starts with a command and goes on as prose still wraps at its spaces. `--json` output is unchanged.
+
 - Updated dependencies [ba731fe]
   - @cotal-ai/workspace@0.119.0
   - @cotal-ai/core@0.119.0
@@ -3530,10 +3575,11 @@
 ### Patch Changes
 
 - ffeaa32: `cotal manager start` on a user-auth space with no sign-in no longer launches a manager it cannot confirm. On a space the folder hosts, `manager start` and `manager restart` without a signed-in, granted login refuse `AUTH_REQUIRED` (exit 2) under a `Mesh: <space>` heading before anything is saved or launched, and Next names `cotal login`, then the command again. A manager left running without a sign-in stops: in the folder that hosts the space, `cotal manager stop` and `cotal down` read the manager's stop impact from its own local receipt, so the folder's owner needs no sign-in.
-  
+
   `cotal supervise` refuses before it connects with exit 2, a `Mesh:` heading and a code, and writes nothing in the folder. A space whose own stack in this folder is stopped names `cotal up` there and, with `--server`, the folder whose `cotal up` started that broker. A user-auth space that another folder hosts names the folder that hosts it.
-  
+
   The deprecation notice of `supervise` and the other deprecated daemon entries wraps at the terminal width with each command kept whole. The manager prints its boot inventory once it is up, so a refused start prints no boot line, and the line for no available connector is in plain words.
+
 - Updated dependencies [ffeaa32]
   - @cotal-ai/workspace@0.109.20
   - @cotal-ai/core@0.109.20
@@ -3585,12 +3631,13 @@
 ### Patch Changes
 
 - 60e6671: A managed Claude Code seat that stops on Claude's first-run text style picker, its login method choice or its Bypass Permissions warning now fails at the startup bound naming that screen and the step that clears it. It used to fail saying the development-channels prompt did not appear, which pointed at the wrong cause. Cotal still never answers any of these screens: the Bypass Permissions warning stays for the user to accept once, or the launch passes `--opt permission-mode=default` (`launchOptions: {permission-mode: default}` in a manifest). A launch recipe declares such screens in the new optional `LaunchSpec.confirmBlockers`. The pty, custody, tmux, cmux, Orca and Herdr runtimes send no key while one is on screen and name its reason when the bound ends there. A runtime that ignores the field fails as before, with the generic message.
-  
+
   A foreground `cotal spawn` of Claude Code no longer passes `--permission-mode bypassPermissions`. It runs in your terminal, so Claude keeps its own permission mode and you answer its prompts there; before, it opened on the Bypass Permissions warning while the spawn's hint said to press Enter at the development-channels prompt, and Enter there exits Claude. A managed seat keeps bypass as its default, and a permission option you pass still wins in both.
-  
+
   `cotal up -f` no longer prints a success mark for its agents. It says the stack is up and the agents' launch is pending, that it does not wait for them to join, and names `cotal ps --space <space>` and the manager's log, where a failed launch is recorded with its reason.
-  
+
   The quickstart and the team guide now say to finish Claude's first run once before the manager launches Claude Code, and give both permission routes.
+
 - Updated dependencies [60e6671]
   - @cotal-ai/core@0.109.14
   - @cotal-ai/seat@0.109.14
@@ -3732,7 +3779,7 @@
 ### Minor Changes
 
 - 7657395: The manager and the built-in services start without being added first. `cotal manager start` starts the manager for this folder's or the selected space with the pty runtime and its registered broker, and `cotal manager stop`, `status`, `logs` and `restart` act on it; after `cotal up` it reports the manager `up` started and starts no second one. `cotal service` lists every built-in service, started or not, with the command that starts it, and `cotal service start <preset>` starts one from its defaults, refusing with the exact flags when it needs a file that has no default, such as the feedback form's tester keys and broker credential. A service preset can declare those defaults: a literal, the space's registered root or broker, or a private file the space already keeps. `cotal service add <name> --exec "<command>"` adds a program of your own without a definition file, splitting the command into words without a shell and refusing pipes, redirection, variables and globs.
-  
+
   `cotal supervise` is deprecated again and is removed in 1.0.0 with the other daemon entries. It keeps its flags and behavior and prints one line on stderr naming `cotal manager start`, or, when it is given `--execution`, `--spawn`, `--seat-cap` or a resume flag that `manager start` does not take yet, saying to keep `supervise` for that run. `cotal manager start` and `restart` install first-party connectors on first run, as `supervise` does. `cotal manager install` refuses before any effect and names a unit of your own running `cotal manager start --foreground`. The `deliver`, `auth-service` and `feedback-intake` warnings now name `cotal service start <preset>`.
 
 ### Patch Changes
@@ -3747,7 +3794,7 @@
 ### Minor Changes
 
 - 0ae11a6: One manager can host seats on different terminal runtimes at the same time.
-  
+
   `cotal spawn --runtime <name>` with `-d` or `--on`, `cotal_spawn` with `runtime`, and a workflow `spawn(persona, { runtime })`, choose the runtime of that one seat. A seat that names none keeps the runtime the manager was started with. An unknown or unreachable runtime, and `auto`, refuses the launch and starts nothing. Stopping, attaching, and recovery follow the runtime recorded for that seat, so a later seat does not move one that is already running.
 
 ### Patch Changes
@@ -3821,12 +3868,12 @@
   with the agent running, and its receipt names the runtime, says the seat runs in the manager's own
   session, and gives `cotal watch` and `cotal send` as the way to reach it. `--json` carries the same
   answer as `result.streamsTerminal`. A `pty` manager still attaches.
-  
+
   `cotal attach <name>` on such a seat is refused once as `UNSUPPORTED`, carrying that runtime's own
   guidance for watching the agent where it runs, and the reconnect loop no longer retries it. The
   manager question's rows name each manager's runtime and whether a terminal attaches to its seats,
   so the choice is informed before a launch.
-  
+
   Breaking for anyone who implements the `Runtime` contract outside this repo: `streamsTerminal` is a
   required field, and a backend that streams no terminal must say so rather than leave a caller to
   find out by catching the throw from `attach()`. The manager reports it to its callers on the launch
@@ -3880,18 +3927,19 @@
 
 - 68377b0: A manager can now bound how many live seats it holds for one owner, so a manager shared by several
   owners cannot be filled by the first one to ask. `cotal supervise --seat-cap <n>` and `cotal up
-  --seat-cap <n>` set it, and the value is recorded in the root, so a repair, a resume or a bare `up`
+--seat-cap <n>` set it, and the value is recorded in the root, so a repair, a resume or a bare `up`
   after `down` keeps it. The default is `unlimited`, which leaves the manager's own 50-slot ceiling as
   the only bound, so a mesh with one owner keeps every slot it had. The cap counts the seats that
   manager supervises for the owner a launch belongs to, plus its launches that have no process yet;
   it does not count cooling slots or another owner's seats.
-  
+
   A launch over the cap is refused before a name is reserved or anything is minted, and the seats
   already running are untouched. The refusal is `resource-exhausted` carrying the owner, its count and
   the cap, so a caller reads the numbers rather than the sentence. `cotal spawn` exits 2 with
   `CONFLICT`, the manager's sentence and a remedy naming `cotal stop --name <name>` and `--seat-cap`;
   under `--json` those three numbers are in `error.cause.detail`. `cotal_spawn` shows an agent the same
   sentence. Stopping one of that owner's seats admits the next launch.
+
 - Updated dependencies [68377b0]
 - Updated dependencies [1608ae7]
   - @cotal-ai/core@0.103.1
@@ -4034,7 +4082,7 @@
 ### Minor Changes
 
 - bd52202: `MeshAgent` now arms the `turn-pending` poll and the turn-boundary re-poll only when `config.managerInstanceId` (`COTAL_MANAGER_INSTANCE`) is set, and `Manager` (`spawnDelegated`) / `delegatedSeatCommand` / `cotal spawn` (`applyHandoffManagerInstance`) now carry `COTAL_MANAGER_INSTANCE` alongside local spawn, restart, and resume so every manager-launched seat polls its launching manager while a directly connected session never polls a manager. `cotal spawn` with `COTAL_MANAGED_HANDOFF_FILE` now requires `COTAL_MANAGER_INSTANCE` before any broker or exchange plane is touched (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; a newer CLI child under an older manager or runtime refuses every delegated launch). Because only manager-launched seats poll, `notePullTrouble` now reports `no responder answered` once per outage while keeping only the startup `still reconciling` window silent.
-  
+
   `DelegatedSeatLaunch.managerInstanceId` is now required, and a CLI with this change refuses a managed handoff without `COTAL_MANAGER_INSTANCE`, so managers and the CLI must be upgraded together.
 
 ### Patch Changes
@@ -4533,10 +4581,11 @@
 ### Patch Changes
 
 - 454cb0e: Include the human-only approval, review link and unchanged-request retry instructions inside the structured pending result as well as its text. Native clients that show the model only structured content must still receive the instructions to wait for the person and never approve or poll on their behalf. Issuance remains blocked by the authority until the person's recorded decision.
-  
+
   Explain expiry without incorrectly claiming the person never approved: an approved request can also expire before its connection is issued. A fresh request still needs fresh approval.
-  
+
   Exercise native connection, exact recovery, capability attenuation and completed workflows through an isolated approval authority and fixture-person decision, including pre-approval transcript exclusion. Register the live approval controls in the smoke gate.
+
 - @cotal-ai/core@0.94.2
   - @cotal-ai/seat@0.94.2
   - @cotal-ai/workspace@0.94.2
