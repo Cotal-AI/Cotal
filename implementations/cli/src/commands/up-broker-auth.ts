@@ -69,9 +69,11 @@ export type BrokerFacts = { version: string; presenceFileBacked: boolean };
 /** The broker's version, and whether `space`'s presence stream exists file-backed. Cotal creates
  *  it in memory (#1356), so only a bucket an older cotal created is file-backed; an absent one
  *  will be created in memory by `setupSpaceStreams`. */
-export async function brokerVersion(server: string, space: string, creds?: string): Promise<BrokerFacts> {
+export async function brokerVersion(server: string, space: string, creds?: string, serverName?: string): Promise<BrokerFacts> {
   const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
   try {
+    if (serverName !== undefined && nc.info?.server_name !== serverName)
+      throw new Error(`the TLS address ${server} did not reach the nats-server this start launched`);
     requireBrokerFloor(nc);
     const version = nc.info?.version ?? "";
     let presenceFileBacked = false;

@@ -161,7 +161,7 @@ import {
   refuseMissingNamedStore,
   checkStartStore,
 } from "./up-transport.js";
-import { reconcileHostAndServer } from "./up-host.js";
+import { assertLocalTlsDialName, reconcileHostAndServer, tlsDialName } from "./up-host.js";
 import {
   registeredAddressHolder,
   refuseRegisteredAddress,
@@ -441,6 +441,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
   let adopted = false;
   try {
     validateUpArguments(args);
+    if (!args.values.file) await assertLocalTlsDialName(args.values.server as string | undefined, args.values.host as string | undefined);
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     checkNewUpSpace(args.values.space, root ?? fresh);
@@ -1319,7 +1320,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // SIGTERM'd a broker that had started perfectly — so `--host` alone could never succeed.
     // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
     // pair rather than starting a broker nothing can reach.
-    if (values.host) server = reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer);
+    if (values.host && !tlsDialName(values.server)) server = reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer);
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -1827,6 +1828,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
     verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
   } : undefined;
+  const dnsServerName = !boundListener && tlsDialName(server) ? `cotal-${randomUUID()}` : undefined;
   const seedFile = loadChannelsFile(cotalRoot(), values.channels, !resumeAttempt && values.open === true);
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
@@ -1840,7 +1842,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", process.stdout)}\n`);
     const { pid, executable, authService, controlPlane: planeReturned, delivery, deliveryLost, manager } = await startMeshDetached({
       transport,
-      server,
+      server, serverName: dnsServerName,
       storeDir: values["store-dir"],
       maxFileStore,
       logFile,
@@ -1944,10 +1946,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   const renderingBinary = brokerSetup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
   const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload, logFile, logfileSizeLimit, logfileMaxNum });
-  const natsArgs = [
-    "-c", confPath,
-    ...(boundListener ? ["--name", boundListener.serverName] : []),
-  ];
+  const serverName = boundListener?.serverName ?? dnsServerName;
+  const natsArgs = ["-c", confPath, ...(serverName ? ["--name", serverName] : [])];
   const natsServer = renderingBinary;
   const bin = natsServer.path;
   const brokerOutput = logFile ?? "the terminal output above";
@@ -1965,7 +1965,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   await recordSpawnedListener(child, listenerStartedAt, boundListener, startupLock);
   const foreground = holdForegroundListener({ child, server, space, executable: natsServer, log: brokerOutput, resuming: resumeAttempt !== undefined, restored, releaseStartupLock });
   try {
-    await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener, heldLock: startupLock });
+    await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener, heldLock: startupLock, serverName: dnsServerName });
     foreground.listenerReady();
     await foreground.waitForRestoreStop();
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
