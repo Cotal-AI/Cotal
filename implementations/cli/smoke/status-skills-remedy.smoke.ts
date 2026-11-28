@@ -185,6 +185,24 @@ try {
     assert.equal(readFileSync(manifest, "utf8"), corrupt, "status preserves the unreadable manifest");
   }
 
+  const invalid = await run(["setup", "--skills"], first.env, first.cwd);
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /SCHEMA_INVALID/);
+  const project = join(first.cwd, "new-project");
+  const full = await run(["setup", "--destination", "local", "--harness", "claude", "--space", "example", "--project", project, "--yes", "--configure-only", "--json"], first.env, first.cwd);
+  assert.equal(JSON.parse(full.stdout).error?.code, "SCHEMA_INVALID");
+  assert.ok(!existsSync(project), "a bad skills manifest is refused before creating the project");
+  if (process.geteuid && process.geteuid() !== 0) {
+    writeFileSync(manifest, '{"skills":{}}');
+    chmodSync(manifest, 0o000);
+    try {
+      const denied = await run(["setup", "--skills"], first.env, first.cwd);
+      assert.equal(denied.code, 2);
+      assert.match(denied.stderr, /PERMISSION_DENIED/);
+      assert.doesNotMatch(denied.stderr, /invalid JSON/);
+    } finally { chmodSync(manifest, 0o600); }
+  }
+
   const refused = await run(["setup", "--skills", "--full"], first.env, first.cwd);
   assert.notEqual(refused.code, 0, "setup --skills --full is refused");
   assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/, "refusal names the --skills combination fence");
