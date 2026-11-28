@@ -228,7 +228,10 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
   // A Windows task pins no PATH: restarted unchanged, its daemon reads the current user PATH, whichever
   // installation registered it, and keeps the version it runs. A unit or LaunchAgent is rewritten, which
-  // only its own installation does. Neither the message nor its remedy names a command line.
+  // only its own installation does. Neither the message nor its remedy names a command line. The
+  // native detail names the owning installation as data, so the app can say it in plain words. The
+  // owner's entry is what is classified, never this copy's own: a desktop runtime marker beside the
+  // owner's entry means the app, anything else a command-line install.
   if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: "use the Cotal installation that set up the background service", native: { code: "ANOTHER_INSTALLATION", detail: { owner: serviceOwner(installation.installedEntry) } } });
   const { version: _version, ...unversioned } = opts;
   const expected: InstallOptions = installation.same ? opts : unversioned;

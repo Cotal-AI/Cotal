@@ -284,6 +284,7 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .apps-message { margin: 0 0 var(--s-1); padding: 8px 12px; border-radius: var(--r-sm); background: var(--t-green); color: var(--green-ink); font-size: var(--t-label); }
 .apps-message:empty { display: none; }
 .apps-message.error { background: var(--t-red); color: var(--red-ink); }
+.apps-message.warning { background: var(--t-gold); color: var(--gold-ink); }
 .app-list { list-style: none; margin: 0; padding: 0; }
 .app-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 0; border-top: 2px solid var(--rule); }
 .app-row:first-child { border-top: 0; }
