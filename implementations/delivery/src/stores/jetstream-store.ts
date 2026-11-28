@@ -127,7 +127,7 @@ export class ArtifactObjects implements ArtifactStoreSpace {
   async read(digest: string, offset: number, length: number): Promise<Uint8Array | undefined> {
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length <= 0 || length > ARTIFACT_STORE_MAX_BLOCK_BYTES)
       throw new Error(`artifacts: the jetstream store cannot read ${length} bytes at offset ${offset}`);
-    const pastEnd = () => new Error(`artifacts: ${digest} ends before byte ${offset + length}; the range is past the artifact`);
+    const pastEnd = () => new Error(`artifacts: a read to byte ${offset + length}: the range is past the artifact`);
     const first = Math.floor(offset / ARTIFACT_STORE_CHUNK_BYTES), last = Math.floor((offset + length - 1) / ARTIFACT_STORE_CHUNK_BYTES);
     const parts: Uint8Array[] = [];
     for (let i = first; i <= last; i++) {
