@@ -4,6 +4,7 @@ import { isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
+  assertPreferencesFolderProtected,
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
@@ -1172,6 +1173,13 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // Help, shell completion, version and docs use none of them.
   if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
     failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
+  if (cmd?.name === "setup" && parsed && parsed.values.skills !== true) {
+    try { assertPreferencesFolderProtected(); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      failureExit(cmd, error, parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
+    }
+  }
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");

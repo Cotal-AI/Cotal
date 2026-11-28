@@ -4,6 +4,7 @@ import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, ope
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
+import type { ProtectedLinkChecks } from "./protected-link-write.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { spaceKey } from "./auth-paths.js";
 
@@ -277,14 +278,14 @@ const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathP
 type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymbolicLink">;
 
 /** One entry another local account could replace or write, and the kind of change that fixes it. */
-type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "go-w" | "g-w-or-acl" };
+type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "go-w" | "g-w-or-acl"; owned: boolean };
 
 /** Why an existing entry is not protected against other local writers, or nothing when it is. Root
  *  or the caller must own it. Group write needs the caller's proven user private group and no
  *  extended ACL, unless the directory is below an ancestor other accounts cannot search. World
  *  write is never accepted. An `ancestor` walk also accepts a root-owned sticky directory such as /tmp. */
 function protectionGap(path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy; privateAncestor?: boolean }): ProtectionGap | undefined {
-  const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix });
+  const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix, owned: stat.uid === (options.policy?.uid ?? process.getuid?.()) });
   if (stat.isSymbolicLink()) return gap("is a symbolic link", "physical");
   if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) return gap("is owned by another account", "physical");
   if (options.ancestor && stat.isDirectory() && stat.uid === 0 && (stat.mode & 0o1000) !== 0) return undefined;
@@ -308,18 +309,20 @@ const checkedPath = (path: CheckedPath): string => typeof path === "string" ? pa
 /** One refusal naming every gap, so a single change fixes them all. Paths that share a reason are
  *  listed together, and each kind of fix is one command over its paths. When links are the only
  *  gaps a physical path fixes, the remedy names the `checked` path with its links resolved. */
-function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked?: CheckedPath): CommandFailure {
+function protectionRefusal(what: string, gaps: readonly ProtectionGap[], checked?: CheckedPath, config = false): CommandFailure {
   const reasons = [...new Set(gaps.map((gap) => gap.reason))].map((reason) => {
     const paths = gaps.filter((gap) => gap.reason === reason).map((gap) => gap.path);
     return paths.length === 1 ? `${paths[0]} ${reason}` : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)} ${reason.replace(/^is /, "are ")}`;
   });
   // Once one entry needs `chmod go-w`, the other group and world gaps join that command, so the
   // refusal names one chmod.
-  const fixOf = (gap: ProtectionGap): ProtectionGap["fix"] => gaps.some((other) => other.fix === "go-w") && (gap.fix === "o-w" || gap.fix === "g-w") ? "go-w" : gap.fix;
-  const remedies = [...new Set(gaps.map(fixOf))].map((fix) => {
-    const paths = gaps.filter((gap) => fixOf(gap) === fix).map((gap) => shellPath(gap.path)).join(" ");
+  const repairable = config ? gaps.filter((gap) => gap.owned || gap.reason === "is a symbolic link") : gaps;
+  const fixOf = (gap: ProtectionGap): ProtectionGap["fix"] => repairable.some((other) => other.fix === "go-w") && (gap.fix === "o-w" || gap.fix === "g-w") ? "go-w" : gap.fix;
+  const remedies = [...new Set(repairable.map(fixOf))].map((fix) => {
+    const paths = repairable.filter((gap) => fixOf(gap) === fix).map((gap) => shellPath(gap.path)).join(" ");
     return fix === "physical" ? physicalRemedy(gaps, checked) : fix === "g-w-or-acl" ? `chmod g-w ${paths}, or install acl` : `chmod ${fix} ${paths}`;
   });
+  if (repairable.length !== gaps.length) remedies.push("use a folder you own, or ask its owner to protect it");
   const path = gaps[0]!.path;
   return new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${reasons.join("; ")}`, { remedy: remedies.join("; "), target: gaps.length === 1 ? { path } : { path, paths: gaps.map((gap) => gap.path) } });
 }
@@ -362,49 +365,90 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
  *  the path for the refusal, such as "the project root". With `parentOf`, check the directory chain
  *  but keep the filename in the physical-path remedy. Returns whether an ancestor bars other local accounts. */
 export function protectedLocalDirectory(path: CheckedPath, what = "the path", policy?: ProtectedPathPolicy): boolean {
+  return checkLocalDirectory(path, what, false, policy);
+}
+
+function checkLocalDirectory(path: CheckedPath, what: string, config: boolean, policy?: ProtectedPathPolicy): boolean {
   const { gaps, privateAncestor } = directoryChainGaps(checkedPath(path), what, policy);
-  if (gaps.length) throw protectionRefusal(what, gaps, path);
+  if (gaps.length) throw protectionRefusal(what, gaps, path, config);
   return privateAncestor;
 }
 
 /** Resolve an existing directory only after checking each link's physical parent chain. The
  *  target and every path in its resolution chain must be protected against other local writers. */
 export function protectedResolvedDirectory(path: string, what = "the path"): string {
+  return resolveProtectedDirectory(path, what, false);
+}
+
+function resolveProtectedDirectory(path: string, what: string, config: boolean): string {
   if (requireLocalRecordAccess() !== "posix") return realpathSync(path);
-  let pending = resolve(path), links = 0;
+  let pending = resolve(path), links = 0, link: string | undefined;
   for (;;) {
     let parent = resolve(sep);
     const segments = pending.slice(parent.length).split(sep).filter(Boolean);
     let followed = false;
     for (let index = 0; index < segments.length; index++) {
       if (segments[index] === ".") continue;
-      if (segments[index] === "..") { parent = dirname(parent); continue; }
+      if (segments[index] === "..") {
+        if (config) checkLocalDirectory(parent, what, true);
+        parent = dirname(parent);
+        continue;
+      }
       const entry = join(parent, segments[index]!);
-      if (lstatSync(entry).isSymbolicLink()) {
-        protectedLocalEntry(parent, what);
+      let stat: Stats;
+      try { stat = lstatSync(entry); }
+      catch (error) {
+        if (!config || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const remedy = lstatSync(parent).uid !== process.getuid!() ? "use a path that exists inside a folder you own" : `create ${shellPath(entry)}, or use a path that exists`;
+        const detail = link === undefined ? `${entry} does not exist` : `${link} is a symbolic link to ${entry}, which does not exist`;
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${detail}`, { target: { path: entry }, remedy });
+      }
+      if (stat.isSymbolicLink()) {
+        if (config) checkConfigLink(entry, stat, parent, what);
+        else protectedLocalEntry(parent, what);
         if (++links > 40) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} has too many symbolic links`, { target: { path } });
+        link = entry;
         const target = readlinkSync(entry);
-        pending = `${isAbsolute(target) ? target : `${parent}${sep}${target}`}${sep}${segments.slice(index + 1).join(sep)}`;
+        const joined = isAbsolute(target) ? target : `${parent}${sep}${target}`;
+        pending = `${joined}${sep}${segments.slice(index + 1).join(sep)}`;
         followed = true;
         break;
       }
       parent = entry;
     }
     if (followed) continue;
-    protectedLocalDirectory(parent, what);
+    checkLocalDirectory(parent, what, config);
     return parent;
   }
 }
+
+/** The owner check makes the sticky-ancestor allowance safe for a config link. */
+function checkConfigLink(entry: string, stat: Stats, parent: string, what: string): void {
+  if (stat.uid !== 0 && stat.uid !== process.getuid!()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${entry} is a symbolic link owned by another account`, { target: { path: entry }, remedy: "use a path whose links you or root own" });
+  const parentStat = lstatSync(parent);
+  if (parentStat.isDirectory() && parentStat.uid === 0 && (parentStat.mode & 0o1000) !== 0) checkLocalDirectory(parent, what, true);
+  else checkLocalEntry(parent, what, true);
+}
+
+/** Link traversal and ownership-sensitive remedies for preferences and trust files only. */
+export const configLinkChecks: ProtectedLinkChecks = {
+  resolved: (path, what) => resolveProtectedDirectory(path, what, true),
+  spelled: (path, what) => checkLocalDirectory(path, what, true),
+};
 
 /** {@link protectedLocalDirectory} for an existing file or directory and every directory above it,
  *  read together so one refusal names each gap in both. The entry itself is not accepted for being
  *  a root-owned sticky directory, as an ancestor is. */
 export function protectedLocalEntry(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
+  checkLocalEntry(path, what, false, policy);
+}
+
+function checkLocalEntry(path: string, what: string, config: boolean, policy?: ProtectedPathPolicy): void {
   const entry = lstatSync(path);
   const { gaps, privateSubtree } = directoryChainGaps(dirname(path), what, policy);
   const gap = requireLocalRecordAccess() === "posix" ? protectionGap(path, entry, { policy, privateAncestor: privateSubtree && resolve(path) === path }) : undefined;
   if (gap) gaps.unshift(gap);
-  if (gaps.length) throw protectionRefusal(what, gaps, path);
+  if (gaps.length) throw protectionRefusal(what, gaps, path, config);
 }
 
 /** {@link protectedLocalEntry} for a directory together with the named entries in it, read together

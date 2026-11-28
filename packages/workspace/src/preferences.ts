@@ -2,7 +2,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "no
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
+import { configLinkChecks, localRecordAccess, shellPath } from "./protected-records.js";
+import { assertProtectedLinkWrite } from "./protected-link-write.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 import { chatNameProblem } from "./chat-name.js";
 import { localWriteFailure } from "./local-write.js";
@@ -221,33 +222,33 @@ function assertPreferencesNotLinked(path: string): void {
 }
 
 /** Refuse a preferences write into a folder another local account could write, by the rule every
- *  protected path follows (see {@link protectedLocalDirectory}): that account could replace the file,
- *  and `editor` runs as a shell command. A folder not made yet is checked from the nearest one above
- *  it that exists. */
+ *  protected path follows (see {@link assertProtectedLinkWrite}): that account could replace the file,
+ *  and `editor` runs as a shell command. A symbolic link is followed when its physical folder and
+ *  every link parent are protected and you or root own the link. A folder not made
+ *  yet is checked from the nearest one above it that exists. */
 export function assertPreferencesFolderProtected(): void {
-  let dir = globalConfigDir();
-  while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
-  try {
-    protectedLocalDirectory(dir, "the preferences folder");
-  } catch (e) {
-    if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
-    throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was changed`, { remedy: e.remedy, target: e.target });
-  }
+  preferencesFolder();
+}
+
+/** The physical preferences directory a write may use, after the protected-link check. */
+function preferencesFolder(): string {
+  return assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", configLinkChecks, "nothing was changed");
 }
 
 /** The warning a command gives when the preferences file it read sits in a folder another local
  *  account could write, and the change that fixes the folder; undefined when there is no file or the
- *  folder is protected. The saved values still apply, and a write is refused (see
- *  {@link assertPreferencesFolderProtected}). */
+ *  folder is protected. A symbolic link whose physical folder is protected is not a warning. The
+ *  saved values still apply, and a write is refused (see {@link assertPreferencesFolderProtected}). */
 export function preferencesFolderWarning(): { warning: OutputWarning; remedy: string } | undefined {
   if (!lstatSync(preferencesPath(), { throwIfNoEntry: false })) return undefined;
   try {
-    protectedLocalDirectory(globalConfigDir(), "the preferences folder");
+    assertProtectedLinkWrite(globalConfigDir(), "the preferences folder", configLinkChecks);
     return undefined;
   } catch (e) {
     if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
     const remedy = e.remedy ?? `make ${globalConfigDir()} a folder only you can write`;
-    return { warning: { code: "PREFERENCES_FOLDER_UNPROTECTED", target: e.target, message: `${e.message}; the saved preferences still apply, and a write to them is refused until this is fixed: ${remedy}` }, remedy };
+    const message = e.message.replace(/; nothing was written$/, "");
+    return { warning: { code: "PREFERENCES_FOLDER_UNPROTECTED", target: e.target, message: `${message}; the saved preferences still apply, and a write to them is refused until this is fixed: ${remedy}` }, remedy };
   }
 }
 
@@ -267,11 +268,16 @@ function assertPreferencesRegular(path: string): void {
  *  `PERMISSION_DENIED` (see {@link assertPreferencesNotLinked}), and so does a FIFO or another file
  *  that is not regular (see {@link assertPreferencesRegular}). */
 export function readPreferences(): Preferences {
+  return readPreferencesFile(preferencesPath());
+}
+
+/** The saved preferences at one file. A missing file is no preferences at revision 0. */
+function readPreferencesFile(path: string): Preferences {
   let text: string;
   try {
-    assertPreferencesNotLinked(preferencesPath());
-    assertPreferencesRegular(preferencesPath());
-    text = readFileSync(preferencesPath(), "utf8");
+    assertPreferencesNotLinked(path);
+    assertPreferencesRegular(path);
+    text = readFileSync(path, "utf8");
   } catch (e) {
     if (isCommandFailure(e)) throw e;
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return EMPTY;
@@ -313,12 +319,12 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     const space = scope.space === undefined ? "" : ` --space ${scope.space}`;
     if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, { remedy: `give ${key} a value of that form; \`cotal config unset ${key}${space}\` returns it to its default` });
   }
-  const dir = globalConfigDir();
-  assertPreferencesFolderProtected();
+  const dir = preferencesFolder();
+  const file = join(dir, "preferences.json");
   let lock: ReturnType<typeof acquireLock>;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
+    lock = acquireLock(`${file}.lock`, { label: "a preferences write", waitMs: 10_000 });
   } catch (e) {
     // Nothing is written before the lock is held, so a folder that cannot be written is a definite refusal.
     const code = (e as NodeJS.ErrnoException).code;
@@ -330,7 +336,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     throw localWriteFailure(e, preferencesPath(), scope.space === undefined ? {} : { space: scope.space });
   }
   try {
-    const current = readPreferences();
+    const current = readPreferencesFile(file);
     if (current.revision !== expectedRevision)
       throw new CommandFailure("refused", "CONFLICT", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {
         remedy: "run the command again",
@@ -346,10 +352,10 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
       else delete spaces[scope.space];
     }
     const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults, spaces };
-    const old = localRecordAccess() === "posix" ? lstatSync(preferencesPath(), { throwIfNoEntry: false }) : undefined;
-    try { writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`); }
+    const old = localRecordAccess() === "posix" ? lstatSync(file, { throwIfNoEntry: false }) : undefined;
+    try { writeSecretFileAtomic(file, `${JSON.stringify(next, null, 2)}\n`); }
     catch (error) { throw localWriteFailure(error, preferencesPath(), scope.space === undefined ? {} : { space: scope.space }); }
-    cached = { path: preferencesPath(), prefs: next };
+    cached = { path: file, prefs: next };
     const oldMode = old ? old.mode & 0o777 : undefined;
     return { changed: true, revision: next.revision, ...(oldMode !== undefined && oldMode !== 0o600 ? { replacedMode: oldMode } : {}) };
   } finally {
@@ -367,10 +373,11 @@ export function removeSpacePreferences(space: string, expectedRevision: number):
   // A space with nothing saved needs no write, so no lock and no configuration folder.
   const before = readPreferences();
   if (!Object.keys(before.spaces[space] ?? {}).length) return { removed: {}, revision: before.revision };
-  assertPreferencesFolderProtected();
-  const lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
+  const dir = preferencesFolder();
+  const path = join(dir, "preferences.json");
+  const lock = acquireLock(`${path}.lock`, { label: "a preferences write", waitMs: 10_000 });
   try {
-    const current = readPreferences();
+    const current = readPreferencesFile(path);
     if (current.revision !== expectedRevision)
       throw new CommandFailure("refused", "CONFLICT", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {
         remedy: "run the command again",
@@ -380,8 +387,8 @@ export function removeSpacePreferences(space: string, expectedRevision: number):
     const spaces: Record<string, Partial<Record<PreferenceKey, string>>> = Object.assign(Object.create(null), current.spaces);
     delete spaces[space];
     const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults: { ...current.defaults }, spaces };
-    writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`);
-    cached = { path: preferencesPath(), prefs: next };
+    writeSecretFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
+    cached = { path, prefs: next };
     return { removed, revision: next.revision };
   } finally {
     lock.release();
