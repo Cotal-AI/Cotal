@@ -25,6 +25,7 @@ import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthorit
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
+import { diskFullRefusal, writeFailureFolder, type ObserveDiskFull } from "./disk-state.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -112,7 +113,28 @@ function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
   };
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, onWriteError?: (error: unknown) => void) {
+function hostedLogWriter(l: Live, root: string, append: (text: string) => void, notify: () => void, onWriteError?: ObserveDiskFull, onWriteSuccess?: (folder: string) => void) {
+  return (text: string) => {
+    const previous = l.view.logError;
+    let message: string | undefined;
+    let failed = false;
+    let failure: unknown;
+    try { append(text); }
+    catch (error) {
+      failed = true;
+      failure = error;
+      message = isDiskFull(error)
+        ? "the hosted Manager log could not be written because the disk is full; free space and it is written again"
+        : "the hosted Manager log could not be written; inspect its private state directory";
+    }
+    if (message !== previous) l.view = { ...l.view, logError: message };
+    if (failed) onWriteError?.(failure, root);
+    else if (previous !== undefined) onWriteSuccess?.(root);
+    if (message !== previous) notify();
+  };
+}
+
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, onWriteError?: ObserveDiskFull, onWriteSuccess?: (folder: string) => void) {
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
@@ -449,10 +471,18 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(l.failures++, 5));
     l.timer = setTimeout(() => {
       l.timer = undefined;
-      l.starting = launch(l).catch((error) => refuse(l, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${l.view.space}\``)).finally(() => { l.starting = undefined; });
+      l.starting = tryLaunch(l);
       void l.starting.catch(() => {});
     }, delay);
   };
+  const tryLaunch = (l: Live): Promise<HostedManager> => launch(l).catch((error: unknown) => {
+    const { space } = l.view;
+    if (!isDiskFull(error)) return refuse(l, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${space}\``);
+    l.view = { ...l.view, reason: diskFullRefusal("manager-start").message };
+    onWriteError?.(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
+    if (l.view.state !== "refused" && !l.child) schedule(l);
+    throw error;
+  }).finally(() => { l.starting = undefined; });
   async function launch(l: Live): Promise<HostedManager> {
     const space = l.view.space;
     if (closed || generationPending || l.stopping) return l.view;
@@ -616,19 +646,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       });
     });
     child.stderr?.setEncoding("utf8");
-    const logged = (text: string) => {
-      try {
-        append(text);
-        // A later successful append proves the log write works again, so the row goes away.
-        if (l.view.logError !== undefined) { l.view = { ...l.view, logError: undefined }; notify(); }
-      } catch (error) {
-        const diskFull = isDiskFull(error);
-        if (diskFull) { try { onWriteError?.(error); } catch {} }
-        l.view = { ...l.view, logError: diskFull
-          ? "the hosted Manager log could not be written because the disk is full; free space and it is written again"
-          : "the hosted Manager log could not be written; inspect its private state directory" };
-      }
-    };
+    const logged = hostedLogWriter(l, root, append, notify, onWriteError, onWriteSuccess);
     const stdoutLine = lines(logged);
     const stderrLine = lines((line) => {
       logged(line);
@@ -664,7 +682,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
       } catch (error) {
         last = error;
-        const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
+        if (isDiskFull(error)) onWriteError?.(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
+        const reason = isDiskFull(error) ? diskFullRefusal("manager-start").message : safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
         l.view = isRateLimited(error)
           ? { ...l.view, state: "starting", reason, next: `wait for the CLI connect limit to refill, then run \`cotal daemon status --space ${space}\` again` }
           : { ...l.view, reason, observedAt: new Date().toISOString() };
@@ -736,7 +755,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           }
         }
       } catch (error) {
-        if (error instanceof HostedManagerRefusal) throw error;
+        if (error instanceof HostedManagerRefusal || isDiskFull(error)) throw error;
         const reason = error instanceof Error ? safeDiagnostic(error.message).slice(0, 1500) : "the hosted Manager did not answer status";
         if (!isRateLimited(error)) {
           l.view = { ...l.view, state: "starting", reason, next: `read \`cotal daemon status --space ${space}\`; correct its connection or restart the daemon`, observedAt: new Date().toISOString() };
@@ -749,9 +768,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (l.timer) { clearTimeout(l.timer); l.timer = undefined; }
     if (l.healthTask) await l.healthTask;
     l.stopping = false;
-    const current = l;
-    current.starting = launch(current).catch((error) => refuse(current, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${space}\``)).finally(() => { current.starting = undefined; });
-    return current.starting;
+    l.starting = tryLaunch(l);
+    return l.starting;
   };
   return {
     start, status, refresh,

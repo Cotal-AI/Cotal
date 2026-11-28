@@ -605,7 +605,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(otherRuntimeRefusal(e, paths, home), home);
   }
-  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) }, running.observeDiskFull);
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
     // The helper stays in this unit's cgroup. NotifyAccess=all permits its readiness
     // message, and the default notification barrier waits for systemd to consume it.
@@ -699,11 +699,8 @@ async function run(args: ParsedArgs): Promise<void> {
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
     catch (error) { throw asFailure(error, home); }
     if (!reply.ok) {
-      // A usage refusal (an invalid name) keeps the refused path it always had; only a real
-      // write failure is an operation failure, so no exit status changes for bad input.
-      if (reply.error.code === "BAD_FIELD" || reply.error.code === "USAGE_INVALID")
-        throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message, { ...(reply.error.remedy ? { remedy: reply.error.remedy } : {}), native: { code: reply.error.code } });
-      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error.message, { ...(reply.error.remedy ? { remedy: reply.error.remedy } : {}) });
+      if (reply.error.code === "OPERATION_FAILED") throw new CommandFailure("failed", "OPERATION_FAILED", reply.error.message);
+      throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
     }
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
