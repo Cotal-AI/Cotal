@@ -160,6 +160,26 @@ interface WindowsTaskService extends NativeService {
   startEnabled(receipt: UnitReceipt): void;
 }
 
+/** Disable the owned task, end any instance, and wait until none remain. */
+async function disableAndEnd(receipt: UnitReceipt, owned: (receipt: UnitReceipt, requireInstances?: boolean) => RegisteredTask, step: (args: readonly string[]) => void, markPending: (pending: boolean) => void): Promise<void> {
+  const task = owned(receipt, true);
+  if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; nothing was stopped");
+  if (task.enabled) step(["/Change", "/TN", receipt.unit, "/DISABLE"]);
+  const disabled = owned(receipt, true);
+  if (!disabled.present || disabled.enabled !== false) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm disabled state; it was not ended");
+  if (disabled.instances! > 0) {
+    markPending(true);
+    step(["/End", "/TN", receipt.unit]);
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ended = owned(receipt, true);
+    if (!ended.present || ended.enabled !== false) break;
+    if (ended.instances === 0) { markPending(false); return; }
+    if (attempt < 2) await delay(250);
+  }
+  throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm no running instances after End; it stays disabled");
+}
+
 export function scheduledTaskService(run: NativeRun): WindowsTaskService {
   const sid = (): string => {
     const out = run(system32("whoami.exe"), ["/user", "/fo", "csv", "/nh"]);
@@ -265,19 +285,28 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
     check(receipt) {
       owned(receipt);
     },
+    isEnabled(receipt) {
+      const task = owned(receipt, true);
+      if (!task.present || typeof task.enabled !== "boolean") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the owned task did not confirm whether automatic start is on; nothing was inferred");
+      return task.enabled;
+    },
     startEnabled(receipt) {
       const task = owned(receipt, true);
       if (!task.present || task.enabled !== true) throw new CommandFailure("refused", "CONFLICT", "the owned task is absent or disabled; update did not enable it");
       if (task.instances === 0) step(["/Run", "/TN", receipt.unit]);
     },
-    start(receipt) {
+    start(receipt, resume = false) {
       const task = owned(receipt, true);
       if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");
       if (!task.enabled) {
+        if (!resume) throw new CommandFailure("refused", "CONFLICT", "the owned task is disabled; it was not enabled or started");
         if (task.instances !== 0) throw new CommandFailure("refused", "CONFLICT", "the disabled owned task still has native instances; startup was refused");
         enable(receipt);
       }
       if (task.instances === 0) step(["/Run", "/TN", receipt.unit]);
+    },
+    async stop(receipt) {
+      await disableAndEnd(receipt, owned, step, (pending) => { pendingEnd = pending; });
     },
     // Production restarts must use install.ts restartInstalled, which pins the old
     // listener and confirms its death before resume. This legacy synchronous adapter

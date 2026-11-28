@@ -618,6 +618,7 @@ cotal daemon setup --space <s> [--idp <auth URL or name>] [--client-id <id>] [--
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon start [--daemon-home <dir>] [--json|--plain]
+cotal daemon stop [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon login [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
@@ -635,6 +636,9 @@ cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 `USAGE_INVALID` before contacting the daemon. Use 1 to 64 ASCII letters, digits, underscores or hyphens.
 
 On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
+`cotal daemon stop` turns automatic start off and then stops the recorded service. The service, its sign-in and its spaces stay in place, and it stays stopped through sign-out and a restart. `cotal daemon start` turns automatic start back on and starts it. While agents are running, stop names them and asks first. Without a terminal, it changes nothing unless `--yes` is given. `cotal daemon status` then says you stopped it and names `cotal daemon start`. `--dry-run` changes nothing.
+
+The app uses the same actions through `cotal daemon desktop`. `{"op":"stop"}` stops when no agent is running. While agents are running it changes nothing and answers `{"state":"needs-confirm","agents":["name"]}`. To confirm, the app sends `{"op":"stop","confirm":true,"agents":["name"]}` with the names from that reply. If the list changed, the bridge returns `needs-confirm` with the current names instead. `{"op":"start"}` turns automatic start back on and starts the service. Neither request removes the installation.
 On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
 runit or s6. Use `cotal update --self` for manual updates.
 If your login does not provide `XDG_RUNTIME_DIR`, use a runtime directory owned by your user

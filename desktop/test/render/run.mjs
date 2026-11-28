@@ -374,9 +374,19 @@ try {
         const sizingAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'running' && a.effect?.target?.id === 'agent-list').map(a => a.transitionProperty || a.animationName));
         assert.deepEqual(sizingAnimations, [], `${name}: delayed resize has no agent sizing motion under reduce`);
       }
-      await page.waitForTimeout(300);
-      const runningAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").map(a => ({ target: a.effect?.target?.id, name: a.animationName || a.transitionProperty })));
-      assert.deepEqual(runningAnimations, [], `${name}: reduced motion`);
+      // Turning reduced motion on restarts the short enter fade. One sample at 300ms races that restart.
+      const reduced = await page.waitForFunction(() => {
+        const running = document.getAnimations().filter(animation => animation.playState === "running").map(animation => {
+          const timing = animation.effect?.getTiming?.() ?? {};
+          return { target: animation.effect?.target?.id, name: animation.animationName || animation.transitionProperty, iterations: timing.iterations, duration: timing.duration };
+        });
+        const endless = running.filter(animation => animation.iterations === Infinity || animation.duration === Infinity);
+        if (endless.length) return { endless, running };
+        return running.length === 0 ? { endless, running } : false;
+      }, null, { timeout: 2000, polling: 50 });
+      const settled = await reduced.jsonValue();
+      assert.deepEqual(settled.endless, [], `${name}: reduced motion`);
+      assert.deepEqual(settled.running, [], `${name}: reduced motion`);
       count++;
       console.log(`PASS ${name}`);
     } finally { await context.close(); }

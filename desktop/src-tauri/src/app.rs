@@ -16,6 +16,9 @@ use tokio::sync::Semaphore;
 const MAX_FRAME: usize = 64 * 1024;
 pub(crate) struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
+struct TrayStop(MenuItem<tauri::Wry>);
+struct SurfaceWord(std::sync::Mutex<String>);
+struct AgentCount(std::sync::Mutex<String>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
 struct ActiveWatch(std::sync::Mutex<Option<(u32, tauri_plugin_shell::process::CommandChild)>>);
@@ -133,8 +136,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                         Some("status") if is_watch => {
                             if agent_terminal.is_none() { agent_terminal = Some(terminal_available().await); }
                             frame["result"]["agentTerminal"] = Value::Bool(agent_terminal.unwrap_or(false));
-                            let status = crate::presence::tray_status(&frame);
-                            app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+                            write_tray(app, &frame)?;
                             if let Err(message) = native_presence::observe(app, "status", &frame) {
                                 app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
                             }
@@ -205,8 +207,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     if (!is_watch && matches!(operation, "status" | "setup"))
         || (is_watch && frame.get("ok").and_then(Value::as_bool) == Some(false))
     {
-        let status = crate::presence::tray_status(&frame);
-        app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+        write_tray(app, &frame)?;
     }
     // An OS integration refusal does not conceal the completed daemon operation.
     if !is_watch {
@@ -215,6 +216,11 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         }
     }
     Ok(frame)
+}
+
+fn update_tray_stop(app: &AppHandle, frame: &Value) -> Result<(), String> {
+    app.state::<TrayStop>().0.set_enabled(frame["ok"] == true && frame["result"]["state"] == "ready")
+        .map_err(|error| error.to_string())
 }
 
 async fn terminal_available() -> bool {
@@ -244,12 +250,29 @@ fn set_update_notice(app: AppHandle, version: Option<String>) -> Result<(), Stri
     item.set_enabled(version.is_some()).map_err(|e| e.to_string())
 }
 
+/// The tray menu shows the word the window computed, plus how many agents are running. It never
+/// reads the connection state from the frame, so an account poll's failure cannot change it.
+fn write_tray(app: &AppHandle, frame: &Value) -> Result<(), String> {
+    update_tray_stop(app, frame)?;
+    let word = app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
+    let agents = crate::presence::agent_count(frame);
+    *app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")? = agents.clone();
+    let status = crate::presence::tray_menu(Some(word.as_str()).filter(|value| !value.is_empty()), &agents);
+    app.state::<TrayStatus>().0.set_text(&status).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn set_connection_state(app: AppHandle, connected: bool, lost: Option<String>, label: Option<String>) -> Result<(), String> {
+    if let Some(text) = label.as_deref().filter(|value| !value.is_empty()) {
+        *app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")? = text.to_string();
+        let agents = app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
+        let menu = crate::presence::tray_menu(Some(text), &agents);
+        app.state::<TrayStatus>().0.set_text(&menu).map_err(|error| error.to_string())?;
+    }
     let tray = app
         .tray_by_id("machine")
         .ok_or("The system tray is unavailable.")?;
-    let known = ["Connected", "Offline", "Can't connect", "Sign in required", "Needs attention", "Starting", "Ready", "Not connected", "Checking connection"];
+    let known = ["Connected", "Offline", "Can't connect", "Sign in required", "Needs attention", "Starting", "Ready", "Not connected", "Checking connection", "Service stopped"];
     let status = match (label.as_deref().filter(|value| known.contains(value)), lost.as_deref()) {
         (Some(text), _) => text,
         (_, Some("offline")) => "offline",
@@ -367,6 +390,7 @@ pub fn run() {
             app.manage(native_presence::load(app.handle())?);
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let stop = MenuItem::with_id(app, "stop-service", "Stop background service", false, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
@@ -376,9 +400,12 @@ pub fn run() {
                 None::<&str>,
             )?;
             let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
+            let menu = Menu::with_items(app, &[&status, &update, &settings, &stop, &dashboard, &quit])?;
+            app.manage(TrayStop(stop));
             app.manage(TrayUpdate(update));
             app.manage(TrayStatus(status));
+            app.manage(SurfaceWord(std::sync::Mutex::new(String::new())));
+            app.manage(AgentCount(std::sync::Mutex::new(String::new())));
             let icon = app
                 .default_window_icon()
                 .ok_or("The packaged application icon is missing.")?
@@ -400,6 +427,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
+                    "stop-service" => { show(app); let _ = app.emit("desktop-stop-service", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { stop_watch(app); app.exit(0); } },
                     _ => {}

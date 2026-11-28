@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string };
+export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string; confirm?: true; agents?: readonly string[] };
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
@@ -83,6 +83,47 @@ export function computerSummary(rows: readonly ComputerSpace[], anyConnected: bo
   if (rows.some(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed))) return "attention";
   if (rows.some(row => row.desired && row.observed !== "removed on this computer")) return "starting";
   return "idle";
+}
+
+/** The ten words the window, pill, dot, tray menu and tooltip share. A problem names itself; there is no
+ *  generic "needs attention". The dot follows the word, so the two cannot disagree. */
+export type SurfaceWord = "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed";
+/** The one Start the stopped card and the tray send. It asks the service to start; it does not install it. */
+export const SERVICE_START: { op: "start" } = { op: "start" };
+export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "problem"; title: string; description: string }
+/** The fields the window reads off one status frame. `diskFull` is the frame's own flag. `generation`
+ *  present means an update is in progress. `recovery` is the repair #10913 reports; nothing else is. */
+export interface SurfaceFrame { diskFull?: unknown; generation?: unknown; recovery?: unknown; account?: { mode?: unknown; reason?: unknown; spaces?: readonly ComputerSpace[] } }
+export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean): { rows: ComputerSpace[]; anyConnected: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
+  const account = frame?.account;
+  return {
+    rows: rows.map(row => ({ ...row })),
+    // A row that remembers a refusal is not connected, even when its Manager answers.
+    anyConnected: anyConnected && rows.some(row => !row.lastRefusal && row.observed === "connected"),
+    signInRequired: account?.mode === "sign-in-required",
+    computerRemoved: account?.mode === "sign-in-required" && account?.reason === "computer-removed",
+    updating: frame?.generation !== undefined && frame?.generation !== null,
+    diskFull: frame?.diskFull === true,
+    repairNeeded: frame?.recovery !== undefined && frame?.recovery !== null,
+  };
+}
+export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
+  const lost = networkState(computerSummary(input.rows, input.anyConnected));
+  if (lost === "offline") return { word: "Offline", dot: "problem", title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description };
+  if (lost === "unreachable") return { word: "Can't connect", dot: "problem", title: CONNECTION_COPY.unreachable.title, description: CONNECTION_COPY.unreachable.description };
+  if (input.diskFull) return { word: "Disk full", dot: "problem", title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room." };
+  if (input.signInRequired) return { word: "Sign in required", dot: "problem", title: "Sign in to keep this computer connected", description: input.computerRemoved ? "This computer was removed from your account. Sign in to add it back." : "Approve this computer in your browser to keep managing its spaces." };
+  if (input.service === "stopped") return { word: "Service stopped", dot: "problem", title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again." };
+  if (input.service === "not-set-up") return { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };
+  if (input.updating) return { word: "Updating", dot: "waiting", title: "Cotal is updating", description: "It finishes by itself. Agents keep running." };
+  const desired = input.rows.filter(row => row.desired);
+  const refused = (row: ComputerSpace) => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed);
+  // A refusal is checked before any connection, so one refused row cannot make the computer Connected.
+  if (desired.length && desired.every(refused)) return { word: "Can't connect", dot: "problem", title: "Can't connect to your spaces", description: "Cotal reconnects by itself when the space answers again." };
+  if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
+  if (input.anyConnected) return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
+  if (desired.some(row => row.observed !== "removed on this computer")) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
+  return { word: "Connected", dot: "ok", title: input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: "Turn on the spaces that can use it in the dashboard." };
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");

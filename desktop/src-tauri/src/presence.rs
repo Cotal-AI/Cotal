@@ -134,6 +134,26 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     if result["launchReady"] == true { "Connected".into() } else { "Needs attention".into() }
 }
 
+/// The window computes the word once. The tray menu uses it instead of reading the status frame
+/// itself, so an account poll's failure message cannot turn the tray to "Needs attention" on its own.
+pub fn tray_menu(word: Option<&str>, agents: &str) -> String {
+    let base = match word {
+        Some("Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed") => word.unwrap(),
+        _ => "Starting",
+    };
+    if agents.is_empty() { base.into() } else { format!("{base} · {agents}") }
+}
+
+/// How many agents are running, from the same frame the window saw. An unreadable row says so
+/// instead of pretending the count is zero.
+pub fn agent_count(frame: &serde_json::Value) -> String {
+    if frame["ok"] != true { return String::new(); }
+    let Some(rows) = frame["result"]["agents"].as_array() else { return String::new(); };
+    if rows.iter().any(|row| row["state"] != "read" || !row["agents"].is_array()) { return "Agents unavailable".into(); }
+    let count = rows.iter().filter_map(|row| row["agents"].as_array()).flatten().filter(|agent| agent["state"] == "running").count();
+    format!("{count} {} running", if count == 1 { "agent" } else { "agents" })
+}
+
 /// Quote the executable path in a Windows `Run` command.
 #[cfg(any(windows, test))]
 pub fn windows_login_command(executable: &Path) -> String {
@@ -221,6 +241,16 @@ mod tests {
         assert_eq!(tray_status(&frame(json!([]))), "Connected · 1 space · 0 agents running");
         assert_eq!(tray_status(&frame(json!([{"state":"read","agents":[{"state":"running"},{"state":"exited"}]}]))), "Connected · 1 space · 1 agent running");
         assert_eq!(tray_status(&frame(json!([{"state":"unreadable"}]))), "Connected · 1 space · Agents unavailable");
+    }
+    #[test]
+    fn tray_menu_uses_the_window_word() {
+        assert_eq!(tray_menu(Some("Connected"), ""), "Connected");
+        assert_eq!(tray_menu(Some("Connected"), "2 agents running"), "Connected · 2 agents running");
+        assert_eq!(tray_menu(Some("Offline"), ""), "Offline");
+        assert_eq!(tray_menu(Some("Can't connect"), ""), "Can't connect");
+        // A word the window did not compute is not one of the ten, so the menu waits rather than inventing one.
+        assert_eq!(tray_menu(Some("Needs attention"), ""), "Starting");
+        assert_eq!(tray_menu(None, ""), "Starting");
     }
     #[test]
     fn tray_reports_verified_spaces_and_attention_without_claiming_service_readiness() {

@@ -29,11 +29,12 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, daemonUserServiceEnv, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled, stopInstalled } from "./install.js";
+import { nativeRun } from "./install-native-run.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
@@ -56,8 +57,8 @@ const daemonFlags = [
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
-  { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
-  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
+  { name: "dry-run", type: "boolean", description: "install, uninstall, stop: report the service it would write, remove or stop, and change nothing" },
+  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script. stop: confirm stopping while agents are running" },
   { name: "wait", type: "string", value: "<seconds>", description: "setup --no-manager only: how long to wait for machine approval (default 900, 0 reports what it reached)" },
   { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
   { name: "space", short: "s", type: "string", value: "<s>", description: "target space (required except for status, where it selects one hosted Manager)" },
@@ -176,6 +177,64 @@ function statusView(s: DaemonStatus): Report {
   ] };
 }
 
+async function runningAgentNames(paths: DaemonPaths): Promise<string[] | undefined> {
+  let reply;
+  try { reply = await queryDaemon({ paths, peerUid, peerPid }); }
+  catch (error) {
+    if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return [];
+    return undefined;
+  }
+  if (!reply.ok) return undefined;
+  const names: string[] = [];
+  for (const inventory of reply.result.agents ?? []) {
+    if (inventory.state !== "read") return undefined;
+    for (const agent of inventory.agents) if (agent.state === "running") names.push(agent.name);
+  }
+  return names;
+}
+
+/** Turn off automatic start and stop the recorded service. Files, sign-in and spaces stay. */
+async function stop(args: ParsedArgs): Promise<void> {
+  const presentation = presentationOf(args.values);
+  const values = args.values as { "dry-run"?: boolean; yes?: boolean };
+  const { paths, home } = resolveTarget(args);
+  const plan = planUninstall(paths, home);
+  if (values["dry-run"] === true) {
+    writeResult(presentation, { command: "daemon stop", target: { unit: plan.unit }, result: { ...plan, state: "would-stop" } }, () => ({ sections: [
+      { title: "Would stop", blocks: [
+        { kind: "fields", rows: [["Service", plan.unit], ["Path", plan.unitPath]] },
+        { kind: "lines", lines: [{ text: "Nothing was stopped. The service, its sign-in and its spaces would stay in place.", tone: "hint" }] },
+      ] },
+    ] }));
+    return;
+  }
+  const agents = await runningAgentNames(paths);
+  if (agents === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry, or confirm with --yes when no agent is running` });
+  if (agents.length && values.yes !== true) {
+    const listed = agents.join(", ");
+    if (!process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", `stopping the background service also stops these agents: ${listed}. Confirm with --yes; nothing was stopped`);
+    const { createInterface } = await import("node:readline/promises");
+    const io = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = (await io.question(`Stopping the background service also stops these agents: ${listed}. Stop it? [y/N] `)).trim().toLowerCase();
+    io.close();
+    if (answer !== "y" && answer !== "yes") return;
+  }
+  const result = await stopInstalled(paths, home);
+  writeResult(presentation, { command: "daemon stop", target: { unit: result.unit }, result: { ...result, state: "stopped", agents: agents.length } }, () => ({ sections: [
+    { title: "Stopped", blocks: [
+      { kind: "fields", rows: [["Service", result.unit]] },
+      { kind: "lines", lines: [{ text: `The background service is stopped. It stays stopped through sign-out and a restart. Start it again with ${codeSpan(daemonCommandCopy("start", home))}. Nothing was removed.`, tone: "hint" }] },
+    ] },
+  ] }));
+}
+
+function unitFileState(unit: string): string | undefined {
+  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
+  if (read.status !== 0) return undefined;
+  const state = read.stdout.trim();
+  return state || undefined;
+}
+
 async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
@@ -190,8 +249,12 @@ async function status(args: ParsedArgs): Promise<void> {
     if (refusal !== e) throw asFailure(refusal, home);
     const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
     if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+      const file = unitFileState(installed.unit);
+      const stoppedByYou = file === "disabled" || file === "static";
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", stoppedByYou ? "You stopped the background service. It stays installed, and it stays stopped through sign-out and a restart." : e.message, {
+        remedy: stoppedByYou
+          ? `start it again with ${codeSpan(daemonCommandCopy("start", home))}`
+          : `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },
       });
     }
@@ -708,12 +771,13 @@ async function run(args: ParsedArgs): Promise<void> {
   }
   if (mode === "start") {
     const { paths, home } = resolveTarget(args);
-    const result = await startInstalled(paths, home);
+    const result = await startInstalled(paths, home, undefined, undefined, true);
     writeResult(presentationOf(args.values), { command: "daemon start", target: { unit: result.unit }, result }, () => ({ sections: [
-      { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The owned service received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
+      { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The background service is set to start on its own again, and it received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
     ] }));
     return;
   }
+  if (mode === "stop") return stop(args);
   if (mode === "status") return status(args);
   if (mode === "serve") return serve(args);
   if (mode === "login") return login(args);
@@ -730,15 +794,16 @@ const daemonCommand: Command = {
   name: "daemon",
   group: "Manager",
   summary: "connect this computer to an account, manage its persistent daemon, or host a space's Manager",
-  usage: "cotal daemon <name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop> [--daemon-home <dir>] [--json|--plain]",
-  positionals: "<name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
+  usage: "cotal daemon <name|setup|start|stop|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop> [--daemon-home <dir>] [--json|--plain]",
+  positionals: "<name|setup|start|stop|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
   flags: daemonFlags,
   flagNames: ["daemon-home", "json", "plain"],
   outputs: ["json", "plain"],
   subcommands: [
     { name: "name", usage: "cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]", summary: "read or change this computer's saved name", examples: [{ command: "cotal daemon name", note: "print the saved computer name" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
-    { name: "start", usage: "cotal daemon start [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon start", note: "start the recorded daemon service" }], summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "start", usage: "cotal daemon start [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon start", note: "turn automatic start back on and start the recorded service" }], summary: "turn automatic start back on and start the recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "stop", usage: "cotal daemon stop [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]", examples: [{ command: "cotal daemon stop", note: "turn automatic start off and stop the recorded service" }], summary: "turn automatic start off and stop the recorded daemon service; it stays installed until start", flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", usage: "cotal daemon desktop [--daemon-home <dir>]", examples: [{ command: "cotal daemon desktop < request.json", note: "serve one desktop request from a file" }], summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
     { name: "setup", usage: "cotal daemon setup [--cloud | --idp <auth URL or name>] [--no-browser] [--space <s>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "connect this computer to an account, or rerun using its sole signed-in provider; with --space, host its Manager (--no-manager and --wait require --space)", examples: [{ command: "cotal daemon setup", note: "refresh apps using the sole signed-in provider" }, { command: "cotal daemon setup --idp <url>", note: "connect your account, then enable spaces in the dashboard" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "cloud", "no-browser", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "status", usage: "cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },

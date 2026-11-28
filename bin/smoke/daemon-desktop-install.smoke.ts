@@ -336,8 +336,8 @@ assert.equal(stopped.error?.code, "NOT_RUNNING");
 assert.equal(stopped.error?.message, "The background service is installed but stopped. Choose Start service to start it.");
 // The app shows Start service for this one, and stays quiet before the first sign-in for the one above.
 assert.deepEqual(stopped.error?.detail, { installed: true });
-// Status validates the recorded source without planning or starting a service.
-assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
+// Status validates the recorded source and reads automatic-start state without changing the service.
+assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read", "unit-read"], "a status request reads the installation and automatic-start state without changing either");
 console.log("installed and stopped: status names the stopped service, not a missing installation");
 
 // Produce a real earlier-launch daemon.log on `control` before the install request starts, so its

@@ -26,6 +26,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   const callbacks = new Map<number, (frame: unknown) => void>(); let next = 0;
   const listeners = new Map<string, number>();
   let installed = options.installed ?? false, stopped = false, connected = options.connected ?? false;
+  let stoppedByYou = false;
   let releaseLogin: (() => void) | undefined, releaseSetup: (() => void) | undefined;
   let closeWatch: ((frame: Frame) => void) | undefined;
   let pushWatchStatus: (() => void) | undefined;
@@ -71,8 +72,14 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         if (options.loading) await new Promise(() => {});
         return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
+      if (r.op === "start") {
+        stopped = false;
+        stoppedByYou = false;
+        return ok({ state: "start-requested", unit: "test-service" });
+      }
       if (r.op === "install") {
         installed = true;
+        stoppedByYou = false;
         if (options.installNotAnswering) {
           stopped = true;
           const reason = typeof options.installNotAnswering === "string" ? ` It refused to start: ${options.installNotAnswering}` : "";
@@ -82,7 +89,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         return ok({ installed: true });
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
-      if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
+      if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(stoppedByYou ? { stopped: "by-you" } : {}) } } } satisfies Frame;
       const statusPayload = () => ({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
@@ -143,7 +150,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; return new Promise(resolve => realTimeout(resolve, 0)); }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; stoppedByYou = false; }, stop: (intentional = true) => { stopped = true; stoppedByYou = intentional; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; return new Promise(resolve => realTimeout(resolve, 0)); }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -360,8 +367,8 @@ test("a later status check clears a daemon-not-running error", async () => {
     const before = a.node("connection-title").textContent;
     await a.stop();
     await a.tick();
-    assert.equal(a.node("connection-title").textContent, "The background service is not running");
-    assert.equal(a.node("details").hidden, false);
+    assert.equal(a.node("connection-title").textContent, "The background service is stopped");
+    assert.equal(a.node("details").hidden, true);
     a.arm();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, before);
@@ -374,11 +381,11 @@ test("a later status check keeps an error the status check did not raise", async
   const a = await app({ installed: true });
   try {
     await a.click("login"); await a.login();
+    await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
+    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
     await a.stop();
     await a.tick();
     a.arm();
-    await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
-    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "This operation could not finish");
@@ -386,7 +393,7 @@ test("a later status check keeps an error the status check did not raise", async
   } finally { a.dom.window.close(); }
 });
 
-test("Start service starts a stopped background service and leaves no notice", async () => {
+test("Start restores an intentionally stopped service and leaves no notice", async () => {
   const a = await app({ installed: true });
   try {
     await a.click("login"); await a.login();
@@ -394,12 +401,12 @@ test("Start service starts a stopped background service and leaves no notice", a
     await a.stop();
     await a.tick();
     assert.equal(a.node("recover").textContent, "Start service");
-    assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
-    assert.equal(a.node("refusal-detail").textContent, "NOT_RUNNING\nThe background service is installed but stopped. Choose Start service to start it.");
+    assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it to run agents on this computer again.");
+    assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
     const from = a.calls.length;
     await a.click("recover");
-    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "install"), ["install"]);
+    assert.deepEqual(a.calls.slice(from).filter(call => call.op === "start" || call.op === "install").map(call => ({ ...call })), [{ op: "start" }]);
     assert.equal(a.node("connection-title").textContent, before);
     assert.equal(a.node("notice").textContent, "");
     assert.equal(a.node("notice").hidden, true);
@@ -415,7 +422,7 @@ test("a service start that does not answer within 15 seconds keeps its refusal a
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    await a.stop();
+    await a.stop(false);
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service is not running");
     assert.equal(a.node("recover").textContent, "Start service");
@@ -706,7 +713,7 @@ test("Ready removes a space and adds another only after confirmation", async () 
     (a.doc.querySelector('#connected-spaces button') as HTMLButtonElement).click(); await settle();
     assert.equal(JSON.stringify(a.calls.filter(r => r.op === "service-disconnect")), JSON.stringify([{ op: "service-disconnect", space: "team" }]));
     assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 0);
-    assert.equal(a.node("tray-label").textContent, "Not connected");
+    assert.equal(a.node("tray-label").textContent, "Connected");
     await a.click("another-space");
     a.node<HTMLSelectElement>("space").value = "other";
     a.node("space").dispatchEvent(new a.dom.window.Event("change")); await settle();
@@ -731,7 +738,7 @@ test("connected and pending spaces retain the connected view and waiting row", a
 
 test("loading stays neutral until the native service answers", async () => {
   const a = await app({ loading: true });
-  try { assert.ok(a.doc.querySelector(".app.loading")); assert.equal(a.node("tray-label").textContent, "Checking connection"); assert.equal(a.calls.length, 1); }
+  try { assert.ok(a.doc.querySelector(".app.loading")); assert.equal(a.node("tray-label").textContent, "Starting"); assert.equal(a.calls.length, 1); }
   finally { a.dom.window.close(); }
 });
 

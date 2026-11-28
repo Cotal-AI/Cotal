@@ -5,7 +5,7 @@
   <div class="app loading">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
-      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><button id="connection-status" class="status-pill" type="button"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></button><button id="open-settings" class="header-control" type="button" hidden>Settings</button></div>
+      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><button id="connection-status" class="status-pill" type="button"><span id="tray-indicator" class="dot"></span><span id="tray-label">Starting</span></button><button id="open-settings" class="header-control" type="button" hidden>Settings</button></div>
     </aside>
     <main>
       <ol id="journey" aria-label="Connection steps">
@@ -22,10 +22,20 @@
         <div id="settings-download-row" class="settings-row" hidden><p id="settings-download-copy"></p><button id="settings-download" class="text-button" type="button">Open release page</button></div>
         <section id="update-preference-row" class="settings-row"><div><p id="update-preference-label">Notify me about updates</p><p id="update-policy" class="muted"></p></div><label class="switch"><input id="update-preference" type="checkbox" aria-labelledby="update-preference-label"><span></span></label></section>
         <div id="settings-startup"><h2>Startup</h2></div>
+        <section id="service-controls" class="settings-row" hidden>
+          <div class="account-actions"><button id="stop-service" class="text-button" type="button">Stop background service</button></div>
+          <div id="service-confirmation" class="account-confirmation" role="region" aria-labelledby="service-confirm-title" hidden>
+            <h3 id="service-confirm-title" tabindex="-1">Stop background service?</h3>
+            <p>Stopping the background service stops these agents:</p>
+            <ul id="service-confirm-agents" aria-labelledby="service-confirm-title"></ul>
+            <div class="account-actions"><button id="service-confirm" class="text-button" type="button">Stop</button><button id="service-cancel" class="text-button" type="button">Cancel</button></div>
+          </div>
+        </section>
         <section class="settings-row"><div><h2>Account</h2><p id="settings-account">No account information available</p><p id="settings-spaces" class="muted" tabindex="0"></p><div class="account-actions"><button id="settings-signout" class="text-button" type="button">Sign out selected provider</button><button id="settings-disconnect" class="text-button" type="button">Disconnect this computer</button></div><div id="account-confirmation" class="account-confirmation" role="region" aria-labelledby="account-confirm-title" hidden><h3 id="account-confirm-title" tabindex="-1"></h3><p id="account-confirm-copy"></p><ul id="account-confirm-spaces" tabindex="0" aria-label="Spaces to disconnect"></ul><div class="account-actions"><button id="account-confirm" class="text-button" type="button">Confirm</button><button id="account-cancel" class="text-button" type="button">Cancel</button></div></div><p id="account-outcome" class="muted" role="status" tabindex="-1"></p><button id="account-outcome-back" class="text-button" type="button" hidden>Back to Settings</button></div></section>
         <section class="settings-row"><div><h2>About</h2><p id="settings-versions"></p></div><button id="release-notes" class="text-button" type="button">Release notes</button></section>
         <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
         <p id="settings-message" class="muted" role="status"></p>
+        <div id="service-stop-result" hidden><p role="status">Cotal couldn't confirm that the background service stopped.</p><button id="service-stop-check" class="text-button" type="button">Check again</button></div>
       </section>
       <section id="apps-panel" class="settings-card apps-card" aria-labelledby="apps-title" hidden>
         <div class="settings-heading"><h1 id="apps-title" tabindex="-1">Agent apps</h1><button id="apps-back" class="text-button" type="button">Back</button></div>
@@ -43,6 +53,7 @@
         <p id="applied-update" class="muted" role="status" hidden></p>
         <p id="link-context" class="context" hidden></p>
         <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
+        <div id="service-start-result" hidden><p role="status">Cotal couldn't confirm that the background service started.</p><button id="service-start-check" class="text-button" type="button">Check again</button></div>
         <div id="sign-in-panel">
           <form id="login-form">
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>

@@ -8,7 +8,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, surfaceState, surfaceInputs, SERVICE_START, type SurfaceFrame, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -97,6 +97,17 @@ let appApplyRunning = false;
 let nextAppApplyTick = 0;
 let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
+let serviceNotice: "stopped" | "not-set-up" | undefined;
+let stageBeforeService: Stage | undefined;
+/** One reading of the status frame for every surface. Dropping a field here changes the word. */
+function readSurface(anyConnected: boolean) {
+  if (serviceNotice === "stopped") return surfaceState({ rows: [], anyConnected: false, service: serviceNotice });
+  const frame = serviceStatus as (SurfaceFrame & { account?: ComputerAccount }) | undefined;
+  const account = computerAccount ?? frame?.account;
+  const rows = account ? computerSpaces(account) : [];
+  const refused = new Set(rows.filter(row => row.lastRefusal).map(row => row.space));
+  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space))), service: serviceNotice });
+}
 async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
   if (tick && Date.now() < nextAppApplyTick) return;
   if (appApplyRunning || busy || loginActive || setupActive || !["darwin", "win32"].includes(appPlatform) || !autoUpdates || !appUpdate?.version) return;
@@ -164,6 +175,20 @@ let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
 let trayUpdate: string | undefined;
 const preferencesHome = el("preferences").parentElement!;
 preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
+let stopNames: string[] | undefined;
+let servicePowerUnknown: "stop" | "start" | undefined;
+function renderServiceControls(): void {
+  const canStop = serviceStatus?.state === "ready";
+  const disabled = busy || loginActive || setupActive || appApplyRunning;
+  el("service-controls").hidden = servicePowerUnknown === "stop" || !canStop && !stopNames;
+  el("stop-service").parentElement!.hidden = !!stopNames;
+  el("service-confirmation").hidden = !stopNames;
+  el<HTMLButtonElement>("stop-service").disabled = disabled || !canStop;
+  el<HTMLButtonElement>("service-confirm").disabled = disabled;
+  el<HTMLButtonElement>("service-cancel").disabled = disabled;
+  el("service-stop-result").hidden = servicePowerUnknown !== "stop";
+  el<HTMLButtonElement>("service-stop-check").disabled = disabled;
+}
 function renderSettings(): void {
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
@@ -175,6 +200,7 @@ function renderSettings(): void {
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
   document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
   renderApps();
+  renderServiceControls();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
@@ -499,6 +525,8 @@ function showStage(next: Stage, focus = false): void {
   el("edit-computer-name").hidden = nameEditing || !(next === "connect" || next === "finished");
   const finished = next === "finished";
   const anyConnected = [...connections.values()].includes("launch-ready");
+  const surface = finished ? readSurface(anyConnected) : undefined;
+  const stopped = surface?.word === "Service stopped";
   const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
   const signIn = next === "welcome" || next === "sign-in";
   el("sign-in-panel").hidden = !signIn;
@@ -507,7 +535,7 @@ function showStage(next: Stage, focus = false): void {
   el("connected-panel").hidden = !finished;
   el("preferences").hidden = !settingsOpen;
   el("setup-progress").hidden = (!setupActive && !progress.some(value => value !== "waiting")) || finished && !setupActive;
-  document.querySelector(".app")!.classList.toggle("later-open", (finished || listOpened) && !completedSetup);
+  document.querySelector(".app")!.classList.toggle("later-open", stopped || (finished || listOpened) && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
   el("link-context").hidden = !linked || next !== "welcome";
   el("refresh").hidden = signIn || busy || (finished && !pending);
@@ -521,29 +549,30 @@ function showStage(next: Stage, focus = false): void {
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
+  else if (stopped) { title = surface.title; description = surface.description; }
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
-  else if (finished && computerAccount?.hostSupport === "supported") {
-    const rows = computerSpaces(computerAccount);
-    const summary = computerSummary(rows, anyConnected);
-    title = summary === "connected" ? connectionView("launch-ready").title : summary === "offline" || summary === "unreachable" ? CONNECTION_COPY[summary].title : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
-    description = summary === "offline" || summary === "unreachable" ? CONNECTION_COPY[summary].description : rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
+  else if (finished && (computerAccount?.hostSupport === "supported" || serviceNotice)) {
+    const state = readSurface(anyConnected);
+    title = state.title; description = state.description;
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
   else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const issue = stopped ? undefined : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
-  const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
+  const lost = !stopped && networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
   if (recovery && !lost) { title = recovery.title; description = recovery.description; }
-  el("recovery-panel").hidden = !recovery || Boolean(lost);
+  el("recovery-panel").hidden = servicePowerUnknown === "start" || !stopped && (!recovery || Boolean(lost));
+  el("service-start-result").hidden = servicePowerUnknown !== "start";
+  el<HTMLButtonElement>("service-start-check").disabled = busy;
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
-  if (recovery && !lost) {
+  if (stopped || recovery && !lost) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
-    text("recover", recovery.label); el("recover").dataset.action = recovery.action;
-    el("recover").hidden = recovery.action === "none";
+    text("recover", stopped ? "Start service" : recovery!.label); el("recover").dataset.action = stopped ? "start-service" : recovery!.action;
+    el("recover").hidden = !stopped && recovery?.action === "none";
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
     if (!retrySignIn && ["EXPIRED", "VERSION_MISMATCH"].includes(issue!) && !el("recover").querySelector(".icon-refresh")) el("recover").prepend(icon("refresh"));
@@ -585,19 +614,17 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.mode === "sign-in-required") {
     for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
-  if (finished && computerAccount?.hostSupport === "supported") {
-    const signInRequired = computerAccount.mode === "sign-in-required";
-    el("spaces-heading").hidden = signInRequired || !anyConnected;
-    const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
-    const lost = summary === "offline" || summary === "unreachable" ? summary : undefined;
-    text("tray-label", signInRequired ? "Sign in required" : lost ? CONNECTION_COPY[lost].pill : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
-    if (isTauri()) void invoke("set_connection_state", { connected: summary === "connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
-    el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
-    el("tray-indicator").classList.toggle("error", Boolean(signInRequired || lost || summary === "attention"));
-    if (!anyConnected) {
-      const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired || lost || summary === "attention" ? "error" : summary === "starting" ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : lost ? CONNECTION_COPY[lost].icon : summary === "attention" ? "warning" : summary === "starting" ? "clock" : empty ? "check" : "computer");
+  if (surface && (stopped || computerAccount?.hostSupport === "supported")) {
+    const state = surface;
+    el("spaces-heading").hidden = state.word === "Sign in required" || !anyConnected;
+    text("tray-label", state.word);
+    if (isTauri()) void invoke("set_connection_state", { connected: state.word === "Connected", label: state.word }).catch(() => undefined);
+    el("tray-indicator").classList.toggle("connected", state.dot === "ok");
+    el("tray-indicator").classList.toggle("error", state.dot === "problem");
+    if (!anyConnected || state.dot === "problem") {
+      const empty = !computerAccount || computerSpaces(computerAccount).length === 0;
+      el("connection-icon").dataset.tone = stopped ? "neutral" : state.dot === "problem" ? "error" : state.dot === "waiting" ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), stopped ? "computer" : state.word === "Sign in required" ? "browser" : state.word === "Offline" ? "offline" : state.dot === "problem" ? "warning" : state.dot === "waiting" ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = connections.size === 0;
   document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
@@ -609,6 +636,7 @@ function showStage(next: Stage, focus = false): void {
   el("other-host").hidden = customHost || linked;
   el("cloud-host").hidden = !customHost || linked || loginActive;
   el("change-space").hidden = !addingSpace;
+  el("footer-note").hidden = stopped;
   text("footer-note", finished ? "Closing this window keeps your connection running." : "You choose when to connect this computer.");
   const stages: Stage[] = ["welcome", "sign-in", "connect", "finished"];
   for (const item of document.querySelectorAll<HTMLElement>("#journey li")) {
@@ -790,6 +818,7 @@ async function removeSpace(space: string, current: () => boolean = () => true): 
 }
 function buttons(): void {
   renderAccountActions();
+  renderServiceControls();
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();
   el<HTMLButtonElement>("other-host").disabled = busy;
   const offline = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], false)) === "offline";
@@ -855,11 +884,12 @@ function state(value: string, space = selectedSpace()): void {
   if (value === "launch-ready" || value === "approval-pending") connections.set(space, value);
   else connections.delete(space);
   const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
-  const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], verified));
+  const state = readSurface(verified);
   if (connected()) problem = undefined;
-  text("tray-label", initialized ? verified ? "Connected" : lost ? CONNECTION_COPY[lost].pill : "Not connected" : "Checking connection");
-  el("tray-indicator").classList.toggle("connected", verified);
-  if (isTauri()) void invoke("set_connection_state", { connected: verified, label: el("tray-label").textContent ?? "", lost }).catch(() => undefined);
+  text("tray-label", initialized ? state.word : "Starting");
+  el("tray-indicator").classList.toggle("connected", state.dot === "ok");
+  el("tray-indicator").classList.toggle("error", state.dot === "problem");
+  if (isTauri()) void invoke("set_connection_state", { connected: state.word === "Connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
   if (connected() && !editing) { listOpened = true; showStage("finished"); }
   else if ((value === "approval-pending" || listOpened) && !editing) { listOpened = true; showStage("finished"); }
   else if (stage === "finished" && !listOpened) showStage(selectedSpace() ? "connect" : "welcome");
@@ -936,8 +966,11 @@ function waitForAgents(names: readonly string[], count = names.length): void {
 }
 async function showStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
   if (!current()) return;
+  if (status.state === "ready" && servicePowerUnknown === "start") servicePowerUnknown = undefined;
   selectionPending = false;
   serviceStatus = status;
+  serviceNotice = undefined;
+  if (stageBeforeService) { const back = stageBeforeService; stageBeforeService = undefined; if (!completedSetup) { listOpened = false; showStage(back); } }
   ready = status.state === "ready";
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
@@ -948,14 +981,17 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
+  const space = selectedSpace();
+  const frameAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+  const refusedSpaces = new Set((frameAccount ? computerSpaces(frameAccount) : []).filter(row => row.lastRefusal).map(row => row.space));
+  observedReadySpaces = observedReadySpaces.filter(name => !refusedSpaces.has(name));
   managerReasons.clear();
   if (Array.isArray(status.managers)) for (const item of status.managers) {
     if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
     else if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
   }
-  const space = selectedSpace();
-  computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
+  computerAccount = frameAccount;
   if (computerAccount?.hostSupport === "supported") {
     computerRows.clear(); connections.clear();
     for (const row of computerSpaces(computerAccount)) {
@@ -1001,6 +1037,11 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
 /** Before the first sign-in no service is set up, which is not a problem; a stopped one is. */
 function notSetUpYet(error: unknown): boolean {
   return !listOpened && error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed !== true;
+}
+/** An intentional stop and a service that was never set up are words. An unexpected stop stays on its own path. */
+function noteService(error: unknown): void {
+  if (!(error instanceof DaemonRefusal) || error.code !== "NOT_RUNNING") { serviceNotice = undefined; return; }
+  serviceNotice = error.detail?.installed === true && error.detail?.stopped === "by-you" ? "stopped" : error.detail?.installed !== true ? "not-set-up" : undefined;
 }
 function startStatusWatch(): void {
   if (!isTauri() || watchActive || watchStarting) return;
@@ -1055,7 +1096,8 @@ function startStatusWatch(): void {
       return;
     }
     if (!busy && !loginActive && !setupActive) {
-      ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+      ready = false; serviceStatus = undefined; noteService(error); renderSettings();
+      if (serviceNotice && !(problem && !statusProblem) && problem !== "NOT_ANSWERING" && (serviceNotice === "stopped" || listOpened)) { statusProblem = false; problem = undefined; upgradeNeeded = false; if (!listOpened) stageBeforeService = stage; listOpened = true; showStage("finished"); buttons(); return; }
       if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
@@ -1076,7 +1118,8 @@ async function refresh(): Promise<void> {
   } catch (error) {
     if (!current()) return;
     selectionPending = false;
-    ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+    ready = false; serviceStatus = undefined; noteService(error); renderSettings();
+    if (serviceNotice && !(problem && !statusProblem) && problem !== "NOT_ANSWERING" && (serviceNotice === "stopped" || listOpened)) { statusProblem = false; problem = undefined; upgradeNeeded = false; if (!listOpened) stageBeforeService = stage; listOpened = true; showStage("finished"); buttons(); return; }
     // An error from an action stays until the person acts on it; a background check never replaces it.
     if (problem && !statusProblem) { buttons(); return; }
     if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
@@ -1166,6 +1209,7 @@ el("recover").addEventListener("click", () => {
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "start-service") void startBackgroundService();
   else if (recovery === "install") void action(async () => {
     clearDetails();
     await startService();
@@ -1175,6 +1219,18 @@ el("recover").addEventListener("click", () => {
   });
   else void action(async () => { if (!keepNotAnswering) clearDetails(); await refresh(); });
 });
+async function startBackgroundService(): Promise<void> {
+  await action(async () => {
+    servicePowerUnknown = undefined;
+    await request(SERVICE_START).catch(() => undefined);
+    await refresh();
+    if (!ready) servicePowerUnknown = "start";
+  });
+}
+el("service-start-check").addEventListener("click", () => void action(async () => {
+  servicePowerUnknown = undefined;
+  await refresh();
+}));
 /** The install request's progress lines all say "running"; only its result ends them, so the list resets. */
 async function startService(): Promise<void> {
   notice("Preparing the background service…");
@@ -1320,6 +1376,41 @@ function openSettings(): void {
   if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
   void refresh();
 }
+async function stopBackgroundService(names?: readonly string[]): Promise<void> {
+  if (busy || loginActive || setupActive || appApplyRunning || servicePowerUnknown === "stop" || !names && serviceStatus?.state !== "ready") return;
+  await action(async () => {
+    settingsOpen = true; appsOpen = false;
+    servicePowerUnknown = undefined;
+    const requestBody: Request = names ? { op: "stop", confirm: true, agents: names } : { op: "stop" };
+    const result = await request(requestBody).catch(() => undefined);
+    if (result?.state === "needs-confirm" && Array.isArray(result.agents) && result.agents.length > 0 && result.agents.every((name): name is string => typeof name === "string" && name.length > 0 && name.length <= 256)) {
+      stopNames = [...result.agents];
+      const rows = stopNames.map(name => Object.assign(document.createElement("li"), { textContent: name }));
+      el("service-confirm-agents").replaceChildren(...rows);
+      el<HTMLDetailsElement>("service-log").open = false;
+      renderSettings(); el("service-confirm-title").focus();
+      return;
+    }
+    if (result?.state !== "stopped") {
+      stopNames = undefined;
+      await refresh();
+      servicePowerUnknown = "stop";
+      return;
+    }
+    stopNames = undefined; settingsOpen = false; appsOpen = false;
+    clearDetails(); notice("");
+    await refresh();
+  });
+}
+el("stop-service").addEventListener("click", () => void stopBackgroundService());
+el("service-confirm").addEventListener("click", () => { if (stopNames) void stopBackgroundService(stopNames); });
+el("service-cancel").addEventListener("click", () => {
+  stopNames = undefined; renderServiceControls(); el("stop-service").focus();
+});
+el("service-stop-check").addEventListener("click", () => void action(async () => {
+  servicePowerUnknown = undefined;
+  await refresh();
+}));
 async function settingsAction(body: Request): Promise<void> {
   if (busy) return;
   busy = true; refreshGeneration++;
@@ -1359,8 +1450,8 @@ el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
 el("recover-apps").addEventListener("click", () => openApps());
 el("apps-chip").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && agentApps.apps && !agentApps.busy && Date.now() - appsLoadedAt > 30_000) void agentApps.load(); });
-el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
-el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
+el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; stopNames = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; stopNames = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
@@ -1416,6 +1507,7 @@ async function start(): Promise<void> {
   };
   try {
     await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
+    await listen("desktop-stop-service", () => { if (!stopNames) void stopBackgroundService(); });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     appPlatform = String(info.platform); appArch = String(info.arch);
@@ -1460,8 +1552,8 @@ async function start(): Promise<void> {
   lastTickAt = Date.now();
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") {
-    const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], [...connections.values()].includes("launch-ready")));
-    text("tray-label", lost ? CONNECTION_COPY[lost].pill : [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
+    const state = readSurface([...connections.values()].includes("launch-ready"));
+    text("tray-label", state.word);
   }
   if (ready) startStatusWatch();
   schedulePoll();
