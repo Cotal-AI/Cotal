@@ -14,7 +14,7 @@ export class DaemonRefusal extends Error {
 export function launchReady(manager: unknown): boolean {
   if (!manager || typeof manager !== "object") return false;
   const m = manager as Record<string, unknown>;
-  return m.state === "answering" && typeof m.instanceId === "string" && Array.isArray(m.connectors) && m.connectors.some((c) => c?.state === "available");
+  return m.state === "answering" && m.connection === undefined && typeof m.instanceId === "string" && Array.isArray(m.connectors) && m.connectors.some((c) => c?.state === "available");
 }
 
 export function machinesUrl(provider: string, spaceId: string, instanceId: string): string {
@@ -48,25 +48,80 @@ const SETTLED_SPACE_STATE: Record<string, string> = {
   unsupported: "Unsupported by this space",
   stopped: "Stopped",
 };
+/** A space whose Manager lost its connection. It reconnects by itself, so nobody needs to act. */
+const NETWORK_SPACE_STATE: Record<string, string> = {
+  offline: "No internet connection",
+  unreachable: "Can't reach this space",
+};
+/** The window title, the header pill and the tray all read these words for one connection state. */
+export const CONNECTION_COPY: Record<"offline" | "unreachable", { title: string; description: string; pill: string; icon: "offline" | "warning" }> = {
+  offline: { title: "No internet connection", description: "Cotal reconnects by itself when this computer is back online.", pill: "Offline", icon: "offline" },
+  unreachable: { title: "Can't reach your space", description: "Cotal reconnects by itself when the space answers again.", pill: "Can't connect", icon: "warning" },
+};
+export function networkState(observed: string): "offline" | "unreachable" | undefined {
+  return observed === "offline" || observed === "unreachable" ? observed : undefined;
+}
 const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this computer"];
 /** Whether this app has decided what to show for a state the daemon reports. */
 export function spaceStateKnown(observed: string): boolean {
-  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
+  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(NETWORK_SPACE_STATE, observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
 }
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
-  return SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
+  return NETWORK_SPACE_STATE[row.observed] ?? SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
 }
-export type ComputerSummary = "connected" | "attention" | "starting" | "idle";
-/** One answer for the window title and the tray, so the two cannot disagree. */
+export type ComputerSummary = "connected" | "offline" | "unreachable" | "attention" | "starting" | "idle";
+/** One answer for the window title and the tray, so the two cannot disagree. A lost connection comes
+ *  before other problems, because it can cause them. */
 export function computerSummary(rows: readonly ComputerSpace[], anyConnected: boolean): ComputerSummary {
   if (anyConnected) return "connected";
+  if (rows.some(row => networkState(row.observed) === "offline")) return "offline";
+  if (rows.some(row => networkState(row.observed) === "unreachable")) return "unreachable";
   if (rows.some(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed))) return "attention";
   if (rows.some(row => row.desired && row.observed !== "removed on this computer")) return "starting";
   return "idle";
+}
+
+/** The ten words the window, pill, dot, tray menu and tooltip share. A problem names itself; there is no
+ *  generic "needs attention". The dot follows the word, so the two cannot disagree. */
+export type SurfaceWord = "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed";
+export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "problem"; title: string; description: string }
+/** The fields the window reads off one status frame. `diskFull` is the frame's own flag. `generation`
+ *  present means an update is in progress. `recovery` is the repair #10913 reports; nothing else is. */
+export interface SurfaceFrame { diskFull?: unknown; generation?: unknown; recovery?: unknown; account?: { mode?: unknown; reason?: unknown; spaces?: readonly ComputerSpace[] } }
+export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean): { rows: ComputerSpace[]; anyConnected: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
+  const account = frame?.account;
+  return {
+    rows: rows.map(row => ({ ...row })),
+    // A row that remembers a refusal is not connected, even when its Manager answers.
+    anyConnected: anyConnected && rows.some(row => !row.lastRefusal && row.observed === "connected"),
+    signInRequired: account?.mode === "sign-in-required",
+    computerRemoved: account?.mode === "sign-in-required" && account?.reason === "computer-removed",
+    updating: frame?.generation !== undefined && frame?.generation !== null,
+    diskFull: frame?.diskFull === true,
+    repairNeeded: frame?.recovery !== undefined && frame?.recovery !== null,
+  };
+}
+export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
+  const lost = networkState(computerSummary(input.rows, input.anyConnected));
+  if (lost === "offline") return { word: "Offline", dot: "problem", title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description };
+  if (lost === "unreachable") return { word: "Can't connect", dot: "problem", title: CONNECTION_COPY.unreachable.title, description: CONNECTION_COPY.unreachable.description };
+  if (input.diskFull) return { word: "Disk full", dot: "problem", title: "Your disk is full", description: "Free up space on this computer. Cotal continues by itself once there is room." };
+  if (input.signInRequired) return { word: "Sign in required", dot: "problem", title: "Sign in to keep this computer connected", description: input.computerRemoved ? "This computer was removed from your account. Sign in to add it back." : "Approve this computer in your browser to keep managing its spaces." };
+  if (input.service === "stopped") return { word: "Service stopped", dot: "problem", title: "The background service is stopped", description: "You stopped the background service. Start it to run agents on this computer again." };
+  if (input.service === "not-set-up") return { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };
+  if (input.updating) return { word: "Updating", dot: "waiting", title: "Cotal is updating", description: "It finishes by itself. Agents keep running." };
+  const desired = input.rows.filter(row => row.desired);
+  const refused = (row: ComputerSpace) => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed);
+  // A refusal is checked before any connection, so one refused row cannot make the computer Connected.
+  if (desired.length && desired.every(refused)) return { word: "Can't connect", dot: "problem", title: "Can't reach your space", description: "Cotal reconnects by itself when the space answers again." };
+  if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
+  if (input.anyConnected) return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
+  if (desired.some(row => row.observed !== "removed on this computer")) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
+  return { word: "Connected", dot: "ok", title: input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: "Turn on the spaces that can use it in the dashboard." };
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
@@ -152,7 +207,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "none"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
@@ -164,10 +219,13 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "DAEMON_LOST": return { title: "The background service stopped", description: "It stopped before this could finish, so nothing was completed. This clears when the service is running again.", action: "refresh", label: "Check status" };
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
-    case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
+    case "OFFLINE": return { title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description, action: "refresh", label: "Check again" };
+    case "SPACE_UNREACHABLE": return { title: CONNECTION_COPY.unreachable.title, description: `${CONNECTION_COPY.unreachable.description} Details shows the reason.`, action: "refresh", label: "Check again" };
+    case "UNREACHABLE": return { title: "We cannot reach your connection", description: `${CONNECTION_COPY.unreachable.description} Details shows the reason.`, action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
+    case "CONFLICT": return { title: "Another Cotal installation runs the background service", description: "This copy cannot take it over. Nothing was changed.", action: "none", label: "" };
     default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
   }
 }
@@ -180,7 +238,10 @@ export function approvalUrl(value: unknown): string {
 }
 
 export function requireResult(frame: Frame): Record<string, unknown> {
-  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", frame.error?.remedy ? `Next: ${frame.error.remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, frame.error?.remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) {
+    const remedy = frame.error?.remedy && !/[`]|\/|\\/.test(frame.error.remedy) ? frame.error.remedy : undefined;
+    throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+  }
   if (!frame.result || typeof frame.result !== "object" || Array.isArray(frame.result)) throw new Error("The daemon returned an unsupported result.");
   return frame.result;
 }
