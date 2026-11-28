@@ -1,6 +1,6 @@
 /** Validate an installed replacement before releasing the daemon to its recorded supervisor. */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
@@ -25,9 +25,10 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
-    const stamp = JSON.parse(readFileSync(join(connectorConfigDir(), "seed", "stamp.json"), "utf8"));
+    const seed = join(connectorConfigDir(), "seed");
+    const stamp = JSON.parse(readFileSync(join(seed, "stamp.json"), "utf8"));
     const skewed = loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
-    if (stamp?.generation === version && !skewed) return;
+    if (stamp?.generation === version && !skewed && !existsSync(join(seed, "reconcile.cursor.json"))) return;
   } catch (error) {
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -49,10 +50,10 @@ function packageFile(): string {
 async function reconcileInstalledGeneration(): Promise<void> {
   const file = packageFile();
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
     let error = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
     // A cold home reconciles every built-in before Manager readiness is bounded.
     const timeoutMs = 10 * 60_000;
     let timedOut = false;
@@ -64,7 +65,7 @@ async function reconcileInstalledGeneration(): Promise<void> {
       else {
         const cause = timedOut ? `timed out after ${timeoutMs}ms, signal ${signal ?? "unknown"}` : signal ? `signal ${signal}` : `exit ${code}`;
         const detail = error.trim().split(/\r?\n/).at(-1)?.replace(/\s+/g, " ").trim();
-        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}; run \`cotal ext seed --repair\` with the installed CLI`));
+        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}`));
       }
     });
   });

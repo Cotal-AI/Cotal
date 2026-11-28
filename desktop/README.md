@@ -1,6 +1,6 @@
 # Cotal desktop
 
-The Tauri app controls the stock `cotal daemon`. It bundles that CLI and Node 24, so end users do not need a terminal, Node or npm. The app and CLI use the same daemon, sign-in and space registry. Closing the window hides it in the tray; quitting the app leaves the installed daemon running.
+The Tauri app controls the stock `cotal daemon`. It bundles that CLI, Node 24 and the matching npm, so end users do not need a terminal, Node or npm. Connector setup uses the npm on `PATH` when available. Otherwise it uses the bundled npm, which reads the user's `.npmrc`. The app and CLI use the same daemon, sign-in and space registry. Closing the window hides it in the tray; quitting the app leaves the installed daemon running.
 
 ## Use
 
