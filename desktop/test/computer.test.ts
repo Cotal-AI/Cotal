@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown } from "../src/model.ts";
+import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown, surfaceState, type SurfaceWord } from "../src/model.ts";
 
 test("computer list follows desired intent while retaining connected local spaces", () => {
   const desired = { space: "mine", desired: true, observed: "starting" };
@@ -66,4 +66,30 @@ test("every space state the daemon can report has a decided label", () => {
   assert.equal(reported.length, 22);
   assert.deepEqual(reported.filter(state => !spaceStateKnown(state)), []);
   assert.equal(spaceStateKnown("a state added later"), false);
+});
+
+test("one state feeds the window, the pill, the dot and the tray", () => {
+  const row = { space: "mine", desired: true, observed: "connected" };
+  const words: SurfaceWord[] = ["Connected", "Starting", "Offline", "Can't connect", "Sign in required", "Service stopped", "Updating", "Not set up", "Disk full", "Repair needed"];
+  const cases: { name: string; input: Parameters<typeof surfaceState>[0]; word: SurfaceWord; dot: "ok" | "waiting" | "problem" }[] = [
+    { name: "a space answers", input: { rows: [row], anyConnected: true }, word: "Connected", dot: "ok" },
+    { name: "a space is starting", input: { rows: [{ ...row, observed: "starting" }], anyConnected: false }, word: "Starting", dot: "waiting" },
+    { name: "the network is off", input: { rows: [{ ...row, observed: "offline" }], anyConnected: false }, word: "Offline", dot: "problem" },
+    { name: "a space is not answering", input: { rows: [{ ...row, observed: "unreachable" }], anyConnected: false }, word: "Can't connect", dot: "problem" },
+    { name: "sign-in is required", input: { rows: [], anyConnected: false, signInRequired: true }, word: "Sign in required", dot: "problem" },
+    { name: "the service is stopped", input: { rows: [], anyConnected: false, service: "stopped" }, word: "Service stopped", dot: "problem" },
+    { name: "an update is running", input: { rows: [row], anyConnected: true, updating: true }, word: "Updating", dot: "waiting" },
+    { name: "nothing is set up", input: { rows: [], anyConnected: false, service: "not-set-up" }, word: "Not set up", dot: "waiting" },
+    { name: "the disk is full", input: { rows: [row], anyConnected: true, diskFull: true }, word: "Disk full", dot: "problem" },
+    { name: "a repair is needed", input: { rows: [], anyConnected: false, repairNeeded: true }, word: "Repair needed", dot: "problem" },
+    { name: "no space can run", input: { rows: [{ ...row, desired: false, observed: "removed on this computer" }], anyConnected: false }, word: "Connected", dot: "ok" },
+  ];
+  for (const item of cases) {
+    const state = surfaceState(item.input);
+    assert.equal(state.word, item.word, item.name);
+    assert.equal(state.dot, item.dot, `${item.name} dot follows the word`);
+    assert.equal(words.includes(state.word), true, `${item.name} uses one of the ten words`);
+    assert.equal(/daemon|generation|Needs attention/.test(`${state.word} ${state.title}`), false, `${item.name} uses no internal word`);
+  }
+  assert.equal(cases.length, words.length + 1, "every word has a row, plus the case where nothing can run");
 });

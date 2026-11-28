@@ -8,7 +8,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, surfaceState, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -523,10 +523,8 @@ function showStage(next: Stage, focus = false): void {
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
-    const rows = computerSpaces(computerAccount);
-    const summary = computerSummary(rows, anyConnected);
-    title = summary === "connected" ? connectionView("launch-ready").title : summary === "offline" || summary === "unreachable" ? CONNECTION_COPY[summary].title : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
-    description = summary === "offline" || summary === "unreachable" ? CONNECTION_COPY[summary].description : rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
+    const state = surfaceState({ rows: computerSpaces(computerAccount), anyConnected, signInRequired: computerAccount.mode === "sign-in-required" });
+    title = state.title; description = state.description;
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
   else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
@@ -586,18 +584,16 @@ function showStage(next: Stage, focus = false): void {
     for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
   if (finished && computerAccount?.hostSupport === "supported") {
-    const signInRequired = computerAccount.mode === "sign-in-required";
-    el("spaces-heading").hidden = signInRequired || !anyConnected;
-    const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
-    const lost = summary === "offline" || summary === "unreachable" ? summary : undefined;
-    text("tray-label", signInRequired ? "Sign in required" : lost ? CONNECTION_COPY[lost].pill : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
-    if (isTauri()) void invoke("set_connection_state", { connected: summary === "connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
-    el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
-    el("tray-indicator").classList.toggle("error", Boolean(signInRequired || lost || summary === "attention"));
+    const state = surfaceState({ rows: computerSpaces(computerAccount), anyConnected, signInRequired: computerAccount.mode === "sign-in-required" });
+    el("spaces-heading").hidden = state.word === "Sign in required" || !anyConnected;
+    text("tray-label", state.word);
+    if (isTauri()) void invoke("set_connection_state", { connected: state.word === "Connected", label: state.word }).catch(() => undefined);
+    el("tray-indicator").classList.toggle("connected", state.dot === "ok");
+    el("tray-indicator").classList.toggle("error", state.dot === "problem");
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired || lost || summary === "attention" ? "error" : summary === "starting" ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : lost ? CONNECTION_COPY[lost].icon : summary === "attention" ? "warning" : summary === "starting" ? "clock" : empty ? "check" : "computer");
+      el("connection-icon").dataset.tone = state.dot === "problem" ? "error" : state.dot === "waiting" ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), state.word === "Sign in required" ? "browser" : state.word === "Offline" ? "offline" : state.dot === "problem" ? "warning" : state.dot === "waiting" ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = connections.size === 0;
   document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
@@ -855,11 +851,12 @@ function state(value: string, space = selectedSpace()): void {
   if (value === "launch-ready" || value === "approval-pending") connections.set(space, value);
   else connections.delete(space);
   const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
-  const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], verified));
+  const state = surfaceState({ rows: computerAccount ? computerSpaces(computerAccount) : [], anyConnected: verified });
   if (connected()) problem = undefined;
-  text("tray-label", initialized ? verified ? "Connected" : lost ? CONNECTION_COPY[lost].pill : "Not connected" : "Checking connection");
-  el("tray-indicator").classList.toggle("connected", verified);
-  if (isTauri()) void invoke("set_connection_state", { connected: verified, label: el("tray-label").textContent ?? "", lost }).catch(() => undefined);
+  text("tray-label", initialized ? state.word : "Starting");
+  el("tray-indicator").classList.toggle("connected", state.dot === "ok");
+  el("tray-indicator").classList.toggle("error", state.dot === "problem");
+  if (isTauri()) void invoke("set_connection_state", { connected: state.word === "Connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
   if (connected() && !editing) { listOpened = true; showStage("finished"); }
   else if ((value === "approval-pending" || listOpened) && !editing) { listOpened = true; showStage("finished"); }
   else if (stage === "finished" && !listOpened) showStage(selectedSpace() ? "connect" : "welcome");
@@ -1460,8 +1457,8 @@ async function start(): Promise<void> {
   lastTickAt = Date.now();
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") {
-    const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], [...connections.values()].includes("launch-ready")));
-    text("tray-label", lost ? CONNECTION_COPY[lost].pill : [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
+    const state = surfaceState({ rows: computerAccount ? computerSpaces(computerAccount) : [], anyConnected: [...connections.values()].includes("launch-ready") });
+    text("tray-label", state.word);
   }
   if (ready) startStatusWatch();
   schedulePoll();
