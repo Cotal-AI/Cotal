@@ -545,13 +545,13 @@ export const scenarios = [
   { name: "details-address-for-terminal", state: { installed: true, signedIn: true, connected: true }, act: async page => {
     await page.locator("#connected-panel:visible").waitFor();
     await page.evaluate(() => {
+      const fail = { v: 1, event: "result", ok: false, error: { code: "UNREACHABLE", message: "the service stopped at https://cloud.cotal.ai/api/auth" } };
       const invoke = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) => command === "daemon_request" && (args.request.op === "status" || args.request.op === "status-watch")
-        ? Promise.resolve({ v: 1, event: "result", ok: false, error: { code: "UNREACHABLE", message: "the service stopped at https://cloud.cotal.ai/api/auth" } })
+        ? Promise.resolve(fail)
         : invoke(command, args);
+      window.__closeStatusWatch?.(fail);
     });
-    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-    await page.click("#open-settings"); await page.click("#open-settings");
     await page.locator("#recovery-panel:visible").waitFor();
   }, expect: async page => {
     assert.doesNotMatch(await page.locator("#refusal-detail").textContent(), /https?:\/\//);
