@@ -9,7 +9,7 @@ try {
     const bin = track(mkdtempSync(join(tmpdir(), "cotal-seed-failing-npm-")));
     symlinkSync(process.execPath, join(bin, "node"));
     const attempts = join(bin, "attempts");
-    writeFileSync(join(bin, "npm"), '#!/bin/sh\nprintf "attempt\\n" >> "$SEED_ATTEMPTS"\nprintf "npm is not on PATH (fixture)\\n" >&2\nexit 1\n', { mode: 0o700 });
+    writeFileSync(join(bin, "npm"), '#!/bin/sh\nif [ "$1" = install ]; then printf "attempt\\n" >> "$SEED_ATTEMPTS"; fi\nprintf "npm is not on PATH (fixture)\\n" >&2\nexit 1\n', { mode: 0o700 });
     const noNpm = { PATH: bin, SEED_ATTEMPTS: attempts };
     for (let attempt = 0; attempt < 2; attempt++) {
       const attach = cotal(cfg, ["attach", "missing"], noNpm);
@@ -55,7 +55,8 @@ try {
     const manager = cotal(cfg, ["manager", "start", "--foreground"], noNpm);
     check("Manager start retries a same-generation seed once and reports that attempt's failure",
       manager.status !== 0 && /failed to seed connector "claude"/.test(manager.stderr) && !manager.stderr.includes("a previous connector seed failed") &&
-        readFileSync(attempts, "utf8") === before + "attempt\n" && readFileSync(cursor, "utf8") !== failedCursor, manager.stderr);
+        readFileSync(attempts, "utf8") === before + "attempt\n" && readFileSync(cursor, "utf8") !== failedCursor,
+      { stderr: manager.stderr, before, after: readFileSync(attempts, "utf8") });
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
     check("failed seed: --repair with npm back exits 0", repair.status === 0 && /recovering from a failed seed \(package "claude"\)/.test(repair.stderr), repair.stderr);
     check("failed seed: --repair installed the failed connector", listNames(cfg).includes("claude"));

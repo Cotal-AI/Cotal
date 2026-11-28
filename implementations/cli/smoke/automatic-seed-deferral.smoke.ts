@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
 const source = readFileSync(new URL("../src/seed/reconcile.ts", import.meta.url), "utf8");
-assert(source.includes('await reconcile("auto", true, resumeFirstSeed)'), "boot reconciliation carries automatic intent even when setup opts into first-seed recovery");
-assert(source.includes("const result = await reconcile(mode, false, false, selfUpdate)"), "explicit seed keeps strict reconciliation intent");
+assert(source.includes('await reconcile("auto", true, resumeFirstSeed, false, retryFailed)'), "boot reconciliation carries automatic intent even when setup opts into first-seed recovery");
+assert(source.includes("const result = await reconcile(mode, false, false, selfUpdate, retryFailed)"), "explicit seed keeps strict reconciliation intent");
 assert.equal(source.split('await reconcile("repair", automatic)').length - 1, 2, "automatic repair paths preserve boot intent");
 const start = source.indexOf('if ((mode === "auto" || automatic)');
 const branch = source.slice(start, source.indexOf("const lock = acquireReconcileLock()", start));
