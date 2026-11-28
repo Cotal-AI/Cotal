@@ -271,6 +271,7 @@ interface NpmCommand {
   npm?: string;
   lifecycleNode?: boolean;
   config?: ReturnType<typeof privateNpmrc>;
+  missingOnPath?: true;
 }
 
 function resolveNpmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
@@ -298,7 +299,7 @@ function resolveNpmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     }
   };
   let file = findOnPath("npm");
-  if (!file) return { file: "npm", args, env, cwd };
+  if (!file) return { file: "npm", args, env, cwd, missingOnPath: true };
   let engine = npmEngine(file);
   let selectedNpm: string | undefined;
   const project = npmProjectDirectory.getStore();
@@ -403,7 +404,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[], scratch = 
   const npm = resolveNpmInvocation(env, args);
   const at = args.indexOf("--prefix");
   const prefix = args[at + 1];
-  if (at < 0 || !prefix || !["install", "remove"].includes(args[0] ?? "") ||
+  if (at < 0 || !prefix || npm.missingOnPath || !["install", "remove"].includes(args[0] ?? "") ||
       Object.keys(npm.env).some(key => key.toLowerCase() === "npm_config_globalconfig")) return npm;
   // npm derives globalconfig from the prefix. Resolve it without our prefix, using the same npm.
   const globalConfig = effectiveGlobalConfig(npm, npm.args.slice(0, npm.args.length - args.length));

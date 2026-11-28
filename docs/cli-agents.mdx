@@ -241,7 +241,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
 | `--no-event-payloads` | payload publication on where mapped | Withhold tool inputs and results while retaining the event plane; the persona equivalent is `eventPayloads: false` |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
-| `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it. Each entry is validated with `USAGE_INVALID` before preview or launch, and must be within `--allow-subscribe` when both flags are given |
+| `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it. Each entry is validated with `USAGE_INVALID` before preview or launch, and must be within `--allow-subscribe` when both flags are given. A foreground launch and its preview also refuse `USAGE_INVALID` if the override conflicts with the persona's read policy |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override; `""` sets it to the read set. Each entry is validated with `USAGE_INVALID` before preview or launch |
 | `--allow-publish <a,b>` | deny | Post-ACL override; `""` clears it. Each entry is validated with `USAGE_INVALID` before preview or launch |
 | `--detach`, `-d` | off | Launch through a manager, wait until the agent joins, and return without attaching (reattach with `cotal attach`) |

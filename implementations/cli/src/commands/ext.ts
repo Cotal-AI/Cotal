@@ -135,8 +135,13 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
-  try { return await runExtensionNpm(npm, prefix, seeding); }
-  finally { npm.config?.dispose(); }
+  try {
+    if (npm.missingOnPath && args[0] === "install" && !seeding)
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "npm is not on PATH; the extension install did not start", {
+        remedy: "make npm available on PATH, check that `npm --version` works, then retry the original extension install",
+      });
+    return await runExtensionNpm(npm, prefix, seeding);
+  } finally { npm.config?.dispose(); }
 }
 
 async function runExtensionNpm(npm: ReturnType<typeof npmInvocation>, prefix: string, seeding: boolean): Promise<ExtensionNpmResult> {
