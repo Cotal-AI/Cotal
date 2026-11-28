@@ -627,7 +627,7 @@ address or another program holds it. The next `up` plans it as a first start, wi
 another `--server`, and `down` reports that nothing runs there. That refusal names the address and
 any space this machine registered there. For a first `up`, it offers a retry from the original folder
 with the same options and a different port if one is available, or says how to free the original port.
-If another program holds a previously started stack's recorded address, free that address before retrying. A stack whose broker does not listen on its recorded address,
+If another program holds a previously started stack's recorded address, free that address before retrying. Repeat the original startup from the same folder so the broker uses the settings you requested. A stack whose broker does not listen on its recorded address,
 because a bind host recorded beside it names another address, or because no bind host was recorded
 and the address is not `127.0.0.1`, cannot be reached and pins no bind host. `up` there refuses
 `CONFLICT` before anything starts and names `cotal up --host <host>` with the address's own host,
