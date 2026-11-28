@@ -1114,7 +1114,8 @@ for (const reason of ["denied", "expired", "unreachable"]) test(`sign-in ${reaso
   } finally { a.dom.window.close(); }
 });
 
-for (const setupCode of ["NO_AVAILABLE_CONNECTOR", "SEATS_ACTIVE"]) test(`${setupCode} retains diagnostics and retries setup`, async () => {
+test("SEATS_ACTIVE retains diagnostics and retries setup", async () => {
+  const setupCode = "SEATS_ACTIVE";
   const a = await app({ installed: true, setupCode });
   try {
     await a.click("connect"); await a.setup();

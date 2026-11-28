@@ -135,7 +135,13 @@ export function nativeStub(scenario) {
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? (state.signedInProviders ?? ["https://cloud.cotal.ai/api/auth"]) : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? state.aboutMachine ?? "Davids-MacBook-Pro" }); }
-      if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
+      if (request.op === "service-status") {
+        if (state.trackConnectorRecovery) {
+          (state.connectorChecks ??= []).push(request.space);
+          if (state.connectorReply) return ok({ space: request.space, ...state.connectorReply, manager: manager() });
+        }
+        return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
+      }
       if (request.op === "logout") {
         state.accountRequests.push({ ...request });
         if (state.accountAction === "signout-busy") await new Promise(() => {});
@@ -1253,13 +1259,19 @@ export const scenarios = [
   { name: "ready", state: {}, act: connect },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
-  { name: "no-application-opens-apps", state: { noApp: true }, prepare: connect, act: async page => {
-    await page.click("#recover-apps");
+  { name: "no-application-opens-apps", state: { noApp: true, trackConnectorRecovery: true, trackAppNavigation: true }, prepare: connect, act: async page => {
+    await page.getByRole("button", { name: "Set up agent apps", exact: true }).click();
     await page.locator("#app-list .app-row").first().waitFor();
   }, expect: async page => {
     assert.equal(await page.locator("#view-apps").getAttribute("aria-selected"), "true");
+    const before = await page.evaluate(() => {
+      window.__renderState.connectorReply = { space: "another-space", state: "connected" };
+      return window.__renderState.connectorChecks?.length ?? 0;
+    });
     await page.click("#view-connection");
-    assert.equal(await page.locator("#recover-apps").isVisible(), true);
+    await page.waitForFunction(count => (window.__renderState.connectorChecks?.length ?? 0) > count, before);
+    assert.deepEqual(await page.locator("#recovery-panel button:visible").allTextContents(), ["Set up agent apps"]);
+    assert.equal(await page.evaluate(() => window.__renderState.connectionActions.filter(action => action === "setup").length), 1);
   } },
   { name: "sessions-active", state: { setupError: "SEATS_ACTIVE" }, act: connect },
   { name: "expired", state: { expired: true }, act: page => page.click("#login"), expect: async page => assert.equal(await page.locator("#recover .icon-spinner").count(), 0) },
@@ -1362,7 +1374,22 @@ export const scenarios = [
     assert.equal(await disconnect.getByRole("heading").textContent(), "Disconnect this computer");
     assert.match(await disconnect.textContent(), /Your spaces stop using this computer\. It stays in your account\./);
   } },
-  { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
+  ...["connected", "approval-pending", "not-requested"].map(state => ({
+    name: state === "connected" ? "audit-app-found-later" : `connector-return-${state}`,
+    state: { noApp: true, trackConnectorRecovery: true, trackAppNavigation: true }, prepare: connect,
+    act: async page => {
+      await page.getByRole("button", { name: "Set up agent apps", exact: true }).click();
+      await page.locator("#app-list .app-row").first().waitFor();
+      await page.evaluate(serviceState => { window.__renderState.connectorReply = { state: serviceState }; }, state);
+      await page.click("#view-connection");
+    }, expect: async page => {
+      const title = state === "connected" ? "This computer is connected" : state === "approval-pending" ? "Waiting for owner approval" : "Ready to connect";
+      await page.waitForFunction(expected => document.querySelector("#connection-title").textContent === expected, title);
+      assert.equal(await page.locator("#recovery-panel").isVisible(), false);
+      assert.equal(await page.evaluate(() => window.__renderState.connectionActions.filter(action => action === "setup").length), 1);
+      assert.equal(await page.evaluate(() => window.__renderState.nativeConnection.connected), state === "connected");
+    },
+  })),
   { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.watchMode), "push");
     assert.equal(await page.evaluate(() => window.__renderState.statusWatchRequests), 1);
