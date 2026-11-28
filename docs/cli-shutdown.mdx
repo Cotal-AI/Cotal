@@ -109,8 +109,9 @@ that stack without requesting agent retirement, run `cotal down --yes`. Pending 
 stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
 retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
-`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. So does a
-process record under the root that may front a process, such as a daemon an earlier release
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. After those services stop, run the suggested retry from the same project folder.
+It names the stack’s space and keeps the requested confirmation, agent handling, preview and output flags.
+A stop also refuses for a process record under the root that may front a process, such as a daemon an earlier release
 started; the message and the Next name each record's path and pid. A record whose process is gone,
 or whose pid now runs another start than its identity pin records because the pid was reused, fronts
 nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dry-run` names it, and
