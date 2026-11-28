@@ -436,8 +436,11 @@ For an npm-managed installation, use its existing npm prefix. After saving and s
 seats, restart the recorded daemon service, then run `cotal update` to reconcile matching extensions.
 The direct npm installation does not call the older updater's Manager-state check.
 
-For Managers hosted by the machine daemon, `update` checks every active hosted instance before
-reconciliation, even with `--space`, because restarting the global installation affects them all.
+On Linux, plain `cotal update` can refresh integrations without checking hosted Manager custody
+when the package closure is current and the daemon already runs that version with its hosted
+Managers answering. It does not ask to stop those agents or restart the daemon in that case.
+When the update may change the package closure or restart the global installation, it checks all
+active hosted Managers before reconciliation, even with `--space`.
 It pins each status request to its instance and refuses unreadable custody or a non-answering
 Manager. A hosted `legacy` Manager with running agents blocks update because restarting it would
 end them. The refusal names agents from the Manager's status and gives `cotal stop <name>` and
