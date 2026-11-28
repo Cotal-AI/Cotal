@@ -49,7 +49,7 @@ export const STATUS_FIELD_CASES: readonly StatusFieldCase[] = [
   { name: "every-space-refused", state: { ...ready, account: account([held("acme-team"), held("research")]) }, word: "Can't connect", title: "Can't connect to your spaces" },
   { name: "one-refused-one-connected", state: { ...ready, account: account([held("acme-team"), connected("research")]) }, word: "Connected", title: "This computer is connected" },
   { name: "disk-full", state: { ...ready, account: account([connected("acme-team")]), statusExtra: { diskFull: true } }, word: "Disk full", title: "Your disk is full", action: "Check again" },
-  { name: "service-stopped-by-you", state: { installed: true, signedIn: true, serviceStopped: true, stoppedDetail: { installed: true, stopped: "by-you" } }, word: "Service stopped", title: "The background service is stopped", action: "Start service" },
+  { name: "service-stopped-by-you", state: { installed: true, signedIn: true, serviceStopped: true, stoppedDetail: { installed: true, stopped: "by-you" } }, word: "Service stopped", title: "The background service is stopped", action: "Start" },
   { name: "update-waiting", state: { ...ready, account: account([connected("acme-team")]), statusExtra: { generation: { installed: "0.184.0", running: "0.183.0", waiting: "preparing activation" } } }, word: "Updating", title: "Cotal is updating" },
   // Only a computer without an account writes a Manager's next into Details; an account computer
   // returns before that line, so this case must use the single-space path.
