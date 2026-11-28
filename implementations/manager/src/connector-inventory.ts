@@ -96,29 +96,13 @@ export class ConnectorInventory {
     }
   }
 
-  /** Verify that available rows still have their recorded executables on disk and on PATH. */
-  recheckAvailableConnectors(name?: string): void {
-    const wasEnabled = this.parts.seatLaunch.classSpawnEnabled();
-    for (const row of this.connectorStatuses) {
-      if (row.state !== "available" || (name !== undefined && row.agent !== name)) continue;
-      const requires = this.connectorRequirements.get(row.agent)?.requires ?? Object.keys(row.binaries);
-      const { binaries, reason } = resolveHarness(row.agent, requires, row.binaries);
-      row.binaries = binaries;
-      if (reason) {
-        row.state = "unavailable";
-        row.reason = reason;
-        this.parts.harnessResolution.forgetCatalog(row.agent);
-      }
-    }
-    if (wasEnabled !== this.parts.seatLaunch.classSpawnEnabled()) this.parts.servePlane.syncClassSpawn();
-  }
-
   /** Recheck available applications and retry unavailable ones. Claude launches join the status or
    *  launch that started wake setup, before any name or capacity is reserved. */
   refreshConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
     const wasEnabled = this.parts.seatLaunch.classSpawnEnabled();
     let pending: Promise<void> | undefined;
     for (const row of this.connectorStatuses) {
+      if (name !== undefined && row.agent !== name) continue;
       const requirements = this.connectorRequirements.get(row.agent);
       if (row.state === "available") {
         const requires = requirements?.requires ?? Object.keys(row.binaries);
@@ -131,7 +115,6 @@ export class ConnectorInventory {
         }
         continue;
       }
-      if (name !== undefined && row.agent !== name) continue;
       if (!requirements) continue;
       if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
         pending = this.claudeWakeRecheck;

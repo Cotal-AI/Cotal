@@ -213,8 +213,6 @@ interface SetupCancelled {
 }
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
-const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name> [--runtime <name>]";
-const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>] [--runtime <name>]";
 /** What to do about a harness setup cannot set up. */
 const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
@@ -312,8 +310,8 @@ function destinationOf(value: string): Destination {
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
   if (missing.length > 0) {
-    const form = v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM;
-    const remedy = v.json === true ? form : `${setupLauncher()}${form.slice("cotal".length)}`;
+    const additions = setupFlags.flatMap(flag => "value" in flag && missing.some(name => name === flag.name) ? [`--${flag.name} ${flag.value}`] : []);
+    const remedy = `repeat your original setup command, adding ${codeSpan(additions.join(" "))} with your values`;
     throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, remedy);
   }
   const project = resolve(v.project!);

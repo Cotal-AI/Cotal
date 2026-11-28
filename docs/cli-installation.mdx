@@ -55,9 +55,7 @@ and waits for your approval, as `cotal login` does. With several spaces it asks 
 that no project uses yet asks for the project folder your agents work in. A space already set up in
 a project keeps that project.
 
-Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
-is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. For local setup, use the example for
+Without a terminal, or with `--yes`, `--no-input`, `--plain` or `--json`, every input is a flag. A missing input refuses with `USAGE_INVALID` before anything is written. Add the missing flags to your original command so its project, destination and other options stay the same. For local setup, use the example for
 your shell. Each creates the project folder first. The example uses Claude Code, which must be installed
 for its setup to complete.
 
