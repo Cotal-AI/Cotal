@@ -338,6 +338,28 @@ async function withLocalRegistry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+async function checkMalformedRegisteredBrokers(grant: (actor: string) => Promise<unknown>): Promise<void> {
+  const cases = [
+    ["bad hostname", "nats://bad host:4222", "bad_hostname_child"],
+    ["out-of-range port", "nats://127.0.0.1:99999", "bad_port_child"],
+    ["free text", "not a url at all", "free_text_child"],
+  ] as const;
+  for (const [label, server, actor] of cases) {
+    recordMesh({ ...localRecord, server });
+    const out = process.stdout.write, err = process.stderr.write;
+    let writes = 0;
+    const capture = () => { writes++; return true; };
+    process.stdout.write = capture;
+    process.stderr.write = capture;
+    try { await grant(actor); }
+    finally {
+      process.stdout.write = out;
+      process.stderr.write = err;
+    }
+    check(`local spawn: registered ${label} preserves the row without output`, writes === 0, { writes });
+  }
+}
+
 async function checkOfflineLocalSpawns(): Promise<void> {
   grantActor(dir, { owner: OWNER, actor: SPAWNER, scope: ["spawn"], allowSubscribe: [">"], allowPublish: [">"] });
   await withLocalRegistry(async () => {
@@ -384,6 +406,7 @@ async function checkOfflineLocalSpawns(): Promise<void> {
     check("local spawn: the built provider process exits within 5 seconds of its last line", timing.exitMs < 5_000, timing);
     console.log(`  stalled DNS grant: ${timing.elapsed} ms, exit after output: ${timing.exitMs} ms`);
     await checkSilentRegisteredBroker(grant);
+    await checkMalformedRegisteredBrokers(grant);
     recordMesh(localRecord);
   });
 }
@@ -415,6 +438,11 @@ async function checkRegisteredLocalSpawns(control: NatsConnection): Promise<void
       assertRow(named);
       await control.flush();
       check("local spawn: a DNS-resolved registered hostname reads the exact protected key", result.requests > 0 && observed === 2);
+      // A malformed first entry must not choose WebSocket transport for the valid TCP entry.
+      recordMesh({ ...localRecord, server: `ws://bad host:4222, ${SERVERS}` });
+      await grant("registered_mixed_child");
+      await control.flush();
+      check("local spawn: a mixed list skips the malformed address and reads once from the valid broker", observed === 3);
       recordMesh(localRecord);
     } finally { requests.unsubscribe(); }
 

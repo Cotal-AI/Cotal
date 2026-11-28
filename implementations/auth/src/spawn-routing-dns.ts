@@ -17,17 +17,20 @@ async function resolveHost(resolver: Resolver, host: string): Promise<LookupAddr
   return dns.getDefaultResultOrder() === "ipv6first" ? [...v6, ...v4] : [...v4, ...v6];
 }
 
-/** Keep the recorded transport, hostname and port. An unanswered name is not a dial candidate. */
+/** Keep the recorded transport, hostname and port. Malformed addresses and unanswered names are not dial candidates. */
 export async function resolveSpawnBroker(server: string, expiresAt: number): Promise<ResolvedSpawnBroker | undefined> {
   const remaining = Math.ceil(expiresAt - performance.now());
   if (remaining <= 0) return undefined;
-  const targets = server.split(",").map(raw => raw.trim()).filter(Boolean).map(target => {
-    const url = new URL(target.includes("://") ? target : `nats://${target}`);
-    return { target, host: hostKey(url.hostname) };
+  const targets = server.split(",").flatMap(raw => {
+    const target = raw.trim();
+    const url = URL.parse(target.includes("://") ? target : `nats://${target}`);
+    return url?.hostname ? [{ target, host: hostKey(url.hostname) }] : [];
   });
+  if (!targets.length) return undefined;
+  const parsed = targets.map(({ target }) => target).join(",");
   const names = [...new Set(targets.map(t => t.host).filter(host => !isIP(host)))];
   const hosts = new Map<string, LookupAddress[]>();
-  if (!names.length) return { server, hosts };
+  if (!names.length) return { server: parsed, hosts };
 
   const resolver = new Resolver({ timeout: remaining, tries: 1 });
   resolver.setServers(dns.getServers());
@@ -39,7 +42,7 @@ export async function resolveSpawnBroker(server: string, expiresAt: number): Pro
     const websocket = (target: string) => /^wss?:\/\//i.test(target);
     // The first address chooses the list's transport. Keep it if filtering would switch transport.
     const filtered = websocket(targets[0]!.target) === websocket(usable[0]!.target)
-      ? usable.map(t => t.target).join(",") : server;
+      ? usable.map(t => t.target).join(",") : parsed;
     return { server: filtered, hosts };
   } finally {
     clearTimeout(timer);
