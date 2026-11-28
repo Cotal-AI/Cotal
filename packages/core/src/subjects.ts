@@ -42,6 +42,7 @@ import {
   isChannelFamily,
   subjectMatches,
   assertValidChannel,
+  chatSubjectPrefix,
   principalKey,
   LIFECYCLE_TOKEN,
   assertLifecycleToken,
@@ -58,6 +59,7 @@ export {
   mentionsIn,
   assertValidRole,
   chatSubject,
+  chatSubjectPrefix,
   isConcreteChannel,
   isChannelFamily,
   familiesCovering,
@@ -455,7 +457,7 @@ export function spaceWildcard(space: string): string {
 /** Wildcard matching every chat (multicast) subject in a space — the read surface an
  *  observer is allowed (DM/anycast stay confidential). */
 export function chatWildcard(space: string): string {
-  return `${spacePrefix(space)}.chat.>`;
+  return `${chatSubjectPrefix(space)}>`;
 }
 
 /** The three peer-message delivery modes (control/trace/presence are not deliveries). */
@@ -771,7 +773,7 @@ export function serverKickSubject(serverId: string): string {
  *  where the channel portion begins and silently break both — revisit this + the daemon's exclusion
  *  (and their tests) together. */
 export function channelFromChatSubscription(space: string, subject: string): string | null {
-  if (!subject.startsWith(`${spacePrefix(space)}.chat.`)) return null;
+  if (!subject.startsWith(chatSubjectPrefix(space))) return null;
   const p = parseSubject(subject);
   return p && p.kind === "chat" ? p.rest : null;
 }
