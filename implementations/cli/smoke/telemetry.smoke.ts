@@ -353,6 +353,15 @@ for (const level of ["regular", "minimal"]) {
   check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
 }
 
+{
+  const message = 'no managed agent "fixture-agent" on manager fixture-instance';
+  const failure = new CommandFailure("refused", "TARGET_NOT_FOUND", message, { native: { code: "not-found" } });
+  const text = telemetryErrorText("attach", failure);
+  check("an attach miss reported by a manager keeps the agent and instance local", text.message === null && text.stack === null && failure.message === message);
+  const usage = telemetryErrorText("attach", new CommandFailure("refused", "USAGE_INVALID", "name the agent"));
+  check("an attach usage refusal still reports its diagnostic", usage.message === "name the agent" && typeof usage.stack === "string");
+}
+
 // ---- minimal ----
 {
   const s = sandbox();
