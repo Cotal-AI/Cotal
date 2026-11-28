@@ -146,9 +146,20 @@ if (process.platform === "linux") {
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), failStop: false })}\n`);
   const units = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { unit?: string }).unit).filter((unit): unit is string => !!unit) : [];
   check("the fixture recorded one service", context.units.length === 1 && context.units[0] === unitName && units.every((unit) => unit === unitName), context.units);
-  const darwin = readFileSync(new URL("../daemon/install-darwin.ts", import.meta.url), "utf8");
-  const windows = readFileSync(new URL("../daemon/install-win32.ts", import.meta.url), "utf8");
-  check("the macOS and Windows stop paths name the same half-way fix", darwin.includes("automatic start is already off") && darwin.includes("cotal daemon start") && windows.includes("automatic start is already off") && windows.includes("cotal daemon start"));
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
+  const marked = run("stop", ["--yes"]);
+  check("a stop writes the marker the status reads", marked.status === 0 && existsSync(marker));
+  const removed = run("uninstall", ["--yes"]);
+  check("uninstall removes the person-stop marker", removed.status === 0 && !existsSync(marker), removed.doc);
+  writeFileSync(marker, "\n", { mode: 0o600 });
+  const reinstalled = run("install");
+  check("install clears a marker left from a service that was removed", reinstalled.status === 0 && !existsSync(marker), reinstalled.doc);
+  writeFileSync(marker, "\n", { mode: 0o600 });
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "disabled", failStart: true })}\n`);
+  const startFailed = run("start");
+  check("a start that fails after turning automatic start back on says so and clears the marker",
+    startFailed.status !== 0 && (startFailed.doc?.error?.message ?? "").includes("Automatic start is on again") && !existsSync(marker), startFailed.doc?.error);
+  writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), failStart: false })}\n`);
 } else {
   console.log(`  ○ Linux stop/start fixture not run on ${process.platform}`);
 }

@@ -160,13 +160,19 @@ interface WindowsTaskService extends NativeService {
   startEnabled(receipt: UnitReceipt): void;
 }
 
-/** Disable the owned task, end any instance, and wait until none remain. */
-async function disableAndEnd(receipt: UnitReceipt, owned: (receipt: UnitReceipt, requireInstances?: boolean) => RegisteredTask, step: (args: readonly string[]) => void, markPending: (pending: boolean) => void): Promise<void> {
+/** Confirm the owned task is disabled. The one-minute trigger cannot launch a new instance after this returns. */
+function disableOwned(receipt: UnitReceipt, owned: (receipt: UnitReceipt, requireInstances?: boolean) => RegisteredTask, step: (args: readonly string[]) => void): void {
   const task = owned(receipt, true);
   if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; nothing was stopped");
   if (task.enabled) step(["/Change", "/TN", receipt.unit, "/DISABLE"]);
   const disabled = owned(receipt, true);
   if (!disabled.present || disabled.enabled !== false) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm disabled state; it was not ended");
+}
+
+/** End a task that is already disabled, and wait until no instance remains. */
+async function endOwned(receipt: UnitReceipt, owned: (receipt: UnitReceipt, requireInstances?: boolean) => RegisteredTask, step: (args: readonly string[]) => void, markPending: (pending: boolean) => void): Promise<void> {
+  const disabled = owned(receipt, true);
+  if (!disabled.present || disabled.enabled !== false) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task is not disabled, so it was not ended");
   if (disabled.instances! > 0) {
     markPending(true);
     step(["/End", "/TN", receipt.unit]);
@@ -298,16 +304,22 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
     start(receipt, resume = false) {
       const task = owned(receipt, true);
       if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");
-      // resume re-enables a task the person stopped. A disabled task with no running instance takes
-      // the same path, because a restart that paused the task itself must be able to start it again.
-      // A disabled task that still has instances is refused: ending one is not what a start does.
-      const turnBackOn = resume || task.instances === 0;
-      if (!task.enabled && turnBackOn) enable(receipt);
-      else if (!task.enabled) throw new CommandFailure("refused", "CONFLICT", "the disabled owned task still has native instances; startup was refused");
+      // Only the person's start asks to resume. A plain start never enables a task they stopped.
+      // A disabled task that still has an instance is refused either way: ending one is not what a start does.
+      if (!task.enabled && !(resume && task.instances === 0)) throw new CommandFailure("refused", "CONFLICT", resume ? "the disabled owned task still has native instances; startup was refused" : "the owned task is disabled; startup did not enable it");
+      if (resume && !task.enabled) enable(receipt);
       if (task.instances === 0) step(["/Run", "/TN", receipt.unit]);
     },
     async stop(receipt) {
-      await disableAndEnd(receipt, owned, step, (pending) => { pendingEnd = pending; });
+      disableOwned(receipt, owned, step);
+      await endOwned(receipt, owned, step, (pending) => { pendingEnd = pending; });
+    },
+    /** Disable only. The person's stop asks the daemon to exit before the task is ended. */
+    prepareStop(receipt: UnitReceipt) {
+      disableOwned(receipt, owned, step);
+    },
+    async finishStop(receipt: UnitReceipt) {
+      await endOwned(receipt, owned, step, (pending) => { pendingEnd = pending; });
     },
     // Production restarts must use install.ts restartInstalled, which pins the old
     // listener and confirms its death before resume. This legacy synchronous adapter

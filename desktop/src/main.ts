@@ -391,6 +391,8 @@ const welcome = "Connect this computer to your Cotal account. People authorized 
 const progressNames = ["Background service", "Sign-in", "Space", "Agent applications", "Ready"];
 type ProgressState = "waiting" | "running" | "done" | "failed";
 let problem: string | undefined;
+/** True only when the person stopped the service. An unexpected stop keeps the ordinary title. */
+let stoppedByYou = false;
 let statusProblem = false;
 let progress: ProgressState[] = progressNames.map(() => "waiting");
 const progressDetails = ["Starting your background service.", "Checking your sign-in.", "Finding your account’s spaces.", "Checking installed agent applications.", "Verifying your connection."];
@@ -408,6 +410,7 @@ function notice(message: string, error = false): void {
 let agentActionProblem = false;
 function clearDetails(): void {
   problem = undefined;
+  stoppedByYou = false;
   statusProblem = false;
   agentActionProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
@@ -425,6 +428,7 @@ function refusal(error: unknown, fromStatus = false): void {
   agentActionProblem = false;
   showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  stoppedByYou = error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.stopped === "by-you";
   statusProblem = fromStatus;
   notice("", true);
   showStage(stage);
@@ -534,7 +538,7 @@ function showStage(next: Stage, focus = false): void {
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
   const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
-  const recovery = issue ? refusalView(issue, applications) : undefined;
+  const recovery = issue ? refusalView(issue, applications, stoppedByYou) : undefined;
   const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
   if (recovery && !lost) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery || Boolean(lost);
@@ -590,7 +594,7 @@ function showStage(next: Stage, focus = false): void {
     el("spaces-heading").hidden = signInRequired || !anyConnected;
     const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
     const lost = summary === "offline" || summary === "unreachable" ? summary : undefined;
-    text("tray-label", signInRequired ? "Sign in required" : lost ? CONNECTION_COPY[lost].pill : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
+    text("tray-label", stoppedByYou ? "Service stopped" : signInRequired ? "Sign in required" : lost ? CONNECTION_COPY[lost].pill : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
     if (isTauri()) void invoke("set_connection_state", { connected: summary === "connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
     el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
     el("tray-indicator").classList.toggle("error", Boolean(signInRequired || lost || summary === "attention"));
@@ -857,7 +861,7 @@ function state(value: string, space = selectedSpace()): void {
   const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
   const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], verified));
   if (connected()) problem = undefined;
-  text("tray-label", initialized ? verified ? "Connected" : lost ? CONNECTION_COPY[lost].pill : "Not connected" : "Checking connection");
+  text("tray-label", stoppedByYou ? "Service stopped" : initialized ? verified ? "Connected" : lost ? CONNECTION_COPY[lost].pill : "Not connected" : "Checking connection");
   el("tray-indicator").classList.toggle("connected", verified);
   if (isTauri()) void invoke("set_connection_state", { connected: verified, label: el("tray-label").textContent ?? "", lost }).catch(() => undefined);
   if (connected() && !editing) { listOpened = true; showStage("finished"); }

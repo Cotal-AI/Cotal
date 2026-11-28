@@ -253,7 +253,10 @@ async function servicePower(req: Extract<DesktopRequest, { op: "stop" | "start" 
     const stopped = await stopInstalled(paths, home, fresh, () => runningAgentNames(paths, opts));
     return { state: "stopped", unit: stopped.unit, agents: stopped.agents };
   } catch (error) {
-    if (error instanceof CommandFailure && error.code === "CONFLICT" && error.changed) return { state: "needs-confirm", agents: error.changed.map(String) };
+    if (error instanceof CommandFailure && error.code === "CONFLICT" && error.native?.code === "AGENTS_CHANGED") {
+      const listed = error.native.detail && typeof error.native.detail === "object" ? (error.native.detail as { agents?: unknown }).agents : undefined;
+      if (Array.isArray(listed)) return { state: "needs-confirm", agents: listed.map(String) };
+    }
     throw error;
   }
 }

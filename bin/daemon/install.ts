@@ -217,6 +217,10 @@ export interface NativeService {
   start(receipt: UnitReceipt, resume?: boolean): void;
   /** Turn off automatic start, then stop the job. The source and receipt stay. */
   stop(receipt: UnitReceipt): Promise<void> | void;
+  /** Windows only: confirm automatic start is off before the daemon is asked to exit. */
+  prepareStop?(receipt: UnitReceipt): void;
+  /** Windows only: end the disabled task after the daemon has exited. */
+  finishStop?(receipt: UnitReceipt): Promise<void>;
   restart(receipt: UnitReceipt, reload?: boolean): void;
   remove(receipt: UnitReceipt, preserveSource?: boolean): void;
 }
@@ -388,7 +392,11 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined,
   if (process.platform === "linux" && !existsSync(paths.state)) planInstall(paths, daemonHome);
   mkSecretDir(paths.state);
   const lock = acquireLock(join(paths.state, "service-repair.lock"));
-  try { return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries); }
+  try {
+    // A stop from before this install must not outlive it. The next outage would otherwise say the person stopped a service they just installed.
+    clearPersonStop(paths);
+    return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries);
+  }
   finally { lock.release(); }
 }
 
@@ -571,20 +579,34 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   try {
   assertDesktopSetupComplete();
   if (process.platform === "win32") {
-    const started = await restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true, undefined, resume);
-    if (resume) clearPersonStop(paths);
-    return started;
+    try {
+      const started = await restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true, undefined, resume);
+      if (resume) clearPersonStop(paths);
+      return started;
+    } catch (error) {
+      // A failed readiness wait comes after the task was enabled. A refusal before that leaves the marker, because automatic start is still off.
+      if (resume && error instanceof Error && /replacement|readiness|did not answer|fresh daemon/i.test(error.message)) clearPersonStop(paths);
+      throw resumeStartFailed(error);
+    }
   }
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+  let automaticOn = false;
   if (!service && resume && process.platform === "linux") {
     const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
     if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
     const state = read.stdout.trim();
     if (state === "disabled") submitSystemdUnitRegistration("enable", plan.unit);
     else if (state !== "enabled" && state !== "static") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded service ${plan.unit} is ${state || "unreadable"}; automatic start was not changed and it was not started`);
+    automaticOn = true;
   }
-  if (service) service.start(receipt, resume);
-  else submitSystemdUnitControl("start", plan.unit);
+  if (service && resume) automaticOn = true;
+  try {
+    if (service) service.start(receipt, resume);
+    else submitSystemdUnitControl("start", plan.unit);
+  } catch (error) {
+    if (automaticOn) clearPersonStop(paths);
+    throw resumeStartFailed(error, automaticOn);
+  }
   if (resume) clearPersonStop(paths);
   return plan;
   } finally { lock?.release(); }
@@ -605,6 +627,12 @@ function markPersonStop(paths: Pick<DaemonPaths, "state">): void {
 
 function clearPersonStop(paths: Pick<DaemonPaths, "state">): void {
   rmSync(personStopFile(paths), { force: true });
+}
+
+/** A resume whose enable already landed. The marker is gone, so the failure has to say automatic start is back on. */
+function resumeStartFailed(error: unknown, automaticOn = true): unknown {
+  if (!automaticOn || !(error instanceof CommandFailure)) return error;
+  return new CommandFailure(error.outcome, error.code, `${error.message} Automatic start is on again, and the service did not start. Run \`cotal daemon start\` again.`, { remedy: error.remedy, native: error.native, cause: error });
 }
 
 /** Ask the running daemon to stop, then wait until its process has exited. A service that is not running needs nothing. */
@@ -636,7 +664,7 @@ async function requestDaemonStop(paths: DaemonPaths): Promise<void> {
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) { if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return; }
     }
-    if (Date.now() >= deadline) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the daemon did not exit after its stop was committed; automatic start was not changed");
+    if (Date.now() >= deadline) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the daemon did not exit after its stop was committed; automatic start is already off");
     await delay(100);
   }
 }
@@ -646,15 +674,17 @@ async function requestDaemonStop(paths: DaemonPaths): Promise<void> {
  *  `confirm` runs under the stop lock. It returns the live list, and a list that no longer matches
  *  the one the person confirmed is not stopped. */
 export async function stopInstalled(paths: DaemonPaths, daemonHome: string | undefined, expected: readonly string[] = [], confirm?: () => Promise<readonly string[] | undefined>): Promise<UninstallPlan & { readonly agents: readonly string[] }> {
-  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  const lock = await acquireLockAsync(join(paths.state, "service-repair.lock"));
   try {
     const agents = confirm ? await confirm() ?? undefined : expected;
     if (agents === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped");
     const same = agents.length === expected.length && agents.every((name, index) => name === expected[index]);
-    if (!same) throw new CommandFailure("refused", "CONFLICT", `the running agents changed to: ${agents.length ? agents.join(", ") : "none"}. Nothing was stopped`, { remedy: "run the stop again so it names the current agents", changed: agents });
+    if (!same) throw new CommandFailure("refused", "CONFLICT", `the running agents changed to: ${agents.length ? agents.join(", ") : "none"}. Nothing was stopped`, { remedy: "run the stop again so it names the current agents", native: { code: "AGENTS_CHANGED", detail: { agents: [...agents] } } });
     const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+    if (service?.prepareStop) await Promise.resolve(service.prepareStop(receipt));
     if (service && process.platform === "win32") await requestDaemonStop(paths);
-    if (service) await service.stop(receipt);
+    if (service?.finishStop) await service.finishStop(receipt);
+    else if (service) await service.stop(receipt);
     else {
       submitSystemdUnitRegistration("disable", plan.unit);
       const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
@@ -1170,8 +1200,9 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         exclusion.release(); exclusion = undefined;
         progress(startOnly ? "starting the verified owned scheduled task" : "enabling and starting the verified owned scheduled task");
         if (automatic && !pauseAttempted) task.startEnabled(receipt);
-        // A pause this restart made itself is not the person's stop. Only a disable found already in place stays disabled.
-        else task.start(receipt, resume || pauseAttempted);
+        // A pause this restart made itself is not the person's stop. resume refuses anything but the disabled idle task that pause left.
+        else if (pauseAttempted) task.resume(receipt);
+        else task.start(receipt, resume);
       } else if (!(startOnly || automatic) || native.instances !== 1 || native.enabled !== true) {
         throw new Error("the owned task is absent or still has native instances");
       }
@@ -1349,6 +1380,7 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     rmSync(plan.unitPath, { force: true });
     if (!service) submitSystemdUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
+    clearPersonStop(paths);
     return { ...plan, state: "removed", removedServiceRecords };
   } finally { socket?.destroy(); exclusion?.release(); }
 }

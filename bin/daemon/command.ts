@@ -221,7 +221,7 @@ async function stop(args: ParsedArgs): Promise<void> {
   if (shown.length && values.yes !== true) {
     const { createInterface } = await import("node:readline/promises");
     const io = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = (await io.question(`Stopping the background service also stops these agents: ${shown.join(", ")}. Stop it? [y/N] `)).trim().toLowerCase();
+    const answer = (await io.question(`Stopping the background service also stops these agents: ${shown.join(", ")}. Their managers are asked to stop. Anything still running after 90 seconds is ended, and they start again with the service. Stop it? [y/N] `)).trim().toLowerCase();
     io.close();
     if (answer !== "y" && answer !== "yes") {
       writeResult(presentation, { command: "daemon stop", target: { unit: plan.unit }, result: { state: "not-stopped", agents: shown } }, () => ({ sections: [
@@ -230,6 +230,7 @@ async function stop(args: ParsedArgs): Promise<void> {
       return;
     }
   }
+  if (values.yes === true && shown.length && process.stdout.isTTY) process.stdout.write(`Stopping these agents: ${shown.join(", ")}.\n`);
   const fresh = await runningAgentNames(paths);
   if (fresh === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry once it can be read` });
   if (!sameNames(shown, fresh)) throw new CommandFailure("refused", "CONFLICT", `the running agents changed to: ${fresh.length ? fresh.join(", ") : "none"}. Nothing was stopped`, { remedy: "run the stop again so it names the current agents" });
