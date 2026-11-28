@@ -25,8 +25,9 @@ function recordedOnPath(bin: string, recorded: string | undefined, env: NodeJS.P
   return pathValue.split(delimiter).some((dir) => Boolean(dir) && resolveOnPath(resolve(dir, bin), env) === recorded);
 }
 
-/** One connector's declared harness binaries resolved on PATH now, keeping any recorded paths that
- *  still exist and still resolve on PATH. The refusal sentence is built only here, so boot, status
+/** One connector's declared harness binaries resolved on PATH now, keeping any pinned paths while
+ *  they still exist and resolve on PATH, and refusing rather than silently switching executables if a
+ *  pinned path disappears or leaves PATH. The refusal sentence is built only here, so boot, status
  *  and launch checks never word it apart. */
 export function resolveHarness(
   name: string,
@@ -35,13 +36,23 @@ export function resolveHarness(
 ): { binaries: Record<string, string>; reason?: string } {
   const binaries: Record<string, string> = {};
   const missing: string[] = [];
+  const unpinned: string[] = [];
   for (const bin of requires) {
     const pinned = recorded?.[bin];
-    const path = recordedOnPath(bin, pinned) ? pinned : resolveOnPath(bin);
+    if (pinned !== undefined) {
+      if (recordedOnPath(bin, pinned)) binaries[bin] = pinned;
+      else unpinned.push(`${bin} (${pinned})`);
+      continue;
+    }
+    const path = resolveOnPath(bin);
     if (path) binaries[bin] = path;
     else missing.push(bin);
   }
-  return missing.length ? { binaries, reason: `${name} harness needs ${missing.join(", ")} on PATH - not found` } : { binaries };
+  const reasons = [
+    ...(unpinned.length ? [`${name} harness needs pinned ${unpinned.join(", ")} on PATH - not found (no fallback to another copy on PATH)`] : []),
+    ...(missing.length ? [`${name} harness needs ${missing.join(", ")} on PATH - not found`] : []),
+  ];
+  return reasons.length ? { binaries, reason: reasons.join("; ") } : { binaries };
 }
 
 /** What {@link HarnessResolution} reads from the Manager. Every entry is read at use, so a field the Manager

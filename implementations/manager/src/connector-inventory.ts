@@ -19,9 +19,11 @@ export interface ConnectorInventorySettings {
 export class ConnectorInventory {
   /** Connector harness inventory. Available paths stay pinned while they still exist and resolve on
    *  PATH. Missing or removed rows are rechecked when launch, model lookup or status asks, without
-   *  stopping unrelated Manager work. */
+   *  stopping unrelated Manager work, and a once-available connector never silently switches to a
+   *  different executable path across flaps. */
   connectorStatuses: ManagerConnectorStatus[] = [];
   private connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
+  private pinnedBinaries = new Map<string, Readonly<Record<string, string>>>();
   private claudeWakeRecheck?: Promise<void>;
   /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
   bootNotes: string[] = [];
@@ -38,6 +40,7 @@ export class ConnectorInventory {
    * boot continues, names it once start completes and records it on both manager status surfaces. */
   async inspectConnectorsAtBoot(): Promise<void> {
     this.bootNotes = [];
+    this.pinnedBinaries.clear();
     if (this.settings.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
     let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; pkg?: string }>;
@@ -72,6 +75,7 @@ export class ConnectorInventory {
         rows.push({ agent: name, state: "unavailable", ...facts, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
+        this.pinnedBinaries.set(name, { ...binaries });
         rows.push({ agent: name, state: "available", ...facts });
       }
     }
@@ -105,8 +109,10 @@ export class ConnectorInventory {
       if (name !== undefined && row.agent !== name) continue;
       const requirements = this.connectorRequirements.get(row.agent);
       if (row.state === "available") {
-        const requires = requirements?.requires ?? Object.keys(row.binaries);
-        const { binaries, reason } = resolveHarness(row.agent, requires, row.binaries);
+        const pinned = this.pinnedBinaries.get(row.agent) ?? { ...row.binaries };
+        this.pinnedBinaries.set(row.agent, pinned);
+        const requires = requirements?.requires ?? Object.keys(pinned);
+        const { binaries, reason } = resolveHarness(row.agent, requires, pinned);
         row.binaries = binaries;
         if (reason) {
           row.state = "unavailable";
@@ -120,7 +126,8 @@ export class ConnectorInventory {
         pending = this.claudeWakeRecheck;
         continue;
       }
-      const { binaries, reason } = resolveHarness(row.agent, requirements.requires);
+      const pinned = this.pinnedBinaries.get(row.agent);
+      const { binaries, reason } = resolveHarness(row.agent, requirements.requires, pinned);
       if (reason) {
         row.binaries = binaries;
         row.reason = reason;
@@ -128,16 +135,18 @@ export class ConnectorInventory {
         const release = setupClaude ? this.beginLifecycle(true) : undefined;
         if (!release) continue;
         pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
-          const rechecked = resolveHarness(row.agent, requirements.requires, binaries);
+          const rechecked = resolveHarness(row.agent, requirements.requires, pinned ?? binaries);
           row.binaries = rechecked.binaries;
           if (failure || rechecked.reason) { row.reason = failure ?? rechecked.reason; return; }
           const alreadyEnabled = this.parts.seatLaunch.classSpawnEnabled();
+          this.pinnedBinaries.set(row.agent, { ...rechecked.binaries });
           row.state = "available";
           delete row.reason;
           if (!alreadyEnabled) this.parts.servePlane.syncClassSpawn();
         }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
         void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
       } else {
+        this.pinnedBinaries.set(row.agent, { ...binaries });
         row.binaries = binaries;
         row.state = "available";
         delete row.reason;

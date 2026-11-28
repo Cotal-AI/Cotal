@@ -173,12 +173,15 @@ An unavailable connector does not prevent unrelated manager work.
 Its reason appears in the manager's status response and a `connector <name> unavailable` log line.
 Available rows record the absolute executable paths the manager found.
 
-Launches and preserved-state resumes use those recorded paths.
-When a launch, `cotal models` or status read asks for an unavailable connector, the Manager
-checks its declared binaries on PATH again and updates its status row. Installing an application
-into a directory already on that PATH needs no restart. Once available, its resolved paths stay pinned.
+Launches, preserved-state resumes, and supervised restarts use those recorded paths.
+A `status` read rechecks every declared connector row on `PATH`, while a launch, preserved resume,
+supervised restart, `cotal models` or command listing rechecks only the requested connector and
+updates its status row. Installing a previously unavailable application into a directory already on
+that `PATH` needs no restart. Once a connector becomes available, its resolved paths stay pinned
+and never switch to another copy on `PATH`; if a pinned file disappears or leaves `PATH`, the
+connector becomes unavailable until that pinned file returns or the manager restarts.
 Catalog reads run the same recorded absolute binary as a launch. `COTAL_OPENCODE_BIN` and `COTAL_CODEX_BIN` override it.
-A connector that was available at boot keeps its recorded paths even if PATH later changes.
+A connector that was available at boot keeps its recorded paths even if `PATH` later changes.
 Since 0.167.1, a detached launch that no manager can take reports the installed connectors' unavailable reasons, including missing executables.
 Install or repair those applications on the named manager hosts and make them available on the PATH used to start the managers.
 The refusal suggests adding a connector only on managers whose connector inventory is empty.
