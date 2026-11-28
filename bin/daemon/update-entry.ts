@@ -579,7 +579,6 @@ const composed: Command = { ...command, async run(args) {
     if (standaloneReconcile && process.env.COTAL_INSTALL_RECONCILE !== "1" &&
         active.every(manager => manager.state === "answering" && manager.instanceId)) {
       releaseCurrentReconciliation = claimCurrentReconciliation(daemon.version);
-      if (releaseCurrentReconciliation) packageCheck = "current";
     }
     for (const manager of releaseCurrentReconciliation ? [] : active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
@@ -713,6 +712,7 @@ const composed: Command = { ...command, async run(args) {
     console.log(`${foreignDaemonUpdateReport(installation.installedEntry)} The daemon is running Cotal ${current.result.version}.`);
     return;
   }
+  if (releaseCurrentReconciliation) return;
   if (current.result.version !== expectedVersion) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
