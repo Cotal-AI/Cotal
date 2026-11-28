@@ -7768,7 +7768,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "onst reconciled = await rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, true);\n          if (reconcil",
+      "anchor": "rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, true)",
       "class": "non-render/control",
       "rationale": "Paused recovery launches the verified reconciliation child under global install custody, not peer presence."
     },
@@ -7803,7 +7803,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "onst reconciled = await rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, true);\n        if (reconciled",
+      "anchor": "rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, !isWaitingRestore(record))",
       "class": "non-render/control",
       "rationale": "Interrupted recovery executes the verified previous generation's reconciliation child, not peer presence."
     },
