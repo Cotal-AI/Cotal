@@ -7,6 +7,7 @@ import {
   isConcreteChannel,
   isChannelFamily,
   patternInAllow,
+  PLUGIN_CHANNEL_ROOT,
   eventChannelPrincipal,
   type ChannelMode,
 } from "@cotal-ai/core";
@@ -16,6 +17,13 @@ export function isPluginChannel(channel: string): boolean {
   try { return classifyChannel(channel).kind !== "chat"; }
   catch { return false; }
 }
+
+/** Includes reserved names and patterns that the isolated route rejects. */
+export function hasPluginChannelRoot(channel: string): boolean {
+  return channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
+}
+
+export const CHANNEL_ROUTING_NOT_READY = "The connection is not ready to route plugin channels. Try again once connected.";
 
 /** Whether the configured broker is one the caller could actually start themselves. Matches the
  *  host of a `nats://`/`ws://`/`wss://` server string; anything else (a hosted mesh, a LAN box) is

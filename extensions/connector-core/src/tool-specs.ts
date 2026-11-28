@@ -10,7 +10,7 @@
 import { z } from "zod";
 import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, formatAge, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
-import { isPluginChannel } from "./agent-channels.js";
+import { CHANNEL_ROUTING_NOT_READY, hasPluginChannelRoot, isPluginChannel } from "./agent-channels.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtFrom } from "./framing.js";
@@ -309,6 +309,15 @@ export function sendNoDefaultRemedy(config: Pick<AgentConfig, "allowSubscribe" |
   return `${where}, so there is no default and an omitted channel is refused. You may post to ${list}: call cotal_send with channel: "${first}", or cotal_join ${first} first to make it your default`;
 }
 
+function sendChannelHelp(config: AgentConfig): string {
+  const hint = (isolated: boolean) => {
+    const channel = defaultSendChannel(config, config.subscribe, isolated);
+    return channel ? `default: ${channel}` : `REQUIRED: ${sendNoDefaultRemedy(config, config.subscribe, isolated)}`;
+  };
+  const legacy = hint(false);
+  return legacy === hint(true) ? legacy : "if omitted, uses the first channel you are on and may post to in this space. If there is no default, give a channel you may post to";
+}
+
 /** The orientation card as the model reads it, over the SAME gated tool list the connector exposes
  *  (cotalToolSpecs already filters spawn/persona by capability), so the card can't claim a tool the
  *  agent can't call. The `cotal_orientation` tool, a connect result and a session-start hook all
@@ -408,7 +417,7 @@ export function cotalToolSpecs(
   // The same rule for the workflow-run door (SPEC 14.3): the `run` capability mints the manager's
   // run-* rows, so cotal_run is advertised only where the wire would admit it.
   const canRun = !isAuthed(config) || (config.capabilities?.includes("run") ?? false);
-  const defaultChannel = defaultSendChannel(config, config.subscribe);
+  const channelHelp = sendChannelHelp(config);
   const specs: CotalToolSpecDecl[] = [
     {
       name: "cotal_orientation",
@@ -624,7 +633,7 @@ export function cotalToolSpecs(
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : `REQUIRED: ${sendNoDefaultRemedy(config, config.subscribe)}`}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`,
+            `Channel to send on (${channelHelp}). ${PATTERN_SEND_HELP} Reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -638,7 +647,13 @@ export function cotalToolSpecs(
         if (refusal !== undefined) return err(`Couldn't send: ${refusal}`);
         try {
           const joined = agent.joinedChannels();
-          const isolated = isolatedChannels(agent);
+          const mode = agent.ep?.channelRoutingMode?.();
+          const isolated = mode === "isolated";
+          if (mode === undefined && isAuthed(config)) {
+            const candidate = channel ?? joined.find((c) => isConcreteChannel(c) &&
+              (hasPluginChannelRoot(c) || channelInAllow(config.allowPublish, c, true)));
+            if (candidate !== undefined && hasPluginChannelRoot(candidate)) return err(`Couldn't send: ${CHANNEL_ROUTING_NOT_READY}`);
+          }
           const target = channel ?? defaultSendChannel(config, joined, isolated);
           if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined, isolated)}.`);
           // Bound by the post ACL before touching the mesh, as cotal_join is by the read ACL. Only a
@@ -937,10 +952,13 @@ export function cotalToolSpecs(
       async run(agent, _config, { channel }: { channel: string }) {
         const notName = notAChannelName(channel, "Nothing was joined.");
         if (notName !== undefined) return err(`Couldn't join: ${notName}`);
+        const mode = agent.ep?.channelRoutingMode?.();
+        if (mode === undefined && isAuthed(config) && hasPluginChannelRoot(channel))
+          return err(`Couldn't join: ${CHANNEL_ROUTING_NOT_READY}`);
         // Bound by the read ACL before touching the mesh — a clear refusal beats a broker/manager
         // rejection. (Auth mode also enforces this server-side; this is the friendly client gate.) A
         // pattern must lie inside one entry, so every channel it matches is readable.
-        if (!(isConcreteChannel(channel) ? channelInAllow : patternInAllow)(config.allowSubscribe, channel, isolatedChannels(agent)))
+        if (!(isConcreteChannel(channel) ? channelInAllow : patternInAllow)(config.allowSubscribe, channel, mode === "isolated"))
           return err(
             `Can't join #${channel}: it's outside your read ACL (allowSubscribe: ${config.allowSubscribe.map((c) => `#${c}`).join(", ")}).`,
           );

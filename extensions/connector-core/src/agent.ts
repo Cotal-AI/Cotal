@@ -7,8 +7,6 @@ import {
   CotalEndpoint,
   DmDurableMissingError,
   acquireLocalConsumer,
-  isConcreteChannel,
-  PLUGIN_MENTION_POINTER_KEY,
   type HeldLock,
   BASELINE_LIFECYCLE_ENDPOINT,
   assertLifecycleToken,
@@ -22,7 +20,6 @@ import {
   type Delivery,
   type AnycastStatus,
   type MessageMeta,
-  type PluginMentionPointer,
   type Presence,
   type PresenceCondition,
   type PresenceStatus,
@@ -44,7 +41,8 @@ import type { CommandDispatch } from "./agent-commands.js";
 import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
 import { AgentSupervision } from "./agent-supervision.js";
-import { AgentChannels, isLocalServer, isPluginChannel } from "./agent-channels.js";
+import { AgentChannels, isLocalServer } from "./agent-channels.js";
+import { PluginMentionIntake } from "./plugin-mention-intake.js";
 import { AgentMessaging } from "./agent-messaging.js";
 import { AgentTurns, type ActiveTurn, type SettledTurn } from "./agent-turns.js";
 import { AgentPresence } from "./agent-presence.js";
@@ -72,17 +70,6 @@ export type { InboxItem, InboxSnapshot, InboxScope, ExactDrainResult, RecallMark
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
 export type { AttentionMode, ChannelMode };
 
-function pluginMentionPointerOf(message: CotalMessage): PluginMentionPointer | undefined {
-  const [part] = message.parts;
-  if (message.parts.length !== 1 || part?.kind !== "data" || !part.data || typeof part.data !== "object") return;
-  const pointer: unknown = (part.data as Record<string, unknown>)[PLUGIN_MENTION_POINTER_KEY];
-  if (!pointer || typeof pointer !== "object") return;
-  const { channel, message: id, seq } = pointer as Record<string, unknown>;
-  if (typeof channel !== "string" || !isConcreteChannel(channel) || !isPluginChannel(channel) ||
-      typeof id !== "string" || !id || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return;
-  return { channel, message: id, seq };
-}
-
 /**
  * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
  * name-based peer resolution. This is the shared core behind the MCP server
@@ -107,6 +94,10 @@ export class MeshAgent extends EventEmitter {
   private readonly launchEnv?: NodeJS.ProcessEnv;
   private readonly managerCalls: AgentManagerCalls;
   private readonly options: MeshAgentOptions;
+  private readonly pluginMentions = new PluginMentionIntake(
+    () => this.ep,
+    (pointer, delivery) => this.inboxState.ingestPluginMention(pointer, delivery, (p) => this.ep.readPluginMentionHistory(p)),
+  );
   private readonly inboxState = new AgentInbox({
     endpoint: () => this.ep,
     config: () => this.config,
@@ -267,6 +258,7 @@ export class MeshAgent extends EventEmitter {
       if (this._transportConnected === e.connected) return;
       this._transportConnected = e.connected;
       this.inboxState.onTransport(e.connected);
+      this.pluginMentions.onTransport();
       this.emit("transport", e);
       // A notice lost while the transport was down can only matter to a turn this seat holds: the
       // manager repeats the notice for a turn the seat has not pulled yet. So only a holder pulls.
@@ -291,24 +283,10 @@ export class MeshAgent extends EventEmitter {
   }
 
   private ingestDirected(m: CotalMessage, delivery: Delivery, meta: MessageMeta): void {
-    const pointer = this.ep.channelRoutingMode() === "isolated" ? pluginMentionPointerOf(m) : undefined;
-    if (pointer) {
-      void this.ingestPluginPointer(m, delivery, meta, pointer);
-      return;
-    }
+    if (this.pluginMentions.accept(m, delivery)) return;
     const notice = deliveryNoticeOf(m);
     if (notice !== undefined) void this.inboxState.ingestNotice(m, delivery, meta, notice);
     else this.inboxState.ingest(m, delivery, meta);
-  }
-
-  private async ingestPluginPointer(m: CotalMessage, delivery: Delivery, meta: MessageMeta, pointer: PluginMentionPointer): Promise<void> {
-    const holder = await this.ep.deliveryLeaseHolder(0);
-    if (this._stopping || this.ep.channelRoutingMode() !== "isolated") return;
-    if (holder !== m.from.id) {
-      this.inboxState.ingest(m, delivery, meta);
-      return;
-    }
-    await this.inboxState.ingestPluginMention(pointer, delivery, (p) => this.ep.readPluginMentionHistory(p));
   }
 
   get id(): string {
@@ -412,6 +390,14 @@ export class MeshAgent extends EventEmitter {
    *  there is nothing to say. */
   get storedCopiesFull(): number {
     return this._storedCopiesFull;
+  }
+
+  get droppedPluginMentionNotices(): number {
+    return this.pluginMentions.dropped;
+  }
+
+  clearDroppedPluginMentionNotices(seen: number): void {
+    this.pluginMentions.clearDropped(seen);
   }
 
   /** The count the stored copies held when they last reached it, from the copy that said so. */
@@ -621,6 +607,7 @@ export class MeshAgent extends EventEmitter {
     this.naming?.end();
     this._stopping = true;
     this.emit("stopping");
+    this.pluginMentions.stop();
     this.inboxState.stop();
     this.managerCalls.clear();
     if (this.turnRetryTimer !== undefined) {

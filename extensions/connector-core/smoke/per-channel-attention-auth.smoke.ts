@@ -83,17 +83,19 @@ const channels = ["normal-ch", "quiet-ch", "muted-ch"];
 const legacyChannel = `${PLUGIN_CHANNEL_ROOT}.linear.legacy`;
 const legacyGrant = `${PLUGIN_CHANNEL_ROOT}.>`;
 const ageChannel = "age-control";
+const reviewRetry = "The connection is not ready to route plugin channels. Try again once connected.";
+const runTool = (seat: MeshAgent, name: string, args: Record<string, unknown> = {}) =>
+  cotalToolSpecs(seat.config, "smoke").find((tool) => tool.name === name)!.run(seat, seat.config, args);
+const waitFor = async (test: () => boolean) => {
+  for (let i = 0; i < 75; i++) {
+    if (test()) return true;
+    await sleep(100);
+  }
+  return false;
+};
 
-async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string): Promise<void> {
-  const run = (seat: MeshAgent, name: string, args: Record<string, unknown> = {}) =>
-    cotalToolSpecs(seat.config, "smoke").find((tool) => tool.name === name)!.run(seat, seat.config, args);
-  const waitFor = async (test: () => boolean) => {
-    for (let i = 0; i < 50; i++) {
-      if (test()) return true;
-      await sleep(100);
-    }
-    return false;
-  };
+async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string, daemonId: string): Promise<void> {
+  const run = runTool;
 
   const initial = await publisher.multicast("plugin join history", { channel: plugin });
   const pluginJoin = await run(agent, "cotal_join", { channel: plugin });
@@ -157,8 +159,9 @@ async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, pu
   await agent.leaveChannel(plugin);
   const fresh = await publisher.multicast("fresh plugin mention via pointer", { channel: plugin, mentions: [agent.displayName] });
   check("an unjoined quiet plugin channel wakes only for the resolved post, not its notice",
-    await waitFor(() => agent.peekInbox("automatic").some((item) => item.id === fresh.id && item.kind === "channel" &&
-      item.channel === plugin && item.mentionsMe && !item.historical)) && !agent.joinedChannels().includes(plugin));
+    await waitFor(() => pointers.has(fresh.id) && agent.peekInbox("automatic").some((item) => item.id === fresh.id && item.kind === "channel" &&
+      item.channel === plugin && item.mentionsMe && !item.historical)) && !agent.joinedChannels().includes(plugin) &&
+    !agent.peekInbox().some((item) => item.kind === "dm" && item.fromId === daemonId));
 
   await agent.setChannelMode(plugin, "muted");
   const muted = await publisher.multicast("muted plugin mention", { channel: plugin, mentions: [agent.displayName] });
@@ -197,6 +200,114 @@ async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, pu
       !agent.peekInbox("automatic").some((item) => item.id === missed.id), { returned, missed });
   } finally {
     agent.off("transport", publishInGap);
+  }
+}
+
+async function checkPluginReviewTools(limited: MeshAgent, wildcard: MeshAgent, readOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string) {
+  const family = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
+  const root = `${PLUGIN_CHANNEL_ROOT}.>`;
+  const rootJoin = await runTool(wildcard, "cotal_join", { channel: root });
+  const familyJoin = await runTool(wildcard, "cotal_join", { channel: family });
+  check("a plugin subtree grant refuses the shared root and joins its own family history-only",
+    rootJoin.isError === true && rootJoin.text.includes("outside your read ACL") && !wildcard.joinedChannels().includes(root) &&
+    !familyJoin.isError && familyJoin.text.includes("retained in channel history, not stored as individual copies") && wildcard.joinedChannels().includes(family),
+    { rootJoin, familyJoin });
+
+  const before = await publisher.channelFrontier(plugin);
+  const absent = `${plugin}.missing`;
+  for (const [tool, args, expected] of [
+    ["cotal_send", { text: "no write" }, "outside your post ACL"],
+    ["cotal_join", {}, "outside your read ACL"],
+    ["cotal_channel_info", {}, "no shared registry entry. Replay on join is on."],
+    ["cotal_channel_mode", { mode: "quiet" }, "is not within your read ACL"],
+  ] as const) {
+    const existing = await runTool(limited, tool, { ...args, channel: plugin });
+    const missing = await runTool(limited, tool, { ...args, channel: absent });
+    check(`${tool} gives a CHAT-only seat the same answer for an existing and absent plugin name`,
+      existing.isError === missing.isError && Boolean(existing.isError) === (tool !== "cotal_channel_info") &&
+      existing.text.includes(expected) && existing.text.replaceAll(plugin, "CHANNEL") === missing.text.replaceAll(absent, "CHANNEL"),
+      { existing, missing });
+  }
+  const spawn = await limited.spawn("unauthorized-helper", undefined, { join: [plugin] });
+  check("CHAT-only spawn cannot delegate a plugin join", !spawn.ok && spawn.error?.includes("a spawn can only hand on channels") === true, spawn);
+
+  const help = cotalToolSpecs(readOnly.config, "smoke").find((tool) => tool.name === "cotal_send")!.schema.shape.channel.description;
+  const noDefault = await runTool(readOnly, "cotal_send", { text: "no default" });
+  check("send help does not promise the read-only plugin as a default",
+    help?.includes("If there is no default, give a channel you may post to") === true && !help.includes(`default: ${plugin}`) &&
+    noDefault.isError === true && noDefault.text.includes("there is no default"), { help, noDefault });
+
+  const mode = readOnly.ep.channelRoutingMode;
+  const chatMode = limited.ep.channelRoutingMode;
+  readOnly.ep.channelRoutingMode = limited.ep.channelRoutingMode = () => undefined;
+  try {
+    const send = await runTool(limited, "cotal_send", { channel: plugin, text: "not ready" });
+    const omit = await runTool(readOnly, "cotal_send", { text: "not ready either" });
+    const join = await runTool(limited, "cotal_join", { channel: plugin });
+    const rootWhileUnknown = await runTool(limited, "cotal_join", { channel: root });
+    const chatSend = await runTool(limited, "cotal_send", { channel: chat, text: "ordinary chat control" });
+    check("unknown routing refuses plugin sends and joins at the client while ordinary CHAT sends still work",
+      [send, omit, join, rootWhileUnknown].every((r) => r.isError && r.text.endsWith(reviewRetry)) && !chatSend.isError &&
+      await publisher.channelFrontier(plugin) === before, { send, omit, join, rootWhileUnknown, chatSend });
+  } finally {
+    readOnly.ep.channelRoutingMode = mode;
+    limited.ep.channelRoutingMode = chatMode;
+  }
+}
+
+async function checkPluginPointerAdmission(seat: MeshAgent, publisher: CotalEndpoint, plugin: string, daemonId: string) {
+  const mode = seat.ep.channelRoutingMode;
+  const lease = seat.ep.readDeliveryLeaseEntry;
+  const raw = new Set<string>();
+  const events: string[] = [];
+  const noRaw = () => !seat.peekInbox().some((item) => item.kind === "dm" && item.fromId === daemonId);
+  seat.ep.on("message", (msg) => {
+    if (msg.from.id === daemonId) raw.add(msg.id);
+  });
+  seat.on("incoming", (item: InboxItem) => events.push(item.id));
+  const received = (post: CotalMessage) => [...raw].some((id) => id.includes(post.id));
+  const surfaced = (post: CotalMessage) => seat.peekInbox("automatic").filter((item) => item.id === post.id &&
+    item.kind === "channel" && item.channel === plugin && item.mentionsMe && !item.historical).length === 1;
+  const publish = (text: string) => publisher.multicast(text, { channel: plugin, mentions: [seat.displayName] });
+
+  // Hold only the connector's view of admission, not the live broker delivery or the daemon read.
+  seat.ep.channelRoutingMode = () => undefined;
+  try {
+    const post = await publish("mention during unknown route");
+    const queued = await waitFor(() => received(post)) && noRaw() && !surfaced(post);
+    seat.ep.channelRoutingMode = mode;
+    check("a real notice received before route admission resolves to one channel mention, never a DM",
+      queued && await waitFor(() => surfaced(post)) && noRaw() && events.filter((id) => id === post.id).length === 1);
+  } finally {
+    seat.ep.channelRoutingMode = mode;
+  }
+
+  let failedReads = 0;
+  seat.ep.readDeliveryLeaseEntry = async () => { failedReads++; throw new Error("fixture lease read temporarily unavailable"); };
+  try {
+    const post = await publish("mention during unreadable lease");
+    const queued = await waitFor(() => received(post) && failedReads > 0) && noRaw() && !surfaced(post);
+    seat.ep.readDeliveryLeaseEntry = lease;
+    check("a real notice received during lease-read failure resolves once after recovery",
+      queued && await waitFor(() => surfaced(post)) && noRaw() && events.filter((id) => id === post.id).length === 1);
+  } finally {
+    seat.ep.readDeliveryLeaseEntry = lease;
+  }
+
+  seat.ep.channelRoutingMode = () => undefined;
+  try {
+    const post = await publish("mention past admission deadline");
+    const dropped = await waitFor(() => received(post) && seat.droppedPluginMentionNotices === 1);
+    seat.ep.channelRoutingMode = mode;
+    const peek = await runTool(seat, "cotal_inbox", { peek: true });
+    const drain = await runTool(seat, "cotal_inbox");
+    const again = await runTool(seat, "cotal_inbox", { peek: true });
+    const note = "Dropped plugin mention notices: 1.";
+    check("a notice that exceeds the admission deadline is counted in inbox without a body and clears only on read",
+      dropped && noRaw() && peek.text.includes(note) && drain.text.includes(note) && !again.text.includes(note) &&
+      !peek.text.includes("mention past admission deadline") && !drain.text.includes("mention past admission deadline"));
+  } finally {
+    seat.ep.channelRoutingMode = mode;
   }
 }
 
@@ -265,14 +376,21 @@ async function checkEnabledPluginChannels(): Promise<void> {
     const publisher = await startSeat("plugin-publisher", [chat, plugin], [chat, plugin], []);
     const seat = await startSeat("plugin-seat", [chat, plugin], [chat, plugin], []);
     const chatOnly = await startSeat("chat-only-seat", [">"], [">"], [">"], [">", plugin]);
+    const limited = await startSeat("limited-seat", [">"], [">"], [">"]);
+    const wildcard = await startSeat("wildcard-seat", [`${PLUGIN_CHANNEL_ROOT}.linear.>`], [], []);
+    const readOnly = await startSeat("read-only-seat", [plugin], [">"], [plugin]);
+    const pending = await startSeat("pending-seat", [plugin], [], []);
     const lease = await daemon.acquireDeliveryLease(0);
     const ready = await daemon.markDeliveryLeaseReady(0, lease);
-    const rosterReady = () => [seat.id, chatOnly.id].every((id) => daemon.getRoster().some((p) => p.card.id === id));
+    const rosterReady = () => [seat.id, chatOnly.id, pending.id].every((id) => daemon.getRoster().some((p) => p.card.id === id));
     for (let i = 0; i < 50 && !rosterReady(); i++) await sleep(100);
     check("the enabled daemon sees the authenticated test seats and holds their delivery lease",
       rosterReady() && await seat.ep.deliveryLeaseHolder(0) === daemon.card.id);
-    await checkPluginToolDelivery(seat, chatOnly, publisher.ep, plugin, chat);
-    await daemon.renewDeliveryLease(0, ready);
+    await checkPluginToolDelivery(seat, chatOnly, publisher.ep, plugin, chat, daemon.card.id);
+    const renewed = await daemon.renewDeliveryLease(0, ready);
+    await checkPluginReviewTools(limited, wildcard, readOnly, publisher.ep, plugin, chat);
+    await checkPluginPointerAdmission(pending, publisher.ep, plugin, daemon.card.id);
+    await daemon.renewDeliveryLease(0, renewed);
     await checkNarrowedPluginPointer(fixture.provisioner, publisher.ep, seat, plugin, chat);
   } finally {
     await Promise.allSettled(seats.map((seat) => seat.stop()));
@@ -662,7 +780,7 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 await checkEnabledPluginChannels();
-const EXPECTED_CELLS = 61;
+const EXPECTED_CELLS = 72;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

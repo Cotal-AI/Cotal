@@ -549,10 +549,13 @@ export function inboxToolSpecs(emptyInboxNote?: () => string | undefined): Cotal
         // reply exists and its caller is still there. A recall that throws or a caller that goes keeps it.
         const storedSeen = agent.storedCopiesFull;
         const omittedSeen = agent.omittedChannelPosts;
-        const lossNotes = [storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : "", omittedSeen ? localOverflowNote(omittedSeen) : ""].filter(Boolean).join("\n");
+        const pluginDropped = agent.droppedPluginMentionNotices;
+        const lossNotes = [storedSeen ? storedCopiesNote(agent.storedCopiesLimit) : "", omittedSeen ? localOverflowNote(omittedSeen) : "",
+          pluginDropped ? `⚠ Dropped plugin mention notices: ${pluginDropped}. The connector could not verify or hold these notices.` : ""].filter(Boolean).join("\n");
         const reply = (text: string): ToolResult => {
           if (storedSeen && !keeps()) agent.clearStoredCopiesFull(storedSeen);
           if (omittedSeen && !keeps()) agent.clearOmittedChannelPosts(omittedSeen);
+          if (pluginDropped && !keeps()) agent.clearDroppedPluginMentionNotices(pluginDropped);
           return ok(text);
         };
         if (agent.attention !== "focus") {
