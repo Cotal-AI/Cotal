@@ -1,5 +1,17 @@
 # @cotal-ai/runtime
 
+## 0.185.0
+
+### Patch Changes
+
+- 4def782: Report an invalid offline workflow as a validation refusal in command telemetry. The file name and detailed findings stay in the local report.
+- Updated dependencies [4def782]
+- Updated dependencies [9708a08]
+- Updated dependencies [658b202]
+  - @cotal-ai/workspace@0.185.0
+  - @cotal-ai/core@0.185.0
+  - @cotal-ai/lang@0.185.0
+
 ## 0.184.1
 
 ### Patch Changes
