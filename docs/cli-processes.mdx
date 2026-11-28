@@ -738,8 +738,12 @@ After sign-in, the daemon registers an account computer with hosts that support 
 With several accounts, the status summary prefers a supported provider and breaks ties by
 provider URL, then subject. The `accounts` list reports each computer UUID once, preferring a
 supported provider when several sign-in addresses identify the same account. Catalog refresh
-replies include an optional `failedProviders` list of provider URLs. The desktop app reports
-other providers' failures as a notice when the active provider refreshed successfully.
+replies include an optional `failedProviders` list of provider URLs, optional `collisionDetails`
+naming each colliding space and its existing origin (`manual`, `catalog` or `up`), and optional
+`migration` when an endorsing previous provider address points to the active provider. The desktop
+app reports other providers' failures as a notice when the active provider refreshed successfully.
+It offers **Move to `<host>`** for endorsed address moves that have a valid previous sign-in, and
+lets you keep existing registrations or replace eligible manual or stopped local registrations.
 Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. The
 heartbeat lists the answering Managers this computer hosts for the account's spaces, each as the
@@ -890,7 +894,11 @@ An unrelated damaged registration does not block catalog refresh: healthy catalo
 update, and the listing reports the unreadable count with a partial outcome (exit 4).
 A damaged canonical registration and its usable legacy duplicate stay untouched, including during
 failure reporting and catalog removal. A selection naming that registration stays selected.
-The desktop app uses these same controls. Its source and native build instructions are in the
+The desktop app uses these same controls. A catalog name collision leaves the existing registration
+intact and does not block desktop sign-in. **Review space conflicts**, or **Review spaces** when a
+move is offered, shows the names and their registration sources. You can keep a registration or
+review what replacing it or signing out will remove before confirming. Signing back in to the
+saved account leaves registrations and the active provider unchanged. The app's source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 If desktop preferences cannot be parsed, the app keeps the original file beside `presence.json`
 with a fresh `.invalid.<number>` suffix, opens with defaults, and reports the saved file's location.

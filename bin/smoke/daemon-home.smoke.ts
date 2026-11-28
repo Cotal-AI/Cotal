@@ -76,6 +76,7 @@ import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { catalogRefreshNotice } from "../../desktop/src/model.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
 // Read the scratch-parent override before the COTAL_* environment is cleared below.
@@ -636,6 +637,19 @@ try {
       slugs = ["catalog-kept", "catalog-added"];
       const recovered = await cli(["spaces", "--refresh", "--json"]);
       check("H6 duplicate fixture starts from a fully applied healthy catalog", recovered.status === 0 && recovered.doc.result?.refresh === "complete" && recovered.doc.result?.unreadable === 0, recovered.doc);
+      const manualConflict = { ...userMesh("catalog-conflict"), origin: "manual" as const };
+      recordMesh(manualConflict);
+      const manualBytes = readFileSync(meshFile(manualConflict.space), "utf8");
+      slugs.push(manualConflict.space, "catalog-alongside-conflict");
+      try {
+        const conflict = await cli(["spaces", "--refresh", "--json"]);
+        const result = conflict.doc.result;
+        check("H6 a live name conflict keeps the existing registration and applies a healthy catalog space", conflict.status === 4 && result?.refresh === "partial" && result.collisions === 1 && result.failedProviders.length === 0 && result.spaces.some((s: { space: string }) => s.space === "catalog-alongside-conflict") && readFileSync(meshFile(manualConflict.space), "utf8") === manualBytes, conflict.doc);
+        check("H6 the renderer turns the live conflict reply into recovery guidance", !!result && /Space "catalog-conflict" conflicts.*kept that registration.*keep or replace/.test(catalogRefreshNotice(result, idp)) && !/cotal sync|cotal space/.test(catalogRefreshNotice(result, idp)), conflict.doc);
+      } finally {
+        slugs = slugs.slice(0, -2);
+        rmSync(meshFile(manualConflict.space));
+      }
       const canonical = meshFile("catalog-kept");
       const legacy = join(home, "meshes", "catalog-kept.json");
       const keptBytes = readFileSync(canonical, "utf8");

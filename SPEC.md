@@ -67,6 +67,27 @@ polls. A successful poll clears the failure count. The daemon rechecks the curre
 candidate sign-in and fresh available catalog registration before moving local custody.
 An answering holder refuses replacement. Matching issuer and subject alone never transfer custody.
 
+## Local daemon space-name conflicts
+
+When `spaces` runs with `refresh: true`, the daemon reply may include optional
+`collisionDetails` (`Array<{ space, catalogLabel, catalogIdp, existingOrigin, existingIdp?, existingSignedIn? }>`,
+where `existingOrigin` is `"manual"`, `"catalog"` or `"up"`) and optional `migration`
+(`{ fromIdp, toIdp, spaces }`). `existingSignedIn` describes the local session of the catalog owner.
+`migration` can also appear without refreshing. It requires a signed-in owner at an HTTPS `fromIdp`,
+one trusted issuer and audience, and endorsement for `toIdp` from the old issuer's
+`/.well-known/cotal-mesh` document. Once an account's registrations have moved to `toIdp`,
+retaining the superseded `fromIdp` session does not report reverse collisions. The local daemon
+protocol also accepts `space-conflict-resolve` with `space` and `idp` to replace one non-catalog
+registration in the default Cotal home when no local stack is running it (refusing running stacks
+with `LIFECYCLE_BLOCKED` and catalog-owned entries with `CONFLICT`), and `login-start` accepts
+optional HTTPS `migrateFrom` to stage, verify and commit an endorsed account migration with a
+fresh device approval. `login-start` also accepts an optional `recoverSpace` naming a saved
+catalog registration at the requested provider. It cannot be combined with `migrateFrom` or
+`discoveryPins`. Recovery saves a sign-in only if it matches the saved account and leaves
+registrations untouched. The registry commit records the previous and new owner for each moved
+space. The daemon uses that committed record and the stable space identity to finish custody
+reconciliation after a restart. A shared issuer and subject alone do not authorize adoption.
+
 > **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.

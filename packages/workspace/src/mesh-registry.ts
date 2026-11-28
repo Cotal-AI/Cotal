@@ -119,6 +119,8 @@ export interface MeshEntry {
   /** Opaque account key for a catalog-owned record. Present iff `origin === "catalog"`; it keeps
    *  two signed-in accounts at one IdP separate without persisting the subject in the registry. */
   catalogOwner?: string;
+  /** Written with an endorsed migration's registry commit. Ordinary refresh retains it for that owner. */
+  catalogMigration?: { fromOwner: string; toOwner: string };
   /** Provider catalog metadata used only for display and snapshot reconciliation. */
   catalogId?: string;
   catalogSlug?: string;

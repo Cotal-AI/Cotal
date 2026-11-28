@@ -21,7 +21,7 @@ import type { UnconfirmedConversation } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 import type { AgentAppRequest, AgentAppResult } from "./desktop-agent-apps.js";
 
-const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "space-conflict-resolve", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -34,6 +34,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "daemon-stop": { required: [], optional: ["commit"] },
   "space-recover": { required: ["space", "candidate", "holder"], optional: [] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
+  "space-conflict-resolve": { required: ["space", "idp"], optional: [] },
   "agent-stop": { required: ["space", "lifecycleUid"], optional: [] },
   "agent-terminal": { required: ["space", "lifecycleUid"], optional: [] },
   name: { required: [], optional: ["name"] },
@@ -45,7 +46,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-prepare-restart": { required: [], optional: [] },
   "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
-  "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins"] },
+  "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins", "migrateFrom", "recoverSpace"] },
   logout: { required: ["idp"], optional: [] },
   "login-cancel": { required: ["attempt"], optional: [] },
   "connect-check": { required: ["space"], optional: [] },
@@ -78,6 +79,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-conflict-resolve"; readonly space: string; readonly idp: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
@@ -86,7 +88,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status-watch" }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string } }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string }; readonly migrateFrom?: string; readonly recoverSpace?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-cancel"; readonly attempt: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connect-check"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "register"; readonly space: string }
@@ -236,11 +238,28 @@ export interface ServiceConnectionResult {
   readonly reason?: string;
 }
 
+export interface SpaceCollision {
+  readonly space: string;
+  readonly catalogLabel: string;
+  readonly catalogIdp: string;
+  readonly existingOrigin: "manual" | "catalog" | "up";
+  readonly existingIdp?: string;
+  readonly existingSignedIn?: boolean;
+}
+
+export interface EndorsedMigration {
+  readonly fromIdp: string;
+  readonly toIdp: string;
+  readonly spaces: readonly string[];
+}
+
 export interface DaemonSpaces {
   readonly kind: "spaces";
   readonly refresh: "not-requested" | "not-signed-in" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
+  readonly collisionDetails?: readonly SpaceCollision[];
+  readonly migration?: EndorsedMigration;
   readonly failedProviders?: readonly string[];
   readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
@@ -321,6 +340,11 @@ export function parseRequest(line: string): ParsedRequest {
     if (!isDaemonSpaceName(obj.space) || typeof obj.enabled !== "boolean") return bad(id, "space and enabled must name a space and a boolean");
     return { ok: true, request: { v, id, op, space: obj.space, enabled: obj.enabled } };
   }
+  if (op === "space-conflict-resolve") {
+    if (!isDaemonSpaceName(obj.space) || typeof obj.idp !== "string" || obj.idp.length > 2048) return bad(id, "invalid space conflict resolution");
+    try { return { ok: true, request: { v, id, op, space: obj.space, idp: normalizeIdpUrl(obj.idp) } }; }
+    catch { return bad(id, "invalid space conflict resolution"); }
+  }
   if (op === "agent-stop" || op === "agent-terminal") {
     if (!isDaemonSpaceName(obj.space) || !isAgentLifecycleUid(obj.lifecycleUid)) return bad(id, "invalid local agent selection");
     return { ok: true, request: { v, id, op, space: obj.space, lifecycleUid: obj.lifecycleUid } };
@@ -366,7 +390,18 @@ export function parseRequest(line: string): ParsedRequest {
     } catch { return bad(id, "discoveryPins must use HTTPS URLs and match idp"); }
     discoveryPins = { url: p.url as string, issuer: p.issuer as string, audience: p.audience as string };
   }
-  return { ok: true, request: { v, id, op, idp, ...(discoveryPins ? { discoveryPins } : {}), ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
+  let migrateFrom: string | undefined;
+  if (obj.migrateFrom !== undefined) {
+    if (obj.discoveryPins !== undefined || typeof obj.migrateFrom !== "string" || obj.migrateFrom.length > 2048) return bad(id, "migrateFrom must be a retained HTTPS auth URL without discoveryPins");
+    try {
+      migrateFrom = normalizeIdpUrl(obj.migrateFrom);
+      if (!migrateFrom.startsWith("https://") || migrateFrom === idp) throw new Error("invalid migration source");
+    } catch { return bad(id, "migrateFrom must be a different HTTPS auth URL"); }
+  }
+  const recoverSpace = obj.recoverSpace;
+  if (recoverSpace !== undefined && (!isDaemonSpaceName(recoverSpace) || migrateFrom !== undefined || discoveryPins !== undefined))
+    return bad(id, "recoverSpace must name a saved space without migrateFrom or discoveryPins");
+  return { ok: true, request: { v, id, op, idp, ...(discoveryPins ? { discoveryPins } : {}), ...(migrateFrom ? { migrateFrom } : {}), ...(recoverSpace ? { recoverSpace } : {}), ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
 }
 
 export function encode(msg: DaemonResponse | DaemonRequest): string {

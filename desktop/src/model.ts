@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string };
+export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; migrateFrom?: string; recoverSpace?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string };
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
@@ -24,6 +24,19 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }
+export interface SpaceRowRefusal { text: string; action: "recover" | "move" | "sign-in" | "apps" | "remove"; label: string }
+const HELD_BY_RE = /^The local space connection is held by (.+)\.$/;
+export function spaceRowRefusal(row: ComputerSpace, migration?: EndorsedMigration): SpaceRowRefusal {
+  const held = row.lastRefusal ? HELD_BY_RE.exec(row.lastRefusal) : null;
+  if (row.custodyRecovery) return { text: row.lastRefusal ?? "Refused", action: "recover", label: "Use signed-in account" };
+  if (held && migration?.spaces.includes(row.space)) {
+    try {
+      if (canonicalProvider(held[1]!) === canonicalProvider(migration.fromIdp))
+        return { text: "This space is set up under another sign-in on this computer.", action: "move", label: "Move to this account" };
+    } catch { /* Unrecognized holders cannot move. */ }
+  }
+  return { text: row.lastRefusal ?? "Refused", action: "remove", label: "Remove" };
+}
 /** States a space passes through without anyone acting. A space that was just turned on reports `not-requested` while its Manager boots. */
 const PASSING_SPACE_STATE: Record<string, string> = {
   "not-requested": "Starting",
@@ -124,6 +137,42 @@ export function activeComputerAccount(account: ComputerAccount & { accounts?: Co
   return supported.length === 1 ? supported[0] : undefined;
 }
 
+export interface SpaceCollision {
+  space: string;
+  catalogLabel: string;
+  catalogIdp: string;
+  existingOrigin: "manual" | "catalog" | "up";
+  existingIdp?: string;
+  existingSignedIn?: boolean;
+}
+
+export interface EndorsedMigration {
+  fromIdp: string;
+  toIdp: string;
+  spaces: string[];
+}
+
+export function parseSpaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
+  if (!Array.isArray(result.collisionDetails)) return [];
+  return result.collisionDetails.filter((item): item is SpaceCollision =>
+    typeof item === "object" && item !== null &&
+    typeof (item as SpaceCollision).space === "string" &&
+    typeof (item as SpaceCollision).catalogLabel === "string" &&
+    typeof (item as SpaceCollision).catalogIdp === "string" &&
+    ["manual", "catalog", "up"].includes((item as SpaceCollision).existingOrigin) &&
+    ((item as SpaceCollision).existingIdp === undefined || typeof (item as SpaceCollision).existingIdp === "string") &&
+    ((item as SpaceCollision).existingSignedIn === undefined || typeof (item as SpaceCollision).existingSignedIn === "boolean"));
+}
+
+export function parseEndorsedMigration(result: Record<string, unknown>): EndorsedMigration | undefined {
+  const m = result.migration;
+  if (!m || typeof m !== "object" || Array.isArray(m)) return undefined;
+  const candidate = m as Record<string, unknown>;
+  if (typeof candidate.fromIdp !== "string" || typeof candidate.toIdp !== "string" || !Array.isArray(candidate.spaces)) return undefined;
+  const spaces = candidate.spaces.filter((s): s is string => typeof s === "string");
+  return spaces.length ? { fromIdp: candidate.fromIdp, toIdp: candidate.toIdp, spaces } : undefined;
+}
+
 /** Return a non-blocking notice only when the active provider refreshed successfully. */
 export function catalogRefreshNotice(result: Record<string, unknown>, provider?: string): string {
   const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
@@ -133,9 +182,24 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }
-  if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
   if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
-  return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
+  const notices = [];
+  const count = Number(result.collisions) || 0;
+  if (count > 0) {
+    const migration = parseEndorsedMigration(result);
+    const details = parseSpaceCollisions(result);
+    if (migration) {
+      const one = migration.spaces.length === 1;
+      notices.push(`${one ? "1 space" : `${migration.spaces.length} spaces`} (${migration.spaces.join(", ")}) ${one ? "is" : "are"} still registered under ${new URL(migration.fromIdp).host}. Choose Move to ${new URL(migration.toIdp).host} to switch ${one ? "it" : "them"}.`);
+    } else if (details.length) {
+      const names = details.map(item => item.space).join(", ");
+      notices.push(`${details.length === 1 ? `Space "${names}" conflicts` : `Spaces ${names} conflict`} with ${details.length === 1 ? "an existing registration" : "existing registrations"} on this computer. Cotal kept ${details.length === 1 ? "that registration" : "those registrations"}; review ${details.length === 1 ? "it" : "them"} to keep or replace.`);
+    } else {
+      notices.push("Some space names conflict with existing registrations on this computer. Cotal kept those registrations; review them in Space conflicts to keep or replace.");
+    }
+  }
+  if (failed?.length) notices.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
+  return notices.join(" ");
 }
 
 /** The notice for a sign-in that replaced an account but could not delete some of that account's
@@ -183,8 +247,9 @@ export function connectionView(state: string): { title: string; description: str
 }
 
 export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "none"; label: string }
-export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
+export function refusalView(code: string, applications: readonly string[] = [], summary?: string): RefusalView {
   switch (code) {
+    case "MOVE_REFUSED": return { title: "Spaces could not be moved", description: summary || "The saved space registrations could not be moved automatically. Review the spaces to choose what to keep.", action: "spaces", label: "Review space conflicts" };
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
     case "SEATS_ACTIVE": return { title: "Agent sessions are still running", description: "The connection cannot be updated while agent applications are using it. Stop those sessions, then check again.", action: "connect", label: "Check again" };
     case "DENIED": return { title: "Sign-in was declined", description: "This computer was not approved in your browser. You can try again when you are ready.", action: "login", label: "Try sign-in again" };

@@ -2,12 +2,13 @@ import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate,
 import { listen } from "@tauri-apps/api/event";
 import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
 import { AgentApps } from "./agent-apps";
+import { SpaceConflicts } from "./space-conflicts";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request, type SurfaceState } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, surfaceState, spaceRowRefusal, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type EndorsedMigration, type Frame, type Request, type SurfaceState } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -61,6 +62,8 @@ el("computer-name-form").addEventListener("submit", event => {
 });
 let initialized = false;
 let retrySignIn = false;
+let activeMove: { provider: string; migrateFrom: string } | undefined;
+let recoveringConflictAccount = false;
 let approvalExpires = 0;
 let countdown: ReturnType<typeof setInterval> | undefined;
 let stage: Stage = "welcome";
@@ -69,6 +72,28 @@ let appVersion: string | undefined;
 let settingsOpen = false;
 let appsOpen = false;
 let appsLoadedAt = 0;
+let conflictsOpen = false;
+let conflictsOpener: HTMLElement | undefined;
+const spaceConflicts = new SpaceConflicts({
+  openPanel: () => openConflicts(),
+  confirm: message => window.confirm(message),
+  moveAccount: migration => runEndorsedMove(migration),
+  signInProvider: item => action(() => recoverConflictAccount(canonicalProvider(item.existingIdp!), item.space)),
+  replaceSpace: async item => {
+    const result = await request({ op: "space-conflict-resolve", space: item.space, idp: item.catalogIdp });
+    applySpacesPayload(result, signedInProvider ?? item.catalogIdp);
+    await refresh();
+  },
+  signOutProvider: async idp => {
+    const result = await request({ op: "logout", idp });
+    if (result.localLoginCleared !== true && result.localLogin !== "absent") throw new Error("Sign-out was not confirmed. Refresh and check before retrying.");
+    signedOutProviders.add(canonicalProvider(idp));
+    if (sameProvider(signedInProvider, idp)) signedInProvider = undefined;
+    await spaces(true);
+    await refresh();
+  },
+  changed: () => { showStage(stage); renderSettings(); },
+});
 let appsOwnerRetry: ReturnType<typeof setTimeout> | undefined;
 const agentApps = new AgentApps({
   platform: () => appPlatform,
@@ -180,11 +205,13 @@ let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
 let trayUpdate: string | undefined;
 function renderSettings(): void {
   const configured = stage === "finished" && !setupActive;
+  el("conflicts-panel").hidden = !conflictsOpen;
   el("settings-panel").hidden = !settingsOpen || appsOpen;
   el("apps-panel").hidden = !appsOpen;
-  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
+  el("connection-view").hidden = settingsOpen || appsOpen || conflictsOpen;
   syncViewTabs();
   renderApps();
+  renderConflicts();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
@@ -417,8 +444,10 @@ function notice(message: string, error = false): void {
   if (message) announce(message);
 }
 let agentActionProblem = false;
+let refusalSummary: string | undefined;
 function clearDetails(): void {
   problem = undefined;
+  refusalSummary = undefined;
   statusProblem = false;
   agentActionProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
@@ -436,6 +465,9 @@ function refusal(error: unknown, fromStatus = false): void {
   agentActionProblem = false;
   showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  refusalSummary = error instanceof DaemonRefusal && error.code === "MOVE_REFUSED"
+    ? [error.message.split("\n")[0] ?? "", error.remedy].filter(Boolean).join(" ")
+    : undefined;
   statusProblem = fromStatus;
   notice("", true);
   showStage(stage);
@@ -534,7 +566,7 @@ function showStage(next: Stage, focus = false): void {
   const networkLoss = surface.title === CONNECTION_COPY.offline.title || surface.title === CONNECTION_COPY.unreachable.title;
   const recovery = surface.word === "Disk full" ? { title: surface.title, description: surface.description, action: "refresh", label: "Check again" }
     : surface.word === "Service stopped" ? { title: surface.title, description: surface.description, action: "start", label: "Start" }
-    : issue && !networkLoss ? refusalView(issue, applications) : undefined;
+    : issue && !networkLoss ? refusalView(issue, applications, refusalSummary) : undefined;
   if (recovery) {
     title = recovery.title;
     description = recovery.description;
@@ -553,6 +585,8 @@ function showStage(next: Stage, focus = false): void {
       text("refusal-detail", `App version ${appVersion ?? "unknown"} · background service ${daemonVersion === "Unavailable" ? "unknown" : daemonVersion}.`); el("details").hidden = false;
     }
   }
+  if (!recovery && (next === "connect" || finished) && !setupActive && !loginActive) spaceConflicts.renderCallout(el("space-conflicts-callout"), busy);
+  else el("space-conflicts-callout").hidden = true;
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
   renderConnectionTitle(title, surface);
   const target = accountSpaces.get(selectedSpace());
@@ -617,7 +651,8 @@ function showStage(next: Stage, focus = false): void {
 function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
+  const migration = spaceConflicts.migration;
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), migration, busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   list.replaceChildren(...[...connections].map(([space, state]) => {
@@ -627,20 +662,31 @@ function renderConnections(): void {
     const kind = document.createElement("span"); kind.className = "space-kind"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
+    const rowRefusal = accountRow && (accountRow.lastRefusal || accountRow.custodyRecovery) ? spaceRowRefusal(accountRow, migration) : undefined;
     const detail = document.createElement("small"); detail.className = "space-state";
     const dot = document.createElement("span"); dot.setAttribute("aria-hidden", "true");
     dot.className = `dot ${accountRow?.lastRefusal ? "error" : state === "launch-ready" ? "connected" : ""}`;
     const reason = accountRow && (accountRow.lastRefusal || accountRow.observed === "offline" || accountRow.observed === "unreachable") ? managerReasons.get(space) : undefined;
-    const status = accountRow ? computerSpaceState(accountRow, state === "launch-ready") : state === "approval-pending" ? "Waiting for owner approval" : "Connected";
+    const status = rowRefusal?.text ?? (accountRow ? computerSpaceState(accountRow, state === "launch-ready") : state === "approval-pending" ? "Waiting for owner approval" : "Connected");
     if (state === "approval-pending") detail.dataset.testid = "approval-pending";
     detail.append(dot, `${status}${reason ? `: ${reason}` : ""}`);
     const restore = accountRow?.observed === "removed on this computer";
     const recovery = accountRow?.custodyRecovery;
-    const label = recovery ? "Use signed-in account" : restore ? "Add" : "Remove";
-    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", recovery ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
+    const label = rowRefusal && rowRefusal.action !== "remove" ? rowRefusal.label : restore ? "Add" : "Remove";
+    const forAria = rowRefusal && (rowRefusal.action === "recover" || rowRefusal.action === "move");
+    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", forAria ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
     button.addEventListener("click", () => {
-      if (recovery && !window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
-      void rowAction(space, restore, recovery);
+      if (rowRefusal?.action === "move" && migration) {
+        if (!window.confirm(`Move ${name.textContent} to the account you're signed in with?`)) return;
+        void runEndorsedMove(migration);
+        return;
+      }
+      if (rowRefusal?.action === "recover" && recovery) {
+        if (!window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
+        void rowAction(space, false, recovery);
+        return;
+      }
+      void rowAction(space, restore);
     });
     if (rowOperation?.space === space) {
       row.setAttribute("aria-busy", "true");
@@ -700,14 +746,14 @@ function buttons(): void {
     if (running && !button.querySelector(".icon-spinner")) { const spin = icon("spinner"); spin.classList.add("button-spinner"); button.prepend(spin); }
     if (!running) button.querySelectorAll(".button-spinner").forEach(spin => spin.remove());
   }
-  for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart"]) (el(id) as HTMLButtonElement).disabled = busy;
+  for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart", "conflicts-refresh"]) (el(id) as HTMLButtonElement).disabled = busy || spaceConflicts.busy;
 }
 function updateCountdown(): void {
   const remaining = Math.max(0, Math.ceil((approvalExpires - Date.now()) / 1000));
   text("approval-expiry", remaining ? `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}` : "This code has expired.");
   el<HTMLButtonElement>("copy-code").disabled = remaining === 0;
   el<HTMLButtonElement>("open-approval").disabled = remaining === 0;
-  if (!remaining && problem !== "EXPIRED") {
+  if (!remaining && !recoveringConflictAccount && problem !== "EXPIRED") {
     problem = "EXPIRED";
     text("refusal-detail", "The approval code expired before sign-in was confirmed."); el("details").hidden = false;
     showStage("sign-in", true);
@@ -982,11 +1028,10 @@ async function refresh(): Promise<void> {
   }
   buttons();
 }
-async function spaces(refreshCatalog: boolean): Promise<void> {
-  const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
-  const result = await request({ op: "spaces", refresh: refreshCatalog });
+function applySpacesPayload(result: Record<string, unknown>, activeProvider?: string, resetKept = false): void {
   signedInProvidersKnown = Array.isArray(result.signedInProviders);
   signedInProviders = Array.isArray(result.signedInProviders) ? result.signedInProviders.filter((item): item is string => typeof item === "string") : [];
+  spaceConflicts.applySpacesResult(result, resetKept);
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
   const connectedProviders = [...providers].filter(([space]) => connections.has(space));
   const retainedSpaces = [...accountSpaces].filter(([space]) => connections.has(space) || computerAccount?.spaces.some(row => row.space === space));
@@ -1008,15 +1053,26 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   if (preferred) select.value = preferred;
   choosingSpace = !preferred;
   const message = catalogRefreshNotice(result, activeProvider ?? providers.get(select.value));
-  if (message) notice(message);
+  if (spaceConflicts.hasUnresolved && !result.failedProviders?.toString()) notice("");
+  else if (message) notice(message);
+  renderConnections();
   buttons();
+}
+async function spaces(refreshCatalog: boolean, resetKept = false): Promise<void> {
+  const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
+  const result = await request({ op: "spaces", refresh: refreshCatalog });
+  applySpacesPayload(result, activeProvider, resetKept);
 }
 async function action(fn: () => Promise<void>): Promise<void> {
   if (busy) return; busy = true; refreshGeneration++; buttons();
   try { await fn(); } catch (error) { refusal(error); }
   finally {
     refreshGeneration++; busy = false; showStage(stage);
-    if (retrySignIn) { retrySignIn = false; beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+    if (retrySignIn) {
+      retrySignIn = false;
+      if (activeMove) { const m = activeMove; void action(() => runSignInFlow(m.provider, m.migrateFrom)); }
+      else { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+    }
   }
 }
 function nextAfterSignIn(): void {
@@ -1025,45 +1081,105 @@ function nextAfterSignIn(): void {
   if (selectedSpace()) showStage("connect", true);
   else {
     showStage("connect", true);
-    if (requestedSpace && !selectedSpace()) notice("The requested space is not available to this account. Ask its owner for access, then refresh spaces.");
-    else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("connect", true); }
+    if (requestedSpace && !selectedSpace()) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", "The requested space is not available to this account. Ask its owner for access, then refresh spaces."].filter(Boolean).join(" "));
+    else if (!el<HTMLSelectElement>("space").options[1] && !spaceConflicts.hasUnresolved) { problem = "NO_SPACES"; showStage("connect", true); }
+  }
+}
+async function runSignInFlow(provider: string, migrateFrom?: string): Promise<void> {
+  activeMove = migrateFrom ? { provider, migrateFrom } : undefined;
+  conflictsOpen = false;
+  loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
+  try {
+    if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
+    const result = await request({ op: "login", idp: provider, ...(migrateFrom ? { migrateFrom } : {}) });
+    problem = undefined; refusalSummary = undefined;
+    if (result.outcome !== "signed-in") {
+      const baseCode = String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_");
+      const code = migrateFrom && baseCode === "LOCAL_STATE_ERROR" ? "MOVE_REFUSED" : baseCode;
+      const remedy = typeof result.remedy === "string" && !/[`]|\/|\\/.test(result.remedy) ? result.remedy : undefined;
+      throw new DaemonRefusal(code, [String(result.message ?? "Sign-in was not completed."), remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), undefined, remedy);
+    }
+    activeMove = undefined;
+    signedInProvider = provider;
+    for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
+    if (migrateFrom) signedOutProviders.add(canonicalProvider(migrateFrom));
+    notice(""); await spaces(true, true); await refresh();
+    if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
+      editing = false; completedSetup = true; listOpened = true; showStage("finished");
+    } else nextAfterSignIn();
+    if (migrateFrom && !spaceConflicts.hasUnresolved) notice(`Moved your spaces to ${new URL(provider).host}.`);
+    // The account switch stands; credential files of the previous account it could not delete are named.
+    const kept = keptCredentialsNotice(result);
+    if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
+  } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
+}
+function runEndorsedMove(migration: EndorsedMigration): Promise<void> {
+  return action(() => runSignInFlow(canonicalProvider(migration.toIdp), canonicalProvider(migration.fromIdp)));
+}
+async function recoverConflictAccount(idp: string, space: string): Promise<void> {
+  const previousStage = stage;
+  conflictsOpen = false;
+  recoveringConflictAccount = loginActive = true;
+  clearDetails(); notice(""); showStage("sign-in", true);
+  try {
+    const result = await request({ op: "login", idp, recoverSpace: space });
+    if (result.outcome === "signed-in") {
+      for (const item of signedOutProviders) if (sameProvider(item, idp)) signedOutProviders.delete(item);
+      if (!signedInProviders.some(item => sameProvider(item, idp))) signedInProviders.push(idp);
+      // A catalog refresh can remove unlisted rows. Read the move offer without applying a catalog.
+      const observed = await request({ op: "spaces", refresh: false }).catch(() => ({}));
+      spaceConflicts.accountRecoveryResult(idp, observed);
+      spaceConflicts.recoveryMessage(`Signed in to ${new URL(idp).host}. The active provider and saved registrations did not change.`, false);
+    } else if (result.outcome === "cancelled" || result.reason === "expired") {
+      spaceConflicts.recoveryMessage("Sign-in was not completed. Nothing was changed. Try signing in again, or keep the existing registration.", true);
+    } else {
+      const message = typeof result.message === "string" ? result.message : "Sign-in was not completed.";
+      const remedy = typeof result.remedy === "string" ? result.remedy : "Try signing in again, or keep the existing registration.";
+      spaceConflicts.recoveryMessage(`${message} ${remedy}`, true);
+    }
+  } catch (error) {
+    spaceConflicts.recoveryMessage(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    recoveringConflictAccount = loginActive = false;
+    approval = undefined;
+    if (countdown) clearInterval(countdown);
+    el("approval").hidden = true;
+    showStage(previousStage);
+    openConflicts();
   }
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
-el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
-el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
+el("other-host").addEventListener("click", () => { activeMove = undefined; customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
+el("cloud-host").addEventListener("click", () => { activeMove = undefined; customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
 el("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  void action(async () => {
-    loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
-    try {
-      const provider = canonicalProvider(el<HTMLInputElement>("provider").value.trim());
-      if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
-      const result = await request({ op: "login", idp: provider });
-      problem = undefined;
-      if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
-      signedInProvider = provider;
-      for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
-      notice(""); await spaces(true); await refresh();
-      if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
-        editing = false; completedSetup = true; listOpened = true; showStage("finished");
-      } else nextAfterSignIn();
-      // The account switch stands; credential files of the previous account it could not delete are named.
-      const kept = keptCredentialsNotice(result);
-      if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
-    } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
-  });
+  void action(() => runSignInFlow(canonicalProvider(el<HTMLInputElement>("provider").value.trim())));
 });
 el("recover").addEventListener("click", () => {
   if (el("recover").dataset.action === "none") return;
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
   const recovery = el("recover").dataset.action;
+  const reviewMove = problem === "MOVE_REFUSED";
   const keepNotAnswering = problem === "NOT_ANSWERING" && recovery === "refresh";
-  if (!keepNotAnswering) problem = undefined;
+  if (!keepNotAnswering) { problem = undefined; refusalSummary = undefined; }
   notice("");
-  if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  if (recovery === "login") {
+    if (activeMove) { const m = activeMove; void action(() => runSignInFlow(m.provider, m.migrateFrom)); }
+    else { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
-  else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "spaces") {
+    if (!reviewMove) { void action(async () => { await spaces(true); nextAfterSignIn(); }); return; }
+    activeMove = undefined;
+    void action(async () => {
+      await spaces(true);
+      await refresh();
+      if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
+        editing = false; completedSetup = true; listOpened = true; showStage("finished");
+      } else nextAfterSignIn();
+      if (spaceConflicts.hasUnresolved) openConflicts();
+    });
+  }
   else if (recovery === "start") void action(async () => {
     clearDetails();
     await request({ op: "start" });
@@ -1208,6 +1324,19 @@ function renderApps(): void {
     appsOwnerRetry ??= setTimeout(() => { appsOwnerRetry = undefined; if (appsOpen && agentApps.retryOwnerCheck) void agentApps.load(); }, 5000);
   } else if (appsOwnerRetry !== undefined) { clearTimeout(appsOwnerRetry); appsOwnerRetry = undefined; }
 }
+function renderConflicts(): void {
+  spaceConflicts.renderPanel(el("conflicts-migration"), el("conflict-list"), el("conflicts-message"), busy || loginActive);
+}
+function openConflicts(): void {
+  if (loginActive || setupActive) return;
+  conflictsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  appsOpen = false; settingsOpen = false; conflictsOpen = true;
+  renderSettings(); document.querySelector("main")!.scrollTop = 0; el("conflicts-title").focus({ preventScroll: true });
+}
+function closeConflicts(): void {
+  conflictsOpen = false; showStage(stage);
+  (conflictsOpener?.isConnected && conflictsOpener.getClientRects().length ? conflictsOpener : el("connection-title")).focus();
+}
 function openApps(): void {
   selectView("view-apps"); el("apps-title").focus({ preventScroll: true });
 }
@@ -1224,7 +1353,8 @@ function syncViewTabs(): void {
   }
 }
 function selectView(id: typeof viewTabs[number]): void {
-  const changed = appsOpen !== (id === "view-apps") || settingsOpen !== (id === "view-settings");
+  const changed = conflictsOpen || appsOpen !== (id === "view-apps") || settingsOpen !== (id === "view-settings");
+  conflictsOpen = false;
   appsOpen = id === "view-apps";
   settingsOpen = id === "view-settings";
   renderSettings();
@@ -1278,6 +1408,8 @@ el("setup-installer").addEventListener("click", event => { event.preventDefault(
 el("settings-download").addEventListener("click", () => void openInstaller());
 el("apps-fix-connection").addEventListener("click", () => { selectView("view-connection"); el("connection-title").focus(); });
 el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
+el("conflicts-back").addEventListener("click", closeConflicts);
+el("conflicts-refresh").addEventListener("click", () => void action(async () => { await spaces(true); renderConflicts(); }));
 el("recover-apps").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && !agentApps.busy && (appsOpen || agentApps.apps && Date.now() - appsLoadedAt > 30_000)) void agentApps.load(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });

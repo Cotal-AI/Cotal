@@ -772,6 +772,86 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...damagedWarnings, ...warnings, ...keptWarnings(name, release.kept)]);
 }
 
+/** Remove a non-catalog registration, checking lifecycle and ownership before `beforeRemove`. */
+export async function forgetLocalSpaceRegistration(
+  name: string,
+  options?: { beforeRemove?: () => Promise<void> },
+): Promise<{ origin: MeshEntry["origin"] | "prepared" | null }> {
+  const target = { space: name };
+  const preferencesRevision = readPreferences().revision;
+  const registry = readMeshRegistry();
+  const legacy = encodeURIComponent(name);
+  const damaged = registry.unusable.filter((e) => e.file === meshFile(name)
+    || !/^space\.[0-9a-f]+$/.test(legacy) && e.file === join(homeCotalDir(), "meshes", `${legacy}.json`));
+  const directory = damaged.find((e) => e.recordDirectory);
+  if (directory) throw refuse("SCHEMA_INVALID", `${directory.summary}; nothing was forgotten`, { ...target, file: directory.file }, directory.remedy);
+  const denied = damaged.find((e) => e.refusal === "PERMISSION_DENIED");
+  if (denied) throw denied;
+  const unrelated = registry.unusable.filter((e) => !damaged.includes(e));
+  if (damaged.length === 0 && unrelated[0]) throw unrelated[0];
+  const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
+  const finish = (origin: MeshEntry["origin"] | "prepared" | null, release?: ReturnType<typeof releaseStackDefinitions>) => {
+    const kept = release?.kept;
+    const keptServices = savedServicesLeft(name, kept);
+    if (!keptServices.length && !kept) pruneEmptyServiceSpace(name);
+    if (getCurrent() === name) clearCurrent();
+    try { removeSpacePreferences(name, preferencesRevision); } catch {}
+    try { forgetChatSessions(name); } catch {}
+    return { origin };
+  };
+  const m = registry.entries.find((entry) => entry.space === name);
+  if (!m) {
+    const running = runningStackRoles(name);
+    if (running.length) throw refuse("LIFECYCLE_BLOCKED", `"${name}" still has running stack members (${running.join(", ")}); nothing was forgotten`, target);
+    let p: ReturnType<typeof findPreparedSpace>;
+    try { p = findPreparedSpace(name); }
+    catch (e) {
+      if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
+      if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
+      if (e.refusal === "PERMISSION_DENIED") throw e;
+      if (options?.beforeRemove) await options.beforeRemove();
+      removeDamaged();
+      removePreparedSpace(name);
+      return finish("prepared");
+    }
+    if (!p) {
+      if (!damaged.length) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { requested: name });
+      if (options?.beforeRemove) await options.beforeRemove();
+      removeDamaged();
+      removeMesh(name);
+      return finish(null);
+    }
+    let runningOwner: string | undefined;
+    try { if (projectRootProblem(p.root) !== "not-directory") runningOwner = liveMeshOwner(p.root, name); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code ?? ((error as Error)?.cause as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EACCES" && code !== "EPERM") throw error;
+      throw refuse("PERMISSION_DENIED", "this account cannot check whether the prepared space is running; nothing was forgotten", { ...target, root: p.root });
+    }
+    if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target);
+    if (options?.beforeRemove) await options.beforeRemove();
+    const release = releaseStackDefinitions(p.root, name);
+    removeDamaged();
+    removeMesh(name);
+    removePreparedSpace(name);
+    return finish("prepared", release);
+  }
+  if (m.origin === "catalog") throw refuse("CONFLICT", `"${name}" is listed by an account's space catalog, so this machine does not own its registration`, target);
+  if (m.origin !== "manual") {
+    const obstructed = m.stoppedByDown === true && projectRootProblem(m.root) === "not-directory";
+    let running: string | undefined;
+    try { if (!obstructed) running = liveMeshOwner(m.root, m.space); }
+    catch (e) { throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target); }
+    if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target);
+    if (obstructed || !existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
+  }
+  if (options?.beforeRemove) await options.beforeRemove();
+  const release = releaseStackDefinitions(m.root, name);
+  removeDamaged();
+  removeMesh(name);
+  return finish(m.origin ?? null, release);
+}
+
 /** Down can rebuild a missing open or static registration from an intact root only when the
  *  journal's exact broker launch still runs. The rootless stop is for a gone root only. */
 function unregisteredStackStop(space: string, damaged: boolean): string {

@@ -620,16 +620,34 @@ export async function fetchStagedIdpSpaceCatalog(candidate: StagedIdpSession, va
   if (!catalogUrl) throw new Error("idp login: the approved provider did not advertise a same-origin catalog");
   if (typeof claims.iss !== "string" || !claims.iss) throw new Error("idp login: the approved provider did not supply an issuer");
   const account = { idpUrl, issuer: claims.iss, sub: candidate.sub, ownerKey: ownerKey(idpUrl, candidate.sub), catalogUrl };
-  const response = await idpFetch(catalogUrl, { headers: { authorization: `Bearer ${session.token}` }, redirect: "manual" }, opts.signal);
-  if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
-  const snapshot = await idpJson<unknown>(catalogUrl, response, opts.signal);
+  const snapshot = await fetchCatalogSnapshot(catalogUrl, session.token, opts.signal);
   validate(snapshot, account);
   throwIfCancelled(opts.signal);
   return { snapshot, account };
 }
 
-/** Persist a staged proof after the caller has checked its migration pins. Not a multi-file transaction. */
-export function commitStagedIdpSession(candidate: StagedIdpSession): { session: IdpSession; sub: string; previousSub?: string; label?: string } {
+async function fetchCatalogSnapshot(url: string, token: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await idpFetch(url, { headers: { authorization: `Bearer ${token}` }, redirect: "manual" }, signal);
+  if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
+  return idpJson<unknown>(url, response, signal);
+}
+
+/** Read the signed-in account's live catalog without applying or writing a cached snapshot. */
+export async function fetchSignedInIdpSpaceCatalog(dir: string, idpUrl: string): Promise<AuthSpaceCatalogResult | undefined> {
+  idpUrl = normalizeIdpUrl(idpUrl);
+  const session = loadIdpSession(dir, idpUrl);
+  if (!session?.sub || session.expiresAt <= Math.floor(Date.now() / 1000)) return undefined;
+  const { jwt, response } = await fetchIdpJwtResponse(idpUrl, session.token);
+  const claims = decodeJwt(jwt);
+  const catalogUrl = catalogUrlFromLink(idpUrl, response.headers.get("link"));
+  if (!catalogUrl || claims.sub !== session.sub || typeof claims.iss !== "string" || !claims.iss) return undefined;
+  const account = { idpUrl, issuer: claims.iss, sub: session.sub, ownerKey: ownerKey(idpUrl, session.sub), catalogUrl };
+  const snapshot = await fetchCatalogSnapshot(catalogUrl, session.token);
+  return { state: "updated", account, snapshot, fetchedAt: new Date().toISOString() };
+}
+
+/** Persist a staged proof after the caller has checked its pins. Not a multi-file transaction. */
+export function commitStagedIdpSession(candidate: StagedIdpSession, beforeSave?: () => void): { session: IdpSession; sub: string; previousSub?: string; label?: string } {
   const { opts, session, claims, previousSub, baseline, link } = stagedState(candidate);
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
@@ -639,8 +657,12 @@ export function commitStagedIdpSession(candidate: StagedIdpSession): { session: 
   const current = readCatalogPreparationState(opts.dir);
   if (opts.migrationFrom !== undefined && migrationDependency(current, opts.migrationFrom) !== baseline)
     throw new Error("idp login: the old account sign-in or catalog state changed during approval; nothing was saved; retry `cotal login --migrate-from " + normalizeIdpUrl(opts.migrationFrom) + "`");
-  stagedLogins.delete(candidate);
-  saveIdpSession(opts.dir, opts.idpUrl, session);
+  withIdpSessionLock(opts.dir, () => {
+    beforeSave?.();
+    throwIfCancelled(opts.signal);
+    stagedLogins.delete(candidate);
+    saveIdpSessionLocked(opts.dir, opts.idpUrl, session);
+  });
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, candidate.sub, link);
   return { session, sub: candidate.sub, ...(previousSub && previousSub !== candidate.sub ? { previousSub } : {}), ...(session.label ? { label: session.label } : {}) };
 }
@@ -659,6 +681,9 @@ export async function establishIdpSession(opts: DeviceLoginOpts & { dir: string;
 function ownerKey(idpUrl: string, sub: string): string {
   return createHash("sha256").update(`${new URL(idpUrl).origin}\0${sub}`).digest("hex");
 }
+
+/** Match the identity stored in catalog registrations without storing a raw subject there. */
+export { ownerKey as catalogAccountOwnerKey };
 
 function readCatalogsFile(dir: string): CatalogsFile {
   const path = join(dir, CATALOG_FILE);

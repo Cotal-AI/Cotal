@@ -165,7 +165,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   };
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
-    async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
+    async start() { await reconciler.reconcileMigratedOwners().catch(() => {}); run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
     recover: (space: string, candidate: string, holder: string) => recoverAccountSpace(home, reconciler, contexts, tick, space, candidate, holder).then(notify),
     vitals: () => vitals,
     vitalsError: () => vitalsError,

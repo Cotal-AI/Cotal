@@ -125,7 +125,44 @@ export function nativeStub(scenario) {
         return await new Promise(resolve => { window.__closeStatusWatch = resolve; });
       }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
-      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? (state.signedInProviders ?? ["https://cloud.cotal.ai/api/auth"]) : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
+      if (request.op === "spaces") {
+        state.spacesRequests = [...(state.spacesRequests ?? []), request.refresh];
+        const collisionDetails = request.refresh ? (state.collisionDetails ?? []) : [];
+        const migration = request.refresh ? state.migration : (state.signedInMigration ?? undefined);
+        return ok({
+          signedInProviders: state.signedInProviders ?? (state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : []),
+          refresh: request.refresh ? (state.otherProviderFailed || collisionDetails.length ? "partial" : "complete") : "not-requested",
+          unreadable: 0,
+          collisions: collisionDetails.length,
+          ...(collisionDetails.length ? { collisionDetails } : {}),
+          ...(migration ? { migration } : {}),
+          failedProviders: state.otherProviderFailed && request.refresh ? ["https://hack.cotal.ai/api/auth"] : [],
+          spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []),
+        });
+      }
+      if (request.op === "space-conflict-resolve") {
+        state.accountRequests.push({ ...request });
+        if (state.conflictBlocked === request.space) {
+          return fail("LIFECYCLE_BLOCKED", `"${request.space}" is currently running on this computer. Stop that local space first, or keep the local registration.`);
+        }
+        const resolved = (state.collisionDetails ?? []).find(item => item.space === request.space);
+        state.collisionDetails = (state.collisionDetails ?? []).filter(item => item.space !== request.space);
+        if (resolved) {
+          state.catalogSpaces = [
+            ...(state.catalogSpaces ?? []).filter(item => item.space !== request.space),
+            { space: resolved.space, label: resolved.catalogLabel, mode: "user", idp: resolved.catalogIdp, catalogId: `sp_${resolved.space}`, kind: "team", role: "owner" },
+          ];
+        }
+        return ok({
+          signedInProviders: state.signedInProviders ?? ["https://cotal.cloud/api/auth"],
+          refresh: state.collisionDetails.length ? "partial" : "complete",
+          unreadable: 0,
+          collisions: state.collisionDetails.length,
+          ...(state.collisionDetails.length ? { collisionDetails: state.collisionDetails } : {}),
+          failedProviders: [],
+          spaces: state.catalogSpaces ?? [],
+        });
+      }
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? state.aboutMachine ?? "Davids-MacBook-Pro" }); }
       if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
       if (request.op === "logout") {
@@ -154,13 +191,41 @@ export function nativeStub(scenario) {
         return ok({ state: "disconnected" });
       }
       if (request.op === "login") {
+        state.loginRequests = [...(state.loginRequests ?? []), { ...request }];
+        if (request.recoverSpace && state.accountRecovery) {
+          send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: `${new URL(request.idp).origin}/device?user_code=RECOVERY`, userCode: "RECOVERY", expiresAt: new Date(Date.now() + 1000).toISOString() } });
+          await new Promise(resolve => { window.__finishAccountRecovery = resolve; });
+          if (state.accountRecovery === "same") {
+            state.signedInProviders = [...state.signedInProviders, request.idp];
+            state.signedInMigration = { fromIdp: request.idp, toIdp: "https://cotal.cloud/api/auth", spaces: [request.recoverSpace] };
+            return ok({ outcome: "signed-in", idp: request.idp });
+          }
+          if (state.accountRecovery === "different") return ok({ outcome: "failed", reason: "local-state-error", message: "A different account signed in. Nothing was changed.", remedy: "Try again with the account that owns the saved space, or keep the existing registration." });
+          return ok({ outcome: "failed", reason: "expired", message: "The approval code expired." });
+        }
+        if (request.migrateFrom && state.moveRefusal) {
+          const refusal = state.moveRefusal;
+          delete state.moveRefusal;
+          return ok({ outcome: "failed", ...refusal });
+        }
         if (state.loginLost) return fail("DAEMON_LOST", "The background service stopped before this could finish, so it did not complete. Try again when the service is running.");
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
-        send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
+        send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: `${new URL(request.idp ?? "https://cloud.cotal.ai/api/auth").origin}/device?user_code=WDJB-MJHT`, userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
         if (state.waiting || state.expired) await new Promise(() => {});
         state.signedIn = true;
-        if (state.accountAfterLogin) state.account = state.accountAfterLogin;
-        return ok({ outcome: "signed-in" });
+        if (request.migrateFrom && (state.migration || state.signedInMigration)) {
+          state.collisionDetails = [];
+          delete state.migration;
+          delete state.signedInMigration;
+          state.signedInProviders = [request.idp];
+          if (state.migratedCatalogSpaces) state.catalogSpaces = state.migratedCatalogSpaces;
+          if (state.accountAfterMigration) state.account = state.accountAfterMigration;
+        } else {
+          if (state.catalogSpacesAfterLogin) state.catalogSpaces = state.catalogSpacesAfterLogin;
+          if (state.signedInProvidersAfterLogin) state.signedInProviders = state.signedInProvidersAfterLogin;
+          if (state.accountAfterLogin) state.account = state.accountAfterLogin;
+        }
+        return ok({ outcome: "signed-in", idp: request.idp, sub: "user_1" });
       }
       if (request.op === "setup") {
         const progress = (step, outcome, detail, extra = {}) => send({ v: 1, event: "setup-progress", line: detail, progress: { step, outcome, detail, ...extra } });
@@ -452,13 +517,66 @@ export const scenarios = [
     expect: async page => {
       const button = page.getByRole("button", { name: /^Use signed-in account for / });
       await button.waitFor();
-      assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /old.example/);
-      page.once("dialog", dialog => confirm ? dialog.accept() : dialog.dismiss());
+      const rowText = await page.locator('[data-testid="connected-space-row"]').textContent();
+      assert.match(rowText, /old\.example/);
+      page.once("dialog", dialog => {
+        assert.equal(dialog.message(), "Use the signed-in account for Acme team instead of https://old.example/api/auth?");
+        return confirm ? dialog.accept() : dialog.dismiss();
+      });
       await button.click();
       if (confirm) await page.waitForFunction(() => window.__renderState.accountRequests.some(row => row.op === "space-recover"));
       assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "space-recover")), confirm ? [
         { op: "space-recover", space: "acme-team", candidate: "b".repeat(64), holder: "https://old.example/api/auth" },
       ] : []);
+    },
+  })),
+  ...[false, true].map(confirm => ({
+    name: `space-row-move-${confirm ? "confirm" : "cancel"}`,
+    state: {
+      installed: true,
+      signedIn: true,
+      connected: true,
+      readyAccountSpaces: true,
+      signedInProviders: ["https://cloud.cotal.ai/api/auth", "https://cotal.cloud/api/auth"],
+      signedInMigration: { fromIdp: "https://cloud.cotal.ai/api/auth", toIdp: "https://cotal.cloud/api/auth", spaces: ["acme-team"] },
+      migration: { fromIdp: "https://cloud.cotal.ai/api/auth", toIdp: "https://cotal.cloud/api/auth", spaces: ["acme-team"] },
+      migratedCatalogSpaces: [
+        { space: "acme-team", label: "Acme team", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_acme", kind: "team", role: "owner" },
+      ],
+      accountAfterMigration: {
+        idpUrl: "https://cotal.cloud/api/auth",
+        sub: "user_1",
+        mode: "account",
+        hostSupport: "supported",
+        spaces: [{ space: "acme-team", desired: true, observed: "connected" }],
+      },
+      account: {
+        idpUrl: "https://cotal.cloud/api/auth",
+        sub: "user_1",
+        mode: "account",
+        hostSupport: "supported",
+        spaces: [{ space: "acme-team", desired: true, observed: "connected", lastRefusal: "The local space connection is held by https://cloud.cotal.ai/api/auth." }],
+      },
+    },
+    expect: async page => {
+      const button = page.getByRole("button", { name: "Move to this account for Acme team" });
+      await button.waitFor();
+      const rowText = await page.locator('[data-testid="connected-space-row"]').textContent();
+      assert.match(rowText, /This space is set up under another sign-in on this computer\./);
+      assert.doesNotMatch(rowText, /cloud\.cotal\.ai/);
+      page.once("dialog", dialog => {
+        assert.equal(dialog.message(), "Move Acme team to the account you're signed in with?");
+        return confirm ? dialog.accept() : dialog.dismiss();
+      });
+      await button.click();
+      if (confirm) {
+        await page.waitForFunction(() => (window.__renderState.loginRequests ?? []).some(row => row.migrateFrom === "https://cloud.cotal.ai/api/auth"));
+        assert.deepEqual(await page.evaluate(() => window.__renderState.loginRequests), [
+          { op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cloud.cotal.ai/api/auth" },
+        ]);
+      } else {
+        assert.deepEqual(await page.evaluate(() => window.__renderState.loginRequests ?? []), []);
+      }
     },
   })),
   { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },
@@ -1184,7 +1302,203 @@ export const scenarios = [
     await page.evaluate(() => window.__emitTauri("desktop-shown", null));
     assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterStart, "status-watch stays open across hide, tray open, and show without polling status");
   } },
+  {
+    name: "space-conflict-endorsed-move",
+    state: {
+      signedInProvidersAfterLogin: ["https://cloud.cotal.ai/api/auth", "https://cotal.cloud/api/auth"],
+      catalogSpacesAfterLogin: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+        { space: "cotal-team", label: "Cotal team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_team", kind: "team", role: "owner" },
+      ],
+      migratedCatalogSpaces: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+        { space: "cotal-team", label: "Cotal team", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_team", kind: "team", role: "owner" },
+      ],
+      collisionDetails: [
+        { space: "personal-home", catalogLabel: "Personal", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "catalog", existingIdp: "https://cloud.cotal.ai/api/auth" },
+        { space: "cotal-team", catalogLabel: "Cotal team", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "catalog", existingIdp: "https://cloud.cotal.ai/api/auth" },
+      ],
+      migration: { fromIdp: "https://cloud.cotal.ai/api/auth", toIdp: "https://cotal.cloud/api/auth", spaces: ["personal-home", "cotal-team"] },
+    },
+    act: page => page.click("#login"),
+    expect: async page => {
+      assert.equal(await page.locator("#recovery-panel").isVisible(), false, "endorsed Cloud move collision never dead-ends in recovery-panel");
+      assert.equal(await page.locator("#connection-title").textContent(), "Ready to connect");
+      assert.equal(await page.locator("#space-conflicts-callout").isVisible(), true);
+      assert.match(await page.locator("#space-conflicts-callout").textContent(), /Move spaces from cloud\.cotal\.ai.*personal-home, cotal-team/);
+      assert.equal(await page.locator("#move-account").textContent(), "Move to cotal.cloud");
+      assert.doesNotMatch(await page.locator("body").textContent(), /cotal sync|cotal space|cotal login/);
+    },
+  },
+  {
+    name: "space-conflict-endorsed-moved",
+    state: {
+      signedInProvidersAfterLogin: ["https://cloud.cotal.ai/api/auth", "https://cotal.cloud/api/auth"],
+      catalogSpacesAfterLogin: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+      ],
+      migratedCatalogSpaces: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+      ],
+      collisionDetails: [
+        { space: "personal-home", catalogLabel: "Personal", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "catalog", existingIdp: "https://cloud.cotal.ai/api/auth" },
+      ],
+      migration: { fromIdp: "https://cloud.cotal.ai/api/auth", toIdp: "https://cotal.cloud/api/auth", spaces: ["personal-home"] },
+      accountAfterMigration: { idpUrl: "https://cotal.cloud/api/auth", sub: "user_1", mode: "account", hostSupport: "supported", spaces: [{ space: "personal-home", desired: true, observed: "connected" }] },
+    },
+    prepare: page => page.click("#login"),
+    act: page => page.click("#move-account"),
+    expect: async page => {
+      assert.equal(await page.locator("#space-conflicts-callout").isVisible(), false);
+      assert.match(await page.locator("#notice").textContent(), /Moved your spaces to cotal\.cloud/);
+      assert.deepEqual(await page.evaluate(() => window.__renderState.loginRequests), [
+        { op: "login", idp: "https://cotal.cloud/api/auth" },
+        { op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cloud.cotal.ai/api/auth" },
+      ]);
+    },
+  },
+  {
+    name: "space-conflicts-panel",
+    state: {
+      signedInProvidersAfterLogin: ["https://cotal.cloud/api/auth"],
+      catalogSpacesAfterLogin: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+      ],
+      collisionDetails: [
+        { space: "running-local", catalogLabel: "Running local", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "up" },
+        { space: "saved-manual", catalogLabel: "Saved manual", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "manual" },
+      ],
+      conflictBlocked: "running-local",
+    },
+    prepare: page => page.click("#login"),
+    act: page => page.click("#open-conflicts"),
+    expect: async page => {
+      assert.equal(await page.locator("#conflicts-panel").isVisible(), true);
+      assert.equal(await page.locator('[data-testid="space-conflict-row"]').count(), 2);
+      assert.doesNotMatch(await page.locator("#conflicts-panel").textContent(), /cotal sync|cotal space/);
+    },
+  },
+  {
+    name: "space-conflicts-blocked-error",
+    state: {
+      signedInProvidersAfterLogin: ["https://cotal.cloud/api/auth"],
+      catalogSpacesAfterLogin: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+      ],
+      collisionDetails: [
+        { space: "running-local", catalogLabel: "Running local", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "up" },
+        { space: "saved-manual", catalogLabel: "Saved manual", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "manual" },
+      ],
+      conflictBlocked: "running-local",
+    },
+    prepare: async page => { await page.click("#login"); await page.click("#open-conflicts"); },
+    act: async page => {
+      page.on("dialog", dialog => dialog.accept());
+      await page.locator('[data-space="running-local"] button:has-text("Use cotal.cloud")').click();
+      await page.locator('[data-space="saved-manual"] button:has-text("Use cotal.cloud")').click();
+    },
+    expect: async page => {
+      assert.equal(await page.locator('[data-testid="space-conflict-row"]').count(), 1);
+      assert.match(await page.locator('[data-space="running-local"]').textContent(), /currently running on this computer\. Stop that local space first, or keep the local registration/);
+    },
+  },
+  {
+    name: "space-conflicts-resolve-blocked",
+    state: {
+      signedInProvidersAfterLogin: ["https://cotal.cloud/api/auth"],
+      catalogSpacesAfterLogin: [
+        { space: "personal-home", label: "Personal", mode: "user", idp: "https://cotal.cloud/api/auth", catalogId: "sp_personal", kind: "personal", role: "owner" },
+      ],
+      collisionDetails: [
+        { space: "running-local", catalogLabel: "Running local", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "up" },
+        { space: "saved-manual", catalogLabel: "Saved manual", catalogIdp: "https://cotal.cloud/api/auth", existingOrigin: "manual" },
+      ],
+      conflictBlocked: "running-local",
+    },
+    prepare: async page => { await page.click("#login"); await page.click("#open-conflicts"); },
+    act: async page => {
+      page.on("dialog", dialog => dialog.accept());
+      await page.locator('[data-space="running-local"] button:has-text("Use cotal.cloud")').click();
+      await page.locator('[data-space="saved-manual"] button:has-text("Use cotal.cloud")').click();
+      await page.locator('[data-space="running-local"] button:has-text("Keep existing")').click();
+    },
+    expect: async page => {
+      assert.equal(await page.locator('[data-testid="space-conflict-row"]').count(), 1);
+      assert.match(await page.locator('[data-space="running-local"]').textContent(), /Kept existing registration/);
+    },
+  },
 ];
+
+const moveScenario = scenarios.find(item => item.name === "space-conflict-endorsed-moved");
+const recoveryFrom = "https://cloud.cotal.ai/api/auth", recoveryTo = "https://cotal.cloud/api/auth";
+for (const outcome of ["same", "different", "abandoned"]) {
+  scenarios.push({
+    name: `space-conflict-account-recovery-${outcome}`,
+    state: {
+      accountRecovery: outcome,
+      signedInProvidersAfterLogin: [recoveryTo],
+      catalogSpacesAfterLogin: [{ space: "acme-team", label: "Acme team", idp: recoveryTo, mode: "user", catalogId: "sp_acme" }],
+      collisionDetails: [{ space: "personal-home", catalogLabel: "Personal", catalogIdp: recoveryTo, existingOrigin: "catalog", existingIdp: recoveryFrom, existingSignedIn: false }],
+    },
+    prepare: async page => { await page.click("#login"); await page.click("#open-conflicts"); },
+    act: async page => {
+      await page.getByRole("button", { name: "Sign in to cloud.cotal.ai" }).click();
+      await page.locator("#approval:visible").waitFor();
+      if (outcome === "abandoned") await page.getByText("This code has expired.", { exact: true }).waitFor();
+      await page.evaluate(() => window.__finishAccountRecovery());
+      await page.locator("#conflicts-panel:visible").waitFor();
+    },
+    async expect(page) {
+      const message = await page.locator("#conflicts-message").textContent();
+      if (outcome === "same") {
+        assert.match(message, /active provider and saved registrations did not change/);
+        assert.equal(await page.getByRole("button", { name: "Sign out cloud.cotal.ai" }).count(), 1);
+        assert.equal(await page.getByTestId("panel-move-account").count(), 1);
+      } else {
+        assert.match(message, outcome === "different" ? /A different account signed in.*Nothing was changed.*keep the existing registration/ : /Sign-in was not completed.*Nothing was changed.*keep the existing registration/);
+        assert.equal(await page.getByRole("button", { name: "Sign in to cloud.cotal.ai" }).count(), 1);
+      }
+      const { loginRequests, spacesRequests, accountRequests } = await page.evaluate(() => window.__renderState);
+      assert.deepEqual(loginRequests, [{ op: "login", idp: recoveryTo }, { op: "login", idp: recoveryFrom, recoverSpace: "personal-home" }]);
+      assert.equal(spacesRequests.filter(Boolean).length, 1, "recovery never applies a catalog refresh");
+      assert.deepEqual(accountRequests, []);
+      await page.click("#view-settings");
+      assert.equal(await page.locator("#settings-account").textContent(), "Cotal Cloud, cotal.cloud");
+      await page.click("#settings-signout");
+      assert.equal(await page.locator("#account-confirm-title").textContent(), "Sign out of Cotal Cloud, cotal.cloud?");
+      await page.click("#account-cancel");
+    },
+  });
+}
+scenarios.push({
+  ...moveScenario,
+  name: "space-conflict-expired-move-retry",
+  state: { ...moveScenario.state, moveRefusal: { reason: "expired", message: "The approval code expired." } },
+  act: async page => {
+    await page.click("#move-account");
+    await page.getByRole("button", { name: "Get a new code" }).click();
+  },
+  expect: async page => {
+    await page.getByText("Moved your spaces to cotal.cloud.", { exact: true }).waitFor();
+    const moves = await page.evaluate(() => window.__renderState.loginRequests.filter(row => row.migrateFrom));
+    assert.deepEqual(moves, Array.from({ length: 2 }, () => ({ op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cloud.cotal.ai/api/auth" })));
+  },
+}, {
+  ...moveScenario,
+  name: "space-conflict-move-refusal-recovery",
+  state: { ...moveScenario.state, moveRefusal: { reason: "local-state-error", message: "Your spaces do not match, so nothing was moved.", remedy: "Open Space conflicts to keep the existing registrations." } },
+  act: page => page.click("#move-account"),
+  expect: async page => {
+    assert.match(await page.locator("#connection-description").textContent(), /nothing was moved.*keep the existing registrations/);
+    await page.getByRole("button", { name: "Review space conflicts" }).click();
+    await page.getByRole("button", { name: "Sign out cloud.cotal.ai" }).waitFor();
+    let dialogText;
+    page.once("dialog", dialog => { dialogText = dialog.message(); return dialog.dismiss(); });
+    await page.getByRole("button", { name: "Sign out cloud.cotal.ai" }).click();
+    assert.match(dialogText, /revokes.*personal-home/);
+    assert.equal(await page.evaluate(() => window.__renderState.accountRequests.some(row => row.op === "logout")), false);
+  },
+});
 
 // Audit regressions use the same real UI entry points as the original fixtures.
 const auditCase = (source, name, expect) => {

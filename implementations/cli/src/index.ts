@@ -952,5 +952,6 @@ export { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource 
 export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "./lib/service-systemd.js";
 export { launchAgent } from "./lib/manifest/live.js";
 
+export { forgetLocalSpaceRegistration } from "./commands/space-registration.js";
 // The machine daemon refreshes the same catalog while retaining its own sign-in session.
 export { prepareCatalogTargets, prepareCatalogMigration, importAccountComputerSpace, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "./commands/sync.js";

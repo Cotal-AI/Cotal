@@ -76,6 +76,15 @@
         <ul id="app-list" class="app-list row-group" data-testid="app-list" aria-labelledby="apps-group-heading"></ul>
         <p class="apps-footer footnote">Each app installs for your user only, from its maker’s own installer.</p>
       </section>
+      <section id="conflicts-panel" class="settings-card apps-card" role="tabpanel" aria-labelledby="conflicts-title" hidden>
+        <h1 id="conflicts-title" class="pane-title" tabindex="-1">Space conflicts</h1>
+        <p class="pane-description">Review where each space is registered. You can keep the existing registration or choose an option shown for that space.</p>
+        <button id="conflicts-back" class="text-button" type="button">Back</button>
+        <section id="conflicts-migration" class="apps-callout conflict-migration" data-testid="conflicts-migration" aria-label="Account address move" hidden></section>
+        <p id="conflicts-message" class="apps-message" role="status"></p>
+        <ul id="conflict-list" class="app-list conflict-list" data-testid="conflict-list" aria-label="Conflicting spaces"></ul>
+        <div class="apps-footer"><p>Keeping an existing registration changes nothing. Replacing a space or signing out asks before removing local data or revoking a sign-in.</p><button id="conflicts-refresh" class="text-button" type="button">Refresh spaces</button></div>
+      </section>
       <section id="connection-view" class="connection-card" role="tabpanel" aria-labelledby="view-connection">
         <h1 id="loading-title" class="pane-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
         <h1 id="connection-title" class="pane-title" tabindex="-1">Welcome to Cotal</h1>
@@ -91,6 +100,7 @@
         <p id="applied-update" class="muted" role="status" hidden></p>
         <p id="link-context" class="context" hidden></p>
         <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
+        <section id="space-conflicts-callout" class="apps-callout conflict-callout" data-testid="space-conflicts-callout" aria-label="Space name conflicts" hidden></section>
         <div id="sign-in-panel">
           <form id="login-form">
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
