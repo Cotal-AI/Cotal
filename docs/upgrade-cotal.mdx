@@ -12,10 +12,11 @@ Use the [upgrade history](UPGRADING.md) for the migration instructions that appl
 When `cotal up` starts its own local broker for a stopped space, it converts an older File-backed derived membership feed to Memory before starting services and reports the conversion; durable channel membership and message history are kept.
 A computer that has never had `~/.config/cotal` needs one manual `npm install -g cotal-ai@latest` to receive the missing-config updater fix.
 
-If the registry lists a new release before its archives are available, `cotal update --self`
-shows its progress and waits up to ten minutes. If the archives are still unavailable, it keeps
-the installed version and exits successfully. Invalid release metadata, failed integrity checks
-and other installation errors still refuse the update.
+If the registry lists a new release before its archives or version metadata are available,
+`cotal update --self` shows its progress and waits up to ten minutes. If they are still unavailable,
+it keeps the installed version and exits successfully. If the registry returns HTTP 404 for a scoped
+first-party package during the initial metadata checks, the command exits with status 1 without waiting.
+Check `@cotal-ai:registry` in `.npmrc`. Invalid release metadata and failed integrity checks also refuse the update.
 
 If another updater owns the same npm global installation, `cotal update --self` keeps waiting
 while that process is alive and renews its reservation. When the reservation is released, the
