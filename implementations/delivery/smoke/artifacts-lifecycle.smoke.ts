@@ -36,7 +36,7 @@ import {
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ArtifactIndex, type AttachmentRow, type Caller } from "../src/artifact-index.js";
-import { ARTIFACT_STORE_CHUNK_BYTES, ArtifactObjects, chunkFilter, chunkSubject, metaSubject, storedChunkCount } from "../src/artifact-objects.js";
+import { ARTIFACT_STORE_CHUNK_BYTES, ArtifactObjects, chunkFilter, chunkSubject, metaSubject, storedChunkCount } from "../src/stores/jetstream-store.js";
 import { attachmentIndexKey, attachmentKey, principalDigestKey } from "../src/artifact-keys.js";
 import { sweepOnce } from "../src/artifact-sweep.js";
 import { ArtifactVerbs, DigestLocks } from "../src/artifact-verbs.js";
@@ -110,7 +110,7 @@ try {
     return typeof v === "function" ? (v as (...x: unknown[]) => unknown).bind(t) : v;
   } }) as KV;
   const index = new ArtifactIndex({ attach: kv.attach, possess: counted, reserve: reserveHook });
-  const objects = new ArtifactObjects(nc, space);
+  const objects = new ArtifactObjects(nc, space, nc);
   const jsm = await jetstreamManager(nc);
   const stream = objectStoreStream(artifactBucket(space));
   const locks = new DigestLocks();
@@ -165,7 +165,7 @@ try {
   };
   const subjects = async (filter: string) => Object.keys((await jsm.streams.info(stream, { subjects_filter: filter })).state.subjects ?? {}).length;
   const metaPresent = async (d: string) => (await subjects(metaSubject(space, d))) > 0;
-  const sweep = (offsetMs = 0) => sweepOnce({ space, nc: nc!, kv, locks, fence: () => {}, emit: (e) => events.push(e.digest), now: () => Date.now() + offsetMs, hold: (point, d) => hold(`${point}:${d}`) });
+  const sweep = (offsetMs = 0) => sweepOnce({ space, objects, kv, locks, fence: () => {}, emit: (e) => events.push(e.digest), now: () => Date.now() + offsetMs, hold: (point, d) => hold(`${point}:${d}`) });
   const lapse = ARTIFACT_RESERVATION_TTL_MS + 60_000;
 
   // ---- E17: storage framing is independent of how the bytes arrived ----
@@ -177,14 +177,14 @@ try {
     await put(alice, bytes, [128 * 1024, 7_000]);
     const back = await fetchAll(bob, "team.r", d);
     check("re-puts of the same bytes in three transport framings leave the attached bytes intact, in fixed storage chunks",
-      sha(back) === d && (await subjects(chunkFilter(space, d))) === storedChunkCount(bytes.byteLength) && (await objects.readMeta(d))?.chunks === storedChunkCount(bytes.byteLength),
+      sha(back) === d && (await subjects(chunkFilter(space, d))) === storedChunkCount(bytes.byteLength) && (await objects.stat(d))?.blocks === storedChunkCount(bytes.byteLength),
       { stored: await subjects(chunkFilter(space, d)), want: storedChunkCount(bytes.byteLength) });
   }
   {
     const bytes = bytesOf(150_000, 17), d = sha(bytes);
     const blocks = [0, 1, 2].map((i) => bytes.subarray(i * ARTIFACT_STORE_CHUNK_BYTES, Math.min(bytes.byteLength, (i + 1) * ARTIFACT_STORE_CHUNK_BYTES)));
     let cut = "";
-    try { await objects.write({ digest: d, name: "f", mediaType: "x/y" }, blocks, (what) => { if (what === "chunk 1") throw new Error("crash"); }); } catch (e) { cut = (e as Error).message; }
+    try { await objects.put({ digest: d, name: "f", mediaType: "x/y" }, blocks, (what) => { if (what === "chunk 1") throw new Error("crash"); }); } catch (e) { cut = (e as Error).message; }
     const partial = await subjects(chunkFilter(space, d));
     const retried = await put(alice, bytes, [10_000]);
     await confirm(alice, "team.r2", retried);
@@ -210,7 +210,7 @@ try {
   {
     // C15/E23: a data connection whose broker limit cannot carry this artifact's largest stored chunk
     // refuses at put-begin, before any byte is staged. The real handler over a connection reporting it.
-    const small = new ArtifactObjects({ info: { max_payload: 1_000 } } as unknown as NatsConnection, space);
+    const small = new ArtifactObjects({ info: { max_payload: 1_000 } } as unknown as NatsConnection, space, { info: { max_payload: 1_000 } } as unknown as NatsConnection);
     const smallVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: small }), locks: new DigestLocks(),
       fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined });
     const refused = await refusal(smallVerbs.putBegin(s)(ctx(dave, { name: "s", mediaType: "x/y", size: 10, digest: sha(bytesOf(10, 7)) })));
@@ -219,7 +219,7 @@ try {
         && smallVerbs.staging.chargeOf(dave).uploads === 0, refused);
     // The limit drops between put-begin and put-commit: the commit refuses before its reservation.
     const info = { max_payload: 1 << 20 };
-    const dropping = new ArtifactObjects({ info } as unknown as NatsConnection, space);
+    const dropping = new ArtifactObjects({ info } as unknown as NatsConnection, space, { info } as unknown as NatsConnection);
     const droppingVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: dropping }), locks: new DigestLocks(),
       fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined });
     const bytes = bytesOf(10, 9), d = sha(bytes);
@@ -341,7 +341,7 @@ try {
     // E18b: the lease ends while a commit waits for its digest AND the limit drops. The fence answers
     // first, so the upload is kept; once the limit is valid again the renewed generation commits it.
     const info = { max_payload: 1 << 20 };
-    const shrinking = new ArtifactObjects(new Proxy(nc!, { get: (t, p) => p === "info" ? info : Reflect.get(t, p) }) as NatsConnection, space);
+    const shrinking = new ArtifactObjects(new Proxy(nc!, { get: (t, p) => p === "info" ? info : Reflect.get(t, p) }) as NatsConnection, space, nc!);
     const shrinkVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: shrinking }), locks,
       fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined,
       hold: (point) => hold(`shrink-${point}`) });
@@ -473,7 +473,7 @@ try {
     const bytes = bytesOf(150_000, 45), d = sha(bytes);
     const blocks = [0, 1, 2].map((i) => bytes.subarray(i * ARTIFACT_STORE_CHUNK_BYTES, Math.min(bytes.byteLength, (i + 1) * ARTIFACT_STORE_CHUNK_BYTES)));
     await index.writeReservation(d, alice, { deadline: Date.now() + ARTIFACT_RESERVATION_TTL_MS, reservationId: randomUUID() }, () => {});
-    await objects.write({ digest: d, name: "f", mediaType: "x/y" }, blocks, (what) => { if (what === "the meta record") throw new Error("crash"); }).catch(() => undefined);
+    await objects.put({ digest: d, name: "f", mediaType: "x/y" }, blocks, (what) => { if (what === "the meta record") throw new Error("crash"); }).catch(() => undefined);
     const chunksOnly = (await subjects(chunkFilter(space, d))) === 3 && !(await metaPresent(d));
     await sweep();
     const keptInside = (await subjects(chunkFilter(space, d))) === 3;

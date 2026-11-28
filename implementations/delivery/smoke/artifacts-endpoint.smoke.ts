@@ -44,6 +44,7 @@ import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smo
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
 import { deriveDaemonServeGrant, DaemonEndpointBinder } from "../src/endpoint-bind.js";
 import { artifactsServedEndpoint } from "../src/artifacts-endpoint.js";
+import { jetstreamArtifactStore } from "../src/stores/jetstream-store.js";
 import { pickFreePort } from "./_free-port.js";
 
 const EXPECTED_CELLS = 36;
@@ -322,7 +323,7 @@ try {
   let nextHold: ((point: "bound" | "retiring") => Promise<void>) | undefined;
   const own = new DaemonEndpointBinder({
     space, servers, tls: false, log: () => {},
-    endpoint: artifactsServedEndpoint({ space, servers, tls: false, store, delivery: { aclForAlias: async () => undefined }, deliveryJsm: () => readerJsm, log: () => {} }),
+    endpoint: artifactsServedEndpoint({ space, servers, tls: false, store, delivery: { aclForAlias: async () => undefined }, deliveryJsm: () => readerJsm, log: () => {} }, jetstreamArtifactStore),
     hold: async (point) => { const h = nextHold; if (h) await h(point); },
   });
   const ownAdopt = async () => own.adopt({ creds: (await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND)))!, instanceId: instanceId!,
@@ -429,7 +430,7 @@ try {
   aclReader.on("error", () => {});
   endpoints.push(aclReader);
   await aclReader.start();
-  const realEndpoint = artifactsServedEndpoint({ space, servers, tls: false, store, delivery: { aclForAlias: (p) => aclReader.aclForAlias(p) }, deliveryJsm: () => readerJsm, log: () => {} });
+  const realEndpoint = artifactsServedEndpoint({ space, servers, tls: false, store, delivery: { aclForAlias: (p) => aclReader.aclForAlias(p) }, deliveryJsm: () => readerJsm, log: () => {} }, jetstreamArtifactStore);
   const gated = new DaemonEndpointBinder({
     space, servers, tls: false, log: () => {},
     endpoint: { ...realEndpoint, defs: (scope) => realEndpoint.defs(scope).map((def) => def.command !== ARTIFACTS_LIST_COMMAND ? def : {

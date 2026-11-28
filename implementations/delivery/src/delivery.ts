@@ -28,8 +28,11 @@ import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 import { healConnectionEvictor } from "./sys-creds.js";
 import { acquireShardLease, ownLeaseReader, requireReachableBroker } from "./delivery-startup.js";
-import { parseServeFlag, ServedEndpoints, type ServedEndpointCatalog } from "./served-endpoints.js";
+import { parseServeFlag, resolveArtifactStore, SERVED_ENDPOINT_NAMES, ServedEndpoints } from "./served-endpoints.js";
 import { artifactsServedEndpoint } from "./artifacts-endpoint.js";
+// The default artifact store registers itself when this module loads, so every entry into the daemon
+// (index, this module, a hosted composition) finds it without importing the package index.
+import "./stores/jetstream-store.js";
 import type { KickAuthority } from "./kick-authority.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 import {
@@ -118,10 +121,6 @@ export interface DeliveryNativeConnection extends NativeConnectionBinding {
    *  of its own store connections (for `artifacts`: `artifact-data`, `artifact-sweeper`). */
   label: "endpoint" | "membership-rw" | "timer-writer" | (string & {});
 }
-
-/** The endpoints this daemon can be asked to serve with `--serve` (or hosted `endpoints`). Each
- *  entry builds its contract and handlers; a name outside the table is refused at start. */
-export const SERVED_ENDPOINT_CATALOG: ServedEndpointCatalog = Object.freeze({ artifacts: artifactsServedEndpoint });
 
 /** A hosted delivery context, with the native bindings of its data-account connections. */
 export interface DeliveryServiceHandle extends HostedServiceHandle {
@@ -271,7 +270,7 @@ async function runStartedDelivery(
   assertNoLocalCredSourceFlags(v, store);
   // `--serve` (or hosted `endpoints`) is parsed here, before anything is read or dialed, so an unknown
   // endpoint name is refused without touching the broker. Not asked means nothing new is served.
-  const serveNames = parseServeFlag(hosted?.endpoints !== undefined ? hosted.endpoints.join(",") || undefined : v.serve, SERVED_ENDPOINT_CATALOG);
+  const serveNames = parseServeFlag(hosted?.endpoints !== undefined ? hosted.endpoints.join(",") || undefined : v.serve, SERVED_ENDPOINT_NAMES);
   // Every workstation read below (cred, registry, $SYS pair, membership feed, pidfile) uses this one
   // root. A hosted context names its own state directory and borrows no cwd.
   const root = hosted?.stateDir ?? (owner.kind === "lane" ? owner.root : daemonRoot(v, store));
@@ -279,6 +278,8 @@ async function runStartedDelivery(
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
   const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(root)) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
+  // The artifact store, resolved from the space's binding before anything is dialed; a bad binding stops the daemon here.
+  const artifactStore = serveNames.includes("artifacts") ? await resolveArtifactStore(store ?? workspaceSecretStore(root), space, (line) => log.err(line)) : undefined;
   const credsSrc = resolveCredsStore(v, space, root, store);
   if (v.creds !== undefined)
     assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds), cwdRoot: root, via: v.root !== undefined ? "--root" : "process cwd" });
@@ -708,7 +709,7 @@ async function runStartedDelivery(
   // Built only when asked. The signer holder writes each endpoint's material into the store the
   // delivery credential comes from, and the daemon reads it back on every adoption.
   served = serveNames.length === 0 ? undefined : new ServedEndpoints({
-    space, servers: server, tls, names: serveNames, catalog: SERVED_ENDPOINT_CATALOG,
+    space, servers: server, tls, names: serveNames, catalog: artifactStore === undefined ? {} : { artifacts: (ctx) => artifactsServedEndpoint(ctx, artifactStore) },
     store: store ?? workspaceSecretStore(root),
     delivery: ep,
     log: (line) => log.err(line),

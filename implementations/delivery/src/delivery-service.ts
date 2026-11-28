@@ -1,7 +1,8 @@
 import { isAbsolute } from "node:path";
 import type { Command, ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled, CommandFailure, DELIVERY_CREDS_KIND, DELIVERY_PROCESS, localProcessPath, observeServiceStartup, protectedCredentialReference, publishServiceStartup, readPidfile, readProcessRecord, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
-import { runDelivery, SERVED_ENDPOINT_CATALOG } from "./delivery.js";
+import { runDelivery } from "./delivery.js";
+import { SERVED_ENDPOINT_NAMES } from "./served-endpoints.js";
 
 export const deliveryPreset: ServicePreset = {
   kind: "service-preset", name: "delivery", adapter: "delivery", timeoutMs: 40000,
@@ -19,7 +20,7 @@ export const deliveryService: LocalProcess = {
       root: { type: "string", minLength: 1, maxLength: 4096, description: "registered broker root; the native store and SYS scan must share its authority" },
       creds: { type: "string", minLength: 1, maxLength: 4096, description: "existing protected delivery credential in that root's native credential store" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "optional repeat of the registered broker; a different broker refuses" },
-      serve: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", enum: Object.keys(SERVED_ENDPOINT_CATALOG) }, description: "endpoints the daemon also serves (`cotal up --serve`); each binds once the signer holder registers it" },
+      serve: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", enum: [...SERVED_ENDPOINT_NAMES] }, description: "endpoints the daemon also serves (`cotal up --serve`); each binds once the signer holder registers it" },
     } },
   },
   buildServiceLaunch(context) {

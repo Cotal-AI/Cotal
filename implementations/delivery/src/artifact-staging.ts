@@ -2,10 +2,10 @@
  * Staged uploads of the `artifacts` endpoint, held in daemon memory until commit (A1, plan section 5;
  * engineering E17 and E20).
  *
- * Bytes are staged directly in storage framing: full blocks of {@link ARTIFACT_STORE_CHUNK_BYTES} and
- * one partly filled tail, whatever transport chunks carried them. So what is committed is independent of
- * how the caller cut its upload (E17), and the bookkeeping is bounded by the declared size, not by the
- * number of `put-chunk` calls: at most `size / ARTIFACT_STORE_CHUNK_BYTES + 1` blocks.
+ * Bytes are staged directly in storage framing: full blocks of the store's block size, recorded on the
+ * upload at `put-begin`, and one partly filled tail, whatever transport chunks carried them. So what is
+ * committed is independent of how the caller cut its upload (E17), and the bookkeeping is bounded by the
+ * declared size, not by the number of `put-chunk` calls: at most `size / blockBytes + 1` blocks.
  *
  * The charge (E20). A caller lifecycle's uploads are charged their declared size at `put-begin`, and the
  * charge is held until the upload's buffers are released: an upload that is committing stays charged,
@@ -13,7 +13,6 @@
  * buffers are still held. A chunk that carries no byte makes no progress and is refused.
  */
 import { ARTIFACT_MAX_STAGED_BYTES, ARTIFACT_MAX_STAGED_UPLOADS, ARTIFACT_STAGE_TTL_MS } from "@cotal-ai/core";
-import { ARTIFACT_STORE_CHUNK_BYTES } from "./artifact-objects.js";
 import type { Caller } from "./artifact-index.js";
 
 /** One upload: its declared metadata, the blocks staged so far, and where it stands. */
@@ -23,6 +22,9 @@ export interface StagedUpload {
   mediaType: string;
   size: number;
   digest: string;
+  /** The store's block size when the upload began, already checked when the store was resolved. The
+   *  upload is framed by this value to the end, whatever happens to the daemon's store set meanwhile. */
+  blockBytes: number;
   /** Full storage blocks, then the tail block filled to `tailFill`. */
   blocks: Buffer[];
   tail: Buffer | undefined;
@@ -100,7 +102,7 @@ export class StagingLedger {
   append(s: StagedUpload, bytes: Uint8Array): void {
     let at = 0;
     while (at < bytes.byteLength) {
-      s.tail ??= Buffer.allocUnsafe(Math.min(ARTIFACT_STORE_CHUNK_BYTES, s.size - s.blocks.length * ARTIFACT_STORE_CHUNK_BYTES));
+      s.tail ??= Buffer.allocUnsafe(Math.min(s.blockBytes, s.size - s.blocks.length * s.blockBytes));
       const n = Math.min(s.tail.byteLength - s.tailFill, bytes.byteLength - at);
       s.tail.set(bytes.subarray(at, at + n), s.tailFill);
       s.tailFill += n;
