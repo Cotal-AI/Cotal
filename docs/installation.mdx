@@ -1,6 +1,6 @@
 ---
 title: "Install Cotal"
-description: "Install the cotal command or check Linux desktop package support."
+description: "Install the cotal command or install the Linux desktop packages."
 kind: Start here
 audience: "first-time users"
 ---
@@ -171,39 +171,47 @@ Use the original launcher's absolute path to manage its installation and daemon.
 GitHub releases publish x64 Linux desktop packages as `.deb` (`Cotal_<version>_amd64.deb`) and `.rpm` (`Cotal-<version>-1.x86_64.rpm`).
 Both packages require WebKitGTK 4.1 (`libwebkit2gtk-4.1.so.0`) and the Ayatana AppIndicator tray library (`libayatana-appindicator3.so.1`).
 
-Supported Linux versions:
+Tested on (`<dir>` is the folder holding the downloaded package):
 
-- **Ubuntu 24.04 (`.deb`):** Linux desktop packages are built and verified on Ubuntu 24.04:
-
-  ```bash
-  sudo apt install ./Cotal_<version>_amd64.deb
-  ```
-
-- **Fedora 41 and newer (`.rpm`):** WebKitGTK 4.1 is in the default repositories:
+- **Ubuntu 24.04 (`.deb`):**
 
   ```bash
-  sudo dnf install ./Cotal-<version>-1.x86_64.rpm
+  sudo apt-get install <dir>/Cotal_<version>_amd64.deb
   ```
 
-- **Enterprise Linux 10 (`.rpm`):** Verified on CentOS Stream 10 (which AlmaLinux 10 is built from). On RHEL 10, AlmaLinux 10, Rocky Linux 10, and CentOS Stream 10, WebKitGTK 4.1 and the tray library come from EPEL and CRB (CodeReady Builder on RHEL). Without both enabled, `dnf` refuses the `.rpm` with `nothing provides libayatana-appindicator3.so.1()(64bit)` and `nothing provides libwebkit2gtk-4.1.so.0()(64bit)`.
-
-  On AlmaLinux 10, Rocky Linux 10, or CentOS Stream 10, enable EPEL and CRB before installing the `.rpm`:
+- **Fedora 45 (`.rpm`):**
 
   ```bash
-  sudo dnf install dnf-plugins-core epel-release
-  sudo dnf config-manager --set-enabled crb
-  sudo dnf install ./Cotal-<version>-1.x86_64.rpm
+  sudo dnf install <dir>/Cotal-<version>-1.x86_64.rpm
   ```
 
-  On RHEL 10, enable the CodeReady Builder repository and EPEL 10 first, then run `sudo dnf install ./Cotal-<version>-1.x86_64.rpm`.
+- **openSUSE Tumbleweed (`.rpm`):** The published `.rpm` is unsigned, so pass `--allow-unsigned-rpm`:
+
+  ```bash
+  sudo zypper install --allow-unsigned-rpm <dir>/Cotal-<version>-1.x86_64.rpm
+  ```
+
+- **CentOS Stream 10 (`.rpm`):** Enable EPEL and CRB as root before installing the `.rpm`:
+
+  ```bash
+  dnf install dnf-plugins-core epel-release && dnf config-manager --set-enabled crb
+  ```
+
+  Then install the `.rpm`:
+
+  ```bash
+  sudo dnf install <dir>/Cotal-<version>-1.x86_64.rpm
+  ```
+
+Enterprise Linux 10 needs EPEL and CRB (CodeReady Builder on RHEL) for WebKitGTK 4.1 and the tray library. Without both enabled, `dnf` refuses the `.rpm` with `nothing provides libayatana-appindicator3.so.1()(64bit)` and `nothing provides libwebkit2gtk-4.1.so.0()(64bit)`.
 
 ### Enterprise Linux 9
 
 RHEL 9, AlmaLinux 9, and Rocky Linux 9 ship WebKitGTK 4.0 (`webkit2gtk3`), and EPEL 9 does not add WebKitGTK 4.1.
 The desktop `.rpm` cannot be installed on version 9 (`dnf` fails with `nothing provides libwebkit2gtk-4.1.so.0()(64bit)` even with EPEL and CRB enabled).
 
-On RHEL, AlmaLinux, or Rocky Linux 9, install the [command-line CLI](#use-the-shell-installer) instead.
-The shell installer installs `cotal-ai` with its own Node 24 runtime, and the background service runs without the desktop window (verified on AlmaLinux 9.9):
+On RHEL, AlmaLinux, or Rocky Linux 9, use the [command-line install](#use-the-shell-installer) instead.
+The shell installer installs `cotal-ai` with its own Node 24 runtime, and the background service runs without the desktop window (tested on AlmaLinux 9.9):
 
 ```bash
 sudo dnf install tar

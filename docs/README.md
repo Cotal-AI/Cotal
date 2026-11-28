@@ -47,7 +47,7 @@ Task dispatch:
 | Page | Covers |
 |---|---|
 | [What is Cotal](what-is-cotal.mdx) | How Cotal lets agents and other software find each other and exchange messages. |
-| [Install Cotal](installation.mdx) | Install the cotal command or check Linux desktop package support. |
+| [Install Cotal](installation.mdx) | Install the cotal command or install the Linux desktop packages. |
 | [Quickstart](getting-started.mdx) | Start a local Cotal mesh, launch an agent, and watch it join. |
 | [Choose a workflow](using-cotal.mdx) | Choose how to connect sessions, join spaces, launch teams, and run durable work. |
 | [Examples](examples.mdx) | Choose a working example of agents collaborating through Cotal. |
