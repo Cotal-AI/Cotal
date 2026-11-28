@@ -28,7 +28,7 @@ import {
   loadOrCreateDaemonEndpointServeIdentity,
 } from "./daemon-endpoint-material.js";
 import { registerDaemonEndpoint, remintDaemonEndpointServe, writeDaemonEndpointReady, type DaemonEndpointContract } from "./daemon-endpoint-registration.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 
 /** A store credential a served endpoint needs beside its serve credential: the profile it is minted
  *  under and the material kind it is written to. Its nkey is fresh on every mint. */
@@ -55,6 +55,24 @@ export const DAEMON_ENDPOINT_BOOTSTRAPS: Readonly<Record<string, () => DaemonEnd
   }),
 });
 
+/** Parse the endpoint names `cotal up --serve` takes: comma-separated, deduplicated, each one an
+ *  endpoint the signer holder can bootstrap. Throws naming the unknown names and the known ones. */
+export function parseServeEndpoints(raw: string): string[] {
+  const names = [...new Set(raw.split(",").map((n) => n.trim()).filter((n) => n.length > 0))];
+  if (names.length === 0) throw new Error("--serve needs an endpoint name (for example --serve artifacts)");
+  const unknown = names.filter((n) => !Object.hasOwn(DAEMON_ENDPOINT_BOOTSTRAPS, n));
+  if (unknown.length)
+    throw new Error(`--serve ${unknown.join(",")}: the delivery daemon serves only ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(", ")}`);
+  return names;
+}
+
+/** A daemon whose lease is ready but whose start-up has not finished refuses an adoption with this
+ *  text, adopting nothing. The launcher returns as soon as the lease is ready, so the first adoption
+ *  can land in that window; it is waited out like an unanswered rail, not reported as a failure. */
+const STILL_STARTING = /has not finished starting; nothing adopted/;
+
+class DaemonStillStarting extends Error {}
+
 /** Send one delivery-admin request on a scoped, short-lived `endpoint-evictor` credential: the one
  *  profile that publishes exactly that rail and nothing else. */
 async function deliveryAdmin(
@@ -63,10 +81,21 @@ async function deliveryAdmin(
   args: Record<string, unknown>,
   log: (line: string) => void,
 ): Promise<ControlReply> {
-  return untilDeliveryAdminAnswers(DELIVERY_ADMIN_BOOT_WAIT_MS, (requestMs) =>
-    withScopedEndpoint({ space: target.space, servers: target.servers, auth: target.auth, tlsRequired: target.tls }, "endpoint-evictor", `delivery-endpoint-${op}`,
-      (ep) => ep.requestDeliveryAdmin(op, args, requestMs(20_000))),
-  (reason, delayMs) => log(`• ${String(args.endpoint)}: waiting for the delivery daemon's admin rail (${reason}); retrying in ${delayMs}ms`));
+  let last: ControlReply | undefined;
+  try {
+    return await untilDeliveryAdminAnswers(DELIVERY_ADMIN_BOOT_WAIT_MS, async (requestMs) => {
+      const reply = await withScopedEndpoint({ space: target.space, servers: target.servers, auth: target.auth, tlsRequired: target.tls }, "endpoint-evictor", `delivery-endpoint-${op}`,
+        (ep) => ep.requestDeliveryAdmin(op, args, requestMs(20_000)));
+      if (!reply.ok && STILL_STARTING.test(reply.error ?? "")) { last = reply; throw new DaemonStillStarting(reply.error); }
+      return reply;
+    },
+    (reason, delayMs) => log(`• ${String(args.endpoint)}: waiting for the delivery daemon's admin rail (${reason}); retrying in ${delayMs}ms`),
+    (e) => e instanceof DaemonStillStarting || isUnansweredDeliveryAdmin(e));
+  } catch (e) {
+    // The wait ended while the daemon was still starting: its own refusal is the answer.
+    if (e instanceof DaemonStillStarting && last !== undefined) return last;
+    throw e;
+  }
 }
 
 /** Register a delivery-served endpoint, hand its credentials to the daemon, and write `ready` on the

@@ -9,8 +9,9 @@ import {
   openPrivateAppend,
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
+  type SpaceAuth,
 } from "@cotal-ai/core";
-import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, DAEMON_ENDPOINT_BOOTSTRAPS, authDir, bootstrapDaemonEndpoint, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, DAEMON_ENDPOINT_BOOTSTRAPS, authDir, bootstrapDaemonEndpoint, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, findMesh, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { daemonArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -264,6 +265,10 @@ export async function ensureDelivery(
 
   const space = o.space ?? folderSpace();
   const root = cotalRoot();
+  // The endpoints to serve: the caller's, else the decision `cotal up --serve` recorded for this mesh.
+  // Every relaunch (a foreground restart of a dead daemon, a refused `down --preserve` cut, a repair)
+  // comes through here without the operator's flags, so reading the record here keeps them all.
+  o = { ...o, serve: o.serve ?? findMesh(space)?.serve };
   if (oldHostingManagerVerdict(managerRecordState(space, root, { probe }), space, probe, root) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
@@ -388,17 +393,8 @@ export async function ensureDelivery(
         `  Check it with \`${displayCmd()} status --components\` (delivery row) and read ${canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space))} for the daemon's own reason.`,
     );
   // The endpoints asked for (plan section 2, E1): the daemon is up and answers delivery-admin, so the
-  // registration barrier has its eviction oracle. Register each one, hand the daemon its credentials,
-  // and write `ready` on the daemon's proof. A failure is loud and the caller hears it: an asked-for
-  // endpoint that did not bind is never reported as served.
-  if (o.serve?.length) {
-    if (!ready) throw new Error(`the delivery daemon's responder is not bound, so ${o.serve.join(", ")} cannot be registered; nothing was served`);
-    for (const name of o.serve) {
-      const spec = DAEMON_ENDPOINT_BOOTSTRAPS[name];
-      if (spec === undefined) throw new Error(`--serve ${name}: the delivery daemon serves only ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(", ")}`);
-      await bootstrapDaemonEndpoint({ auth, servers: server, space, tls: o.tls === true, store: credsStore(), log: (line) => console.error(line) }, spec());
-    }
-  }
+  // registration barrier has its eviction oracle.
+  if (o.serve?.length) await bootstrapServedEndpoints(o.serve, ready, { auth, server, space, tls: o.tls === true });
   // The caller hears WHICH of the two states it got. `running` still means "a daemon process is
   // there" (unchanged for every existing caller), but a caller that needs the responder — anything
   // that is about to spawn, retire or join — can now ask instead of assuming, which it could not do
@@ -407,6 +403,20 @@ export async function ensureDelivery(
 }
 
 export { DELIVERY_PROCESS } from "@cotal-ai/workspace";
+
+/** Register each asked-for endpoint, hand the daemon its credentials, and write `ready` on the daemon's
+ *  proof. A failure is loud and the caller hears it: an asked-for endpoint that did not bind is never
+ *  reported as served. A responder not yet bound is not a refusal here: each bootstrap waits, bounded,
+ *  for the daemon's delivery-admin rail and for its start-up to finish, and fails loud when that wait
+ *  ends. On a loaded host the lease wait can end first while the daemon is still coming up. */
+async function bootstrapServedEndpoints(serve: readonly string[], ready: boolean, t: { auth: SpaceAuth; server: string; space: string; tls: boolean }): Promise<void> {
+  if (!ready) console.error(`• delivery: waiting for the daemon to answer before registering ${serve.join(", ")}`);
+  for (const name of serve) {
+    const spec = DAEMON_ENDPOINT_BOOTSTRAPS[name];
+    if (spec === undefined) throw new Error(`--serve ${name}: the delivery daemon serves only ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(", ")}`);
+    await bootstrapDaemonEndpoint({ auth: t.auth, servers: t.server, space: t.space, tls: t.tls, store: credsStore(), log: (line) => console.error(line) }, spec());
+  }
+}
 
 /** Remove this space's delivery credentials after its required process stops have succeeded. */
 export async function removeDeliveryCredentials(space: string): Promise<void> {

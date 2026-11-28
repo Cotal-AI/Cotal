@@ -100,7 +100,7 @@ import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } f
 import { adoptedTlsRequired } from "./up-transport.js";
 import { reconcileHostAndServer } from "./up-host.js";
 import { recreateAdoptedMemoryBuckets } from "./up-stores.js";
-import { startUserAuthService, startDeliveryWithBroker, attachHostFor, maxSessionsFor, recordOurMesh } from "./up-detach.js";
+import { startUserAuthService, startDeliveryWithBroker, attachHostFor, maxSessionsFor, serveFor, recordOurMesh } from "./up-detach.js";
 import type { RestoreStartupResult } from "./up.js";
 
 /** The human receipt for a completed `up --restore`. `backup restore` prints its own receipt. */
@@ -596,6 +596,7 @@ export async function adoptProvenListener(
   // below would then be launched loopback-only from an entry that no longer remembers otherwise.
   const attachHost = attachHostFor(attempt.space);
   const maxSessions = maxSessionsFor(attempt.space);
+  const serve = serveFor(attempt.space);
   // Adopted from the recorded policy: an adopted listener was started from it, never from a default.
   const tlsRequired = adoptedTlsRequired(attempt.root);
   recordOurMesh({
@@ -607,6 +608,7 @@ export async function adoptProvenListener(
     ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
     ...(attachHost ? { attachHost } : {}),
     ...(maxSessions !== undefined ? { maxSessions } : {}),
+    ...(serve ? { serve } : {}),
     ...(attempt.maxFileStore !== undefined ? { maxFileStore: attempt.maxFileStore } : {}),
     storeDir: resolve(storeDir),
     ts: new Date().toISOString(),
@@ -615,6 +617,7 @@ export async function adoptProvenListener(
     runtime: attempt.runtime,
     attachHost,
     maxSessions,
+    ...(serve ? { serve } : {}),
     resumeAttempt: attempt.attemptId,
     resumeCommit: commitTokenHandoff(attempt.root, attempt.managerCommit !== undefined, heldLock),
   });

@@ -68,6 +68,11 @@ export interface MeshEntry {
    * The browser console opens one session per pane, so the right number is roughly agents × panes.
    */
   maxSessions?: number;
+  /** The endpoints the operator asked the delivery daemon to serve (`cotal up --serve`). Recorded
+   *  because it is a DECISION: a foreground restart of a dead daemon, a same-root repair, a resume
+   *  and a refused `down --preserve` cut all relaunch the daemon without the operator's flags, and
+   *  without this field each would silently stop serving what was asked for. Absent means none. */
+  serve?: string[];
   /** The JetStream file storage cap in bytes the running broker was started with (`cotal up
    *  --max-file-store`). `down --preserve-state` copies it into the preserved launch so the resume
    *  re-renders it, and a refresh compares a requested cap against it. Absent means the broker runs

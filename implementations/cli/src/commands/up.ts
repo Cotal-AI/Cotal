@@ -84,6 +84,8 @@ import {
   recordOperationWarning,
   NATS_PIDFILE,
   terminalWidth,
+  DAEMON_ENDPOINT_BOOTSTRAPS,
+  parseServeEndpoints,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveAuthProvider } from "../lib/auth-proc.js";
@@ -197,6 +199,7 @@ import {
   claimSpace,
   attachHostFor,
   maxSessionsFor,
+  serveFor,
   recordOurMesh,
   seedPersonaAfterUp,
   belowPresenceSafeBroker,
@@ -300,6 +303,7 @@ export const upFlags: FlagSpec[] = [
   { name: "manager-name", type: "string", value: "<name>", description: "name this root's manager for who --all, the manager choice and --on; kept for later starts" },
   { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this root's manager admits per owner (default unlimited); kept for later starts" },
   { name: "no-manager", type: "boolean", description: "broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager (refuses on a mesh whose manager is live)" },
+  { name: "serve", type: "string", value: "<endpoints>", description: "auth mode: the delivery daemon also serves these endpoints (comma-separated, for example artifacts); each is registered and bound before up reports success, and kept for later starts" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
   { ...jsonFlag, description: "one structured receipt on stdout (controller-owned stack only, without --foreground)" },
@@ -510,6 +514,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     "manager-name"?: string;
     "seat-cap"?: string;
     "no-manager"?: boolean;
+    serve?: string;
     json?: boolean; plain?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
@@ -969,6 +974,16 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   const noManager = Boolean(values["no-manager"]);
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
+  // `--serve`: the endpoints the delivery daemon also serves. Parsed before anything starts, so an
+  // unknown name is refused without touching a broker. An open mesh runs no delivery daemon and a
+  // manifest launch renders no daemon flags, so either combination is refused, never dropped.
+  let serve: string[] | undefined;
+  if (values.serve !== undefined) {
+    try { serve = parseServeEndpoints(values.serve); }
+    catch (e) { throw new FlagValueRefusal(`${(e as Error).message}, so nothing was started`, `name ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(" or ")}`); }
+    if (values.open) throw new FlagValueRefusal("--serve needs the delivery daemon, and an open mesh (--open) runs none, so nothing was started", "drop --serve, or drop --open to start an auth mesh");
+    if (values.file) throw new FlagValueRefusal("--serve cannot be combined with --file/-f: a manifest launch does not take it, so nothing was started", "drop --serve, or start the mesh without -f");
+  }
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   const logFile = values["log-file"] === undefined ? undefined : resolve(values["log-file"]);
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", values["logfile-size-limit"]);
@@ -1111,7 +1126,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       const prepare = async () => {
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
-          return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
+          return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(serve ? { serve } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
             managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
@@ -1712,6 +1727,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         runtime: values.runtime,
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
+        ...(serveFor(held.space, serve) ? { serve: serveFor(held.space, serve) } : {}),
         managerName,
         managerSeatCap,
         noManager,
@@ -1726,7 +1742,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // record as ours (see `Provenance`), and it passes only what this invocation decided.
       // `recordOurMesh` carries everything else (`tlsRequired`, the recorded host and session
       // ceiling, the store) from the record as it stands at write time, not from `held`.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(serve ? { serve } : {}), ts: new Date().toISOString() }, "refresh");
       if (noManager && held.mode !== "open") recordOperationWarning(await noManagerCredentialWarning(root, held.space));
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
@@ -1840,6 +1856,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       host: values.host,
       runtime: values.runtime,
       maxSessions,
+      ...(serve ? { serve } : {}),
       managerName,
       managerSeatCap,
       noManager,
@@ -1993,6 +2010,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
       maxSessions,
+      ...(serve ? { serve } : {}),
       managerName,
       managerSeatCap,
       maxFileStore,

@@ -143,6 +143,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--recreate-issued-stores` (2026-10): on a fresh broker start, back up the space's pre-0.111.0
       // issued-authority stores into a new directory, delete them and create them again.
       "recreate-issued-stores:string",
+      // `--serve` (2026-11): the delivery daemon also serves these endpoints (the artifacts plane),
+      // registered from the signer holder and recorded so every relaunch keeps them.
+      "serve:string",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -432,7 +435,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   "__service-delivery": {
-    flags: ["creds:string", "ready-file:string", "root:string", "server:string", "service-instance:string", "service-request:string", "space:string", "tls:boolean"],
+    flags: ["creds:string", "ready-file:string", "root:string", "serve:string", "server:string", "service-instance:string", "service-request:string", "space:string", "tls:boolean"],
     positionals: false,
   },
   "__service-exec-endpoint": {

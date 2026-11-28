@@ -20,7 +20,7 @@ import {
   type SecretStore,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, isWorkspaceTargetError, listenForLocalStop, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import { DAEMON_ENDPOINT_BOOTSTRAPS, DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, bootstrapDaemonEndpoint, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, isWorkspaceTargetError, listenForLocalStop, loadSpaceAuth, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
@@ -83,6 +83,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStart
   let releaseOnStartupFailure: (() => Promise<void>) | undefined;
   try {
     const started = await runStartedDelivery(args, store, (r) => { releaseOnStartupFailure = r; }, { kind: "cli" });
+    await devMintServedEndpoints(args, started);
     if (onStarted) await onStarted(started);
   } catch (e) {
     if (releaseOnStartupFailure !== undefined) {
@@ -92,6 +93,21 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStart
     throw e;
   }
   await new Promise<void>(() => {}); // CLI runs until signalled
+}
+
+/** `deliver --serve <names> --dev-mint`: a standalone dev daemon has nobody else to hold the signer, so
+ *  once it is up and its delivery-admin rail answers it registers each endpoint it was asked to serve
+ *  from the local signer, the way `cotal up --serve` does (E9). Without `--dev-mint` the daemon never
+ *  reads the signer and waits for the signer holder's adoption, as before. A failure is the start-up
+ *  failure: an asked-for endpoint that did not bind is never reported as served. */
+async function devMintServedEndpoints(args: ParsedArgs, started: Awaited<ReturnType<typeof runStartedDelivery>>): Promise<void> {
+  const { space, server, tls, root, serve, store } = started.target;
+  if (args.values["dev-mint"] === undefined || serve.length === 0) return;
+  const auth = loadSpaceAuth(authDir(root), space);
+  if (!auth) throw new Error(`delivery --dev-mint --serve: no .cotal/auth for space "${space}" here to register ${serve.join(", ")} with`);
+  console.error(`⚠ delivery: --dev-mint --serve — registering ${serve.join(", ")} from the LOCAL SIGNER (DEV ONLY; \`cotal up --serve\` registers them from the signer holder)`);
+  for (const name of serve)
+    await bootstrapDaemonEndpoint({ auth, servers: server, space, tls, store, log: (line) => console.error(line) }, DAEMON_ENDPOINT_BOOTSTRAPS[name]!());
 }
 
 /** One data-account connection a hosted delivery context holds. The label says which part of the
@@ -233,7 +249,7 @@ async function runStartedDelivery(
   store: SecretStore | undefined,
   publishReleaser: (release: () => Promise<void>) => void,
   owner: DeliveryOwner,
-): Promise<{ status(): DeliveryStatus; close(): Promise<void>; ended: Promise<string>; nativeConnections(): DeliveryNativeConnection[] }> {
+): Promise<{ status(): DeliveryStatus; close(): Promise<void>; ended: Promise<string>; nativeConnections(): DeliveryNativeConnection[]; target: { space: string; server: string; tls: boolean; root: string; serve: readonly string[]; store: SecretStore } }> {
   const hosted = owner.kind === "hosted" ? owner.inputs : undefined;
   const held = owner.kind !== "cli";
   const log = owner.kind === "lane" ? owner.log : consoleLog;
@@ -1247,5 +1263,6 @@ async function runStartedDelivery(
     close,
     ended,
     nativeConnections,
+    target: { space, server, tls, root, serve: serveNames, store: store ?? workspaceSecretStore(root) },
   };
 }
