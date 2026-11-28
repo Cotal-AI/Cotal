@@ -99,6 +99,10 @@ export function telemetryErrorText(command: string, error: unknown): ErrorText {
   // A spawn diagnostic can include native terminal output or the original launch arguments.
   if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
       || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
+  // A missing Manager pin names the requested instance, its space and any running instances.
+  if (isCommandFailure(error) && (error.code === "TARGET_NOT_FOUND" || error.code === "TARGET_UNAVAILABLE") &&
+      error.target !== null && typeof error.target === "object" && "requestedManagerInstance" in error.target &&
+      typeof error.target.requestedManagerInstance === "string") return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
