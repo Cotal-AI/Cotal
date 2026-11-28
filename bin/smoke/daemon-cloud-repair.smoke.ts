@@ -24,7 +24,9 @@
  *  U3  a plan that moves or starts the service is refused needs-this-computer and 0 applies run; a takeover
  *      consent from Cloud is dropped;
  *  U4  a Windows path, a macOS home path, a command and the person's names in Repair's words never reach the ack;
- *  U5  an ack keeps at most 32 steps and 300 characters a string, and fits its share of the heartbeat.
+ *  U5  an ack keeps at most 32 steps and 300 characters a string, and fits its share of the heartbeat;
+ *  U6  a plan with a connectors fix applies from the account, and its found text with a seed path and
+ *      a command comes out as the fixed words.
  *
  * Run: tsx bin/smoke/daemon-cloud-repair.smoke.ts   (Linux and macOS)
  */
@@ -304,6 +306,25 @@ await cell("U5 an ack keeps at most 32 steps and 300 characters a string", async
   const strings = JSON.stringify(answered).match(/"(?:[^"\\]|\\.)*"/g) ?? [];
   assert.equal(strings.filter(item => item.length - 2 > 300).length, 0, "no string over 300 characters");
   assert.ok(Buffer.byteLength(JSON.stringify(answered)) <= ACK_MAX_BYTES, "within its share of the heartbeat");
+  await repair.close();
+});
+await cell("U6 a connectors fix applies from the account, in fixed words", async () => {
+  const connectors: RepairPlan = { digest: "e".repeat(64), steps: [
+    step("service-owner", "ok", "This copy of Cotal runs the background service."),
+    step("connectors" as RepairStep["step"], "fix", "failed to seed connector \"claude\" from ~/.config/cotal/seed/store/0.177.0/claude: npm is not on PATH - run `cotal ext seed --repair`", { change: "Set up the agent app connectors again." }),
+  ] };
+  const { repair, calls, account, settle } = door(connectors);
+  const one = account("connectors");
+  repair.offer(one, { revision: 1, request: "apply", digest: connectors.digest, consent: [] }, true);
+  await settle(() => repair.ack(one) !== undefined);
+  const applied = repair.ack(one)!;
+  assert.equal(applied.state, "applied", `answered ${applied.state}${applied.reason ? ` ${applied.reason}` : ""}`);
+  assert.equal(calls.apply, 1, "1 apply ran");
+  const row = applied.steps?.find(item => item.step === "connectors");
+  assert.equal(row?.found, "Cotal couldn't set up the agent app connectors on this computer.", "the fixed words");
+  assert.equal(row?.change, "Set up the agent app connectors again.");
+  assert.equal(row?.changed, true);
+  for (const leak of ["npm", ".config", "seed --repair", "~", "`"]) assert.ok(!JSON.stringify(applied).includes(leak), `the ack has no ${leak}`);
   await repair.close();
 });
 console.log(`${passed} of ${passed + failures.length} cells passed${failures.length ? `; failed: ${failures.join(", ")}` : ""}. Fixture kept at ${root}`);

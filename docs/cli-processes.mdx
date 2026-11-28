@@ -902,9 +902,10 @@ characters. Repair's words are sent only when they carry no path, command, accou
 name, computer name or space name; otherwise the step carries fixed words for its kind. What the
 service said is never sent.
 
-Only finding agent apps, starting stopped spaces and removing an old registration run from the
-account. The only consent the host can give is `remove-old-registration`. Moving, setting up or
-starting the service needs the person at this computer.
+Only finding agent apps, setting up the agent app connectors again, starting stopped spaces and
+removing an old registration run from the account. The only consent the host can give is
+`remove-old-registration`. Moving, setting up or starting the service needs the person at this
+computer.
 
 Each account keeps the last revision it handled in `repair.json` beside its computer identity, so a
 repeated request, an unchanged poll or a service restart never runs a revision again. Once an

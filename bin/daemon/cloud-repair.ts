@@ -15,7 +15,8 @@
  * - A run the service did not finish because it restarted is answered `interrupted` with a fresh
  *   plan, and never runs again.
  * - Only steps that are safe without the person at this computer run from Cloud: finding agent apps,
- *   starting stopped spaces and removing an old registration. A plan that needs any other change is
+ *   setting up the agent app connectors again, starting stopped spaces and removing an old
+ *   registration. A plan that needs any other change is
  *   refused `needs-this-computer`, and its steps show that change as `needs-you`. Reset is never
  *   accepted.
  * - The ack carries fixed plain words, booleans and space ids only: never a path, a person's or
@@ -71,7 +72,7 @@ export interface RepairAck {
 /** The only consent Cloud can give. Moving or starting the service needs the person at this computer. */
 const REMOTE_CONSENTS: readonly RepairConsent[] = ["remove-old-registration"];
 /** The steps a Cloud request may run. Every other step changes the service itself. */
-const REMOTE_STEPS: ReadonlySet<string> = new Set(["agent-apps", "spaces", "stale-registration"]);
+const REMOTE_STEPS: ReadonlySet<string> = new Set(["agent-apps", "connectors", "spaces", "stale-registration"]);
 
 /** Read the request Cloud wrote. Undefined when there is none or it has no usable revision. */
 export function parseRepairRequest(raw: unknown): CloudRepairRequest | undefined {
@@ -105,6 +106,7 @@ const FALLBACK: Record<string, string> = {
   "service-owner": "The background service needs a change made on this computer.",
   "service-running": "The background service needs a change made on this computer.",
   "agent-apps": "The background service has not found your agent apps.",
+  connectors: "Cotal couldn't set up the agent app connectors on this computer.",
   spaces: "Some spaces have stopped on this computer.",
   "stale-registration": "An old copy of this computer's agent host is still registered in a space.",
   account: "An account on this computer needs you to sign in again.",
