@@ -57,6 +57,7 @@ import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { serviceApplicationPath } from "./desktop-path.js";
 import { removeAllServiceRecords } from "./service-records.js";
 import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, servicePolicyRepairFile, serviceRepairFile, sourceDigest } from "./service-repair.js";
+import { claimSuspendableServiceRepairLock, DAEMON_SYSTEMD_START_TIMEOUT_SEC, startSystemdDaemonUnit } from "./startup-recovery.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -130,7 +131,7 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     "[Service]",
     "Type=notify",
     "NotifyAccess=all",
-    "TimeoutStartSec=60",
+    `TimeoutStartSec=${DAEMON_SYSTEMD_START_TIMEOUT_SEC}`,
     `Environment=PATH=${unitValue(serviceApplicationPath())}`,
     "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
     `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
@@ -450,6 +451,20 @@ interface UninstallPlan {
   readonly installedAt: string;
 }
 
+export interface DaemonStartPlan extends UninstallPlan {
+  /** Non-enumerable version pin when startup update-recovery restored the previous CLI. */
+  readonly recoveredVersion?: string;
+}
+
+function withRecoveredVersion(plan: UninstallPlan, recoveredVersion: string | undefined): DaemonStartPlan {
+  if (!recoveredVersion) return plan;
+  return Object.defineProperty({ ...plan }, "recoveredVersion", {
+    value: recoveredVersion,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
 function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undefined {
   if (process.platform !== "linux") return undefined;
   const unitDirectory = systemdUserUnitDirectory();
@@ -562,21 +577,28 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
 }
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
-export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
-  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<DaemonStartPlan> {
+  const lock = await claimSuspendableServiceRepairLock(join(paths.state, "service-repair.lock"));
   try {
   assertDesktopSetupComplete();
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service) service.start(receipt);
-  else submitSystemdUnitControl("start", plan.unit);
-  return plan;
-  } finally { lock?.release(); }
+  if (service) {
+    service.start(receipt);
+    return plan;
+  }
+  const { recoveredVersion } = await startSystemdDaemonUnit(paths, daemonHome, plan.unit, {
+    refusalStyle: "unit-control",
+    serviceEnv: process.env,
+    suspendServiceLock: lock.suspend,
+  });
+  return withRecoveredVersion(plan, recoveredVersion);
+  } finally { lock.release(); }
 }
 
 /** Start only an enabled, same-installation POSIX unit or LaunchAgent during update, never overriding an operator disable. */
 export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: string | undefined): Promise<{ started: boolean; unit: string; state: string }> {
-  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  const lock = await claimSuspendableServiceRepairLock(join(paths.state, "service-repair.lock"));
   try {
   assertDesktopSetupComplete();
   const recorded = recordedUnit(paths, daemonHome);
@@ -593,9 +615,12 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
   const state = read.stdout.trim();
   if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} reported an empty UnitFileState; nothing was started`);
   if (state !== "enabled") return { started: false, unit: plan.unit, state };
-  submitSystemdUnitControl("start", plan.unit, daemonUserServiceEnv());
+  await startSystemdDaemonUnit(paths, daemonHome, plan.unit, {
+    refusalStyle: "unit-control",
+    suspendServiceLock: lock.suspend,
+  });
   return { started: true, unit: plan.unit, state: "enabled" };
-  } finally { lock?.release(); }
+  } finally { lock.release(); }
 }
 
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
@@ -1174,19 +1199,22 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
 }
 
 /** Restart only the source and native job recorded for this daemon. */
-export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
-  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void, automatic?: WindowsAutomaticRestart): Promise<DaemonStartPlan> {
+  const lock = await claimSuspendableServiceRepairLock(join(paths.state, "service-repair.lock"));
   try {
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, false, automatic);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service) service.restart(receipt, reload);
-  else {
-    submitSystemdUnitControl("stop", plan.unit, daemonUserServiceEnv());
-    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit], daemonUserServiceEnv());
-    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run \`cotal daemon start\`" });
+  if (service) {
+    service.restart(receipt, reload);
+    return plan;
   }
-  return plan;
-  } finally { lock?.release(); }
+  submitSystemdUnitControl("stop", plan.unit, daemonUserServiceEnv());
+  const { recoveredVersion } = await startSystemdDaemonUnit(paths, daemonHome, plan.unit, {
+    refusalStyle: "daemon-restart",
+    suspendServiceLock: lock.suspend,
+  });
+  return withRecoveredVersion(plan, recoveredVersion);
+  } finally { lock.release(); }
 }
 
 interface UninstallResult extends UninstallPlan {

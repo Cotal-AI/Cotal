@@ -26,6 +26,7 @@ import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLife
 import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { reclaimInterruptedUpdateSnapshots } from "./update-snapshot-cleanup.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
+import { nativeStartupUpdateRecoveryParent } from "./startup-recovery.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
@@ -186,7 +187,7 @@ const composed: Command = { ...command, async run(args) {
   let admission: UpdateAdmission | undefined;
   const staged = Boolean(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const standaloneReconcile = args.values.self !== true && !process.env.COTAL_UPDATE_PARENT;
-  const recoveryAdmission = readUpdateRecovery();
+  const recoveryAdmission = readUpdateRecovery(), skipStartupRecoveryWait = nativeStartupUpdateRecoveryParent(recoveryAdmission);
   if (recoveryAdmission?.admission && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && recoveryAdmission.owner?.pid === process.ppid && recoveryAdmission.phase !== "restoring" && recoveryAdmission.target === updateRuntime.version()) {
     const release = claimUpdateClosureAccess(); release();
     admission = recoveryAdmission.admission;
@@ -451,9 +452,9 @@ const composed: Command = { ...command, async run(args) {
       }
     };
   }, waitForInstalledGeneration: async (version: string) => {
+    if (skipStartupRecoveryWait) return;
     if (admission?.disposition === "deferred") {
-      // The reconcile child must finish successfully. The publishing parent owns the final outcome.
-      if (!systemdActivationDeferred() || !targetReceipt?.daemon) return;
+      if (!systemdActivationDeferred() || !targetReceipt?.daemon) return; // Reconcile child finishes; parent owns outcome.
       const pid = targetReceipt.daemon.pid;
       let current: Awaited<ReturnType<typeof queryDaemon>> | undefined;
       try { current = await queryDaemon({ paths: daemonPaths(), timeoutMs: 5_000 }); }
