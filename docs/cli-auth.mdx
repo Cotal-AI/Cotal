@@ -560,6 +560,7 @@ expiry. To move to a new join credential before expiry, mint a fresh key to a se
 A run with no findings says so in its heading only when nothing else is printed. While an exported
 file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
 names each, such as `2 exported credential files need attention`. The exit code stays 0.
+If doctor cannot list the selected space's agent credential directory, it names the directory and reports how to check access. It does not report an empty inventory.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
