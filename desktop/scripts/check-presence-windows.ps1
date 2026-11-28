@@ -239,9 +239,12 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $deadline = (Get-Date).AddSeconds(60)
     do { Start-Sleep -Milliseconds 500; $running = @(& $mineNow | Where-Object { $_.Name -eq 'node.exe' }) } while ($running.Count -lt 1 -and (Get-Date) -lt $deadline)
     if ($running.Count -lt 1) { throw "$kind background service has no running daemon after install" }
+    # The task's one-minute trigger starts the service again after a stop, so a new launcher and daemon can
+    # appear inside this wait. Only the processes that ran when the task was ended must be gone.
+    $beforeStop = @(& $mineNow | ForEach-Object { $_.ProcessId })
     Get-ScheduledTask | Where-Object { $_.TaskName -ceq $serviceTask } | Stop-ScheduledTask
     $deadline = (Get-Date).AddSeconds(15)
-    do { Start-Sleep -Milliseconds 500; $left = & $mineNow } while ($left.Count -gt 0 -and (Get-Date) -lt $deadline)
+    do { Start-Sleep -Milliseconds 500; $left = @(& $mineNow | Where-Object { $beforeStop -contains $_.ProcessId }) } while ($left.Count -gt 0 -and (Get-Date) -lt $deadline)
     if ($left.Count -ne 0) { throw "$kind ending the background service task left $($left.Count) process(es) running: $(($left | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" }
     Get-ScheduledTask | Where-Object { $_.TaskName -ceq $serviceTask } | Start-ScheduledTask
     # The disconnected welcome cannot enable startup. Seed the real plugin's exact Run entry to test uninstaller cleanup separately.
