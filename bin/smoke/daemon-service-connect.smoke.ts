@@ -2274,9 +2274,14 @@ process.stdin.once('data', () => {
             const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], ...bounded });
             let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
             const code = await new Promise<number | null>((resolve, reject) => { seedChild.once("error", reject); seedChild.once("close", resolve); });
-            const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
-            check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
-            if (finishConnectorUpdate) { assert.equal(code, 0, output); assertSeededInventory("0.151.2"); }
+            if (finishConnectorUpdate) {
+              assert.equal(code, 0, output);
+              assertSeededInventory("0.151.2");
+              console.log("  ✓ old CLI reports the seeded stock connector at 0.151.2");
+            } else {
+              const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+              check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+            }
           }
         }
       }
@@ -4284,44 +4289,47 @@ process.exit(result.status ?? 93);
             const config = join(root, "config");
             const runUpdate = async (...flags: string[]) => {
               const updater = spawn(cliNode, [cliEntry, "update", ...flags], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 240_000, killSignal: "SIGKILL" });
-              let output = "";
-              updater.stdout.on("data", b => { output += String(b); }); updater.stderr.on("data", b => { output += String(b); });
+              let out = "", err = "";
+              updater.stdout.on("data", b => { out += String(b); }); updater.stderr.on("data", b => { err += String(b); });
               const code = await new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("close", resolve); });
-              return { code, output };
+              return { code, out, output: out + err };
             };
+            type Service = { version: string; pid: number; generation?: { waiting: string }; managers?: { state: string; space: string }[] };
+            const observeService = async () => resultOf(await ask(paths.socket, { op: "status" }, 5000)) as Service;
             const oldPid = child.pid;
             chmodSync(config, 0o777);
             try {
               const deferred = await runUpdate("--self", "--json");
               assert.equal(deferred.code, 4, deferred.output);
-              const doc = JSON.parse(deferred.output);
+              const doc = JSON.parse(deferred.out);
               assert.equal(doc.outcome, "partial");
               assert.equal(doc.completeness, "partial");
               assert.equal(doc.error.code, "OPERATION_PARTIAL");
               assert.deepEqual(doc.result, { version: "0.151.3", releaseInstalled: true, reconciliation: "deferred" });
-              let waiting = await cli("status");
-              for (let i = 0; i < 30 && !waiting.doc.result?.generation?.waiting; i++) {
+              let waiting = await observeService();
+              for (let i = 0; i < 30 && !waiting.generation?.waiting; i++) {
                 await sleep(200);
-                waiting = await cli("status");
+                waiting = await observeService();
               }
-              assert.equal(waiting.doc.result?.version, "0.151.2");
-              assert.match(waiting.doc.result?.generation?.waiting ?? "", /Connector reconciliation and daemon activation are waiting:/);
+              assert.equal(waiting.version, "0.151.2");
+              assert.match(waiting.generation?.waiting ?? "", /Connector reconciliation and daemon activation are waiting:/);
               assert.equal(child.pid, oldPid);
             } finally { chmodSync(config, 0o755); }
             if (process.argv.includes("--finish-connector-update-manual")) {
               const finished = await runUpdate();
               assert.equal(finished.code, 0, finished.output);
             }
-            let after: Awaited<ReturnType<typeof cli>> | undefined;
+            let after: Service | undefined;
+            const answering = (service?: Service) => service?.managers?.some(row => row.space === ON && row.state === "answering");
             const deadline = Date.now() + 180_000;
             while (Date.now() < deadline) {
-              after = await cli("status", "--space", ON).catch(() => undefined);
-              if (after?.doc.result?.version === "0.151.3" && after.doc.result.managers?.some((row: { state: string }) => row.state === "answering")) break;
+              after = await observeService().catch(() => undefined);
+              if (after?.version === "0.151.3" && answering(after)) break;
               await sleep(500);
             }
-            assert.equal(after?.doc.result?.version, "0.151.3", JSON.stringify(after));
-            assert.equal(after?.doc.result?.managers?.some((row: { state: string }) => row.state === "answering"), true);
-            assert.notEqual(child.pid, oldPid);
+            assert.equal(after?.version, "0.151.3", JSON.stringify(after));
+            assert.equal(answering(after), true, JSON.stringify(after));
+            assert.notEqual(after?.pid, oldPid);
             const { deferredUpdateActivation } = await import("@cotal-ai/workspace");
             assert.equal(deferredUpdateActivation(cliEntry, "0.151.3"), undefined);
             assertSeededInventory("0.151.3");
