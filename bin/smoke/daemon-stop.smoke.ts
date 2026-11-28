@@ -377,12 +377,13 @@ if (process.platform === "linux") {
   const failingStart = () => { enabledState = true; throw missingAction; };
   try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: failingStart, enabled: () => enabledState, setEnabled: (next) => { enabledState = next; } }); }
   catch (error) { disabledRead = error instanceof Error ? error.message : String(error); disabledCode = error instanceof CommandFailure ? error.code : ""; }
-  check("a failed start of a disabled task ends disabled, keeps the marker, and says nothing was started", disabledCode === "OPERATION_UNKNOWN" && disabledRead.includes("Nothing was started") && !disabledRead.includes("the task was not enabled") && !disabledRead.includes("Automatic start is on again") && existsSync(marker) && enabledState === false, { disabledCode, disabledRead, enabledState });
-  enabledState = true;
+  check("a failed start of a disabled task ends disabled, keeps the marker, exits 3, and names another start", disabledCode === "OPERATION_UNKNOWN" && disabledRead.includes("Nothing was started") && disabledRead.includes("Automatic start is off") && disabledRead.includes("cotal daemon start") && !disabledRead.includes("the task was not enabled") && !disabledRead.includes("Automatic start is on again") && existsSync(marker) && enabledState === false, { disabledCode, disabledRead, enabledState });
+  const enabledTask: { on: boolean } = { on: true };
   let enabledRead = "";
-  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => enabledState, setEnabled: (next) => { enabledState = next; } }); }
-  catch (error) { enabledRead = error instanceof Error ? error.message : String(error); }
-  check("a failed start that leaves the task enabled keeps the marker and never says the task was not enabled", enabledRead.includes("Nothing was started") && !enabledRead.includes("the task was not enabled") && !enabledRead.includes("Automatic start is on again") && existsSync(marker) && enabledState === true, { enabledRead, enabledState });
+  let enabledCode = "";
+  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => enabledTask.on, setEnabled: (next) => { enabledTask.on = next; } }); }
+  catch (error) { enabledRead = error instanceof Error ? error.message : String(error); enabledCode = error instanceof CommandFailure ? error.code : ""; }
+  check("a failed start of a task that was already enabled ends disabled, keeps the marker, and exits 3", enabledCode === "OPERATION_UNKNOWN" && enabledRead.includes("Nothing was started") && enabledRead.includes("Automatic start is off") && enabledRead.includes("cotal daemon start") && !enabledRead.includes("the task was not enabled") && !enabledRead.includes("Automatic start is on again") && existsSync(marker) && enabledTask.on === false, { enabledCode, enabledRead, enabledState: enabledTask.on });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   enabledState = false;
   let unreadableReads = 0;
@@ -396,7 +397,7 @@ if (process.platform === "linux") {
       setEnabled: (next) => { enabledState = next; },
     });
   } catch (error) { unreadableRead = error instanceof Error ? error.message : String(error); unreadableCode = error instanceof CommandFailure ? error.code : ""; }
-  check("an unreadable Windows start of a stopped task ends disabled and keeps the marker", unreadableCode === "OPERATION_UNKNOWN" && unreadableRead.includes("Nothing was started") && !unreadableRead.includes("the task was not enabled") && existsSync(marker) && enabledState === false, { unreadableCode, unreadableRead, enabledState });
+  check("an unreadable Windows start of a stopped task ends disabled, keeps the marker, and exits 3", unreadableCode === "OPERATION_UNKNOWN" && unreadableRead.includes("Nothing was started") && unreadableRead.includes("Automatic start is off") && existsSync(marker) && enabledState === false, { unreadableCode, unreadableRead, enabledState });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const readFailure = await probeStop("unread");
   check("a macOS start whose automatic start cannot be read says the service started and leaves no stop marker", readFailure.doc?.started === true && readFailure.doc.enabled === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === false, readFailure);

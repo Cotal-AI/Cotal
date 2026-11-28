@@ -371,7 +371,7 @@ test("a later status check clears a daemon-not-running error", async () => {
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    await a.stop();
+    await a.stopByYou();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service is stopped");
     assert.equal(a.node("details").hidden, true);
@@ -389,7 +389,7 @@ test("a later status check keeps an error the status check did not raise", async
     await a.click("login"); await a.login();
     await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
     assert.equal(a.node("connection-title").textContent, "This operation could not finish");
-    await a.stop();
+    await a.stopByYou();
     await a.tick();
     a.arm();
     assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
@@ -404,7 +404,7 @@ test("Start service starts a stopped background service and leaves no notice", a
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    await a.stop();
+    await a.stopByYou();
     await a.tick();
     assert.equal(a.node("recover").textContent, "Start");
     assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it to run agents on this computer again.");
@@ -441,7 +441,7 @@ test("a service start that does not answer within 15 seconds keeps its refusal a
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    await a.stop();
+    await a.stopByYou();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service is stopped");
     assert.equal(a.node("recover").textContent, "Start");

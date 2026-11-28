@@ -586,15 +586,6 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   try {
   assertDesktopSetupComplete();
   if (process.platform === "win32" || probe?.windowsFailure !== undefined || probe?.enabled) {
-    const readEnabled = (): boolean => {
-      if (probe?.enabled) return probe.enabled();
-      const current = recordedUnit(paths, daemonHome);
-      return scheduledTaskService(nativeRun).isEnabled?.(current.receipt) === true;
-    };
-    // The end state has to match the state this command found, so read it before the start can change it.
-    let wasEnabled = false;
-    let known = false;
-    if (resume) { try { wasEnabled = readEnabled(); known = true; } catch { known = false; } }
     try {
       const failure = typeof probe?.windowsFailure === "function" ? probe.windowsFailure() : probe?.windowsFailure;
       if (failure !== undefined) throw failure;
@@ -602,33 +593,23 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
       if (resume) clearPersonStop(paths);
       return started;
     } catch (error) {
-      let automaticOn = wasEnabled;
-      let restored = known;
-      const putBack = (enabled: boolean): void => {
-        if (probe?.setEnabled) { probe.setEnabled(enabled); return; }
+      // A start that was not proven ends one way: disabled, the marker kept, exit 3. The marker stays because nothing started.
+      let disabled = false;
+      const disable = (): void => {
+        if (probe?.setEnabled) { probe.setEnabled(false); disabled = true; return; }
         const current = recordedUnit(paths, daemonHome);
-        const task = scheduledTaskService(nativeRun);
-        if (enabled) task.enable?.(current.receipt);
-        else if (personStopped(paths)) task.prepareStop(current.receipt);
+        scheduledTaskService(nativeRun).prepareStop(current.receipt);
+        disabled = true;
       };
-      // A read that fails after the start changed the task must still end in one state: disabled with the marker, or enabled with none.
-      const settle = (): void => {
-        if (personStopped(paths)) { putBack(false); automaticOn = false; restored = true; return; }
-        restored = false;
-      };
-      try {
-        if (known) {
-          if (readEnabled() !== wasEnabled) putBack(wasEnabled);
-          automaticOn = wasEnabled;
-        } else settle();
-      } catch { try { settle(); } catch { restored = false; } }
+      try { disable(); }
+      catch { try { disable(); } catch { disabled = false; } }
       const message = error instanceof CommandFailure ? error.message : error instanceof Error ? error.message : String(error);
-      const same = !known || automaticOn === wasEnabled;
-      const ended = restored
-        ? `Nothing was started. ${message} Automatic start is ${automaticOn ? "on" : "off"}${same ? ", as it was before this command" : ""}.`
-        : `${message} Automatic start could not be put back as it was before this command.`;
-      if (error instanceof CommandFailure) throw new CommandFailure(error.outcome, error.code, ended, { remedy: error.remedy, native: error.native, cause: error });
-      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { cause: error });
+      const ended = disabled
+        ? `Nothing was started. ${message} Automatic start is off. Run \`cotal daemon start\` again.`
+        : `${message} Automatic start could not be turned off. Run \`cotal daemon start\` again.`;
+      const remedy = "run `cotal daemon start` again";
+      if (error instanceof CommandFailure) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { remedy, native: error.native, cause: error });
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { remedy, cause: error });
     }
   }
   const recorded = recordedUnit(paths, daemonHome);
