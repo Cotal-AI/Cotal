@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   isCommandFailure,
@@ -28,7 +28,6 @@ import {
   setUpdateSetting,
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
-  launcherInstallRoot,
   logicalExecutionEntry,
   loadExtensionsManifest,
   provenance,
@@ -48,6 +47,7 @@ import { assertConfigAncestorProtected, connectorConfigPreflightFailure, manifes
 import { reclaimPreviousExtensionStages } from "../lib/extension-stage.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
+import { repairOwnedModes } from "./update-modes.js";
 import { repairOfflineExtensions } from "./update-offline.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
@@ -141,7 +141,7 @@ export interface UpdateRuntime {
   preflightExecution?(): boolean | void;
   executionGlobalRoot?(): string;
   /** Preserve the selected execution binding while hardening installer-owned modes. */
-  repairInstallModes?(root: string): number;
+  repairInstallModes?(root: string, onError?: (error: NodeJS.ErrnoException) => void): number;
   /** Prepare a complete retained target under the held global root lock, without publication. */
   prepareExecution?(version: string, root: string): Promise<ExecutionReplacement>;
   /** Reopen only a journal already validated against this logical installation. */
@@ -397,14 +397,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   // Removing group and other write from Cotal's install and config folder changes nothing a running
   // manager reads, so their modes are repaired before the continuity check rather than only when the
   // reconcile is allowed to run.
-  const install = launcherInstallRoot();
-  for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
-    const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
-    if (repaired) {
-      preflightChanged = true;
-      rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
-    }
-  }
+  if (!(args.values.self === true && rt.prepareExecution) && repairOwnedModes(rt)) preflightChanged = true;
   if (childBinding(rt).kind === "none") reclaimPreviousExtensionStages();
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection, preflightChanged, promotionRecovered, permissionsRestored);
   if (code !== 0) process.exitCode = code;
@@ -641,6 +634,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
+    if (rt.prepareExecution) repairOwnedModes(rt);
     if (unreadableSelection) {
       const repaired = repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line), () => { permissionsRestored = true; });
       reportConnectorAccessRestored(rt, permissionsRestored);

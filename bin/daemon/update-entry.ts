@@ -327,7 +327,7 @@ const composed: Command = { ...command, async run(args) {
     } } : {}) }),
     ...(staged ? {
       preflightExecution: preflightExecutionWithCleanup,
-      repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
+      repairInstallModes: (root: string, onError?: (error: NodeJS.ErrnoException) => void) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root, onError)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       globalVersion: () => observeExecutionVersion(executionInstallRoot()),
       verifyUpdatedEntry: (root: string, version: string) => {
