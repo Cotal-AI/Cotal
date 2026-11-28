@@ -19,6 +19,7 @@ import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { recordedProcessRefusal } from "../src/commands/service-registry.js";
 import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 import { openTelemetryIntake } from "./_telemetry-intake.js";
@@ -241,6 +242,18 @@ for (const level of ["regular", "minimal"]) {
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
 }
 
+{
+  const s = sandbox(), space = "private-preset-fixture";
+  const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  for (const mode of ["status", "logs"]) {
+    const r = await s.run(["manager", mode, "--space", space, "--json"], { COTAL_TELEMETRY: "regular" });
+    const commands = r.sent.filter(body => body.event === "command"), event = commands[0];
+    check(`an unstarted manager's ${mode} refusal keeps the space local`, prepared.status === 0 && r.status === 2 && r.stdout.includes(space)
+      && commands.length === 1 && event?.outcome === "refused" && event.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null
+      && event.errorStack === null && !JSON.stringify(r.sent).includes(space), shown(r));
+  }
+}
+
 for (const level of ["regular", "minimal"]) {
   const s = sandbox();
   const r = await s.run(["status", "--components", "--space", "missing-fixture-space"], { COTAL_TELEMETRY: level });
@@ -253,6 +266,9 @@ for (const level of ["regular", "minimal"]) {
 
 {
   const space = "private-project";
+  const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
+  const refused = telemetryErrorText("down", recorded);
+  check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
   const failure = membershipConversionRefusal(space);
   const text = telemetryErrorText("up", failure);
   check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",
