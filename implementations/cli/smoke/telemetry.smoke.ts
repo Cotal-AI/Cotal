@@ -208,6 +208,15 @@ for (const level of ["regular", "minimal"]) {
   check("a refused command's event carries the outcome and the typed error code", ps.sent.length === 1 && ps.sent[0]?.outcome === "refused" && ps.sent[0]?.errorCode === error?.code && ps.sent[0]?.exitCode === 2, ps.sent[0]);
   check("…and the refusal's message, with no path in it", typeof ps.sent[0]?.errorMessage === "string" && (ps.sent[0]!.errorMessage as string).length > 0 && !(ps.sent[0]!.errorMessage as string).includes(s.home) && !/\/[\w.-]+\/[\w.-]+/.test(ps.sent[0]!.errorMessage as string), ps.sent[0]?.errorMessage);
   check("…and a stack whose frames name no directory outside node_modules", typeof ps.sent[0]?.errorStack === "string" && /^at /.test(ps.sent[0]!.errorStack as string) && !(ps.sent[0]!.errorStack as string).includes(s.home) && !/\(\/|\(file:/.test(ps.sent[0]!.errorStack as string), ps.sent[0]?.errorStack);
+  const marker = "fixture-setup-value", file = join(s.project, `ordinary ${marker}`);
+  writeFileSync(file, "unchanged");
+  for (const flag of ["destination", "runtime", "project"] as const) {
+    const options = { destination: "local", runtime: "pty", project: s.project, harness: "codex", space: "setup-check", [flag]: flag === "project" ? file : marker };
+    const r = await s.run(["setup", "--json", ...Object.entries(options).flatMap(([key, value]) => [`--${key}`, value])]);
+    const event = r.sent.find(body => body.event === "command");
+    check(`setup keeps the rejected --${flag} value local`, r.status === 1 && r.stdout.includes(marker) && event?.errorCode === "USAGE_INVALID" &&
+      event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker) && readFileSync(file, "utf8") === "unchanged", shown(r));
+  }
   const watch = await s.run(["watch", "--json", "--space", "absent-watch-fixture"]);
   const records = watch.stdout.trim().split("\n").map((line) => JSON.parse(line));
   const event = watch.sent[0];
