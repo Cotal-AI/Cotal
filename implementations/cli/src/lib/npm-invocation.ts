@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
@@ -236,6 +236,21 @@ function selectAsdfNpm(
   } catch { return undefined; }
 }
 
+function desktopNpm(): string | undefined {
+  const entry = logicalExecutionEntry();
+  if (!entry) return;
+  const root = dirname(dirname(entry));
+  if (!existsSync(join(root, "desktop-runtime.json"))) return;
+  try {
+    const manifest = createRequire(entry).resolve("npm/package.json");
+    // Only the app's own package qualifies, not an ancestor or NODE_PATH installation.
+    if (manifest !== join(root, "node_modules", "npm", "package.json")) return;
+    const candidate = join(dirname(manifest), "bin", "npm-cli.js");
+    const engine = npmEngine(candidate);
+    if (engine?.entry === candidate && satisfies(process.version, engine.range)) return candidate;
+  } catch { /* The desktop runtime has no usable bundled npm. */ }
+}
+
 /** The npm package shipped beside the Node that launched this process, not a file named npm in its bin folder. */
 function bundledNpm(): { entry: string; range: string } | undefined {
   if (windows) return;
@@ -284,6 +299,14 @@ interface NpmCommand {
   missingOnPath?: true;
 }
 
+function bundledNpmInvocation(entry: string, env: NodeJS.ProcessEnv, args: string[], cwd: string): NpmCommand {
+  const pathKey = pathVariable(env), path = env[pathKey] ?? "";
+  // Windows ships as node.exe. The POSIX sidecar needs a temporary `node` name for lifecycle scripts.
+  const childEnv = { ...env, [pathKey]: windows ? `${dirname(process.execPath)}${delimiter}${path}` : path };
+  return { file: process.execPath, args: [entry, ...args], env: childEnv, cwd,
+    lifecycleNode: !windows && args[0] === "install" && !args.includes("--ignore-scripts") };
+}
+
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
@@ -295,7 +318,10 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     delete env[UPDATE_NPM_NODE];
   }
   const path = env[pathKey];
-  if (path === undefined) return { file: "npm", args, env, cwd };
+  if (path === undefined) {
+    const entry = desktopNpm();
+    return entry ? bundledNpmInvocation(entry, env, args, cwd) : { file: "npm", args, env, cwd };
+  }
   const literal = updatePath?.value === path ? updatePath.directories : undefined;
   const directories = literal ?? path.split(delimiter).map(dir => resolve(cwd, dir));
   const lookup = literal ? env : { ...env, [pathKey]: directories.join(delimiter) };
@@ -375,6 +401,10 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   }
   const pathNpmMissing = !file;
   const pathNpmReportsUnsupported = !!npmRange && !satisfies(process.version, npmRange);
+  if (pathNpmMissing || pathNpmReportsUnsupported) {
+    const entry = desktopNpm();
+    if (entry) return bundledNpmInvocation(entry, env, args, cwd);
+  }
   // A file named npm whose engine cannot be read is still the npm on PATH. Only a missing
   // file, or npm's own unsupported-Node report, selects the package shipped with this Node.
   if (!windows && (pathNpmMissing || pathNpmReportsUnsupported)) {
@@ -384,10 +414,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
       const why = pathNpmReportsUnsupported ? `the npm on PATH does not support Node ${process.version}` : "npm is not on PATH";
       process.stderr.write(`Using the npm shipped with ${process.version} because ${why}.\n`);
     }
-    if (bundled) {
-      return { file: process.execPath, args: [bundled.entry, ...args], env, cwd,
-        lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
-    }
+    if (bundled) return bundledNpmInvocation(bundled.entry, env, args, cwd);
   }
   if (!file) return { file: "npm", args, env, cwd, missingOnPath: true };
   if (windows) return { file: "npm", args, env, cwd };

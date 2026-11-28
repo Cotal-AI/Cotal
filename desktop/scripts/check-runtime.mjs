@@ -21,6 +21,55 @@ mkdirSync(env.XDG_RUNTIME_DIR, { mode: 0o700 });
 cpSync(staged, relocated, { recursive: true, verbatimSymlinks: true });
 // Exercise the installed basename, after Tauri removes the target suffix.
 cpSync(stagedNode, node, { errorOnExist: true, force: false });
+
+function checkBundledNpm() {
+  const npmDir = join(relocated, 'node_modules', 'npm');
+  const npmEntry = join(npmDir, 'bin', 'npm-cli.js');
+  const npmVersion = JSON.parse(readFileSync(join(npmDir, 'package.json'), 'utf8')).version;
+  const noNpm = join(scratch, 'no-npm'); mkdirSync(noNpm);
+  const external = join(scratch, 'external-npm'); mkdirSync(external);
+  const windows = process.platform === 'win32';
+  const externalNpm = join(external, windows ? 'npm.cmd' : 'npm');
+  writeFileSync(externalNpm, windows ? '@echo off\r\n' : '#!/bin/sh\n', { mode: 0o700 });
+  const bareRuntime = join(scratch, 'bare-runtime');
+  mkdirSync(join(bareRuntime, 'dist'), { recursive: true });
+  writeFileSync(join(bareRuntime, 'dist/cotal.js'), '');
+  writeFileSync(join(bareRuntime, 'package.json'), '{"name":"cotal-ai","bin":{"cotal":"./dist/cotal.js"}}');
+  writeFileSync(join(bareRuntime, 'desktop-runtime.json'), '{}');
+  const npmEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.toLowerCase().startsWith('npm_config_') && key.toLowerCase() !== 'path'));
+  const run = (path, root, expectedFile, expectedArgs, missing) => {
+    const cli = realpathSync.native(join(root, 'dist', 'cotal.js'));
+    const module = pathToFileURL(join(relocated, 'node_modules/@cotal-ai/cli/dist/lib/npm-invocation.js')).href;
+    const script = `import assert from 'node:assert/strict';
+      import { npmInvocation } from ${JSON.stringify(module)};
+      Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze({ logicalEntry: ${JSON.stringify(cli)}, loadedEntry: ${JSON.stringify(cli)} }) });
+      const result = npmInvocation(process.env, ['--version']);
+      assert.equal(result.file, ${expectedFile === node ? 'process.execPath' : JSON.stringify(expectedFile)});
+      assert.deepEqual(result.args, ${JSON.stringify(expectedArgs)});
+      assert.equal(result.missingOnPath, ${missing});`;
+    const result = spawnSync(node, ['--input-type=module', '-e', script], { cwd: scratch, env: { ...npmEnv, PATH: path }, encoding: 'utf8', timeout: 30_000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+  };
+  run(noNpm, relocated, node, [realpathSync.native(npmEntry), '--version'], undefined);
+  run(external, relocated, windows ? 'npm' : externalNpm, ['--version'], undefined);
+  run(noNpm, bareRuntime, 'npm', ['--version'], true);
+  const registry = 'https://registry.example.test/';
+  const proxy = 'http://127.0.0.1:9876/';
+  const cafile = join(home, 'custom-ca.pem').replaceAll('\\', '/');
+  writeFileSync(join(home, '.npmrc'), `registry=${registry}\nhttps-proxy=${proxy}\ncafile=${cafile}\n`);
+  const options = { cwd: scratch, env: { ...npmEnv, PATH: noNpm }, encoding: 'utf8', timeout: 30_000 };
+  const result = spawnSync(node, [npmEntry, 'config', 'list', '--json'], options);
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(result.stdout);
+  assert.equal(config.registry, registry);
+  assert.equal(config['https-proxy'], proxy);
+  assert.equal(config.cafile.replaceAll('\\', '/'), cafile);
+  assert.equal(spawnSync(node, [npmEntry, '--version'], options).stdout.trim(), npmVersion);
+  rmSync(join(home, '.npmrc'));
+  console.log('PASS relocated npm preserves PATH priority, missing-npm refusal and user npm configuration');
+}
+
 try {
   const cli = join(relocated, 'dist/cotal.js');
   const run = (args, input, customEnv = env) => spawnSync(node, [cli, ...args], { cwd: scratch, env: customEnv, input, encoding: 'utf8', timeout: 30000 });
@@ -41,6 +90,7 @@ try {
   console.log('PASS relocated CLI daemon status reports missing endpoint cleanly');
   const update = run(['update', '--self']); assert.notEqual(update.status, 0); assert.match(update.stdout + update.stderr, /runtime belongs to the desktop app/);
   console.log('PASS bundled runtime refuses npm self-update');
+  checkBundledNpm();
 
   const lazyRuntimeFiles = [
     'package.json',
