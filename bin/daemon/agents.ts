@@ -1,4 +1,4 @@
-/** Read-only public seat projection over a retained Manager child channel. */
+/** Read-only questions over a retained Manager child channel: its public seats and its connection. */
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import type { HostedAgent } from "./protocol.js";
@@ -18,30 +18,44 @@ export function parseHostedAgents(value: unknown): HostedAgent[] {
   });
 }
 
-export function readHostedAgents(child: ChildProcess): Promise<HostedAgent[]> {
+/** One read-only question over a retained Manager child channel. Any failure, timeout or
+ *  malformed answer rejects; the caller decides what an unanswered question means. */
+function askChild<T>(child: ChildProcess, kind: string, parse: (frame: Record<string, unknown>) => T, failure: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const attemptId = randomUUID();
     let settled = false;
-    const finish = (agents?: HostedAgent[]) => {
+    const finish = (answer?: { value: T }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       child.off("message", receive);
       child.off("exit", unavailable);
       child.off("disconnect", unavailable);
-      agents ? resolve(agents) : reject(new Error("could not read local agents"));
+      answer ? resolve(answer.value) : reject(new Error(failure));
     };
     const unavailable = () => finish();
     const receive = (raw: unknown) => {
-      const frame = raw as { kind?: unknown; attemptId?: unknown; ok?: unknown; agents?: unknown } | null;
-      if (frame?.kind !== "machine-agents-result" || frame.attemptId !== attemptId) return;
-      try { finish(frame.ok === true ? parseHostedAgents(frame.agents) : undefined); } catch { finish(); }
+      const frame = raw as Record<string, unknown> | null;
+      if (frame?.kind !== `${kind}-result` || frame.attemptId !== attemptId) return;
+      try { finish(frame.ok === true ? { value: parse(frame) } : undefined); } catch { finish(); }
     };
     const timer = setTimeout(unavailable, 1500);
     child.on("message", receive);
     child.once("exit", unavailable);
     child.once("disconnect", unavailable);
     if (!child.connected || child.exitCode !== null || child.signalCode !== null) { finish(); return; }
-    child.send({ kind: "machine-agents", attemptId }, error => { if (error) finish(); });
+    child.send({ kind, attemptId }, error => { if (error) finish(); });
   });
+}
+
+export function readHostedAgents(child: ChildProcess): Promise<HostedAgent[]> {
+  return askChild(child, "machine-agents", frame => parseHostedAgents(frame.agents), "could not read local agents");
+}
+
+/** Whether the Manager's rails are served on a connected transport: its own liveness grade. */
+export function readServeBound(child: ChildProcess): Promise<boolean> {
+  return askChild(child, "machine-connection", (frame) => {
+    if (typeof frame.bound !== "boolean") throw new Error("invalid connection answer");
+    return frame.bound;
+  }, "could not read the Manager's connection");
 }
