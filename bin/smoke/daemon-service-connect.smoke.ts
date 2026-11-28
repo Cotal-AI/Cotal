@@ -108,7 +108,7 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, readUpdateRecovery, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -286,7 +286,7 @@ const jwtsIssued: string[] = [];
 let idpRevoked = false;
 let signOutRequests = 0;
 let signOutSuccesses = 0;
-let idpJwtTtl = 120;
+let idpJwtTtl = manualAdmissionRace ? 900 : 120;
 let tokenFailure: "unreachable" | "unusable" | undefined;
 let recoverOnApproval = false;
 let deviceCodeRequests = 0;
@@ -2003,7 +2003,9 @@ try {
       writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
 const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(e,out)=>e?reject(e):resolve(out.trim())));
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
-      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
+      // A self-update rebinds the extension's core peer to the generation importing it.
+      const registryImport = manualAdmissionRace ? "@cotal-ai/core" : coreUrl;
+      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(registryImport)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
       const cleanSeed = claudeWakeOnly || process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
@@ -3360,6 +3362,13 @@ process.stdin.once('data', () => {
             const stopped = await askManager(caller, ON, target.server, "stop", { name }, target.auth, "owner", 20_000, pin);
             assert.equal(stopped.ok, true, `could not stop owned seat ${name}: ${stopped.error}`);
           };
+          const runUpdate = async (...args: string[]) => {
+            const updating = spawn(process.execPath, [cliEntry, "update", ...args], { cwd: root, env: { ...env, npm_config_prefix: globalPrefix }, stdio: ["ignore", "pipe", "pipe"], timeout: 360_000, killSignal: "SIGKILL" });
+            let text = "";
+            updating.stdout.on("data", b => { text += String(b); }); updating.stderr.on("data", b => { text += String(b); });
+            const code = await new Promise<number | null>((resolve, reject) => { updating.once("error", reject); updating.once("close", resolve); });
+            return { code, text };
+          };
           const before = await status();
           console.log("MANUAL_ADMISSION initial real status", JSON.stringify(before));
           assert.ok(before.ok && (before.data as any)?.custody === "legacy" && (before.data as any)?.agentCount === 0, "requires a real empty legacy Manager");
@@ -3370,8 +3379,8 @@ process.stdin.once('data', () => {
           mkdirSync(npmBin, { mode: 0o700 });
           // The staged route resolves its global root without npm. Hold the fixture target's
           // actual read-only pre-install receipt after continuity, before parent admission.
-          // A raced seat must refuse publication. The empty case holds installed verification
-          // after publication, then fails the target so the real transaction restores the old graph.
+          // A raced seat defers activation without blocking publication. Both cases hold installed
+          // verification after publication, then fail the target to exercise rollback.
           writeFileSync(join(npmBin, "npm"), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -3408,10 +3417,15 @@ process.exit(result.status ?? 93);
 `, { mode: 0o700 });
           const updater = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env: { ...env, PATH: `${npmBin}:${env.PATH}`, npm_config_prefix: globalPrefix }, stdio: ["ignore", "pipe", "pipe"] });
           let output = "", raceSeat = false;
+          let racedLifecycle: string | undefined;
+          const sameRacedSeat = async () => {
+            const occupied = await status();
+            return occupied.ok && (occupied.data as any)?.stopImpact?.agents?.some((agent: any) => agent.name === "manual_install_race" && agent.lifecycleUid === racedLifecycle) === true;
+          };
           updater.stdout.on("data", b => { output += String(b); }); updater.stderr.on("data", b => { output += String(b); });
           const finished = new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("close", resolve); });
           try {
-            const deadline = Date.now() + 90_000;
+            const deadline = Date.now() + 300_000;
             while (!existsSync(rootEntered)) {
               if (updater.exitCode !== null || updater.signalCode !== null || Date.now() > deadline) throw new Error(`manual updater did not reach target admission hold: ${output}`);
               await sleep(20);
@@ -3449,6 +3463,8 @@ process.exit(result.status ?? 93);
               const inventory = resultOf(await ask(paths.socket, { op: "status" }, 25_000)).agents?.find((row: any) => row.space === ON);
               console.log("MANUAL_ADMISSION real start after continuity while npm root held", JSON.stringify({ started, during, inventory }));
               assert.equal(started.ok, true, "real seat must be admitted after the updater continuity read");
+              racedLifecycle = (started.data as { lifecycleUid?: string }).lifecycleUid;
+              assert.ok(racedLifecycle, "real seat must have a lifecycle identity");
               assert.ok(during.ok && (during.data as any)?.agentCount === 1, "real Manager inventory must agree with spawn result");
               assert.ok(inventory?.state === "read" && inventory.agents.length === 1, "daemon IPC inventory must independently observe the seat count");
               assert.equal(inventory.agents[0].name, "manual_install_race");
@@ -3458,40 +3474,60 @@ process.exit(result.status ?? 93);
                 if (Date.now() > installDeadline) throw new Error(`manual updater neither refused admission nor reached install: ${output}`);
                 await sleep(20);
               }
-              const admittedInstall = existsSync(entered);
-              if (admittedInstall) {
+              const published = existsSync(entered);
+              if (published) {
                 const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
                 assert.equal(journal.phase, "replacing");
                 assert.equal(JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version, "0.151.2");
                 const occupied = await status();
-                console.log("MANUAL_ADMISSION install admitted with real raced seat", JSON.stringify({ journal: { phase: journal.phase, preparedRestart: journal.preparedRestart }, occupied, npm: JSON.parse(readFileSync(entered, "utf8")), output }));
-                assert.ok(occupied.ok && (occupied.data as any)?.agentCount === 1, "raced seat must remain real and live at install boundary");
+                const sameSeat = (occupied.data as any)?.stopImpact?.agents?.some((agent: any) => agent.lifecycleUid === racedLifecycle);
+                check("Manual updater publishes but defers activation and preserves the raced seat", journal.preparedRestart === false && journal.admission?.disposition === "deferred" && journal.admission.reason.includes("SEATS_ACTIVE") && occupied.ok && (occupied.data as any)?.agentCount === 1 && sameSeat, { admission: journal.admission, preparedRestart: journal.preparedRestart, occupied });
+              } else {
+                check("Manual updater publishes but defers activation and preserves the raced seat", false, output);
               }
-              await stop("manual_install_race"); raceSeat = false;
-              console.log("MANUAL_ADMISSION exact race seat stopped before releasing npm install");
-              check("Manual updater rechecks raced real seat before npm replacement", !admittedInstall && /SEATS_ACTIVE|cannot preserve running agents/.test(output), { admittedInstall, output });
             }
           } finally {
-            try { if (raceSeat) await stop("manual_install_race"); }
-            finally {
-              writeFileSync(rootRelease, "release\n");
-              writeFileSync(release, "release\n");
-              // Do not strand a held npm child or an updater finishing its owned rollback.
-              const timer = setTimeout(() => { if (updater.exitCode === null && updater.signalCode === null) updater.kill("SIGKILL"); }, 180_000);
-              try {
-                const code = await finished;
-                console.log("MANUAL_ADMISSION updater completed", JSON.stringify({ code, output, npm: readFileSync(npmLog, "utf8") }));
-                check("Manual fixture refusal or failed install retains old generation", code === 1 && (existsSync(entered) ? output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && output.includes("was restored and reconciled") : /SEATS_ACTIVE|cannot preserve running agents/.test(output)) && JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2", { code, output });
-              } finally { clearTimeout(timer); }
-            }
+            writeFileSync(rootRelease, "release\n");
+            writeFileSync(release, "release\n");
+            // Do not strand a held npm child or an updater finishing its owned rollback.
+            const timer = setTimeout(() => { if (updater.exitCode === null && updater.signalCode === null) updater.kill("SIGKILL"); }, 180_000);
+            try {
+              const code = await finished;
+              console.log("MANUAL_ADMISSION updater completed", JSON.stringify({ code, output, npm: readFileSync(npmLog, "utf8") }));
+              const { selectExecutionProgram } = await import("../cotal.js");
+              const selected = selectExecutionProgram(dirname(dirname(cliEntry)));
+              const version = JSON.parse(readFileSync(join(selected.root, "package.json"), "utf8")).version;
+              const pending = readUpdateRecovery() !== undefined;
+              const reconciled = output.includes("was restored and reconciled");
+              check("Manual failed install restores and reconciles the old generation", code === 1 && output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && reconciled && version === "0.151.2" && !pending, { code, reconciled, version, pending });
+              if (manualAdmissionEmpty) check("Manual empty rollback verifies a fresh empty restart fence", output.includes("daemon verified prepared fences and zero seats"), output);
+              else check("Manual live-seat rollback does not report a finished update or ask to stop agents", !output.includes("software update finished") && !output.includes("--stop-agents"), output);
+            } finally { clearTimeout(timer); }
           }
-          const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
-          check("Manual install failure retains same answering hosted Manager", after.state === "answering" && after.instanceId === manager.instanceId && after.pid === manager.pid, after);
-          const recovered = await start("manual_install_released");
-          try { check("Manual install failure releases real spawn admission without external abort", recovered.ok, recovered); }
-          finally { if (recovered.ok) await stop("manual_install_released"); }
+          try {
+            const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            check("Manual install failure retains same answering hosted Manager", after.state === "answering" && after.instanceId === manager.instanceId && after.pid === manager.pid, after);
+            if (racedLifecycle) check("Manual rollback keeps the raced seat on the same lifecycle", await sameRacedSeat());
+            const recovered = await start("manual_install_released");
+            try { check("Manual install failure releases real spawn admission without external abort", recovered.ok, recovered); }
+            finally { if (recovered.ok) await stop("manual_install_released"); }
+            if (racedLifecycle) {
+              // The retry uses the healthy target from the same loopback registry, without the npm fault shim.
+              const retry = await runUpdate("--self");
+              const daemon = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+              console.log("MANUAL_ADMISSION plain retry", JSON.stringify({ ...retry, daemonVersion: daemon.version }));
+              check("Plain self-update reconciles while the old daemon and raced seat stay live", retry.code === 0 && retry.text.includes("cotal-ai@0.151.3 in use and reconciled") && retry.text.includes("machine daemon activation deferred") && daemon.version === "0.151.2" && !readUpdateRecovery() && await sameRacedSeat(), retry);
+            }
+          } finally { if (raceSeat) await stop("manual_install_race"); }
           const empty = await status();
           check("Manual admission cleanup leaves zero real seats", empty.ok && (empty.data as any)?.agentCount === 0, empty);
+          if (racedLifecycle) {
+            const activation = await runUpdate();
+            const daemon = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+            const evidence = { ...activation, daemonVersion: daemon.version };
+            console.log("MANUAL_ADMISSION post-seat activation", JSON.stringify(evidence));
+            check("Plain update after the raced seat exits activates the reconciled daemon release", activation.code === 0 && daemon.version === "0.151.3", evidence);
+          }
           return;
         }
         if (process.argv.includes("--exchange-retry-repro")) {

@@ -1158,6 +1158,9 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       if (execution) execution.verify(current);
       await releaseAdmission?.();
       releaseAdmission = await rt.prepareReplacement?.();
+      const restoredRecovery = readUpdateRecovery();
+      if (!restoredRecovery) throw new Error("update recovery journal is missing");
+      writeUpdateRecovery({ ...restoredRecovery, preparedRestart: rt.preparedRestart?.() ?? false });
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
       snapshot.discard();
       clearUpdateRecovery();
@@ -1169,8 +1172,10 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       let installedVersion = "unknown";
       try { installedVersion = JSON.parse(readFileSync(join(root, "cotal-ai", "package.json"), "utf8")).version ?? "unknown"; } catch { /* Report an unknown install instead of claiming the previous tree survived. */ }
       const detail = `${reason}; repair failed: ${message(error)}`;
-      writeUpdateRecovery({ ...readUpdateRecovery(), previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
-      rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}. Automatic updates are paused. Run \`cotal update --self\` to repair this installation.`));
+      const recovery = readUpdateRecovery();
+      if (recovery) writeUpdateRecovery({ ...recovery, previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
+      const pause = recovery ? " Automatic updates are paused." : " No recovery record was written.";
+      rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}.${pause} Run \`cotal update --self\` to repair this installation.`));
       return interrupted || failureStatus;
     }
   }
