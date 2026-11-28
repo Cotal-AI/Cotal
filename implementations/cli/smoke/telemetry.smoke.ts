@@ -262,16 +262,16 @@ for (const level of ["regular", "minimal"]) {
   check("a spawn pin refusal shows its retry locally but sends neither its message nor its stack",
     spawn.status === 1 && spawn.stderr.includes(prompt) && spawn.sent.length === 1 && spawn.sent[0]?.errorCode === "USAGE_INVALID"
     && spawn.sent[0]?.errorMessage === null && spawn.sent[0]?.errorStack === null, { ...shown(spawn), sent: spawn.sent });
-  const marker = "fixture-terminal-text";
+  const terminalText = "fixture-terminal-text";
   const inputArgs = ["input", "--name", "fixture-agent", "--no-enter", "--json"];
   const empty = await s.run(inputArgs);
   const emptyEvent = empty.sent.find(body => body.event === "command");
   check("unpinned missing text reports the equals form for a dash-leading value", empty.status === 1 && empty.stdout.includes("--text=<value>") &&
     emptyEvent?.errorCode === "USAGE_INVALID" && String(emptyEvent.errorMessage).includes("--text=<value>"));
-  const input = await s.run([...inputArgs, `--text=--${marker}`, "--on="]);
+  const input = await s.run([...inputArgs, `--text=--${terminalText}`, "--on="]);
   const inputEvent = input.sent.find(body => body.event === "command");
-  check("an input pin retry keeps the terminal text local", input.status === 1 && input.stdout.includes(`--text=--${marker}`) &&
-    inputEvent?.errorCode === "USAGE_INVALID" && inputEvent.errorMessage === null && inputEvent.errorStack === null && !JSON.stringify(input.sent).includes(marker), shown(input));
+  check("an input pin retry keeps the terminal text local", input.status === 1 && input.stdout.includes(`--text=--${terminalText}`) &&
+    inputEvent?.errorCode === "USAGE_INVALID" && inputEvent.errorMessage === null && inputEvent.errorStack === null && !JSON.stringify(input.sent).includes(terminalText), shown(input));
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
