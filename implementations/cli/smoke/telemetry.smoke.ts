@@ -87,6 +87,14 @@ const MINIMAL = [...COMMON, "command", "outcome", "exitCode", "durationMs"];
 const REGULAR = [...MINIMAL, "account", "subcommand", "flags", "errorCode", "errorMessage", "errorStack", "interactive", "shell", "terminal"];
 const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMethod", "connectors", "extensions", "runtimes", "meshes", "hostedMesh", "uptimeDays"];
 
+{
+  const s = sandbox(), file = "fixture-private-workflow.cotal.js";
+  writeFileSync(join(s.project, file), "const = ;");
+  const r = await s.run(["run", "validate", file, "--json"]), event = r.sent.find(row => row.event === "command");
+  check("invalid workflow findings stay local while telemetry matches the refusal", r.status === 1 && r.envelope?.outcome === "refused" && r.stdout.includes("SCHEMA_INVALID") && r.stdout.includes(file) &&
+    event?.outcome === "refused" && event.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(file), shown(r));
+}
+
 // ---- regular: the first command of the day sends the install event, then its own ----
 {
   const s = sandbox();
@@ -216,6 +224,27 @@ for (const level of ["regular", "minimal"]) {
     configEvent?.errorCode === "SCHEMA_INVALID" && configEvent.errorMessage === null && configEvent.errorStack === null && !JSON.stringify(blocked.sent).includes(marker), shown(blocked));
   check("an unexpanded store path names the working folder only locally", r.status === 1 && r.stdout.includes(marker) && !existsSync(join(s.project, "artifact")) &&
     event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
+{
+  const s = sandbox(), marker = "fixture-retained-store", store = join(s.project, `store ${marker}`), config = join(s.project, ".cotal"), missing = join(s.project, "absent");
+  mkdirSync(config, { recursive: true }); mkdirSync(join(store, "jetstream"), { recursive: true });
+  writeFileSync(join(config, "server-open.conf"), `jetstream { store_dir: ${JSON.stringify(store)} }\n`);
+  writeFileSync(join(s.project, "cotal.yaml"), 'apiVersion: cotal/v1\nkind: Mesh\nspace: sample\nbroker: { servers: "nats://127.0.0.1:14222", auth: false }\nchannels:\n  lobby: { description: "fixture" }\n');
+  for (const args of [[], ["--store-dir", missing]]) {
+    const r = await s.run(["up", "-f", "cotal.yaml", "--dry-run", ...args]), event = r.sent.find(row => row.event === "command");
+    check(`last-store conflict keeps its path local with ${args.length ? "a missing" : "no"} store option`, r.status === 2 && r.stderr.replace(/\s+/g, " ").includes(`--store-dir '${store}'`) && !existsSync(missing) &&
+      event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
+}
+
+{
+  const s = sandbox(), marker = "fixture-preferences-marker", config = join(s.home, `config ${marker}`);
+  const dir = join(config, "cotal"), file = join(dir, "preferences.json");
+  mkdirSync(dir, { recursive: true }); writeFileSync(file, "{", { mode: 0o600 });
+  const r = await s.run(["history", "--json"], { XDG_CONFIG_HOME: config }), event = r.sent.find(row => row.event === "command");
+  check("invalid preferences name the file and parse error only locally", r.status === 1 && r.stdout.includes(marker) && r.stdout.includes("not JSON") && readFileSync(file, "utf8") === "{" &&
+    event?.errorCode === "SCHEMA_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
 }
 
 {
@@ -470,7 +499,7 @@ for (const level of ["regular", "minimal"]) {
     const other = new CommandFailure("refused", code, "no available target", { target: { space } });
     check(`an unpinned ${code} diagnostic still reports its reason`, telemetryErrorText("ps", other).message === other.message);
   }
-  const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
+  const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "/fixture", "stop", "json");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
   const service = liveServicesRefusal(space, [{ definition: "fixture-worker", instanceId: "fixture-instance", host: "fixture-host", process: "running", recordedState: "running", action: "stop-first", reason: null, remedy: null }], "down --preserve-state");

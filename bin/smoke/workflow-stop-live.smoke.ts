@@ -83,7 +83,7 @@ for (const prepared of [false, true]) {
         const refused = cli(...args, "--yes");
         check(`${args.join(" ")}: PID-only control refuses UNSUPPORTED, exit 2`, refused.code === 2 && refused.body.outcome === "refused" && refused.body.error?.code === "UNSUPPORTED", refused);
         const remedy = refused.body.error?.remedy ?? "";
-        check(`${args.join(" ")}: the remedy names the working stop and its whole-stack impact`, remedy.includes("`cotal down`") && remedy.includes("every hosted workflow run") && remedy.includes("broker and agents"), refused);
+        check(`${args.join(" ")}: the remedy names the working stop and its whole-stack impact`, remedy.includes(`\`cotal down --dry-run --space=${name} --json\``) && !remedy.includes("`cotal down`") && remedy.includes("every hosted workflow run") && remedy.includes("broker and agents"), refused);
       }
       const read = cli("run", "show", runId);
       const view = read.body.result?.view;
