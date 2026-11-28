@@ -61,6 +61,7 @@ import { reportCurrentConnectorState } from "./setup-current-connectors.js";
 import { c } from "../ui.js";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
+import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import {
   type CommandResult,
   STRICT_SEMVER,
@@ -318,6 +319,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   });
   const environments = [...new Set([process.env, rt.env])];
   const previous = environments.map(env => ({ env, values: { TMPDIR: env.TMPDIR, TMP: env.TMP, TEMP: env.TEMP } }));
+  const releaseOutput = args.values.check === true ? undefined : ownStdoutErrors(() => {});
   let continuation: string | undefined;
   try {
     for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
@@ -328,6 +330,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
       else env[key] = value;
     }
     rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+    releaseOutput?.();
   }
   if (continuation) {
     const result = rt.spawn(rt.nodePath, [continuation, "update", ...args.raw], rt.env, true);
@@ -957,8 +960,20 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
 
-  let execution: ExecutionReplacement | undefined;
+  let interrupted = 0, hangup = false;
+  const interrupt = (code: number): void => {
+    if (interrupted) return;
+    interrupted = code;
+    rt.err(c.yellow("Interrupt received; finishing installation and reconciliation before exiting."));
+  };
+  const onInt = (): void => interrupt(130), onTerm = (): void => interrupt(143);
+  const onHup = (): void => { hangup = true; interrupted ||= 129; };
+  const releaseOutput = ownStdoutErrors(() => {});
+  process.on("SIGHUP", onHup);
+  let execution: ExecutionReplacement | undefined, releaseAdmission: (() => Promise<void>) | undefined;
+  let releaseClosure: (() => void) | undefined, snapshot: UpdateSnapshot;
   let stagedExecution = false;
+  try {
   if (rt.prepareExecution) {
     stagedExecution = true;
     const prepareStarted = Date.now();
@@ -966,30 +981,32 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       rt.out(c.bold("cotal-ai binary"));
       rt.out(c.dim(`installing cotal-ai@${targetVersion} beside the running version; this ${current} process stays loaded until the new version is verified`));
       execution = await rt.prepareExecution(targetVersion, root);
+      if (hangup) { execution.discard?.(); return 129; }
       await execution.preflight(target);
+      if (hangup) { execution.discard?.(); return 129; }
       if (await rt.reportRunningManager(target) === "legacy") throw new Error("running Manager requires a restart that cannot preserve its agents");
+      if (hangup) { execution.discard?.(); return 129; }
       rt.out(`✓ new version installed and verified (${((Date.now() - prepareStarted) / 1000).toFixed(1)} s)`);
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
-      releaseGlobal();
+      if (hangup) return 129;
       if (!execution && deferStagingFailure(error, targetVersion, rt, preflightChanged || repairedSelection)) return 0;
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages were replaced`);
       return 1;
     }
   }
-  let releaseAdmission: (() => Promise<void>) | undefined;
+  if (hangup) { execution?.discard?.(); return 129; }
   try {
     releaseAdmission = await rt.prepareReplacement?.();
   } catch (error) {
     try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
-    releaseGlobal();
+    if (hangup) return 129;
     recordUpdateDeferral(targetVersion, "waiting for agents to stop");
     rt.err(`update admission refused: ${message(error)}`);
     return 1;
   }
-  let releaseClosure: (() => void) | undefined;
-  let snapshot: UpdateSnapshot;
+  if (hangup) { execution?.discard?.(); return 129; }
   const snapshotStarted = Date.now();
   try {
     releaseClosure = claimUpdateClosureAccess();
@@ -998,30 +1015,18 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.out(`✓ recovery snapshot saved (${((Date.now() - snapshotStarted) / 1000).toFixed(1)} s)`);
   } catch (error) {
     try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
-    releaseClosure?.();
-    await releaseAdmission?.();
-    releaseGlobal();
+    if (hangup) return 129;
     const detail = preflightDetail(error);
     recordUpdateDeferral(targetVersion, `update snapshot refused: ${detail}`);
     rt.err(`update snapshot refused: ${message(error)}`);
     return 1;
   }
+  if (hangup) { snapshot.discard(); execution?.discard?.(); return 129; }
   // npm replaces the live package tree. Keep custody until it and the verified reconcile
   // finish, even when the terminal sends Ctrl-C during that replacement.
-  let interrupted = 0;
-  const interrupt = (code: number): void => {
-    if (interrupted) return;
-    interrupted = code;
-    rt.err(c.yellow("Interrupt received; finishing installation and reconciliation before exiting."));
-  };
-  const onInt = (): void => interrupt(130);
-  const onTerm = (): void => interrupt(143);
-  process.on("SIGINT", onInt);
-  process.on("SIGTERM", onTerm);
-  try {
-  if (execution) {
-    rt.out(`Switching to cotal-ai@${targetVersion}`);
-  } else {
+  process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
+  if (execution) rt.out(`Switching to cotal-ai@${targetVersion}`);
+  else {
     rt.out(c.bold("cotal-ai binary"));
     rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
   }
@@ -1051,6 +1056,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.out(reason);
     return interrupted;
   }
+  if (hangup) return 129;
   if (installed.stderr) rt.stderr(installed.stderr);
   if (installed.status !== 0) {
     rt.err(c.red(`✗ global cotal-ai@${targetVersion} install failed: ${failure(installed)}`));
@@ -1066,17 +1072,13 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ installed global cotal-ai could not be verified: ${message(e)}`));
     return await repairReplacement(`installed entry verification failed: ${message(e)}`);
   }
-  const env: NodeJS.ProcessEnv = {
-    ...rt.env,
-    ...(prefix ? { npm_config_prefix: prefix } : {}),
-    [UPDATE_TARGET_ENV]: targetVersion,
-    [UPDATE_PARENT_ENV]: String(rt.pid),
-    ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}),
-  };
+  const env: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: targetVersion, [UPDATE_PARENT_ENV]: String(rt.pid), ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
   delete env[EXT_UPDATE_PARENT_ENV];
+  if (hangup) return 129;
   rt.out(`Reconciling installed cotal-ai@${targetVersion}`);
   const reconcileStarted = Date.now();
   const child = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update", ...targetArgv(target)], env, true);
+  if (hangup) return 129;
   rt.out(`✓ installed reconciliation finished (${((Date.now() - reconcileStarted) / 1000).toFixed(1)} s)`);
   if (child.stderr) rt.stderr(child.stderr);
   if (child.stdout) rt.stdout(child.stdout);
@@ -1091,10 +1093,12 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: targetVersion, phase: "verified-ready" });
       activationDeferred = await rt.waitForInstalledGeneration?.(targetVersion);
     } catch (error) {
+      if (hangup) return 129;
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return await repairReplacement(`installed daemon generation: ${message(error)}`, 1, true);
     }
   }
+  if (hangup) return 129;
   try { execution?.verify(targetVersion); }
   catch (error) { return await repairReplacement(`selected execution after reconciliation: ${message(error)}`, 1, true); }
   rt.out("Removing completed update recovery snapshot");
@@ -1128,6 +1132,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   }
 
   async function repairReplacement(reason: string, failureStatus = 1, skipTargetRetry = false): Promise<number> {
+    if (hangup) return 129;
     if (!skipTargetRetry) {
       rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
       try {
@@ -1141,6 +1146,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
         }
       } catch (error) { rt.err(`reconcile retry: ${message(error)}`); }
     }
+    if (hangup) return 129;
     rt.err(c.yellow(`Restoring verified cotal-ai@${current} through the global updater.`));
     try {
       const recovery = readUpdateRecovery();
@@ -1150,14 +1156,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
         execution.restore();
       } else {
         await checkReleaseArchives(current, rt);
+        if (hangup) return 129;
         const restored = await rt.spawnGlobal(root, "install", "npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`], rt.env, true);
         if (restored.status !== 0) throw new Error(failure(restored));
         rt.verifyGlobalEntry(root, current);
       }
+      if (hangup) return 129;
       snapshot.restore();
       if (execution) execution.verify(current);
       await releaseAdmission?.();
       releaseAdmission = await rt.prepareReplacement?.();
+      if (hangup) return 129;
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
       snapshot.discard();
       clearUpdateRecovery();
@@ -1179,8 +1188,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       try { await releaseAdmission?.(); }
       finally { try { releaseClosure?.(); } finally { releaseGlobal(); } }
     } finally {
-      process.off("SIGINT", onInt);
-      process.off("SIGTERM", onTerm);
+      process.off("SIGINT", onInt); process.off("SIGTERM", onTerm); process.off("SIGHUP", onHup);
+      releaseOutput();
     }
   }
 }

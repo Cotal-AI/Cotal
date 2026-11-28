@@ -14,38 +14,69 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
 
 function reconciliationScratch(parent, worker) {
-  const old = new Date(Date.now() - 61 * 60_000);
+  const hourOld = new Date(Date.now() - 61 * 60_000);
+  const youngDay = new Date(Date.now() - 23 * 60 * 60_000);
+  const dayOld = new Date(Date.now() - 25 * 60 * 60_000);
   const fixture = shape => {
+    const stamp = ['compile-only', 'dead'].includes(shape) ? hourOld : shape === 'young-npm' ? youngDay : dayOld;
     const outer = mkdtempSync(join(parent, 'cotal-update-'));
     const cache = join(outer, 'node-compile-cache');
     const version = join(cache, 'v24');
     const compiled = join(version, 'compiled');
     mkdirSync(cache, { mode: 0o700 });
     mkdirSync(version, { mode: 0o700 });
-    writeFileSync(compiled, 'cache');
+    writeFileSync(compiled, 'cache', { mode: 0o600 });
     if (shape === 'link') {
       const link = join(outer, 'cotal-update-npm-linked');
       symlinkSync(cache, link);
-      lutimesSync(link, old, old);
+      lutimesSync(link, stamp, stamp);
     } else if (shape !== 'compile-only' && shape !== 'fresh-deep') {
-      const recorded = ['dead', 'live', 'pending', 'fresh-recorded'].includes(shape);
+      const populated = ['dead-populated', 'live', 'young-npm', 'fresh-npm', 'foreign-npm', 'shared-npm', 'extra-entry', 'linked-npm', 'two-workers', 'worker-only'].includes(shape);
+      const recorded = populated || ['dead', 'pending', 'fresh-recorded'].includes(shape);
       const npm = mkdtempSync(join(outer, recorded ? 'cotal-update-reconcile-' : 'cotal-update-npm-'));
-      if (recorded) {
+      chmodSync(npm, 0o700);
+      if (recorded && shape !== 'worker-only') {
         writeFileSync(join(npm, '.owner'), '2147483647\nexpired\n', { mode: 0o600 });
         if (shape !== 'pending') writeFileSync(join(npm, `.worker-${shape === 'live' ? worker : 2147483647}`), '', { mode: 0o600 });
+        if (shape === 'two-workers') writeFileSync(join(npm, '.worker-2147483646'), '', { mode: 0o600 });
       }
-      if (shape === 'nonempty') writeFileSync(join(npm, '.keep'), 'other content');
+      if (shape === 'worker-only') writeFileSync(join(npm, '.worker-2147483647'), '', { mode: 0o600 });
+      if (populated) {
+        const cacache = join(npm, '_cacache');
+        if (shape === 'linked-npm') {
+          symlinkSync(cache, cacache);
+          lutimesSync(cacache, stamp, stamp);
+        } else {
+          const content = join(cacache, 'content-v2');
+          const entry = join(content, 'blob');
+          mkdirSync(cacache, { mode: 0o755 });
+          mkdirSync(content, { mode: 0o755 });
+          writeFileSync(entry, 'cached data', { mode: 0o644 });
+          if (shape === 'shared-npm') chmodSync(entry, 0o660);
+          if (shape === 'foreign-npm') {
+            writeFileSync(join(cacache, 'keep'), 'other content', { mode: 0o644 });
+            utimesSync(join(cacache, 'keep'), stamp, stamp);
+          }
+          utimesSync(entry, shape === 'fresh-npm' ? youngDay : stamp, shape === 'fresh-npm' ? youngDay : stamp);
+          for (const path of [content, cacache]) utimesSync(path, stamp, stamp);
+        }
+      }
+      if (shape === 'nonempty' || shape === 'extra-entry') writeFileSync(join(npm, '.keep'), 'other content', { mode: 0o600 });
       if (shape === 'shared') chmodSync(npm, 0o750);
-      if (shape === 'mixed') writeFileSync(join(outer, 'keep'), 'other content');
-      if (shape !== 'recent') utimesSync(npm, old, old);
+      if (shape === 'mixed') {
+        writeFileSync(join(outer, 'keep'), 'other content', { mode: 0o600 });
+        utimesSync(join(outer, 'keep'), stamp, stamp);
+      }
+      for (const file of readdirSync(npm)) if (file !== '_cacache') utimesSync(join(npm, file), stamp, stamp);
+      if (shape !== 'recent') utimesSync(npm, stamp, stamp);
     }
-    for (const path of [compiled, version, cache, outer]) utimesSync(path, old, old);
-    if (shape === 'fresh-deep' || shape === 'fresh-recorded') writeFileSync(compiled, 'recent in-place rewrite');
+    for (const path of [compiled, version, cache, outer]) utimesSync(path, stamp, stamp);
+    if (shape === 'fresh-deep' || shape === 'fresh-recorded') writeFileSync(compiled, 'recent in-place rewrite', { mode: 0o600 });
     return outer;
   };
-  const expired = ['compile-only', ...(worker ? ['dead'] : [])].map(fixture);
+  const expired = ['compile-only', ...(worker ? ['dead', 'dead-populated'] : [])].map(fixture);
   const retained = ['empty', 'fresh-deep', ...(process.getuid ? ['nonempty', 'shared', 'link', 'mixed', 'recent'] : []),
-    ...(worker ? ['pending', 'fresh-recorded'] : [])]
+    ...(worker ? ['pending', 'fresh-recorded', 'young-npm', 'fresh-npm', 'foreign-npm', ...(process.getuid ? ['shared-npm'] : []), 'extra-entry', 'linked-npm', 'two-workers', 'worker-only'] : [])]
     .map(fixture).map(path => [path, readdirSync(path, { recursive: true }).sort()]);
   return { expired, retained, live: worker && fixture('live') };
 }
@@ -83,8 +114,11 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
 /** Runs real npm and the built public entry against a loopback registry. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
+  if (scenario === 'pty-real-child-hangup') return ptyRealChildHangupCell(entry, parent);
   const versionNamedNode = scenario === 'version-named-node';
-  const reconcileOrphan = scenario === 'reconcile-orphan';
+  const ptyPhase = scenario === 'pty-install-hangup' ? 'install' : scenario === 'pty-reconcile-hangup' ? 'reconcile' : undefined;
+  const orphanSignal = scenario === 'reconcile-orphan' ? 'SIGHUP' : scenario === 'reconcile-orphan-sigkill' ? 'SIGKILL' : undefined;
+  const reconcileOrphan = orphanSignal !== undefined;
   const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
   const stagingFetchTimeout = scenario === 'staging-fetch-timeout';
   const stagingNetwork = stagingFetchTimeout || ['staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'].includes(scenario);
@@ -94,7 +128,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const configAccess = scenario === 'config-access-upgrade' || scenario === 'config-access-auto';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(versionNamedNode || repairSelection || configAccess || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(ptyPhase || versionNamedNode || repairSelection || configAccess || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -120,7 +154,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   }
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   const lifecycle = versionNamedNode ? lifecycleRuntime(root, join(root, 'payload/package')) : undefined;
-  const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection || configAccess;
+  const staged = scenario === 'staging-killed' || scenario === 'pty-install-hangup' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection || configAccess;
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
   if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   if (stagingNetwork) writeFileSync(join(root, 'payload/package/dist/data'), randomBytes(1024 * 1024));
@@ -129,13 +163,21 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const contention = scenario === 'concurrent'
       ? `if (process.argv.includes('update')) { const deadline = Date.now() + 30000; while (!existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
       : '';
-    const hold = reconcileInterrupted && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${reconcileOrphan ? `const deadline = Date.now() + 60000; const timer = setInterval(() => { if (existsSync(${JSON.stringify(releaseReconcile)}) || Date.now() >= deadline) clearInterval(timer); }, 20);` : 'setTimeout(() => process.exit(99), 60000);'} }\n` : '';
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${contention}${hold}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n`, { mode: 0o755 });
+    const fillCache = reconcileOrphan || ptyPhase ? `execFileSync('npm', ['cache', 'add', ${JSON.stringify(join(root, `${target}.tgz`))}], { stdio: 'inherit', timeout: 20000 });` : '';
+    const hold = (reconcileInterrupted || ptyPhase) && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { ${fillCache} writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${reconcileOrphan || ptyPhase ? `const deadline = Date.now() + 60000; const timer = setInterval(() => { if (existsSync(${JSON.stringify(releaseReconcile)}) || Date.now() >= deadline) clearInterval(timer); }, 20);` : 'setTimeout(() => process.exit(99), 60000);'} }\n` : '';
+    const stdoutGuard = ptyPhase && version === target
+      ? `import { ownStdoutErrors, stdoutError } from ${JSON.stringify(pathToFileURL(join(repo, 'implementations/cli/dist/lib/stdout-owner.js')).href)};\nprocess.stdout.on("error", stdoutError);\nconst releaseStdout = process.argv[2] === "update" ? ownStdoutErrors(() => {}) : undefined;\n`
+      : '';
+    const releaseStdoutTail = ptyPhase && version === target ? `releaseStdout?.();\n` : '';
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { execFileSync } from "node:child_process";\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${stdoutGuard}${contention}${hold}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n${releaseStdoutTail}`, { mode: 0o755 });
     if (staged) {
       const fail = scenario === 'selection-rollback' && version === target
         ? `if (process.argv.includes('update')) { console.error('fixture reconciliation failed'); process.exit(7); }\n` : '';
-      writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${fail}console.log('cotal-ai ${version}');\n`, { mode: 0o755 });
-      writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), `${fail}console.log('cotal-ai ${version}');\n`);
+      const stagedEntry = ptyPhase && version === target
+        ? `#!/usr/bin/env node\nimport { execFileSync } from "node:child_process";\nimport { existsSync, writeFileSync } from "node:fs";\n${stdoutGuard}${hold}console.log('cotal-ai ${version}');\n${releaseStdoutTail}`
+        : `#!/usr/bin/env node\n${fail}console.log('cotal-ai ${version}');\n`;
+      writeFileSync(join(root, 'payload/package/dist/cotal.js'), stagedEntry, { mode: 0o755 });
+      writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), stagedEntry.replace(/^#!\/usr\/bin\/env node\n/, ''));
       writeFileSync(join(root, 'payload/package/dist/preinstall.js'), `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
     }
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package'], { env: childEnv });
@@ -164,13 +206,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const env = lifecycle ? { PATH: childEnv.PATH } : Object.fromEntries(Object.entries(childEnv).filter(([name]) =>
     !/^npm_config_(?:before|offline)$/i.test(name) && !(stagingFetchTimeout && /^npm_config_(?:prefix|registry)$/i.test(name))));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
-  let origin, armed = false, disconnected = false, missing = 0, heldArchive, closureSignal, holdStaging = scenario === 'staging-killed';
+  let origin, armed = false, disconnected = false, missing = 0, heldArchive, closureSignal, holdStaging = scenario === 'staging-killed' || ptyPhase === 'install';
   let hermesAvailable = false, installedAtWait, originalInstallation;
   const installedFiles = [join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js'),
     join(root, 'config/cotal/extensions/extensions.json'),
     join(root, 'config/cotal/extensions/node_modules', extension, 'package.json')];
   const readInstallation = () => installedFiles.map(path => readFileSync(path, 'utf8'));
-  let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker;
+  let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker, reconcileWorkerPid;
   let stagingDenied = false;
   let invalidStagingMetadata = true;
   const backlog = [];
@@ -318,7 +360,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       symlinkSync(join(repo, 'bin/node_modules'), join(packageRoot, 'node_modules'), 'dir');
       entry = join(packageRoot, 'dist/cotal.js');
       // The built entry replaces the executable that npm linked in the private prefix.
-      if (stagingTimeout || stagingFetchTimeout) chmodSync(entry, 0o755);
+      if (stagingTimeout || stagingFetchTimeout || scenario === 'pty-install-hangup') chmodSync(entry, 0o755);
     }
     if (scenario === 'offline-closure') {
       const extensions = join(root, 'config/cotal/extensions');
@@ -714,7 +756,7 @@ exec npm "$@"
     const started = Date.now();
     let abandonedCache, unrecordedCache, abandonedStagingCache, unrecordedStagingCache;
     let legacyScratch, retainedScratch;
-    if (staged) {
+    if (scenario === 'staging-killed') {
       const tools = join(root, 'tools'), busProbe = join(root, 'bus-called');
       mkdirSync(tools);
       writeFileSync(join(tools, 'busctl'), '#!/bin/sh\nprintf called > "$BUS_PROBE"\nprintf "native probe output\\n" >&2\nexit 1\n', { mode: 0o700 });
@@ -862,6 +904,130 @@ exec npm "$@"
       // Do not await close: the detached npm child still owns the parent's output pipes.
       first.catch(() => {});
     }
+    if (ptyPhase) {
+      const probe = spawnSync('python3', ['-c', 'import os, pty; m, s = pty.openpty(); os.close(m); os.close(s)'], { env: childEnv, encoding: 'utf8' });
+      if (probe.error) {
+        assert.fail(`${scenario} requires python3 to test controlling-pty hangup, and python3 could not start: ${probe.error.message}`);
+      }
+      if (probe.status !== 0) {
+        const reason = `controlling pty device could not be opened: ${(probe.stderr || `exit ${probe.status}`).trim()}`;
+        console.log(`skip ${scenario}: ${reason}`);
+        return { scenario, skipped: reason, code: null, elapsedMs: Date.now() - started, selected: previous, missing, requests, output: '' };
+      }
+      const ptyClosed = join(root, 'pty-closed');
+      const ptyResult = join(root, 'pty-result.json');
+      const driver = join(root, 'pty-driver.py');
+      writeFileSync(driver, [
+        'import json, os, pty, select, signal, sys, threading, time',
+        'closed_file, result_file, close_ready, node_bin, entry_js = sys.argv[1:6]',
+        'pid, master_fd = pty.fork()',
+        'if pid == 0:',
+        '    os.execv(node_bin, [node_bin, entry_js, "update", "--self"])',
+        'chunks = []',
+        'stop = threading.Event()',
+        'def drain():',
+        '    while not stop.is_set():',
+        '        try:',
+        '            r, _, _ = select.select([master_fd], [], [], 0.02)',
+        '            if not r: continue',
+        '            b = os.read(master_fd, 4096)',
+        '            if not b: break',
+        '            chunks.append(b)',
+        '        except OSError: break',
+        't = threading.Thread(target=drain, daemon=True)',
+        't.start()',
+        'deadline = time.monotonic() + 90.0',
+        'while not os.path.exists(close_ready) and time.monotonic() < deadline:',
+        '    wp, st = os.waitpid(pid, os.WNOHANG)',
+        '    if wp == pid:',
+        '        stop.set(); t.join(1.0); os.close(master_fd)',
+        '        open(result_file, "w").write(json.dumps({"pid": pid, "early": True, "code": os.WEXITSTATUS(st) if os.WIFEXITED(st) else None, "signal": signal.Signals(os.WTERMSIG(st)).name if os.WIFSIGNALED(st) else None, "output": b"".join(chunks).decode("utf-8", "replace")}))',
+        '        sys.exit(0)',
+        '    time.sleep(0.01)',
+        'stop.set(); t.join(1.0); os.close(master_fd)',
+        'open(closed_file, "w").write(str(pid))',
+        '_, st = os.waitpid(pid, 0)',
+        'open(result_file, "w").write(json.dumps({"pid": pid, "early": False, "code": os.WEXITSTATUS(st) if os.WIFEXITED(st) else None, "signal": signal.Signals(os.WTERMSIG(st)).name if os.WIFSIGNALED(st) else None, "output": b"".join(chunks).decode("utf-8", "replace")}))',
+      ].join('\n'));
+      const closeTrigger = join(root, 'pty-trigger-close');
+      const py = spawn('python3', [driver, ptyClosed, ptyResult, closeTrigger, process.execPath, entry], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      interrupted = py;
+      abandoned = once(py, 'close');
+      let record;
+      for (let deadline = Date.now() + 90000; !record && py.exitCode === null && Date.now() < deadline; ) {
+        const row = readMarker();
+        if (ptyPhase === 'install'
+          ? heldArchive && row?.phase === 'live' && row.operation === 'global install'
+          : row?.phase === 'live' && row.operation === 'global reconcile' && existsSync(ready) && +readFileSync(ready, 'utf8') === row.pid) record = row;
+        else await new Promise(done => setTimeout(done, 10));
+      }
+      assert(record, `the updater inside a controlling pty reached ${ptyPhase}`);
+      reconcileWorkerPid = record.pid;
+      const [scratch] = readdirSync(env.TMPDIR).filter(name => /^cotal-update-[a-zA-Z0-9]{6}$/.test(name));
+      assert(scratch, 'the live pty updater created private scratch');
+      const scratchPath = join(env.TMPDIR, scratch);
+      const cachePrefix = ptyPhase === 'install' ? 'cotal-update-npm-' : 'cotal-update-reconcile-';
+      const [cacheName] = readdirSync(scratchPath).filter(name => name.startsWith(cachePrefix));
+      assert(cacheName, `the live pty ${ptyPhase} worker created ${cachePrefix}*`);
+      writeFileSync(closeTrigger, 'close', { mode: 0o600 });
+      for (let deadline = Date.now() + 5000; !existsSync(ptyClosed) && py.exitCode === null && Date.now() < deadline; )
+        await new Promise(done => setTimeout(done, 10));
+      assert(existsSync(ptyClosed), 'closed the controlling pty master while the worker was active');
+      for (let deadline = Date.now() + 200; !existsSync(ptyResult) && Date.now() < deadline; )
+        await new Promise(done => setTimeout(done, 20));
+      assert(!existsSync(ptyResult), `pty updater waits for the active ${ptyPhase} child to settle before exiting`);
+      if (ptyPhase === 'install') {
+        holdStaging = false;
+        writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
+        heldArchive.end(archives.get(target));
+        heldArchive = undefined;
+      } else {
+        writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
+      }
+      await abandoned;
+      abandoned = undefined;
+      await stopGroupAndWaitGone(record.pid);
+      reconcileWorkerPid = undefined;
+      const finished = JSON.parse(readFileSync(ptyResult, 'utf8'));
+      assert.equal(finished.early, false, finished.output);
+      assert.equal(finished.signal, null, finished.output);
+      assert.equal(finished.code, 129, `pty master close during ${ptyPhase} exits 129 instead of EIO exit 3:\n${finished.output}`);
+      if (ptyPhase === 'install') {
+        assert(!existsSync(ready), 'pty hangup during install did not start a post-hangup reconciliation child');
+        assert.match(finished.output, /beside the running version/, finished.output);
+        assert(!existsSync(join(root, 'cotal/update-recovery.json')), 'staged install hangup writes no recovery journal before live replacement');
+        assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
+      } else {
+        assert.match(finished.output, /into npm's global installation/, finished.output);
+        assert.equal(JSON.parse(readFileSync(join(root, 'cotal/update-recovery.json'), 'utf8')).phase, 'replacing');
+      }
+      assert.doesNotMatch(finished.output, /Retrying reconciliation|Restoring verified|installed globally and reconciled|in use and reconciled/);
+      assert(!existsSync(marker), 'settled child cleared its custody marker');
+      assert(!existsSync(scratchPath), 'updater finally removed its private scratch after pty master close');
+      assert.deepEqual(readdirSync(env.TMPDIR).filter(name => name.startsWith('cotal-')), [], 'no cotal-* scratch or cache remains in TMPDIR');
+      const liveProcs = readdirSync('/proc').filter(name => /^\d+$/.test(name)).filter(pid => {
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+          if (/^[ZX] /.test(stat.slice(stat.lastIndexOf(') ') + 2))) return false;
+          return readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(root);
+        } catch { return false; }
+      });
+      assert.deepEqual(liveProcs, [], 'no update child process remains alive after pty hangup');
+      const recovered = await run(process.execPath, [entry, 'update', '--self'], 90000);
+      assert.equal(recovered.code, 0, recovered.output);
+      if (staged) {
+        assert.doesNotMatch(recovered.output, /Restored cotal-ai@/);
+        assert.match(recovered.output, /cotal-ai@99\.0\.0 in use and reconciled/);
+        const current = await run(process.execPath, [entry, '--version'], 60000);
+        assert.equal(current.code, 0, current.output);
+        assert.match(current.output, /cotal-ai 99\.0\.0/);
+      } else {
+        assert.match(recovered.output, /Restored cotal-ai@/);
+        assert.match(recovered.output, /installed globally and reconciled/);
+        assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
+      }
+      return { scenario, code: finished.code, elapsedMs: Date.now() - started, selected: target, missing, requests, output: finished.output };
+    }
     if (scenario === 'pending' || reconcileInterrupted) {
       const pending = scenario === 'pending';
       const preload = join(root, 'pause.cjs');
@@ -906,9 +1072,34 @@ exec npm "$@"
         assert.match(readFileSync(join(custody, '.owner'), 'utf8'), new RegExp(`^${updater.pid}\\n[^\\n]+\\n$`));
         assert(existsSync(join(custody, `.worker-${record.pid}`)), 'the running child has a published cache record');
         if (reconcileOrphan) {
-          updater.kill('SIGKILL');
-          writeFileSync(releaseReconcile, 'finish');
-          assert.equal((await first).signal, 'SIGKILL');
+          reconcileWorkerPid = record.pid;
+          const reconcileScratch = join(env.TMPDIR, scratch);
+          const npmCache = join(custody, '_cacache');
+          assert(readdirSync(join(npmCache, 'content-v2'), { recursive: true }).length > 0, 'npm populated the reconciliation cache');
+          if (orphanSignal === 'SIGHUP') {
+            updater.kill('SIGHUP');
+            for (let deadline = Date.now() + 200; updater.exitCode === null && Date.now() < deadline; )
+              await new Promise(done => setTimeout(done, 20));
+            assert.equal(updater.exitCode, null, 'updater waits for in-flight reconciliation to finish on SIGHUP');
+            assert(existsSync(npmCache), 'reconciliation cache stays while reconciliation finishes');
+            writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
+            const finished = await first;
+            await stopGroupAndWaitGone(record.pid);
+            reconcileWorkerPid = undefined;
+            assert.equal(finished.signal, null, finished.output);
+            assert.equal(finished.code, 129, finished.output);
+            assert.doesNotMatch(finished.output, /installed globally and reconciled|Retrying reconciliation|Restoring verified/);
+            assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
+            assert(!existsSync(marker), 'in-flight reconciliation cleared its child custody marker');
+            assert.equal(JSON.parse(readFileSync(join(root, 'cotal/update-recovery.json'), 'utf8')).phase, 'replacing', 'interrupted update retains its recovery journal for the next run');
+            assert(!existsSync(custody), 'the reconciliation cache is gone when the SIGHUPped update ends');
+            assert(!existsSync(reconcileScratch), 'the updater scratch is gone when the SIGHUPped update ends');
+            assert.deepEqual(readdirSync(env.TMPDIR).filter(name => name.startsWith('cotal-')), [], 'no cotal-* scratch remains in TMPDIR');
+            return { scenario, code: finished.code, elapsedMs: Date.now() - started, selected: target, missing, requests, output: finished.output };
+          }
+          updater.kill(orphanSignal);
+          writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
+          assert.equal((await first).signal, orphanSignal);
           assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
           const childExited = () => {
             try { return /^[ZX] /.test(readFileSync(`/proc/${record.pid}/stat`, 'utf8').split(') ').at(-1)); }
@@ -917,12 +1108,16 @@ exec npm "$@"
           for (let deadline = Date.now() + 5000; !childExited() && Date.now() < deadline; )
             await new Promise(done => setTimeout(done, 20));
           assert(childExited(), 'the interrupted updater’s child exited');
-          const reconcileScratch = join(env.TMPDIR, scratch);
+          await stopGroupAndWaitGone(record.pid);
+          reconcileWorkerPid = undefined;
           const compile = join(reconcileScratch, 'node-compile-cache');
-          mkdirSync(compile, { recursive: true });
-          const old = new Date(Date.now() - 61 * 60_000);
-          for (const name of readdirSync(compile, { recursive: true })) utimesSync(join(compile, name), old, old);
-          for (const path of [compile, custody, reconcileScratch]) utimesSync(path, old, old);
+          mkdirSync(compile, { recursive: true, mode: 0o700 });
+          const ageScratch = ageMs => {
+            const stamp = new Date(Date.now() - ageMs);
+            for (const name of readdirSync(reconcileScratch, { recursive: true }).reverse())
+              utimesSync(join(reconcileScratch, name), stamp, stamp);
+            utimesSync(reconcileScratch, stamp, stamp);
+          };
           // A different installation may run collection while the original update journal remains.
           const otherPrefix = join(root, 'other-prefix');
           mkdirSync(otherPrefix, { mode: 0o700 });
@@ -931,10 +1126,15 @@ exec npm "$@"
           mkdirSync(env.COTAL_HOME, { mode: 0o700 });
           env.npm_config_fetch_retries = '0';
           disconnected = true;
+          ageScratch(23 * 60 * 60_000);
+          const whileYoung = await run(process.execPath, [entry, 'update', '--self'], 60000);
+          assert.equal(whileYoung.code, 0, whileYoung.output);
+          assert(existsSync(npmCache), `populated reconciliation cache left by SIGKILL is kept while younger than 24 hours:\n${whileYoung.output}`);
+          ageScratch(25 * 60 * 60_000);
           const collected = await run(process.execPath, [entry, 'update', '--self'], 60000);
           assert.equal(collected.code, 0, collected.output);
           if (existsSync(reconcileScratch))
-            assert.fail(`interrupted reconciliation scratch remained: ${readdirSync(reconcileScratch, { recursive: true }).join(', ')}\n${collected.output}`);
+            assert.fail(`interrupted reconciliation scratch remained after 25 hours: ${readdirSync(reconcileScratch, { recursive: true }).join(', ')}\n${collected.output}`);
           return { scenario, code: collected.code, output: collected.output };
         } else {
           process.kill(record.pid, 'SIGKILL');
@@ -977,7 +1177,7 @@ exec npm "$@"
       assert.match(update.output, /Waiting for .*connector-hermes@99\.0\.0/);
       assert.deepEqual(installedAtWait, originalInstallation);
     }
-    if (staged) {
+    if (scenario === 'staging-killed') {
       assert.equal(update.code, 0, update.output);
       assert.match(update.output, /recovery snapshot saved/);
       assert.match(update.output, /cotal-ai@99\.0\.0 in use and reconciled/);
@@ -1067,15 +1267,16 @@ exec npm "$@"
         for (const path of scratchFixtures.expired)
           assert(!existsSync(path), `successful self-update removes expired compile scratch: ${path}`);
         if (scratchFixtures.live) assert(existsSync(scratchFixtures.live), 'a live reconciliation group retains its scratch');
+        for (const [path, contents] of scratchFixtures.retained)
+          assert(existsSync(path), `ineligible scratch stays: ${path} (${contents.join(', ')})`);
         assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')).sort(),
           [...scratchFixtures.retained.map(([path]) => basename(path)), ...(scratchFixtures.live ? [basename(scratchFixtures.live)] : [])].sort(),
           'ineligible scratch stays and new update scratch is removed');
         for (const [path, contents] of scratchFixtures.retained)
           assert.deepEqual(readdirSync(path, { recursive: true }).sort(), contents, `ineligible scratch is unchanged: ${path}`);
         if (scratchFixtures.live) {
-          const exited = once(cacheWorker, 'exit');
-          cacheWorker.kill();
-          await exited;
+          await stopGroupAndWaitGone(cacheWorker.pid, cacheWorker);
+          cacheWorker = undefined;
           const retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
           assert.equal(retry.code, 0, retry.output);
           assert(!existsSync(scratchFixtures.live), 'the next successful self-update collects scratch after the worker exits');
@@ -1141,12 +1342,11 @@ exec npm "$@"
     return { scenario, code: update.code, ...(scenario === 'concurrent' ? { updates } : {}), elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
   } finally {
     clearInterval(trickle);
-    if (reconcileOrphan) writeFileSync(releaseReconcile, 'finish');
-    if (cacheWorker && cacheWorker.exitCode === null && cacheWorker.signalCode === null) {
-      const exited = once(cacheWorker, 'exit');
-      cacheWorker.kill();
-      await exited;
+    if (reconcileOrphan || ptyPhase) {
+      writeFileSync(releaseReconcile, 'finish', { mode: 0o600 });
+      await stopGroupAndWaitGone(reconcileWorkerPid);
     }
+    if (cacheWorker?.pid) await stopGroupAndWaitGone(cacheWorker.pid, cacheWorker);
     for (const socket of backlog) socket.destroy();
     blackhole?.kill('SIGKILL');
     if (networkChild) { try { process.kill(-networkChild, 'SIGKILL'); } catch {} }
@@ -1160,6 +1360,33 @@ exec npm "$@"
     if (existsSync(join(root, 'configured-cache'))) chmodSync(join(root, 'configured-cache'), 0o700);
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+async function stopGroupAndWaitGone(pid, child) {
+  if (!pid) return;
+  try { process.kill(-pid, 'SIGKILL'); } catch {}
+  try { process.kill(-pid, 'SIGCONT'); } catch {}
+  try { process.kill(pid, 'SIGKILL'); } catch {}
+  try { process.kill(pid, 'SIGCONT'); } catch {}
+  if (child && child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+  const gone = () => {
+    try { process.kill(-pid, 0); }
+    catch (error) {
+      if (error.code === 'ESRCH') {
+        try { process.kill(pid, 0); }
+        catch (inner) { if (inner.code === 'ESRCH') return true; }
+      }
+    }
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return /^[ZX] /.test(stat.slice(stat.lastIndexOf(') ') + 2));
+    } catch (error) {
+      return error.code === 'ENOENT' || error.code === 'ESRCH';
+    }
+  };
+  for (let deadline = Date.now() + 10000; !gone() && Date.now() < deadline; )
+    await new Promise(done => setTimeout(done, 20));
+  assert(gone(), `process ${pid} exited before removing cell folder`);
 }
 
 async function corepackNodeFallbackCell(entry, parent) {
@@ -1249,13 +1476,133 @@ async function corepackNodeFallbackCell(entry, parent) {
   }
 }
 
+async function ptyRealChildHangupCell(entry, parent) {
+  const started = Date.now();
+  const probe = spawnSync('python3', ['-c', 'import os, pty; m, s = pty.openpty(); os.close(m); os.close(s)'], { env: childEnv, encoding: 'utf8' });
+  if (probe.error) {
+    assert.fail(`pty-real-child-hangup requires python3 to test controlling-pty hangup, and python3 could not start: ${probe.error.message}`);
+  }
+  if (probe.status !== 0) {
+    const reason = `controlling pty device could not be opened: ${(probe.stderr || `exit ${probe.status}`).trim()}`;
+    console.log(`skip pty-real-child-hangup: ${reason}`);
+    return { scenario: 'pty-real-child-hangup', skipped: reason, code: null, elapsedMs: Date.now() - started, selected: '', missing: 0, requests: [], output: '' };
+  }
+  const root = mkdtempSync(join(parent, 'pty-real-child-'));
+  const prefix = join(root, 'prefix'), home = join(root, 'home');
+  const installed = join(prefix, 'lib/node_modules/cotal-ai');
+  const exe = join(installed, 'dist/cotal.js');
+  const version = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
+  const env = {
+    ...childEnv,
+    HOME: home,
+    COTAL_HOME: join(root, 'cotal'),
+    XDG_CONFIG_HOME: join(root, 'config'),
+    TMPDIR: join(root, 'tmp'),
+    XDG_RUNTIME_DIR: join(root, 'runtime'),
+    npm_config_prefix: prefix,
+    npm_config_cache: join(root, 'cache'),
+    npm_config_update_notifier: 'false',
+    npm_config_audit: 'false',
+    npm_config_fund: 'false',
+    COTAL_TELEMETRY: 'off',
+    DO_NOT_TRACK: '1',
+    COTAL_NO_UPDATE_CHECK: '1',
+  };
+  delete env.NODE_OPTIONS;
+  try {
+    for (const dir of [home, env.COTAL_HOME, env.XDG_CONFIG_HOME, env.TMPDIR, env.XDG_RUNTIME_DIR, env.npm_config_cache, join(prefix, 'bin'), installed]) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+    }
+    const packed = spawnSync(process.execPath, [join(repo, 'bin/scripts/copy-seeded-connectors.mjs')], { cwd: repo, env: childEnv, encoding: 'utf8' });
+    assert.equal(packed.status, 0, packed.stdout + packed.stderr);
+    cpSync(dirname(entry), join(installed, 'dist'), { recursive: true });
+    cpSync(join(repo, 'bin/package.json'), join(installed, 'package.json'));
+    cpSync(join(repo, 'bin/seeded-connectors'), join(installed, 'seeded-connectors'), { recursive: true });
+    symlinkSync(join(repo, 'bin/node_modules'), join(installed, 'node_modules'), 'dir');
+    chmodSync(exe, 0o755);
+    symlinkSync(exe, join(prefix, 'bin/cotal'));
+    const seed = join(env.XDG_CONFIG_HOME, 'cotal/seed');
+    mkdirSync(seed, { recursive: true, mode: 0o700 });
+    for (const file of ['authority.json', 'authority.bak.json']) {
+      writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web'] }), { mode: 0o600 });
+    }
+    writeFileSync(join(seed, 'witness.json'), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
+    writeFileSync(join(seed, 'stamp.json'), JSON.stringify({ generation: version }), { mode: 0o600 });
+    const extensions = join(env.XDG_CONFIG_HOME, 'cotal/extensions');
+    mkdirSync(extensions, { recursive: true, mode: 0o700 });
+    writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: 'third-party-ext', version: '1.0.0', spec: 'third-party-ext@1.0.0', commands: [] }] }), { mode: 0o600 });
+    const driver = join(root, 'real-child-pty.py');
+    const resultFile = join(root, 'real-child-result.json');
+    writeFileSync(driver, [
+      'import json, os, pty, signal, subprocess, sys',
+      'result_file, node_bin, entry_js, target_ver = sys.argv[1:5]',
+      'master_fd, slave_fd = pty.openpty()',
+      'os.close(master_fd)',
+      'err_r, err_w = os.pipe()',
+      'child_env = dict(os.environ)',
+      'child_env["COTAL_UPDATE_PARENT"] = str(os.getpid())',
+      'child_env["COTAL_UPDATE_TARGET_VERSION"] = target_ver',
+      'child_env["COTAL_UPDATE_PARENT_WAITS"] = "1"',
+      'proc = subprocess.Popen(',
+      '    [node_bin, entry_js, "update"],',
+      '    stdin=subprocess.DEVNULL,',
+      '    stdout=slave_fd,',
+      '    stderr=err_w,',
+      '    env=child_env,',
+      '    start_new_session=True,',
+      ')',
+      'os.close(slave_fd)',
+      'os.close(err_w)',
+      'stderr_chunks = []',
+      'while True:',
+      '    chunk = os.read(err_r, 4096)',
+      '    if not chunk:',
+      '        break',
+      '    stderr_chunks.append(chunk)',
+      'os.close(err_r)',
+      'rc = proc.wait(timeout=60)',
+      'open(result_file, "w").write(json.dumps({',
+      '    "code": rc if rc >= 0 else None,',
+      '    "signal": signal.Signals(-rc).name if rc < 0 else None,',
+      '    "stderr": b"".join(stderr_chunks).decode("utf-8", "replace"),',
+      '}))',
+    ].join('\n'));
+    const ran = spawnSync('python3', [driver, resultFile, process.execPath, exe, version], { cwd: root, env, encoding: 'utf8', timeout: 90_000 });
+    assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+    const outcome = JSON.parse(readFileSync(resultFile, 'utf8'));
+    assert.equal(outcome.signal, null, outcome.stderr);
+    assert.equal(outcome.code, 3, `real built reconcile child reports lost stdout with exit 3 after finishing cleanup:\n${outcome.stderr}`);
+    assert.equal(outcome.stderr.split('could not write to stdout').length - 1, 1, outcome.stderr);
+    assert.deepEqual(readdirSync(env.TMPDIR).filter(name => name.startsWith('cotal-')), [], 'real built reconcile child held stdout errors through finally and removed its cotal-update-* scratch');
+    assert.deepEqual(readdirSync(join(env.XDG_CONFIG_HOME, 'cotal')).filter(name => name.includes('.lock')), [], 'real built reconcile child released its reconcile and mutation locks');
+    const emptyPath = mkdtempSync(join(root, 'no-python-'));
+    const missingProbe = spawnSync('python3', ['-c', 'pass'], { env: { ...childEnv, PATH: emptyPath }, encoding: 'utf8' });
+    assert(missingProbe.error, 'empty PATH reproduces missing python3');
+    const missingPythonRun = spawnSync(
+      process.execPath,
+      [fileURLToPath(import.meta.url), 'pty-real-child-hangup'],
+      { cwd: root, env: { ...childEnv, PATH: emptyPath }, encoding: 'utf8', timeout: 15_000 },
+    );
+    assert.notEqual(missingPythonRun.status, 0, 'missing python3 fails the pty cell instead of skipping');
+    assert.match(missingPythonRun.stderr, /requires python3 to test controlling-pty hangup/, missingPythonRun.stderr);
+    return { scenario: 'pty-real-child-hangup', code: outcome.code, elapsedMs: Date.now() - started, selected: version, missing: 0, requests: [], output: outcome.stderr };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const mountPoint = mkdtempSync(join(tmpdir(), 'closure-mount-probe-'));
   let canMount;
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'config-access-upgrade', 'config-access-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
-  for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
-  emitSentinel({ passed: selected.length, failed: 0 });
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'reconcile-orphan-sigkill', 'pty-install-hangup', 'pty-reconcile-hangup', 'pty-real-child-hangup', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'config-access-upgrade', 'config-access-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  let passed = 0;
+  for (const scenario of selected) {
+    const result = await registryArrivalCell({ scenario });
+    console.log(JSON.stringify(result));
+    if (!result.skipped) passed++;
+  }
+  emitSentinel({ passed, failed: 0 });
 }

@@ -4,34 +4,53 @@ import { processGroupMembers, protectedLocalDirectory, recoveryProcessStartToken
 
 const npmCacheName = /^cotal-update-npm-[a-zA-Z0-9]{6}$/;
 const reconcileCacheName = /^cotal-update-reconcile-[a-zA-Z0-9]{6}$/;
+const workerName = /^\.worker-[1-9]\d*$/;
+const compileIdleMs = 60 * 60_000;
+const populatedReconcileIdleMs = 24 * 60 * 60_000;
 
 function privateDirectory(info: Stats, uid: number | undefined): boolean {
   return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
 }
 
-function idleCompileTree(directory: string, cutoff: number): boolean {
+function idleCacheTree(directory: string, cutoff: number, uid?: number): boolean {
   return readdirSync(directory).every(name => {
     const path = join(directory, name);
     const info = lstatSync(path);
-    return info.mtimeMs < cutoff && (info.isDirectory() ? idleCompileTree(path, cutoff) : info.isFile());
+    return info.mtimeMs < cutoff && (uid === undefined || (info.uid === uid && (info.mode & 0o022) === 0)) &&
+      (info.isDirectory() ? idleCacheTree(path, cutoff, uid) : info.isFile());
   });
 }
 
-function removeExpiredCompileScratch(scratch: string, mtimeMs: number, removeReconcileCache: (path: string) => boolean): boolean {
-  const cutoff = Date.now() - 60 * 60_000;
+function idleNpmCache(path: string, cutoff: number, uid: number | undefined): boolean {
+  const info = lstatSync(path);
+  return uid !== undefined && info.isDirectory() && info.uid === uid && (info.mode & 0o022) === 0 &&
+    info.mtimeMs < cutoff && readdirSync(path).every(name =>
+      (name === "content-v2" || name === "index-v5" || name === "tmp") && lstatSync(join(path, name)).isDirectory()) &&
+    idleCacheTree(path, cutoff, uid);
+}
+
+function removeExpiredCompileScratch(
+  scratch: string,
+  mtimeMs: number,
+  removeReconcileCache: (path: string, dayCutoff: number, scratchIdleDay: () => boolean) => boolean,
+): boolean {
+  const now = Date.now();
+  const cutoff = now - compileIdleMs;
   if (mtimeMs >= cutoff) return false;
   const entries = readdirSync(scratch);
   const compile = "node-compile-cache";
   if (!entries.includes(compile) || entries.length > 2) return false;
   const cache = join(scratch, compile);
   const info = lstatSync(cache);
-  if (!info.isDirectory() || info.mtimeMs >= cutoff || !idleCompileTree(cache, cutoff)) return false;
+  if (!info.isDirectory() || info.mtimeMs >= cutoff || !idleCacheTree(cache, cutoff)) return false;
 
   const npm = entries.find(name => name !== compile);
   if (npm !== undefined) {
     if (process.platform !== "linux" || !reconcileCacheName.test(npm)) return false;
     const reconcile = join(scratch, npm);
-    if (lstatSync(reconcile).mtimeMs >= cutoff || !removeReconcileCache(reconcile)) return false;
+    const dayCutoff = now - populatedReconcileIdleMs;
+    const scratchIdleDay = () => mtimeMs < dayCutoff && info.mtimeMs < dayCutoff && idleCacheTree(cache, dayCutoff);
+    if (lstatSync(reconcile).mtimeMs >= cutoff || !removeReconcileCache(reconcile, dayCutoff, scratchIdleDay)) return false;
   }
   rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   rmdirSync(scratch);
@@ -62,14 +81,25 @@ export function collectUpdateCaches(parent: string): void {
     }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   };
-  function removeReconcileCache(cache: string): boolean {
-    if (!privateDirectory(lstatSync(cache), uid)) return false;
+  function removeReconcileCache(cache: string, dayCutoff: number, scratchIdleDay: () => boolean): boolean {
+    const cacheInfo = lstatSync(cache);
+    if (!privateDirectory(cacheInfo, uid)) return false;
     protectedLocalDirectory(cache, "the update cache");
     const files = readdirSync(cache);
-    const worker = files.find(name => /^\.worker-[1-9]\d*$/.test(name));
-    if (files.length !== 2 || !worker || !deadOwner(cache) || !absentGroup(Number(worker.slice(".worker-".length)))) return false;
-    const info = lstatSync(join(cache, worker));
-    if (!info.isFile() || info.uid !== uid || info.size !== 0 || (info.mode & 0o077) !== 0) return false;
+    const workers = files.filter(name => workerName.test(name));
+    const hasData = files.includes("_cacache");
+    if (workers.length !== 1 || files.length !== (hasData ? 3 : 2) || !files.includes(".owner") || !deadOwner(cache))
+      return false;
+    const worker = workers[0]!;
+    const workerInfo = lstatSync(join(cache, worker));
+    if (!workerInfo.isFile() || workerInfo.uid !== uid || workerInfo.size !== 0 || (workerInfo.mode & 0o077) !== 0 ||
+        !absentGroup(Number(worker.slice(".worker-".length)))) return false;
+    if (hasData) {
+      if (cacheInfo.mtimeMs >= dayCutoff || workerInfo.mtimeMs >= dayCutoff ||
+          lstatSync(join(cache, ".owner")).mtimeMs >= dayCutoff || !scratchIdleDay() ||
+          !idleNpmCache(join(cache, "_cacache"), dayCutoff, uid)) return false;
+      rmSync(join(cache, "_cacache"), { recursive: true, force: true, maxRetries: 3 });
+    }
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
     return true;
   }
