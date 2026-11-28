@@ -292,8 +292,9 @@ try {
         visited.push(await page.evaluate(() => document.activeElement.id || document.activeElement.tagName));
       }
       assert.deepEqual(visited, expected, `${name}: keyboard order`);
+      // Reduce Motion turned on while the app is open: whatever was running must settle, and nothing may run forever.
+      await page.emulateMedia({ reducedMotion: "reduce" });
       if (scenario.name === 'audit-account-refusal-agents') {
-        await page.emulateMedia({ reducedMotion: "reduce" });
         await page.waitForTimeout(350);
         const viewport = page.viewportSize();
         await page.setViewportSize({ width: viewport.width, height: Math.round(viewport.height * .7) });
@@ -301,11 +302,25 @@ try {
         const sizingAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'running' && a.effect?.target?.id === 'agent-list').map(a => a.transitionProperty || a.animationName));
         assert.deepEqual(sizingAnimations, [], `${name}: delayed resize has no agent sizing motion under reduce`);
       }
+      // Turning reduced motion on restarts the short enter fade. One sample at 300ms races that restart.
+      const reduced = await page.waitForFunction(() => {
+        const running = document.getAnimations().filter(animation => animation.playState === "running").map(animation => {
+          const timing = animation.effect?.getTiming?.() ?? {};
+          return { target: animation.effect?.target?.id, name: animation.animationName || animation.transitionProperty, iterations: timing.iterations, duration: timing.duration };
+        });
+        const endless = running.filter(animation => animation.iterations === Infinity || animation.duration === Infinity);
+        if (endless.length) return { endless, running };
+        return running.length === 0 ? { endless, running } : false;
+      }, null, { timeout: 2000, polling: 50 });
+      const settled = await reduced.jsonValue();
+      assert.deepEqual(settled.endless, [], `${name}: reduced motion`);
+      assert.deepEqual(settled.running, [], `${name}: reduced motion`);
+      // Reduce Motion already on when the app opens, as a person's setting usually is: every animation that starts only fades.
       if (reducedMotion === "no-preference") {
-        const reduced = await reducedRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
-        assert.deepEqual(reducedViolations(reduced.entries), [], `${name}: reduced motion only fades and never repeats`);
-        motion.reduced += reduced.entries.length;
-        motion.reducedStill += reduced.still;
+        const fromLoad = await reducedRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
+        assert.deepEqual(reducedViolations(fromLoad.entries), [], `${name}: reduced motion only fades and never repeats`);
+        motion.reduced += fromLoad.entries.length;
+        motion.reducedStill += fromLoad.still;
       }
       count++;
       console.log(`PASS ${name}`);
