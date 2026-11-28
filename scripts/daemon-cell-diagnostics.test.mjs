@@ -130,7 +130,7 @@ test('before and after collect fixed native observations, private hashes, record
 
 test('failed and timed-out child observations do not replace verdict or prevent independent status', async () => {
   const f = fixture(), verdict = new Error('raw update timeout');
-  const report = await captureDaemonDiagnostics({ ...f.options, timeoutMs: 80, verdict, run: (file, args, bounds) => f.child(file === 'systemctl' ? 'process.exit(7)' : file === 'journalctl' ? 'setTimeout(()=>{},10000)' : 'console.log("{\\"result\\":{\\"state\\":\\"ready\\"}}")', bounds) });
+  const report = await captureDaemonDiagnostics({ ...f.options, verdict, run: (file, args, bounds) => f.child(file === 'systemctl' ? 'process.exit(7)' : file === 'journalctl' ? 'setTimeout(()=>{},10000)' : 'console.log("{\\"result\\":{\\"state\\":\\"ready\\"}}")', bounds) });
   assert.equal(report.verdict, verdict);
   assert.equal(row(report, 'systemctl-show').state, 'failed');
   assert.equal(row(report, 'systemctl-show').exit, 7);

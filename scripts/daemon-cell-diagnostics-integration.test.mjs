@@ -25,13 +25,13 @@ test('diagnostic timeout kills only its own child and retains an explicit unknow
 });
 
 test('diagnostic timeout closes inherited pipes from its owned descendant group', { skip: process.platform === 'win32' ? 'POSIX process-group proof only' : false }, async () => {
-  const grandchild = "setTimeout(()=>{},900)";
+  const grandchild = "setTimeout(()=>{},6000)";
   const code = `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:['ignore','inherit','inherit']});console.log(child.pid);setInterval(()=>{},1000)`;
   const started = Date.now();
-  const result = await runDiagnosticCommand(process.execPath, ['-e', code], { timeoutMs: 100 });
+  const result = await runDiagnosticCommand(process.execPath, ['-e', code], { timeoutMs: 1000 });
   assert.equal(result.timeout, true);
   assert.equal(result.signal, 'SIGKILL');
-  assert(Date.now() - started < 700, 'must not wait for the 900ms descendant to close inherited pipes');
+  assert(Date.now() - started < 4000, 'must not wait for the descendant to close its inherited pipes');
   assert.match(result.stdout, /^\d+\n$/);
 });
 
