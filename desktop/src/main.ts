@@ -8,7 +8,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, spaceRowRefusal, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { consents, readPlan, renderRepair, resultNotice, resultSteps, signInNeeded, updateNeeded, type RepairPlanView, type RepairResultView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
@@ -456,8 +456,9 @@ function renderProgress(): void {
   });
 }
 function setupProgress(frame: Frame): void {
-  if (typeof frame.line === "string") {
-    const line = document.createElement("li"); line.textContent = frame.line;
+  const shown = typeof frame.line === "string" && !forTerminal(frame.line) ? frame.line : "";
+  if (shown) {
+    const line = document.createElement("li"); line.textContent = shown;
     el("setup-lines").append(line); el("details").hidden = false;
   }
   const p = frame.progress;
@@ -730,7 +731,7 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -746,11 +747,16 @@ function renderConnections(): void {
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const recovery = accountRow?.custodyRecovery;
-    const label = recovery ? "Use signed-in account" : restore ? "Add" : "Remove";
-    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", recovery ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
+    const fix = accountRow && (accountRow.lastRefusal || recovery) ? spaceRowRefusal(accountRow) : undefined;
+    const label = fix?.label ?? (restore ? "Add" : "Remove");
+    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", fix && fix.action !== "remove" ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
     button.addEventListener("click", () => {
-      if (recovery && !window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
-      void rowAction(space, restore, recovery);
+      if (fix?.action === "recover" && recovery) { if (window.confirm(`Move ${name.textContent} to the account you're signed in with?`)) void rowAction(space, false, recovery); }
+      else if (fix?.action === "sign-in") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+      else if (fix?.action === "apps") openApps();
+      else if (fix?.action === "check") void action(refresh);
+      else if (fix?.action === "remove") { if (window.confirm(`Remove ${name.textContent} from this computer? Agents from this space stop running here.`)) void rowAction(space, false); }
+      else void rowAction(space, restore);
     });
     if (rowOperation?.space === space) {
       row.setAttribute("aria-busy", "true");

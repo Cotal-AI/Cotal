@@ -66,8 +66,25 @@ const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this compu
 export function spaceStateKnown(observed: string): boolean {
   return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(NETWORK_SPACE_STATE, observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
 }
+export interface SpaceRowRefusal { text: string; action: "recover" | "sign-in" | "apps" | "check" | "remove"; label: string }
+const KEEPS_TRYING = "Cotal keeps trying by itself.";
+/** What a space row says about the refusal the background service saved, and the one action for it.
+ *  The service's own sentence is never shown: it can name a sign-in address or a command. */
+export function spaceRowRefusal(row: ComputerSpace): SpaceRowRefusal {
+  const saved = row.lastRefusal ?? "";
+  const check = (text: string): SpaceRowRefusal => ({ text, action: "check", label: "Check again" });
+  if (row.custodyRecovery) return { text: "This space is set up under another sign-in on this computer.", action: "recover", label: "Move to this account" };
+  if (saved.startsWith("The local space connection is held by ")) return { text: "This space is set up under another sign-in on this computer.", action: "remove", label: "Remove" };
+  if (saved === "no available application") return { text: "No agent app is installed.", action: "apps", label: "Set up agent apps" };
+  if (["not-signed-in", "credential-expired", "not-user-auth"].includes(saved)) return { text: "Sign in again to use this space.", action: "sign-in", label: "Sign in" };
+  if (saved === "Manager is not answering") return check(`Starting this space. ${KEEPS_TRYING}`);
+  if (["unreachable", "account space is currently unavailable"].includes(saved)) return check(`Can't reach this space. ${KEEPS_TRYING}`);
+  if (saved.startsWith("disconnect refused")) return check(`Couldn't remove this space from this computer. ${KEEPS_TRYING}`);
+  if (saved.startsWith("local removal could not stop")) return check("Couldn't remove this space from this computer.");
+  return check("Can't connect this space.");
+}
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
-  if (row.lastRefusal) return row.lastRefusal;
+  if (row.lastRefusal) return spaceRowRefusal(row).text;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
@@ -210,9 +227,9 @@ export function approvalUrl(value: unknown): string {
   return url.href;
 }
 
-/** A daemon message or remedy that names a command, a path or a file is for a terminal, not a window. */
+/** A daemon message or remedy that names a command, a path, a file or a web address is for a terminal, not a window. */
 export function forTerminal(text: string): boolean {
-  return /`|\bcotal\s|systemctl|loginctl|launchctl|schtasks|(?:^|[\s(])(?:\/|~\/|[A-Za-z]:\\)\S/.test(text);
+  return /`|\bcotal\s|systemctl|loginctl|launchctl|schtasks|https?:\/\/|(?:^|[\s(])(?:\/|~\/|[A-Za-z]:\\)\S/.test(text);
 }
 
 export function requireResult(frame: Frame): Record<string, unknown> {
