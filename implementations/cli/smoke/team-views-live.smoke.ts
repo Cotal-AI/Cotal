@@ -523,12 +523,12 @@ try {
     /Auth mode:\s+static auth\n/.test(additiveShow.stdout) && /Recorded state:\s+channels created\n/.test(additiveShow.stdout), additiveShow.stdout);
 
   console.log("\nH. a deployment ID that no record names");
-  const missing = (run: ReturnType<typeof cotal>, message: string) => {
+  const missing = (run: ReturnType<typeof cotal>, message: string, list = "cotal team --json") => {
     const error = envelope(run.stdout)?.error;
-    return run.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message === message && error.remedy === "list the deployments recorded here with `cotal team`";
+    return run.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.message === message && error.remedy === `list the deployments recorded here with \`${list}\``;
   };
   const unknown = "0000000000000000";
-  check("team show <unknown id> is TARGET_NOT_FOUND and names the ID", missing(cotal(s, "team", "show", unknown, "--json"), `no team deployment "${unknown}" is recorded in this root`));
+  check("a missing team shown from another project names the selected inventory in JSON", missing(cotal(b, "team", "show", unknown, "--space", SPACE, "--json"), `no team deployment "${unknown}" is recorded in this root`, `cotal team --space ${SPACE} --json`));
   check("team show <garbage> is TARGET_NOT_FOUND and says what an ID looks like", missing(cotal(s, "team", "show", "nonsense", "--json"), `no team deployment "nonsense" is recorded in this root; a deployment ID is 16 hex characters`));
   check("team remove <unknown id> --dry-run is TARGET_NOT_FOUND", missing(cotal(s, "team", "remove", unknown, "--dry-run", "--json"), `no team deployment "${unknown}" is recorded in this root`));
   check("team remove <unknown id> --yes is TARGET_NOT_FOUND, not a route it does not support", missing(cotal(s, "team", "remove", unknown, "--yes", "--json"), `no team deployment "${unknown}" is recorded in this root`));

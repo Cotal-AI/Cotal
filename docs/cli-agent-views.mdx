@@ -213,6 +213,7 @@ and auth mode in words, such as `boot returned` and `static auth`. The JSON resu
 recorded values, such as `broker-boot-returned` and `auth`. A deployment ID that no record in the
 root names is refused with `TARGET_NOT_FOUND`, which names the ID, by `team show` and by
 `team remove`; `team show` adds that an ID is 16 hex characters when the value has another shape.
+The suggested inventory command keeps any `--space`, `--json` or `--plain` flag from the lookup.
 When native `up -f` returns from its broker start, it writes a creation-only fresh
 summary with its full run ID, initial broker PID, declared agent/channel names
 and the initial control-plane, auth-service and delivery-responder results.
