@@ -65,7 +65,10 @@ export async function startEnabledPluginSpace() {
     const wire = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds, tls: false }) });
     provisionerWire = wire;
     const jsm = await jetstreamManager(wire);
-    await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 1 })));
+    const writeAuthority = async (state: unknown) => {
+      await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), JSON.stringify(state));
+    };
+    await writeAuthority({ version: 1, enabled: true, epoch: 1 });
     const registry = await openChannelRegistry(wire, space);
     await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 1 }));
     await writeChannelConfig(registry, hiddenChannel, { deliveryClass: "durable", replay: false });
@@ -126,7 +129,7 @@ export async function startEnabledPluginSpace() {
       await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 2 })));
       await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 2 }));
     };
-    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory,
+    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory, writeAuthority,
       recreatePluginHistoryAtNextEpoch, provisioner, jsm, close };
   } catch (error) {
     await close();

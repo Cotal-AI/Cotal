@@ -1,5 +1,5 @@
 import { setTimeout as wait } from "node:timers/promises";
-import type { CotalEndpoint, CotalMessage, Delivery, MessageMeta } from "../../src/index.js";
+import { dmStream, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "../../src/index.js";
 import type { EndpointConsumers } from "../../src/endpoint-consumers.js";
 import type { ConnectionState } from "../../src/endpoint-connection-state.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "../../src/types.js";
@@ -120,5 +120,45 @@ export async function checkPluginFirstFanout(check: Check): Promise<void> {
     await fixture.startDelivery();
     check("first EXT fan-out bind routes a retained mention accepted before the consumer existed", missing && await until(() =>
       pointed.some((value) => !!value && typeof value === "object" && "message" in value && value.message === early.id)), pointed);
+  } finally { await fixture.close(); }
+}
+
+export async function checkEnabledUnreadableAuthority(check: Check): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, chatChannel, endpoint, jsm, mintAgent, space } = fixture;
+  try {
+    const daemon = await fixture.startDelivery();
+    const next = internals(daemon).conn;
+    const daemonWire = next.nc!;
+    let ready = 0;
+    const warnings: Error[] = [];
+    daemon.on("transport", ({ connected }) => { if (connected && next.nc === daemonWire) ready++; });
+    daemon.on("warning", (error) => {
+      if (error.message.includes("plugin channel authority unavailable")) warnings.push(error);
+    });
+    const sender = await mintAgent({ post: [channel, chatChannel] });
+    const target = await mintAgent({ read: [channel, chatChannel] });
+    const writer = endpoint({ creds: sender.creds, lifecycleUid: sender.lifecycleUid, consume: false,
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "authority-writer" } });
+    const reader = endpoint({ creds: target.creds, lifecycleUid: target.lifecycleUid, channels: [],
+      watchPresence: false, card: { kind: "agent", name: "authority-target" } });
+    const received = new Set<string>();
+    reader.on("message", (msg, delivery) => { received.add(msg.id); delivery.ack(); });
+    await Promise.all([writer.start(), reader.start()]);
+    if (!(await until(() => daemon.getRoster().some(({ card }) => card.name === "authority-target"))))
+      throw new Error("enabled authority fixture never saw its mention target");
+    await fixture.writeAuthority({ version: 1, enabled: true, epoch: "unreadable" });
+    await daemonWire.reconnect();
+    const degraded = await until(() => ready === 1 || daemonWire.isClosed());
+    await daemonWire.reconnect();
+    const reread = await until(() => ready === 2 || daemonWire.isClosed());
+    const before = (await jsm.streams.info(dmStream(space))).state.last_seq;
+    const plugin = await writer.multicast("isolated body while authority is unavailable", { channel, mentions: ["authority-target"] });
+    const chat = await writer.multicast("ordinary CHAT during authority failure", { channel: chatChannel, mentions: ["authority-target"] });
+    check("unreadable enabled authority keeps ordinary CHAT delivery, withholds EXT notices and reports the cause once", degraded && reread &&
+      ready === 2 && next.nc === daemonWire && !next.pluginChannelsEnabled && next.pluginChannelEpoch === undefined &&
+      warnings.length === 1 && warnings[0].message.includes("invalid or unsupported plugin channel space state") &&
+      await until(() => received.has(chat.id)) && !received.has(plugin.id) &&
+      (await jsm.streams.info(dmStream(space))).state.last_seq === before, { ready, warnings, received: [...received] });
   } finally { await fixture.close(); }
 }

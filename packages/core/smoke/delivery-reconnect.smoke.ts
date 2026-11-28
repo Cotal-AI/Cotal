@@ -33,7 +33,7 @@ import { PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from
 import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
 import { isStreamNotFound } from "../src/jetstream-missing.js";
 import { startEnabledPluginSpace } from "./fixtures/enabled-plugin-space.js";
-import { checkPluginFirstFanout, checkPluginJoinReplay } from "./fixtures/plugin-join-replay.js";
+import { checkEnabledUnreadableAuthority, checkPluginFirstFanout, checkPluginJoinReplay } from "./fixtures/plugin-join-replay.js";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -530,6 +530,7 @@ async function checkPluginProjection(space: string, provisioner: string, creds: 
     try { await refused.start(); } catch (error) { failure = error; } finally { await refused.stop(); }
     check("boot rejects deleted projection without publishing readiness", !bootReady &&
       failure instanceof Error && failure.message.includes("invalid plugin channel route projection record"));
+    await put(false, 3);
   } finally {
     await viewer.stop();
     await ep.stop();
@@ -1010,6 +1011,7 @@ try {
   await checkEnabledPluginNativeRecovery();
   await checkPluginJoinReplay(check);
   await checkPluginFirstFanout(check);
+  await checkEnabledUnreadableAuthority(check);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
