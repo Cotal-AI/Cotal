@@ -1,5 +1,36 @@
 # @cotal-ai/cli
 
+## 0.184.1
+
+### Patch Changes
+
+- bc13966: Keep the terminal text in a Manager pin retry out of telemetry. When input is missing, show the equals syntax required for text beginning with a dash.
+- c3e56b3: When a setup bundle names a different broker, show how to inspect the existing registration before changing it. Keep conflicting project paths in the local setup diagnostic.
+- c3e56b3: Keep paths out of telemetry when backup inspection or verification finds a missing, non-backup or incomplete artifact. The CLI still shows the local diagnosis and how to recover.
+- 75fd5c4: Keep control directory and store paths out of CLI telemetry when startup or restore refuses a store location.
+- 23e7342: Keep the paths and validation details of malformed persona files local when a foreground launch or preview refuses them.
+- 69ca033: Keep the agent name and Manager instance ID out of telemetry when the pinned Manager cannot find the agent during attach. The operator still sees the local diagnostic and the scoped roster command.
+- 37bb95a: Preserve startup settings when retrying a stopped controller stack whose recorded broker address is occupied.
+- 31f19df: Keep requested startup settings in the recovery advice when a separate service already owns a stack component.
+- 0a2d3dd: Keep a refused service definition’s credential file path in its local diagnostic and out of error telemetry. When service launch coordinates disagree with the registration, show both targets in the local remedy without sending them in the error message.
+- 004966b: Keep rejected destinations, unknown runtimes and non-directory project paths out of setup telemetry. The CLI still shows the supplied value and the correction locally.
+- c3e56b3: When startup refuses a store another space uses, keep the store path, tenant names, roots and stream names in the local diagnostic. The exit status and recovery advice stay the same.
+- c3e56b3: Keep paths out of telemetry when a file blocks the config folder or a command refuses an unexpanded `--store-dir`. The CLI still names the affected folder. For a blocked config folder it now asks for an unused name instead of printing a move command that splits paths at spaces and can replace an existing file.
+- 1392fa1: Keep the project path local when setup or space creation cannot write the project's `.cotal` directory. The operator still sees the path and recovery advice.
+- ea9e9b6: Keep credential filenames in local connection diagnostics and out of CLI error telemetry.
+- 000e0f2: Preserve plain output when confirming a stop or restart of a service without an installed unit.
+- eb29bf2: Verify that replacing a stopped stack manager removes its old log and restarting the broker removes the prior launch files.
+- e3f3310: Keep the target space and stop options in the retry shown when another service or registration blocks a controller stack shutdown.
+- 2a49228: Keep unsupported adapter unit previews read-only and scoped to the requested space and output format. When the adapter cannot run in the foreground, the non-preview start advice also names the original space.
+- 5395c59: Point a live membership migration at the project that owns the running stack before suggesting a stop. For an externally started broker, name its launcher instead.
+- ac5096d: Keep the requested Manager ID, space name and running Manager IDs out of telemetry when a command refuses an unregistered Manager pin. The local diagnostic and recovery advice are unchanged.
+- Updated dependencies [0a2d3dd]
+- Updated dependencies [c3e56b3]
+- Updated dependencies [7c5c7ff]
+  - @cotal-ai/workspace@0.184.1
+  - @cotal-ai/core@0.184.1
+  - @cotal-ai/seat@0.184.1
+
 ## 0.184.0
 
 ### Minor Changes

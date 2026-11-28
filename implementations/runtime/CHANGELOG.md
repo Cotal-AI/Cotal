@@ -1,5 +1,17 @@
 # @cotal-ai/runtime
 
+## 0.184.1
+
+### Patch Changes
+
+- 48f3312: When a workflow inventory page needs a Manager ID, or a hosted run command rejects a malformed ID, point to the roster in the requested space, broker and output format. Keep private broker and caller details out of the advice.
+- Updated dependencies [0a2d3dd]
+- Updated dependencies [c3e56b3]
+- Updated dependencies [7c5c7ff]
+  - @cotal-ai/workspace@0.184.1
+  - @cotal-ai/core@0.184.1
+  - @cotal-ai/lang@0.184.1
+
 ## 0.184.0
 
 ### Patch Changes
