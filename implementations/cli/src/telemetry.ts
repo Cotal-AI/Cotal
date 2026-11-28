@@ -78,7 +78,16 @@ interface ErrorText {
   readonly stack: string | null;
 }
 
+const localDiagnostics = new WeakSet<Error>();
+
+/** Keep this error's operator text and stack out of telemetry without changing the local failure. */
+export function localDiagnostic<T extends Error>(error: T): T {
+  localDiagnostics.add(error);
+  return error;
+}
+
 export function telemetryErrorText(command: string, error: unknown): ErrorText {
+  if (error instanceof Error && localDiagnostics.has(error)) return { message: null, stack: null };
   // Help shows the requested topic and can suggest commands from local extensions.
   if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   // A spawn diagnostic can include native terminal output or the original launch arguments.
