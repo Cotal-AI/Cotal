@@ -74,6 +74,7 @@ When a service preset has never started, its refusal names the space locally. Te
 code without the message or stack, including when `manager logs` names a missing log file.
 The space and PID also stay local when a service command cannot control a process started by `up` or `supervise`.
 When a separately started service blocks `up`, its name, PID and instance ID stay in the local refusal.
+When `backup inspect` or `backup verify` finds no artifact at the requested path, or finds an incomplete artifact without its manifest, the path and recovery advice stay local. The event carries the refusal code without the message or stack.
 If the preferences file is a symbolic link, the event reports the reason without the link path or target.
 If a service adapter path crosses a symbolic link, the event names the option. The link and its destination stay in the local remedy.
 When `space create` refuses a project root that is not a directory, the event reports the reason. The path stays in the local remedy.

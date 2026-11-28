@@ -256,6 +256,15 @@ for (const level of ["regular", "minimal"]) {
     check("a refused contract link is named only locally", denied.status === 2 && denied.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
       && event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
   }
+  const incomplete = join(s.project, `unfinished ${marker}`);
+  mkdirSync(incomplete); writeFileSync(join(incomplete, "checkpoints.json"), "[]");
+  for (const mode of ["inspect", "verify"]) {
+    for (const path of [file, join(s.project, `missing ${marker}`), incomplete]) {
+      const r = await s.run(["backup", mode, path, "--json"]), event = r.sent.find(body => body.event === "command");
+      check(`backup ${mode} keeps its rejected artifact path local`, r.status === (path === incomplete ? 1 : 2) && r.stdout.includes(marker) &&
+        event?.errorCode === (path === incomplete ? "SCHEMA_INVALID" : "TARGET_NOT_FOUND") && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+    }
+  }
   const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
