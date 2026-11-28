@@ -2,4 +2,4 @@
 "@cotal-ai/core": patch
 ---
 
-Count plugin channels from the viewer's admitted grants and keep ordinary CHAT and direct messages available when a read-only viewer cannot verify plugin routing.
+Export `readPluginChannelSpaceAuthority` for signers, count plugin channels from the viewer's admitted grants, and keep ordinary CHAT and direct messages available without falling back to CHAT for reserved-channel history or publishing when the viewer cannot verify routing.

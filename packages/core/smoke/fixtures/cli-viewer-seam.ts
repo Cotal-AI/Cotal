@@ -91,6 +91,42 @@ async function checkDegradedFeed(check: Check, fixture: Fixture, viewer: ReturnT
     history instanceof Error && history.message === "plugin channel routing projection is unavailable", history);
 }
 
+async function checkDegradedRecall(check: Check, fixture: Fixture, legacyWriter: CotalEndpoint) {
+  const { hiddenChannel, chatChannel, space } = fixture;
+  await fixture.enableLegacyReplay();
+  const stale = await legacyWriter.multicast("retained and replayable on legacy CHAT", { channel: hiddenChannel });
+  const legacy = await fixture.mintAgent({ read: [hiddenChannel, chatChannel], legacy: true });
+  const opts = { creds: legacy.creds, lifecycleUid: legacy.lifecycleUid, consume: false, channels: [],
+    registerPresence: false, readOnce: true, card: { kind: "endpoint" as const, name: "recall-viewer" } };
+  const control = fixture.endpoint(opts);
+  const chatRequests: string[] = [];
+  const stream = chatStream(space);
+  const viewer = fixture.endpoint({ ...opts, readChannelRoutingProjection: true, onConnection(wire) {
+    const request = wire.request;
+    wire.request = (...args) => {
+      if (args[0].startsWith("$JS.API.") && args[0].split(".").includes(stream)) chatRequests.push(args[0]);
+      return request.apply(wire, args);
+    };
+  } });
+  await control.start();
+  await control.channelHistoryPage(hiddenChannel, { limit: 1 });
+  const legacyRows = await control.recallChannel(hiddenChannel, 0);
+  await control.stop();
+
+  await viewer.start();
+  const policy = await viewer.channelReplayPolicy(hiddenChannel);
+  await viewer.channelHistoryPage(chatChannel, { limit: 1 }); // Initialize the JetStream manager on the viewer.
+  const ordinary = await viewer.recallChannel(chatChannel, 0);
+  const observedChatRead = chatRequests.length > 0;
+  chatRequests.length = 0;
+  const refusal = await viewer.recallChannel(hiddenChannel, 0).then(() => undefined, (error: unknown) => error);
+  check("degraded viewer refuses recall of a replayable reserved name without reading CHAT",
+    policy.registered && policy.replay && legacyRows.messages.some(({ id }) => id === stale.id) && ordinary.messages.length > 0 && !ordinary.unanswered &&
+    observedChatRead && viewer.channelRoutingMode() === undefined && chatRequests.length === 0 &&
+    refusal instanceof Error && refusal.message === "plugin channel routing projection is unavailable",
+    { policy, legacy: legacyRows.messages.length, ordinary: ordinary.messages.length, observedChatRead, chatRequests, refusal });
+}
+
 async function checkDegradedPublish(check: Check, fixture: Fixture) {
   const legacy = await fixture.mintAgent({ post: [fixture.hiddenChannel, fixture.chatChannel], legacy: true });
   let wire: NatsConnection | undefined;
@@ -164,6 +200,7 @@ export async function checkCliViewerSeam(check: Check): Promise<void> {
     check("fresh viewer binds around the malformed projection without arming an EXT tap",
       !freshWire.isClosed() && fresh.pluginTaps.size === 0 && fresh.ep.channelRoutingMode() === undefined);
     await checkDegradedFeed(check, fixture, fresh, writer, legacyWriter, recipient.principal, "fresh viewer");
+    await checkDegradedRecall(check, fixture, legacyWriter);
     await checkDegradedPublish(check, fixture);
     const cid = freshWire.info!.client_id;
     await fixture.writeProjection({ enabled: true, epoch: 1 });

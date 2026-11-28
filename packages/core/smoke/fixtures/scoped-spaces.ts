@@ -3,7 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { awaitBrokerReady, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { CotalEndpoint, isReachable, listSpaces, PLUGIN_CHANNEL_ROOT, readPluginChannelSpaceAuthority, setupSpaceStreams } from "../../src/index.js";
+import { CotalEndpoint, chatStream, chatSubject, isReachable, listSpaces, PLUGIN_CHANNEL_ROOT, readPluginChannelSpaceAuthority, setupSpaceStreams } from "../../src/index.js";
+import { pluginChannelStream } from "../../src/plugin-channel-route.js";
 import { pickFreePort } from "../_free-port.js";
 import { startEnabledPluginSpace } from "./enabled-plugin-space.js";
 
@@ -14,20 +15,29 @@ export async function checkScopedSpaces(check: Check): Promise<void> {
   try {
     const signed = await f.mintAgent({ read: [f.channel, f.chatChannel], post: [f.chatChannel] });
     const writerGrant = await f.mintAgent({ post: [f.hiddenChannel] });
+    const legacyGrant = await f.mintAgent({ post: [f.hiddenChannel], legacy: true });
     const chatViewer = await f.mintObserver();
     const writer = f.endpoint({ creds: writerGrant.creds, lifecycleUid: writerGrant.lifecycleUid, channels: [], consume: false,
       registerPresence: false, watchPresence: false, card: { name: "other-plugin", kind: "agent" } });
     const visible = f.endpoint({ creds: signed.creds, lifecycleUid: signed.lifecycleUid, channels: [], consume: false,
       registerPresence: false, watchPresence: false, card: { name: "scoped-view", kind: "agent" } });
-    await Promise.all([writer.start(), visible.start()]);
+    const legacy = f.endpoint({ creds: legacyGrant.creds, channels: [], consume: false,
+      registerPresence: false, watchPresence: false, card: { name: "legacy-overview-writer", kind: "endpoint" } });
+    await Promise.all([writer.start(), visible.start(), legacy.start()]);
     await visible.multicast("one ordinary CHAT row", { channel: f.chatChannel });
     await writer.multicast("one inaccessible retained EXT row", { channel: f.hiddenChannel });
+    await legacy.multicast("one stale reserved CHAT row", { channel: f.hiddenChannel });
+    const legacySubject = chatSubject(f.space, legacyGrant.owner, legacyGrant.actor, f.hiddenChannel);
+    const rawChat = await f.jsm.streams.info(chatStream(f.space), { subjects_filter: ">" });
+    const rawExt = await f.jsm.streams.info(pluginChannelStream(f.space));
     const opts = { servers: f.servers };
     const exact = await listSpaces({ ...opts, creds: signed.creds });
     const chat = await listSpaces({ ...opts, creds: chatViewer });
     const want = (channels: number) => [{ space: f.space, agents: 0, channels, messages: 1 }];
-    check("scoped enabled spaces counts only explicit plugin grants and never counts another plugin's retained rows", JSON.stringify(exact) === JSON.stringify(want(2)) &&
-      JSON.stringify(chat) === JSON.stringify(want(1)), { exact, chat });
+    check("scoped enabled spaces counts explicit plugin grants but excludes retained reserved CHAT and EXT messages",
+      rawChat.state.messages === 2 && rawChat.state.subjects?.[legacySubject] === 1 && rawExt.state.messages === 1 &&
+      JSON.stringify(exact) === JSON.stringify(want(2)) && JSON.stringify(chat) === JSON.stringify(want(1)),
+      { exact, chat, rawChat: rawChat.state, extMessages: rawExt.state.messages });
     const mutable = { ...opts, creds: chatViewer };
     const pinned = listSpaces(mutable);
     mutable.creds = signed.creds;
