@@ -55,10 +55,13 @@ function hostLineage(scope: DarwinSeatHostScope): readonly [string, string, stri
   return [state, scope.installedRoot, scope.space];
 }
 
+export function darwinSeatHostLineageRoot(scope: DarwinSeatHostScope): string {
+  return join(scope.cotalHome, "daemon", "pty-hosts", digest(JSON.stringify(hostLineage(scope))).slice(0, 32));
+}
+
 export function darwinSeatHostGenerationRoot(scope: DarwinSeatHostScope, generation: string): string {
-  const lineage = hostLineage(scope);
   if (!/^[a-f0-9]{64}$/.test(generation)) throw refusal();
-  return join(scope.cotalHome, "daemon", "pty-hosts", digest(JSON.stringify(lineage)).slice(0, 32), generation);
+  return join(darwinSeatHostLineageRoot(scope), generation);
 }
 
 /** Derive the host identity from the daemon home, logical install, exact space and generation. */
@@ -83,6 +86,15 @@ export function planDarwinSeatHost(input: DarwinSeatHostScope & {
   if (Buffer.byteLength(bytes) > limit) throw refusal();
   return { cotalHome, ...(daemonHome === undefined ? {} : { daemonHome }), id, label, source,
     receipt: join(directory, `${label}.json`), sha256: digest(bytes), argv: [...argv], bytes };
+}
+
+export function planRetainedDarwinSeatHost(scope: DarwinSeatHostScope, generation: string): DarwinSeatHostPlan {
+  darwinSeatHostGenerationRoot(scope, generation);
+  const base = join(scope.cotalHome, "daemon", "app-manager-runtimes", generation);
+  return planDarwinSeatHost({ ...scope, generation, argv: [join(base, "cotal-node"),
+    join(base, "runtime", "dist", "daemon", "seat-host-entry-darwin.js"), scope.cotalHome, scope.installedRoot,
+    scope.space, generation, ...(scope.daemonHome === undefined ? [] : [scope.daemonHome])],
+  });
 }
 
 function uid(): number {

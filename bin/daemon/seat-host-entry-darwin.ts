@@ -2,7 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir } from "./endpoint.js";
-import { admitDarwinSeatHost, darwinSeatHostGenerationRoot, darwinSeatHostSocket, planDarwinSeatHost, type DarwinSeatHostScope } from "./seat-host-darwin.js";
+import { admitDarwinSeatHost, darwinSeatHostGenerationRoot, darwinSeatHostSocket, planRetainedDarwinSeatHost, type DarwinSeatHostScope } from "./seat-host-darwin.js";
 
 const entrySuffix = "dist/daemon/seat-host-entry-darwin.js";
 const entryPath = fileURLToPath(import.meta.url);
@@ -13,12 +13,9 @@ export async function prepareDarwinDesktopHost(scope: DarwinSeatHostScope, runti
   const retained = await retainDarwinSeatRuntime({ home: scope.cotalHome, installedRoot: scope.installedRoot,
     node: process.execPath, root: runtimeRoot, entry: join(runtimeRoot, entrySuffix), desktop: true });
   const { generation } = retained;
-  return { generation, root: darwinSeatHostGenerationRoot(scope, generation),
-    plan: planDarwinSeatHost({ ...scope, generation,
-      argv: [retained.node, retained.entry, scope.cotalHome, scope.installedRoot, scope.space, generation,
-        ...(scope.daemonHome === undefined ? [] : [scope.daemonHome])],
-    }),
-  };
+  const plan = planRetainedDarwinSeatHost(scope, generation);
+  if (plan.argv[0] !== retained.node || plan.argv[1] !== retained.entry) throw new Error("unverified retained Darwin PTY host plan");
+  return { generation, root: darwinSeatHostGenerationRoot(scope, generation), plan };
 }
 
 async function runHostEntry(): Promise<void> {
@@ -31,9 +28,7 @@ async function runHostEntry(): Promise<void> {
       process.execPath !== node || realpathSync.native(node) !== node || realpathSync.native(entry) !== entry)
     throw new Error("unverified retained Darwin PTY host entry");
   const scope = { cotalHome, ...(daemonHome === undefined ? {} : { daemonHome }), installedRoot, space };
-  const plan = planDarwinSeatHost({ ...scope, generation,
-    argv: [node, entry, cotalHome, installedRoot, space, generation, ...(daemonHome === undefined ? [] : [daemonHome])],
-  });
+  const plan = planRetainedDarwinSeatHost(scope, generation);
   admitDarwinSeatHost(plan);
   const socket = darwinSeatHostSocket(plan.id);
   const seatEntry = new URL("./shared-host-darwin.js", import.meta.resolve("@cotal-ai/seat"));
