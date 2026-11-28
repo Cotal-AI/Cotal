@@ -8,7 +8,8 @@ const VERSION = "2.4.0";
 const base = { state: "ready", protocol: 1, version: VERSION, pid: 1, startedAt: "", uptimeMs: 0 } as const;
 const status = (managers: HostedManager[]): DaemonStatus => ({ ...base, managers }) as DaemonStatus;
 const probe = (managers: HostedManager[]): RepairProbe => ({ status: status(managers), statusUnknown: false, service: { kind: "this" } });
-const refused = (space: string, reason: string): HostedManager => ({ space, state: "refused", restarts: 0, reason, lastRefusal: reason });
+// A refused space this computer still means to host, as the service reports it.
+const refused = (space: string, reason: string): HostedManager => ({ space, state: "refused", restarts: 0, hostingIntent: true, reason, lastRefusal: reason });
 // The reason 0.184.1 records, word for word, on a computer with no npm (seen on Linux, macOS and Windows).
 const SEED = "hosted connector reconciliation failed: replacement connector reconciliation failed (exit 1): × a previous connector seed failed (package \"claude\", phase add): failed to seed connector \"claude\" from /home/person/.config/cotal/seed/store/0.177.0/claude: @cotal-ai/connector-claude-code npm install failed: npm is not on PATH - fix that, then run `cotal ext seed --repair`; run `cotal ext seed --repair` with the installed CLI";
 const REPLACED = "hosted connector reconciliation failed: daemon loaded CLI 2.3.0, but the installed CLI is 2.4.0; refusing to launch a hosted Manager from the replaced installation";
