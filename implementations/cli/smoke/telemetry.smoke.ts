@@ -353,6 +353,22 @@ for (const level of ["regular", "minimal"]) {
   check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
 }
 
+{
+  const message = "Private space at /home/example/private-project could not be read.";
+  for (const [code, cause] of [
+    ["TARGET_NOT_FOUND", "NOT_REGISTERED"],
+    ["TARGET_NOT_FOUND", "NOT_REQUESTED"],
+    ["LIFECYCLE_BLOCKED", "ACCOUNT_DESIRED"],
+    ["DEPENDENCY_UNAVAILABLE", "UNAVAILABLE"],
+  ] as const) {
+    const failure = new CommandFailure("refused", code, message, { native: { code: cause } });
+    const text = telemetryErrorText("daemon", failure);
+    check(`daemon status ${cause} keeps the diagnostic local`, failure.message === message && text.message === null && text.stack === null);
+  }
+  const usage = telemetryErrorText("daemon", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
+  check("daemon usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
+}
+
 // ---- minimal ----
 {
   const s = sandbox();
