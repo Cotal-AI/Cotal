@@ -1,5 +1,11 @@
 # @cotal-ai/registry
 
+## 0.185.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.185.1
+
 ## 0.185.0
 
 ### Patch Changes
@@ -869,8 +875,9 @@
 ### Patch Changes
 
 - c986cc1: Host permission-scoped endpoint discovery inside the auth service with explicit registry opt-in.
-  
+
   The builtin auth-service preset accepts `--registry`; multi-space auth manifests enable it per entry. Embedders supply `registryService` through the same auth lifecycle. Signing authority stays in auth, reader and serving credentials stay separate, serving renewal uses the native issuance fence, and restart recovery retains the original instance and native gate operation. The registry is disabled by default and stops with its auth plane.
+
 - Updated dependencies [c986cc1]
 - Updated dependencies [143a69e]
 - Updated dependencies [38f5bb2]
@@ -1404,7 +1411,7 @@
   broker or the endpoint can still refuse a listed command, and the answer says so. On a user-auth
   mesh, `view: "manager"` lists what the agent's manager-call credential can call, asked over that
   credential. A listing drops the agent's cached `describe` of each endpoint it lists.
-  
+
   To ask, a credential on the legacy rail now carries a listing generation: one `ep.v1` request row
   that reaches only the registry's `endpoints` command, its reply row, and the read of its own
   accepted row. The auth callout issues one for an agent connection and an unissued `manager-caller`
