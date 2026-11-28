@@ -3,32 +3,18 @@ import { basename, dirname, join } from "node:path";
 import { lockExclusiveNb } from "./host.js";
 import { capabilityToken, isSeatId } from "./record.js";
 import { validSharedGeneration } from "./shared-controller-claim.js";
+import { readDarwinControllerClaim, type DarwinControllerClaim } from "./shared-controller-claim-darwin.js";
 import { darwinHostTransport } from "./shared-control-darwin.js";
-import { darwinSharedIdentity, type DarwinSharedIdentity } from "./shared-identity-darwin.js";
+import { darwinSharedIdentity } from "./shared-identity-darwin.js";
 import { darwinCustodianIdentity, darwinSeatIsolation } from "./shared-lifetime-darwin.js";
 import { serveSharedHost } from "./shared-host-v2.js";
 import type { HostRecords } from "./shared-platform.js";
-import { readPrivateRecord, sharedControllerClaim, sharedHostRecord, sharedSeatRecord, SHARED_MULTIPLEX_VERSION, writePrivateRecord } from "./shared-record.js";
-
-type DarwinClaim = DarwinSharedIdentity & { generation: string };
+import { readPrivateRecord, sharedHostRecord, sharedSeatRecord, SHARED_MULTIPLEX_VERSION, writePrivateRecord } from "./shared-record.js";
 
 function privateRoot(path: string, uid: number): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o777) !== 0o700 || realpathSync.native(path) !== path)
     throw new Error("unverified Darwin PTY custody directory");
-}
-
-function readClaim(lineage: string, uid: number): DarwinClaim | undefined {
-  privateRoot(lineage, uid);
-  try {
-    const row = readPrivateRecord(sharedControllerClaim(lineage), 1024) as Partial<DarwinClaim & { version: number }> | null;
-    if (!row || row.version !== 1 || !validSharedGeneration(row.generation) || !Number.isSafeInteger(row.pid) ||
-        typeof row.start !== "string" || typeof row.bootId !== "string") throw new Error("unverified Darwin PTY controller claim");
-    return { pid: row.pid!, start: row.start, bootId: row.bootId, generation: row.generation, uid };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
 }
 
 function publishHostRecord(path: string, host: unknown): void {
@@ -58,9 +44,9 @@ export async function serveDarwinSharedHost(
     const protocol = SHARED_MULTIPLEX_VERSION;
     const host = { version: protocol, protocol, pid, start, bootId, scope, token: capabilityToken() };
     const launchState = (id: string) => lstatSync(dirname(sharedSeatRecord(root, id)), { throwIfNoEntry: false }) ? "unknown" : "absent";
-    const records: HostRecords<DarwinClaim> = {
-      readClaim: () => readClaim(lineage, identity.uid),
-      acceptsLaunch: (_claim): _claim is DarwinClaim => false,
+    const records: HostRecords<DarwinControllerClaim> = {
+      readClaim: () => readDarwinControllerClaim(lineage, identity.uid),
+      acceptsLaunch: (_claim): _claim is DarwinControllerClaim => false,
       launchState,
       reserve: id => launchState(id) === "unknown" ? "unknown" : "not-admitted",
       publishHost: () => publishHostRecord(path, host),
