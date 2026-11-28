@@ -785,7 +785,22 @@ export async function requestAccountMachine(opts: {
   if (body !== undefined && Buffer.byteLength(body, "utf8") > 16384) throw new Error("invalid computer registration exceeds 16384 bytes");
   const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body } : {}) }, opts.signal);
   const etag = response.headers.get("etag");
-  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
+  // A refusal can name a removed computer. Other error bodies stay unread.
+  const errorBody = !response.ok && (response.status === 401 || response.status === 403 || response.status === 404)
+    ? await readAccountRefusal(response) : undefined;
+  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}), ...(errorBody ? { body: errorBody } : {}) };
+}
+
+/** A small JSON refusal, or nothing. A body that is not JSON, or is too large, is discarded. */
+async function readAccountRefusal(response: Response): Promise<unknown> {
+  const text = await response.text().catch(() => "");
+  if (!text || text.length > 4096) return undefined;
+  try {
+    const body: unknown = JSON.parse(text);
+    return body && typeof body === "object" && !Array.isArray(body) ? body : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 interface PrepareCatalogOpts {

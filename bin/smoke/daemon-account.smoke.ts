@@ -40,8 +40,10 @@ console.log("ok recorded Manager selection is read-only and refuses corrupt or l
 const machineHome = process.env.COTAL_HOME;
 const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
 let registration: Record<string, unknown> | undefined;
+let sent: unknown;
 let malformed = false;
 let mode = 200, puts = 0, gets = 0;
+let refusal: Record<string, unknown> | undefined;
 let revision = 1;
 let etag = '"one"';
 let conditional: string | undefined;
@@ -55,7 +57,7 @@ const fixture = createServer((req, res) => {
   if (req.method === "PUT") {
     let body = "";
     req.on("data", chunk => { body += String(chunk); });
-    req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 16384); registration = JSON.parse(body) as Record<string, unknown>; });
+    req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 16384); registration = JSON.parse(body) as Record<string, unknown>; if (registration.vitals) sent = daemon.status().vitals; });
     puts++;
     persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
     if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
@@ -63,7 +65,7 @@ const fixture = createServer((req, res) => {
   }
   gets++; conditional = req.headers["if-none-match"] as string | undefined;
   if (holdGet) return;
-  if (mode !== 200) { res.writeHead(mode); res.end(mode === 304 ? undefined : "{}"); return; }
+  if (mode !== 200) { res.writeHead(mode); res.end(mode === 304 ? undefined : JSON.stringify(refusal ?? {})); return; }
   res.setHeader("etag", etag);
   res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, ...(malformed ? {} : { bindingRevisions: {} }), account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
 });
@@ -88,7 +90,7 @@ try {
   await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "name", "sample-ready", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
   await until(() => !!registration?.vitals, "next registration carries cached sample");
   assert.ok(registration);
-  assert.deepEqual(registration.vitals, daemon.status().vitals, "status exposes the sent sample");
+  assert.deepEqual(registration.vitals, sent, "status exposes the sent sample");
   const { stdout: humanStatus } = await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "status", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
   assert.match(humanStatus, /\d+\.\d GiB free \/ \d+\.\d GiB total \(\d+\.\d% used\)/);
   assert.match(humanStatus, /System uptime:\s+\d+ days \d+ hours/);
@@ -124,13 +126,21 @@ try {
   await until(() => gets > before, "conditional 304 poll");
   assert.equal(conditional, etag); assert.equal(daemon.status().account!.desiredRevision, 1);
   mode = 503; const errors = gets;
-  await until(() => gets > errors && daemon.status().account?.message === "account computer request failed; existing connections are unchanged", "503 leaves desired revision unchanged");
+  await until(() => gets > errors && daemon.status().account?.cloud?.state === "retrying" && daemon.status().account?.mode === "account", "503 keeps the account mode and retries");
   assert.equal(daemon.status().account!.desiredRevision, 1);
-  assert.equal(daemon.status().account!.message, "account computer request failed; existing connections are unchanged");
+  assert.equal(daemon.status().account!.message, undefined);
+  assert.equal(daemon.status().account!.cloud?.reason, "refused");
   mode = 304; const recovered = gets;
-  await until(() => gets > recovered && daemon.status().account?.message === undefined, "an unchanged poll after a failed one clears the failure message");
+  await until(() => gets > recovered && daemon.status().account?.cloud === undefined, "a later unchanged poll clears the retry");
   mode = 401; const denied = gets;
-  await until(() => gets > denied && daemon.status().account?.mode === "sign-in-required", "401 surfaces sign in again");
+  await until(() => gets > denied && daemon.status().account?.cloud?.state === "retrying" && daemon.status().account?.mode === "account", "a bare 401 keeps the account and retries");
+  const retried = gets;
+  await until(() => gets > retried, "the refused account is asked again", 8_000);
+  mode = 200; revision = 3; const healing = gets;
+  await until(() => gets > healing && daemon.status().account?.cloud === undefined && daemon.status().account?.desiredRevision === 3, "a later 200 clears the retry");
+  refusal = { code: "computer-removed" }; mode = 401; const removed = gets;
+  await until(() => gets > removed && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.reason === "computer-removed", "a removed computer asks for a sign-in");
+  assert.equal(daemon.status().account!.message, "This computer was removed from your account. Sign in to add it back.");
   const halted = gets; await sleep(5500); assert.equal(gets, halted);
   await daemon.close(); mode = 404;
   daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
