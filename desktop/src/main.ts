@@ -543,6 +543,7 @@ function showStage(next: Stage, focus = false): void {
   if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
+    el("recover").hidden = recovery.action === "none";
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
     if (!retrySignIn && ["EXPIRED", "VERSION_MISMATCH"].includes(issue!) && !el("recover").querySelector(".icon-refresh")) el("recover").prepend(icon("refresh"));
@@ -887,7 +888,9 @@ function state(value: string, space = selectedSpace()): void {
   if (value === "launch-ready" || value === "approval-pending") connections.set(space, value);
   else connections.delete(space);
   const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
-  if (connected()) problem = undefined;
+  // A connected space clears earlier errors, but not the offer to move the service to this app,
+  // which only a status read that no longer reports another installation clears.
+  if (connected() && problem !== "ANOTHER_INSTALLATION") problem = undefined;
   text("tray-label", initialized ? verified ? "Connected" : "Not connected" : "Checking connection");
   el("tray-indicator").classList.toggle("connected", verified);
   if (isTauri()) void invoke("set_connection_state", { connected: verified }).catch(() => undefined);
@@ -974,7 +977,8 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
   // Another Cotal installation runs the service: say so and offer Repair while each status read finds it.
-  if ((status.recovery as { reason?: unknown } | undefined)?.reason === "another-installation" && (!problem || statusProblem)) { problem = "ANOTHER_INSTALLATION"; statusProblem = true; }
+  if ((status.recovery as { reason?: unknown } | undefined)?.reason === "another-installation") { if (!problem || statusProblem) { problem = "ANOTHER_INSTALLATION"; statusProblem = true; } }
+  else if (problem === "ANOTHER_INSTALLATION") { problem = undefined; statusProblem = false; }
   renderAgentRows(status);
   if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0))) { appsLoadedAt = Date.now(); void agentApps.load(); }
   requestAnimationFrame(sizeSpaceList);
@@ -1440,7 +1444,7 @@ async function start(): Promise<void> {
     }
   };
   try {
-    await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
+    await startPresence(notice, { settings: openSettings, dashboard: openDashboard, repair: () => { if (!busy) { settingsOpen = false; renderSettings(); void action(openRepair); } } });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     appPlatform = String(info.platform); appArch = String(info.arch);

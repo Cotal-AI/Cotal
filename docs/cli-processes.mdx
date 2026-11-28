@@ -661,17 +661,20 @@ prints a plan digest. `cotal daemon repair --apply <digest>` runs that plan and 
 `CONFLICT` with cause `PLAN_CHANGED` when the computer changed since it was printed.
 
 When another Cotal installation runs the service, the plan moves it to this installation. A move
-needs `--yes` (cause `CONSENT_REQUIRED` without it) and lists the agents that restart. It stops the
+needs `--yes` (cause `CONSENT_REQUIRED` without it) and lists the agents that stop. It stops the
 recorded service through the same verified path as `uninstall`, but keeps every record in the daemon
 home: sign-in, this computer's account identity and each space's service records. It then installs
 this installation's service and waits for it to answer. If that service does not answer, the move puts
 the previous service back, starts it, and refuses with cause `MOVE_ROLLED_BACK`. `uninstall` still
 erases the space service records; use `repair` to move the service.
 
-The desktop app offers Repair as the one button on every error screen whose cause it handles, and in
-Settings. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`, and its `status`
-reply adds `recovery: {reason: "another-installation", owner}` while another installation runs the
-service.
+The desktop app offers Repair as the one button on every error screen whose cause it handles, in
+Settings and in the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, consent}`.
+Its `status` reply and every `status-watch` frame add `recovery: {reason: "another-installation", owner}`
+while another installation runs the service, so the window offers Repair without a manual refresh.
+A move holds the same `agent-app.lock` admission that agent-app installs and sign-ins hold, so it
+refuses `LIFECYCLE_BLOCKED` while one runs and none starts during the move. The new service's
+startup never takes that lock.
 
 Daemon launches keep the invoked Node path when it resolves to the running Node in the same
 directory, including a distribution's stable `node` symlink. Links through another directory,

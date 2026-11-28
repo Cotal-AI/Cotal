@@ -152,7 +152,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "repair" | "installer"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "repair" | "installer" | "none"; label: string }
 /** Rule 0: every screen offers one button that fixes the cause here. A cause no button can fix
  *  directly gets Repair, which checks the background service and fixes what it finds. */
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
@@ -166,10 +166,12 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "AUTH_REQUIRED": case "NOT_SIGNED_IN": return { title: "Sign in to continue", description: "This computer is not signed in. Approve it in your browser to continue.", action: "login", label: "Sign in" };
     case "SETUP_INTERRUPTED": return { title: "Setup was interrupted", description: "This copy of Cotal did not finish installing. Download the installer and run it again.", action: "installer", label: "Download installer" };
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
-    case "DAEMON_LOST": return repair("The background service stopped", "It stopped before this could finish, so nothing was completed. Repair starts it again.");
+    case "DAEMON_LOST": return repair("The background service stopped", "The background service stopped before Cotal could confirm the result. Repair checks what changed and starts the service again if needed.");
     case "NOT_ANSWERING": return repair("The background service has not started", "Cotal asked the background service on this computer to start, and it has not answered. Repair checks why and fixes what it can.");
     case "ANOTHER_INSTALLATION": case "CONFLICT": case "RUNNING_WITHOUT_UNIT": return repair("Another copy of Cotal runs the background service", "Repair can move it to this app. Your spaces and sign-in stay as they are.");
-    case "LOCK_HELD": case "PEER_NOT_LOCK_OWNER": case "PEER_UID_MISMATCH": return repair("The background service can't be checked", "Another program holds it, so this app cannot confirm it is Cotal's. Repair checks it and tells you what it found.");
+    case "LOCK_HELD": case "PEER_NOT_LOCK_OWNER": return repair("The background service can't be checked", "Another program holds it, so this app cannot confirm it is Cotal's. Repair checks it and tells you what it found.");
+    // Repair cannot act on another account's service, so no button that cannot work is offered.
+    case "PEER_UID_MISMATCH": return { title: "The background service can't be used", description: "The background service on this computer belongs to another user account, so this app can't use it.", action: "none", label: "" };
     case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };

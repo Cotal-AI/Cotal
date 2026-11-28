@@ -386,7 +386,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
                 finish(undefined, { kind: "version-mismatch", status: frame.result });
                 return;
               }
-              emit({ v: 1, event: "status", ok: true, watchMode: "push", result: frame.result });
+              emit({ v: 1, event: "status", ok: true, watchMode: "push", result: { ...frame.result, ...ownershipRecovery(paths, home) } });
             }
           });
           sock.once("end", () => finish(seenFirst ? undefined : new Error("daemon closed the connection without a reply"), { kind: "closed" }));

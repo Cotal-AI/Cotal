@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { lockExclusiveNb } from "@cotal-ai/seat";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,8 +62,8 @@ function otherInstallation(): string {
   return join(other, "dist/cotal.js");
 }
 
-type Mode = "moved" | "rolled-back" | "declined" | "uninstall-erases";
-for (const mode of ["uninstall-erases", "declined", "moved", "rolled-back"] as const satisfies readonly Mode[]) {
+type Mode = "moved" | "rolled-back" | "declined" | "uninstall-erases" | "app-change-running";
+for (const mode of ["uninstall-erases", "declined", "app-change-running", "moved", "rolled-back"] as const satisfies readonly Mode[]) {
   const root = mkdtempSync(join(tmpdir(), "drt-"));
   const home = join(root, "home"), config = join(root, "config"), rt = join(root, "rt"), native = join(root, "native");
   for (const path of [home, config, rt, native]) mkdirSync(path, { mode: 0o700 });
@@ -145,6 +146,21 @@ process.exit(0)
       assert.equal((await queryDaemon({ paths })).ok, true, "the other installation's service still answers");
       assert.equal(readFileSync(unitPath, "utf8"), source, "its unit is unchanged");
       console.log("PASS takeover without consent changes nothing and stops nothing");
+      continue;
+    }
+    if (mode === "app-change-running") {
+      // An agent-app install holds the shared admission gate; a move must wait, never cut it off.
+      const gate = openSync(join(paths.state, "agent-app.lock"), constants.O_RDWR | constants.O_CREAT, 0o600);
+      assert.ok(lockExclusiveNb(gate), "the smoke holds the agent-app gate");
+      try {
+        const blocked = await run(["daemon", "repair", "--apply", plan.json.result.digest, "--yes", "--json"]);
+        assert.equal(blocked.code, 2, blocked.output);
+        assert.equal(blocked.json.error.code, "LIFECYCLE_BLOCKED");
+        assert.ok(!existsSync(effects), "a move during an app change runs no native command");
+        assert.equal(readFileSync(unitPath, "utf8"), source, "the other installation's unit is unchanged");
+        assert.equal((await queryDaemon({ paths })).ok, true, "its service keeps answering");
+      } finally { closeSync(gate); }
+      console.log("PASS a move waits for a running agent-app change and changes nothing");
       continue;
     }
     const applied = await run(["daemon", "repair", "--apply", plan.json.result.digest, "--yes", "--json"]);

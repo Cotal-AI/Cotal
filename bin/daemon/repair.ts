@@ -6,7 +6,7 @@
  * the computer no longer matches it, so a person always approves exactly what runs.
  *
  * A step needs consent when it stops something the person may be using: moving the background
- * service from another Cotal installation, which restarts every agent it runs, and starting a
+ * service from another Cotal installation, which stops every agent it runs, and starting a
  * service the person stopped. Every other step is safe to run without asking.
  *
  * Moving the service keeps every record in the daemon home: sign-in, this computer's identity and
@@ -23,6 +23,7 @@ import { unitReceiptFile } from "./install-receipt.js";
 import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
 import type { DaemonStatus } from "./protocol.js";
 import { serviceOwner, type ServiceOwner } from "./service-owner.js";
+import { withAppMutation } from "./agent-app-admission.js";
 
 export { serviceOwner, type ServiceOwner };
 
@@ -38,7 +39,7 @@ export interface RepairStep {
   readonly change?: string;
   /** A fix that stops something the person may be using. Apply must name it in `consent`. */
   readonly consent?: "takeover" | "start-stopped";
-  /** Agents the change restarts, by space, name and agent app. */
+  /** Agents the change stops, by space, name and agent app. */
   readonly agents?: readonly { readonly space: string; readonly name: string; readonly application: string }[];
   readonly owner?: ServiceOwner;
 }
@@ -93,7 +94,7 @@ function ownerStep(opts: RepairOptions, status: DaemonStatus | undefined): Repai
   return {
     step: "service-owner", outcome: "fix", consent: "takeover", owner, agents,
     found: owner.kind === "app" ? "Another copy of the Cotal app runs the background service." : "A command-line install of Cotal runs the background service.",
-    change: agents.length ? `Use this app for the background service. ${agents.length === 1 ? "1 agent restarts" : `${agents.length} agents restart`}.` : "Use this app for the background service.",
+    change: agents.length ? `Use this app for the background service. ${agents.length === 1 ? "1 agent stops" : `${agents.length} agents stop`}.` : "Use this app for the background service.",
   };
 }
 
@@ -149,9 +150,13 @@ export async function applyRepair(opts: RepairOptions & { readonly digest: strin
 async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
   const install: InstallOptions = { paths: opts.paths, daemonHome: opts.daemonHome, peerUid: opts.peerUid, peerPid: opts.peerPid, version: opts.version, report: line => opts.report?.(line) };
   if (step.step === "service-owner" && step.consent === "takeover") {
-    const identity = installedDaemonIdentity(opts.paths, opts.daemonHome);
-    const moved = await applyMove(opts.paths, opts.daemonHome, { from: identity.installed, version: opts.version }, line => opts.report?.(line));
-    return `This app now runs the background service. ${moved.spaces.length === 1 ? "1 space was" : `${moved.spaces.length} spaces were`} kept.`;
+    // The same gate agent-app changes hold: no install or sign-in runs across the handoff.
+    // The new service's startup never takes it, so waiting for it to answer cannot deadlock.
+    return withAppMutation(opts.paths, async () => {
+      const identity = installedDaemonIdentity(opts.paths, opts.daemonHome);
+      const moved = await applyMove(opts.paths, opts.daemonHome, { from: identity.installed, version: opts.version }, line => opts.report?.(line));
+      return `This app now runs the background service. ${moved.spaces.length === 1 ? "1 space was" : `${moved.spaces.length} spaces were`} kept.`;
+    });
   }
   if (step.step === "service-owner") {
     applyInstall(opts.paths, opts.daemonHome);

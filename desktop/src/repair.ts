@@ -1,5 +1,5 @@
 /** The Repair panel: read the plan, show what each step found and will change, ask once for a step
- *  that restarts agents or moves the background service, then run exactly that plan. */
+ *  that stops agents or moves the background service, then run that plan and nothing else. */
 import type { Request } from "./model";
 
 export interface RepairStepView { step: string; outcome: "ok" | "fix" | "needs-you" | "cannot"; found: string; change?: string; changed?: string; consent?: "takeover" | "start-stopped"; agents?: { space: string; name: string; application: string }[]; owner?: { kind: "app" | "cli"; location: string } }
@@ -11,7 +11,7 @@ export function consentCopy(plan: RepairPlanView): string {
   if (takeover) {
     const copy = takeover.owner?.kind === "app" ? "another copy of the Cotal app" : "a command-line install of Cotal";
     const count = takeover.agents?.length ?? 0;
-    return `The background service is now run by ${copy}. Repair moves it to this app. Your spaces and sign-in stay as they are.${count ? ` ${count === 1 ? "This agent restarts" : `These ${count} agents restart`}:` : ""}`;
+    return `The background service is now run by ${copy}. Repair moves it to this app. Your spaces and sign-in stay as they are.${count ? ` ${count === 1 ? "This agent stops" : `These ${count} agents stop`}:` : ""}`;
   }
   if (plan.steps.some(step => step.outcome === "fix" && step.consent === "start-stopped")) return "The background service was stopped on this computer. Repair starts it again.";
   return "";
@@ -43,9 +43,9 @@ export function renderRepair(root: HTMLElement, plan: RepairPlanView, result?: R
   const agents = root.querySelector<HTMLUListElement>("#repair-agents")!;
   const copy = result ? "" : consentCopy(plan);
   consent.textContent = copy; consent.hidden = !copy;
-  const restarting = result ? [] : plan.steps.find(step => step.consent === "takeover" && step.outcome === "fix")?.agents ?? [];
-  agents.replaceChildren(...restarting.map(agent => { const li = document.createElement("li"); li.textContent = `${agent.name} (${agent.application}) in ${agent.space}`; return li; }));
-  agents.hidden = !restarting.length;
+  const stopping = result ? [] : plan.steps.find(step => step.consent === "takeover" && step.outcome === "fix")?.agents ?? [];
+  agents.replaceChildren(...stopping.map(agent => { const li = document.createElement("li"); li.textContent = `${agent.name} (${agent.application}) in ${agent.space}`; return li; }));
+  agents.hidden = !stopping.length;
   const apply = root.querySelector<HTMLButtonElement>("#repair-apply")!;
   apply.textContent = result ? "Done" : applyLabel(plan);
 }

@@ -363,6 +363,7 @@ pub fn run() {
             app.manage(native_presence::load(app.handle())?);
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let repair = MenuItem::with_id(app, "repair", "Repair…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
@@ -372,7 +373,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
+            let menu = Menu::with_items(app, &[&status, &update, &settings, &repair, &dashboard, &quit])?;
             app.manage(TrayUpdate(update));
             app.manage(TrayStatus(status));
             let icon = app
@@ -396,6 +397,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
+                    "repair" => { show(app); let _ = app.emit("desktop-open-repair", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { stop_watch(app); app.exit(0); } },
                     _ => {}
