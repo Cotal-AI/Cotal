@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
-import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
+import { installedUpdatePrefix, runGlobalProcess, runNpm, runNpmAsync, runProcess } from "../src/commands/update-process.js";
 import { DependencyCheckNoSpace, ReleaseNotAvailable, waitForReleasePreflight } from "../src/commands/update-release.js";
 import { npmInvocation, npmProjectDirectory, npmUpdateChildEnvironment } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
@@ -284,7 +284,7 @@ process.exitCode = 1;
       const output: string[] = [];
       const runtime: UpdateRuntime = { ...updateRuntime,
         npm: runNpm, extensions: () => [{ pkg: name, version: "1.0.0", provides: [], commands: [] }],
-        npmAsync: async args => args[0] === "view"
+        npmAsync: async args => args[0] === "install" ? runNpmAsync(args) : args[0] === "view"
           ? { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dist: { tarball: "http://127.0.0.1:1/fixture.tgz", integrity: "sha512-fixture" } }), stderr: "" }
           : { status: 0, stdout: "", stderr: "" },
         now: () => now, sleep: async () => { now = 10 * 60_000; }, out: line => output.push(line),

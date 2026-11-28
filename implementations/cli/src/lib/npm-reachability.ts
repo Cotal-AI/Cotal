@@ -101,12 +101,32 @@ export function scrubProjectedNpmrc(file: string, env: NodeJS.ProcessEnv): (outp
   return redact(secrets(reachability(readConfig(file) ?? ""), env));
 }
 
+function removeOnInterrupt(remove: () => void): () => void {
+  const handlers = new Map<"SIGINT" | "SIGTERM", () => void>();
+  const dispose = () => {
+    for (const [signal, listener] of handlers) process.off(signal, listener);
+    remove();
+  };
+  // Existing command handlers own cancellation and their call still disposes in finally.
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    if (process.listenerCount(signal)) continue;
+    const listener = () => {
+      if (process.listenerCount(signal) > 1) return;
+      try { dispose(); } catch { /* A scratch cleanup error cannot change the exit signal. */ }
+      process.kill(process.pid, signal);
+    };
+    handlers.set(signal, listener);
+    process.prependListener(signal, listener);
+  }
+  return dispose;
+}
+
 export function privateNpmrc(source: string, scratch: string, env: NodeJS.ProcessEnv) {
   const entries = reachability(readConfig(source) ?? "");
   if (!entries.length) return;
   const dir = mkdtempSync(join(scratch, "cotal-npmrc-"));
   const file = join(dir, "npmrc");
-  const dispose = () => rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  const dispose = removeOnInterrupt(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }));
   try {
     writeFileSync(file, entries.map(([key, raw]) => `${key}=${raw}\n`).join(""), { flag: "wx", mode: 0o600 });
     return { file, dispose, scrub: redact(secrets(entries, env)) };

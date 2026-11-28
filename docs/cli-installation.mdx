@@ -266,8 +266,9 @@ Cotal never rewrites, moves or deletes your npm configuration. A managed install
 a Cotal-supplied prefix can copy `registry`, scoped registries and scoped auth, `proxy`,
 `https-proxy`, `noproxy`, `cafile`, `ca`, and `strict-ssl` from the global npm configuration the
 prefix displaces. The copy is private (mode `0600` on POSIX), lives in the call's scratch folder,
-and is removed when the call ends. It does not carry `offline`, `cache`, `fetch-*`, install layout
-settings, or top-level client `cert` and `key`. Explicit npm config overrides and the standalone
+and is removed when the call ends, including on `SIGINT` and `SIGTERM`. It does not carry
+`offline`, `cache`, `fetch-*`, install layout settings, or top-level client `cert` and `key`.
+Explicit npm config overrides and the standalone
 installer keep their existing behavior. An unavailable dependency stops the update before replacement.
 If npm runs out of space while checking installed extension dependencies, no global install is
 attempted. Free space on the temporary filesystem, then run `cotal update --self` again.

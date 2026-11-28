@@ -143,8 +143,9 @@ async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promis
   }
 }
 
-/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
-function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
+/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies.
+ *  Await npm asynchronously so an interrupt can remove the private configuration while npm runs. */
+async function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): Promise<void> {
   const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
@@ -155,7 +156,7 @@ function checkInstalledClosure(version: string, releasePackages: ReadonlySet<str
       overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
     }));
     const specs = names.map(name => `${name}@${version}`);
-    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
+    const result = await rt.npmAsync(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
       const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;
@@ -309,7 +310,7 @@ export async function waitForReleasePreflight(version: string, current: string, 
         if (!prepareExtensions()) return "refused";
         rt.out(`Checking installed extension dependencies for ${version}`);
       }
-      checkInstalledClosure(version, releasePackages, rt);
+      await checkInstalledClosure(version, releasePackages, rt);
       return "ready";
     } catch (error) {
       if (!(error instanceof ReleaseNotAvailable)) throw error;

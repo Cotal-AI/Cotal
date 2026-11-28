@@ -14,6 +14,73 @@ import { emitSentinel } from './sentinel.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
 
+function interruptNpmCell(scenario) {
+  const [, operation, signal] = /^global-config-interrupt-(closure|stage|remove)-(SIGINT|SIGTERM)$/.exec(scenario) ?? [];
+  if (operation) return { operation, signal };
+}
+
+// Hold the real npm executable at startup so it cannot finish before the CLI is interrupted.
+function holdNpmForInterrupt(root, env, { operation, signal }, token, expectProjection) {
+  const lookup = spawnSync('sh', ['-c', 'command -v npm'], { env, encoding: 'utf8' });
+  assert.equal(lookup.status, 0, lookup.stderr);
+  const tools = join(root, 'interrupt-npm');
+  mkdirSync(tools);
+  const ready = join(tools, 'ready.json'), release = join(tools, 'release'), preload = join(tools, 'hold.mjs');
+  writeFileSync(preload, `import { renameSync, writeFileSync } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { setTimeout } from 'node:timers/promises';
+const ready = ${JSON.stringify(ready)}, release = ${JSON.stringify(release)};
+writeFileSync(ready + '.tmp', JSON.stringify({ pid: process.pid, config: process.env.npm_config_globalconfig ?? null }));
+renameSync(ready + '.tmp', ready);
+for (const deadline = Date.now() + 20000; Date.now() < deadline; await setTimeout(25)) {
+  if (await access(release).then(() => true, () => false)) process.exit(0);
+}
+process.exit(99);
+`);
+  writeFileSync(join(tools, 'npm'), `#!${process.execPath}
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const prefix = args[args.indexOf('--prefix') + 1];
+const matches = { closure: args[0] === 'install' && /^cotal-closure-check-/.test(require('node:path').basename(prefix ?? '')),
+  stage: args[0] === 'install' && args.includes('-g') && /^\\.installing-/.test(require('node:path').basename(prefix ?? '')),
+  remove: args[0] === 'remove' };
+const env = { ...process.env };
+if (matches[${JSON.stringify(operation)}]) env.NODE_OPTIONS = ((env.NODE_OPTIONS ?? '') + ' --import=' + ${JSON.stringify(pathToFileURL(preload).href)}).trim();
+const result = spawnSync(${JSON.stringify(lookup.stdout.trim())}, args, { env, stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`, { mode: 0o700 });
+  env.PATH = `${tools}${delimiter}${env.PATH}`;
+  return async (child, output) => {
+    const exited = once(child, 'exit');
+    const closed = once(child, 'close');
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+    try {
+      for (const deadline = Date.now() + 15000; !existsSync(ready);) {
+        assert(child.exitCode === null && child.signalCode === null && Date.now() < deadline, `npm did not reach ${operation}: ${output()}`);
+        await new Promise(done => setTimeout(done, 20));
+      }
+      const { pid, config } = JSON.parse(readFileSync(ready, 'utf8'));
+      process.kill(pid, 0);
+      if (expectProjection) {
+        assert(config && basename(config) === 'npmrc' && realpathSync(config).startsWith(`${realpathSync(root)}/`), 'npm must receive a private projection');
+        assert.equal(statSync(config).mode & 0o777, 0o600);
+        assert(readFileSync(config, 'utf8').includes(token), 'running npm received the fixture credential');
+      } else assert.equal(config, null, 'unchanged main does not project global config');
+      assert(child.kill(signal));
+      const [code, observed] = await exited;
+      assert.deepEqual([code, observed], [null, signal], output());
+      if (expectProjection) assert(!existsSync(config), 'private npmrc was removed before CLI exit');
+      assert(!output().includes(token), 'fixture token leaked in CLI output');
+      return { code, signal: observed };
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      writeFileSync(release, 'done');
+      await closed;
+      clearTimeout(timer);
+    }
+  };
+}
+
 function watchGlobalNpmrc(root, env, failure, token) {
   const lookup = spawnSync('sh', ['-c', 'command -v npm'], { env, encoding: 'utf8' });
   assert.equal(lookup.status, 0);
@@ -128,7 +195,7 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
 }
 
 /** Runs real npm and the built public entry against a loopback registry. */
-export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
+export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir(), expectProjection = true }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
   const versionNamedNode = scenario === 'version-named-node';
   const reconcileOrphan = scenario === 'reconcile-orphan';
@@ -139,7 +206,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
   const stagingRefused = scenario === 'staging-refused';
   const secretFailure = scenario === 'global-config-secret-failure';
-  const globalConfig = scenario === 'global-config' || secretFailure;
+  const interrupt = interruptNpmCell(scenario);
+  const globalConfig = scenario === 'global-config' || secretFailure || Boolean(interrupt);
   const fixtureToken = globalConfig ? randomBytes(20).toString('hex') : '';
   const configAccess = scenario === 'config-access-upgrade' || scenario === 'config-access-auto';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
@@ -330,7 +398,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
-  let checkNpmrc;
+  let checkNpmrc, interruptNpm;
   if (globalConfig) {
     const etc = join(prefix, 'etc');
     mkdirSync(etc);
@@ -342,7 +410,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     }
     writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
     Object.assign(env, { HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
-    const check = watchGlobalNpmrc(root, env, secretFailure, fixtureToken);
+    // Keep unchanged main's pre-staging closure on loopback as well.
+    if (interrupt && !expectProjection) writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n${originalNpmrc}`);
+    if (interrupt) interruptNpm = holdNpmForInterrupt(root, env, interrupt, fixtureToken, expectProjection);
+    const check = interrupt ? () => {} : watchGlobalNpmrc(root, env, secretFailure, fixtureToken);
     checkNpmrc = () => { check(); assert(readFileSync(npmrc, 'utf8') === originalNpmrc, 'original npmrc is unchanged'); };
   } else env.npm_config_registry = origin;
   let interrupted, orphan, abandoned, pausedArchive;
@@ -368,6 +439,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     });
     child.stderr.on('data', bytes => output += bytes);
     interrupted = child;
+    if (interruptNpm && args.includes('--self')) return { ...await interruptNpm(child, () => output), output };
     const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
     try {
       const { code, signal } = await new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
@@ -1023,6 +1095,10 @@ exec npm "$@"
     if (lifecycle) env.PATH = lifecycle.path;
     const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(lifecycle?.node ?? process.execPath, [entry, 'update', '--self'], 660000)));
     const update = updates[0];
+    if (interrupt) {
+      checkNpmrc();
+      return { scenario, code: update.code, signal: update.signal };
+    }
     if (abandoned) await abandoned;
     const waitLine = "Waiting for another updater to release npm's global root";
     for (const result of updates) assert.doesNotMatch(result.output, /Reserving npm's global root/);
@@ -1333,11 +1409,11 @@ async function corepackNodeFallbackCell(entry, parent) {
   }
 }
 
-async function globalConfigExtensionCell(setting) {
+async function globalConfigExtensionCell(setting, interrupt, expectProjection) {
   const root = mkdtempSync(join(tmpdir(), 'global-config-ext-'));
   const scoped = setting === 'scoped-auth', tls = setting === 'cafile' || setting === 'strict-ssl';
   const name = scoped ? '@fixture/global-config-extension' : 'global-config-extension-fixture', version = '1.0.0';
-  const token = scoped ? randomBytes(20).toString('hex') : undefined;
+  const token = scoped || interrupt ? randomBytes(20).toString('hex') : undefined;
   const home = join(root, 'home'), prefix = join(root, 'npm prefix'), config = join(root, 'config');
   const tmp = join(root, 'tmp'), source = join(root, 'package'), cache = join(root, 'read-only cache');
   const ext = join(config, 'cotal', 'extensions');
@@ -1377,7 +1453,7 @@ async function globalConfigExtensionCell(setting) {
     socket.on('error', () => upstream.destroy());
     socket.once('close', () => { tunnels.delete(socket); upstream.destroy(); });
   });
-  let server;
+  let server, interruptNpm;
   const env = Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/^(?:npm_config_|(?:https?_proxy|all_proxy|no_proxy|node_extra_ca_certs|node_tls_reject_unauthorized)$)/i.test(key)));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: config, TMPDIR: tmp,
     DO_NOT_TRACK: '1', COTAL_SKIP_CONNECTOR_SEED: '1', npm_config_fetch_retries: '0', npm_config_update_notifier: 'false',
@@ -1387,6 +1463,7 @@ async function globalConfigExtensionCell(setting) {
     let output = '';
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { output += chunk; });
+    if (interruptNpm && args[0] === 'remove') return { ...await interruptNpm(child, () => output), output };
     const [code] = await once(child, 'close');
     return { code, output };
   };
@@ -1414,6 +1491,11 @@ async function globalConfigExtensionCell(setting) {
     const npmrc = join(prefix, 'etc/npmrc');
     let contents = `registry=${registry}/\n${setting === 'cache' ? `cache=${cache}\n` : 'global=true\npackage-lock=false\nsave=false\n'}`;
     if (scoped) contents = `registry=http://127.0.0.1:1/\n@fixture:registry=${registry}/\n//${new URL(registry).host}/:_authToken=${token}\n`;
+    if (interrupt) {
+      contents += `//${new URL(registry).host}/:_authToken=${token}\n`;
+      if (!expectProjection) writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\nregistry=${registry}/\n`);
+      interruptNpm = holdNpmForInterrupt(root, env, interrupt, token, expectProjection);
+    }
     if (setting === 'cafile') contents += `cafile=${cert}\n`;
     if (setting === 'strict-ssl') contents += 'strict-ssl=false\n';
     if (setting === 'proxy') {
@@ -1432,6 +1514,11 @@ async function globalConfigExtensionCell(setting) {
     const dependency = file => JSON.parse(readFileSync(join(ext, file), 'utf8'));
     assert(dependency('package.json').dependencies[name] && dependency('package-lock.json').packages[''].dependencies[name]);
     const removed = await run('remove', name);
+    if (interrupt) {
+      assert(readFileSync(npmrc, 'utf8') === contents, 'original npmrc is unchanged');
+      assert(existsSync(join(ext, 'node_modules', name)), 'interrupted removal did not remove the package');
+      return { scenario: `global-config-interrupt-remove-${interrupt.signal}`, code: removed.code, signal: removed.signal };
+    }
     assert.equal(removed.code, 0, removed.output);
     assert(!existsSync(join(ext, 'node_modules', name)), 'removal changes the project, not the global tree');
     assert(!dependency('package.json').dependencies?.[name] && !dependency('package-lock.json').packages['']?.dependencies?.[name]);
@@ -1450,6 +1537,12 @@ async function globalConfigExtensionCell(setting) {
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  const runInterrupt = scenario => {
+    const interrupt = interruptNpmCell(scenario);
+    const expectProjection = process.argv[3] !== 'main';
+    return interrupt.operation === 'remove' ? globalConfigExtensionCell('interrupt', interrupt, expectProjection)
+      : registryArrivalCell({ scenario, expectProjection });
+  };
   if (process.argv[2] === 'global-config-shape') {
     const { npmInstallShape } = await import('./npm-install-shape.mjs');
     const baseline = JSON.parse(readFileSync(new URL('./fixtures/npm-install-shape.json', import.meta.url), 'utf8'));
@@ -1469,9 +1562,11 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'config-access-upgrade', 'config-access-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   if (!process.argv[2] && ['linux', 'darwin'].includes(process.platform)) {
     selected.push('global-config', 'global-config-secret-failure', ...['mirror', 'default', 'scoped-auth', 'proxy', 'cafile', 'strict-ssl'].map(setting => `global-config-ext-${setting}`));
+    for (const operation of ['closure', 'stage', 'remove']) for (const signal of ['SIGINT', 'SIGTERM'])
+      selected.push(`global-config-interrupt-${operation}-${signal}`);
     if (process.getuid?.()) selected.push('global-config-ext-cache');
   }
-  for (const scenario of selected) console.log(JSON.stringify(await (scenario.startsWith('global-config-ext-')
+  for (const scenario of selected) console.log(JSON.stringify(await (interruptNpmCell(scenario) ? runInterrupt(scenario) : scenario.startsWith('global-config-ext-')
     ? globalConfigExtensionCell(scenario.slice('global-config-ext-'.length)) : registryArrivalCell({ scenario }))));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

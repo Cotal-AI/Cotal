@@ -127,17 +127,20 @@ async function stopStagingGroup(pgid: number, grace: number, reap: number): Prom
 }
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
+  let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
-    const npm = npmInvocation(process.env, args);
+    const prefix = args.indexOf("--prefix");
+    npm = npmInvocation(process.env, args, args[0] === "install" && prefix >= 0 ? args[prefix + 1] : undefined);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", npmChildGate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, windowsHide: true,
-      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
+      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] }
+        : args[0] === "install" ? { stdio: ["ignore", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", cause => { error = cause.message; });
     if (gated) {
       const permit = child.stdio[3] as import("node:stream").Writable;
@@ -150,18 +153,19 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
         }
       } catch (cause) { error = message(cause); permit.end(); }
     }
-    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
-    return { status, stdout, stderr, ...(error ? { error } : {}) };
+    const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>(resolveClose =>
+      child.once("close", (status, signal) => resolveClose({ status, signal })));
+    return { status: closed.status, stdout, stderr, ...(error ? { error } : {}),
+      ...(args[0] === "install" && { signal: closed.signal }), ...(npm.config && { scrub: npm.config.scrub }) };
   } catch (error) {
-    return { status: null, stdout: "", stderr: "", error: message(error) };
-  }
+    return { status: null, stdout: "", stderr: "", error: message(error), scrub: npm?.config?.scrub };
+  } finally { npm?.config?.dispose(); }
 }
 
 export function runNpm(args: string[], inherit = false): CommandResult {
   let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
-    const prefix = args.indexOf("--prefix");
-    npm = npmInvocation(process.env, args, args[0] === "install" && prefix >= 0 ? args[prefix + 1] : undefined);
+    npm = npmInvocation(process.env, args);
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
