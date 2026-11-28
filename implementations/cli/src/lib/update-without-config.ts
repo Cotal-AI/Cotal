@@ -1,10 +1,11 @@
 import { dirname, isAbsolute } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { claimUpdateClosureAccess, clearUpdateRecovery, codeSpan, connectorConfigModeProblem, logicalExecutionEntry, observeUpdateVersion, readUpdateRecovery, recordUpdateCompletion, recordUpdateReleaseHold, updateClosureOwner, UPDATE_HOUR_MS, writeUpdateRecovery, type UpdateRecovery } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, clearUpdateRecovery, codeSpan, connectorConfigModeProblem, exitCode, logicalExecutionEntry, observeUpdateVersion, readUpdateRecovery, recordConnectorReconciliationDeferred, recordUpdateReleaseHold, updateClosureOwner, UPDATE_HOUR_MS, writeResult, writeUpdateRecovery, type UpdateRecovery } from "@cotal-ai/workspace";
 import { compareSemver } from "../seed/reconcile.js";
 import { checkReleaseArchives, deferStagingFailure, handleLatestVersionFailure, latestVersion, offlineUpdateMessage, registryNetworkFailure } from "../commands/update-release.js";
 import type { ExecutionReplacement, UpdateRuntime } from "../commands/update.js";
 import { displayCmd } from "./self-exec.js";
+import { CommandFailure, clearConnectorActivationDeferral } from "@cotal-ai/workspace";
 
 type ModeProblem = NonNullable<ReturnType<typeof connectorConfigModeProblem>>;
 
@@ -20,29 +21,35 @@ export async function maybeUpdateWithoutConnectorConfig(args: ParsedArgs, rt: Up
 
 async function updateWithoutConnectorConfig(args: ParsedArgs, rt: UpdateRuntime, gap: ModeProblem): Promise<void> {
   if (readUpdateRecovery()) throw gap.failure;
-  const next = gap.owned ? `run ${codeSpan(`${gap.remedy} && ${displayCmd()} update`)}` : `ask the owner to protect the folder, then run ${codeSpan(`${displayCmd()} update`)}`;
+  const next = gap.owned ? `run ${codeSpan(`${gap.remedy} && ${displayCmd()} update`)}` : `${gap.remedy}, then run ${codeSpan(`${displayCmd()} update`)}`;
   const reason = `Connector reconciliation and daemon activation are waiting: ${gap.failure.message}. To finish, ${next}.`;
-  const report = () => rt.err(reason);
+  const json = args.values.json === true;
+  const human = json ? { ...rt, out: () => {}, err: () => {} } : rt;
+  const report = (version: string, releaseInstalled = false) => {
+    if (json) writeResult("json", { command: "update", target: null, completeness: "partial", result: { version, releaseInstalled, reconciliation: "deferred" }, partial: { message: reason } }, () => ({ sections: [] }));
+    else { rt.err(reason); process.exitCode = exitCode("partial", "OPERATION_PARTIAL"); }
+  };
   const current = rt.version();
-  if (args.values.self !== true) { rt.connectorConfigDeferred = true; report(); return; }
   rt.connectorConfigDeferred = true;
+  if (args.values.self !== true) { report(current); return; }
   const latest = latestVersion(rt);
   if (!latest.ok) {
-    const code = await handleLatestVersionFailure(latest, current, rt, offlineUpdateMessage(false), false);
+    const code = await handleLatestVersionFailure(latest, current, human, offlineUpdateMessage(false), false);
+    if (code !== 0 && json) throw new CommandFailure("failed", "OPERATION_FAILED", "the cotal-ai version check failed; no release was installed");
+    report(current);
     if (code !== 0) process.exitCode = code;
-    report();
     return;
   }
   if (compareSemver(latest.version, current) <= 0) {
-    rt.out("No newer CLI version.");
-    recordUpdateCompletion(current, "up to date; connector reconciliation is waiting for folder protection", true);
-    report();
+    human.out("No newer CLI version.");
+    recordConnectorReconciliationDeferred(current, false);
+    report(current);
     return;
   }
   const version = latest.version;
   if (rt.env.COTAL_AUTO_UPDATE === "1") {
     const next = await observeUpdateVersion(version) + UPDATE_HOUR_MS;
-    if (Date.now() < next) { recordUpdateReleaseHold(version, next); return; }
+    if (Date.now() < next) { recordUpdateReleaseHold(version, next); report(current); return; }
   }
   if (!rt.prepareExecution || !rt.executionGlobalRoot || !rt.recoverExecution) throw gap.failure;
   rt.preflightExecution?.();
@@ -52,7 +59,7 @@ async function updateWithoutConnectorConfig(args: ParsedArgs, rt: UpdateRuntime,
   let releaseGlobal: (() => void) | undefined;
   let releaseClosure: (() => void) | undefined;
   try {
-    rt.out(`Checking cotal-ai@${version} release archives`);
+    human.out(`Checking cotal-ai@${version} release archives`);
     await checkReleaseArchives(version, rt);
     releaseGlobal = rt.claimGlobalUpdate(root);
     releaseClosure = claimUpdateClosureAccess();
@@ -68,16 +75,18 @@ async function updateWithoutConnectorConfig(args: ParsedArgs, rt: UpdateRuntime,
       execution.restore();
       execution.verify(current);
       clearUpdateRecovery();
+      const entry = logicalExecutionEntry();
+      if (entry) clearConnectorActivationDeferral(entry, version);
       throw error;
     }
     clearUpdateRecovery();
     execution.complete?.();
-    recordUpdateCompletion(version, `updated to ${version}; connector reconciliation is waiting for folder protection`, true);
-    rt.out(`✓ cotal-ai@${version} installed`);
-    report();
+    recordConnectorReconciliationDeferred(version, true);
+    human.out(`✓ cotal-ai@${version} installed`);
+    report(version, true);
   } catch (error) {
-    if (!execution && deferStagingFailure(error, version, rt, false)) return;
-    if (!execution && registryNetworkFailure(error)) { rt.out(offlineUpdateMessage(false)); return; }
+    if (!execution && deferStagingFailure(error, version, human, false)) { report(current); return; }
+    if (!execution && registryNetworkFailure(error)) { human.out(offlineUpdateMessage(false)); report(current); return; }
     throw error;
   } finally {
     try { execution?.discard?.(); }
@@ -104,7 +113,9 @@ export function recoverUpdateWithoutConnectorConfig(rt: UpdateRuntime, observed:
     const execution = rt.recoverExecution(record.execution, true);
     const published = execution.verifyPublished?.(record.target) === true;
     if (!published) { execution.restore(); execution.verify(record.previous); }
+    else recordConnectorReconciliationDeferred(record.target, true);
     clearUpdateRecovery();
+    if (!published && entry) clearConnectorActivationDeferral(entry, record.target);
     execution.complete?.();
     if (!published) return { entry: execution.entry, version: record.previous };
   } finally { try { releaseClosure?.(); } finally { release(); } }

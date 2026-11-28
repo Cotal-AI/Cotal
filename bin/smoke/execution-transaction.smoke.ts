@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { recoverExecutionUpdate, prepareExecutionUpdate } from "../daemon/execution-update.js";
-import { updateRuntime } from "@cotal-ai/cli/update";
+import { recoverInterruptedUpdate, updateRuntime } from "@cotal-ai/cli/update";
+import { claimUpdateClosureAccess, readUpdateRecovery, recordUpdateActivation, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { repairInstallModes } from "../../implementations/cli/src/lib/install-umask.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, repairExecutionInstallModes, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
@@ -177,6 +178,31 @@ if (["linux", "darwin"].includes(process.platform)) {
         rmSync(join(state, "daemon/daemon.lock"));
         staged.publish(); staged.verify("0.2.0");
         staged.restore(); staged.verify("0.1.0"); staged.complete?.();
+        const config = join(scratch, "unprotected-config");
+        mkdirSync(config, { mode: 0o700 }); chmodSync(config, 0o777);
+        const previousConfig = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = config;
+        try {
+          for (const published of [false, true]) {
+            const update = await prepareExecutionUpdate("0.2.0", dirname(installed), () => {}, true);
+            await update.preflight({});
+            const reason = "Connector reconciliation and daemon activation are waiting: fixture config protection";
+            const release = claimUpdateClosureAccess();
+            try {
+              writeUpdateRecovery({ previous: "0.1.0", target: "0.2.0", installed: "0.1.0", phase: "replacing", owner: updateClosureOwner(), execution: update.journal, reconcileWithoutSnapshot: true, reason, admission: { disposition: "deferred", occupied: null, hostedSpaces: [], reason } });
+              if (published) { recordUpdateActivation(installedEntry, "0.2.0", reason, true); update.publish(); }
+            } finally { release(); }
+            const restored = await recoverInterruptedUpdate({ ...updateRuntime, recoverExecution: recoverExecutionUpdate });
+            assert.equal(restored?.version, published ? undefined : "0.1.0");
+            assert.equal(readUpdateRecovery(), undefined);
+            assert.equal(lstatSync(config).mode & 0o777, 0o777);
+            assert.deepEqual(readdirSync(config), []);
+            if (published) { update.verify("0.2.0"); update.restore(); }
+            else update.verify("0.1.0");
+          }
+          console.log("execution transaction: interrupted release-only install restored or retained the verified selection without touching config");
+        } finally {
+          if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousConfig;
+        }
       } finally {
         process.execArgv.push(...oldExecArgv);
         process.argv[1] = oldArgv;

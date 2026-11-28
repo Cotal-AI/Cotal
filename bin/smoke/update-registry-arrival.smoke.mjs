@@ -337,15 +337,22 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       writeFileSync(manifest, 'not a trusted extension manifest');
       chmodSync(config, 0o777);
       const manual = await run(process.execPath, [entry, 'update'], 60000);
-      assert.equal(manual.code, 0, manual.output);
+      assert.equal(manual.code, 4, manual.output);
       assert.match(manual.output, /chmod go-w/);
+      const structured = await run(process.execPath, [entry, 'update', '--json'], 60000);
+      assert.equal(structured.code, 4, structured.output);
+      const report = JSON.parse(structured.output);
+      assert.equal(report.outcome, 'partial');
+      assert.equal(report.error.code, 'OPERATION_PARTIAL');
+      assert.equal(report.error.message, manual.output.trim());
+      assert.equal(report.result.releaseInstalled, false);
       if (scenario === 'config-unprotected-auto') {
         const now = Date.now();
         writeFileSync(join(env.COTAL_HOME, 'update-check.json'), JSON.stringify({ v: 1, latest: target, attemptedAt: now, checkedAt: now, firstSeenAt: now - 3_601_000 }));
         env.COTAL_AUTO_UPDATE = '1';
       }
       const update = await run(process.execPath, [entry, 'update', '--self'], 180000);
-      assert.equal(update.code, 0, update.output);
+      assert.equal(update.code, 4, update.output);
       assert.match(update.output, /cotal-ai@99\.0\.0 installed/);
       assert.match(update.output, /connector config folder.*writable by every local account/);
       assert.ok(update.output.includes(`chmod go-w '${config}' && `));
@@ -357,7 +364,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.equal(readFileSync(manifest, 'utf8'), 'not a trusted extension manifest');
       assert.deepEqual(readdirSync(join(config, 'cotal')), ['extensions']);
       assert.equal(JSON.parse(readFileSync(join(env.COTAL_HOME, 'update-recovery.json'), 'utf8')), null);
-      assert.equal(JSON.parse(readFileSync(join(env.COTAL_HOME, 'update-attempt.json'), 'utf8')).failures, 0);
+      const attempt = JSON.parse(readFileSync(join(env.COTAL_HOME, 'update-attempt.json'), 'utf8'));
+      assert.equal(attempt.failures, 0);
+      assert.equal(attempt.connectorReconciliationPending, true);
+      assert.equal(attempt.result, `installed ${target}; connector reconciliation is waiting for folder repair`);
       return { scenario, manual, update, version };
     }
     if (stagingTimeout) {

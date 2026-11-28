@@ -3091,6 +3091,7 @@ process.stdin.once('data', () => {
             assert.equal(row.next, remedy);
             const bad = await ask(paths.socket, { op: "connector-config-repair", path: home });
             assert.equal(bad.ok, false);
+            assert.deepEqual(bad.error, { code: "UNKNOWN_FIELD", message: 'unknown request field "path"' });
             assert.equal(statSync(config).mode & 0o777, 0o777);
             const applied = resultOf(await ask(paths.socket, { op: "connector-config-repair" }));
             assert.deepEqual(applied, { path: config, mode: 0o755 });

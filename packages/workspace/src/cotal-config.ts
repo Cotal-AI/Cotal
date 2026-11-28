@@ -26,7 +26,9 @@ export function connectorConfigModeProblem(requireRepairable = false): { failure
       if (!stat?.isDirectory()) { if (requireRepairable) throw failure; return; }
       const mode = stat.mode & 0o7777;
       const owned = stat.uid === process.getuid?.();
-      if (!owned) return { failure, path, mode, owned, remove: 0, remedy: "ask the account that owns this folder to protect it, then retry" };
+      if (!owned) return { failure, path, mode, owned, remove: 0, remedy: stat.uid === 0
+        ? `ask an administrator to remove the unsafe write permissions from ${shellPath(path)}`
+        : `ask an administrator to make ${shellPath(path)} owned by your account or root` };
       for (const [word, remove] of [["o-w", 0o002], ["go-w", 0o022], ["g-w", 0o020]] as const)
         if (failure.remedy === `chmod ${word} ${shellPath(path)}`) return { failure, path, mode, owned, remove, remedy: failure.remedy };
     }

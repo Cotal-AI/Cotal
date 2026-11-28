@@ -3,7 +3,7 @@ import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { checkForUpdate, homeCotalDir, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { checkForUpdate, deferredConnectorReconciliation, homeCotalDir, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanWindowsUpdate, startWindowsUpdate } from "./update-windows.js";
 import { WINDOWS_INTERRUPTED_UPDATE, readWindowsUpdatePause } from "@cotal-ai/workspace";
@@ -126,6 +126,8 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (host.eligible() !== true || !status().automatic) return;
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
+    const entry = logicalExecutionEntry();
+    if (entry && deferredConnectorReconciliation(entry, cached.latest)) return; // The generation watcher owns the finishing pass.
     const reconciling = !retiring && !newerUpdate(cached.latest, host.version) && reconciliationPending(host.version);
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
     if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }

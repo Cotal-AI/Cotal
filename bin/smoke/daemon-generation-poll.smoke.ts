@@ -137,6 +137,35 @@ if (!["linux", "darwin"].includes(process.platform)) {
       await assert.rejects(reconcileHostedConnectors("0.1.0"), /timed out after 600000ms, signal SIGKILL/);
     }
     console.log("daemon generation poll: idle metadata reads, corrupt refusal, unmarked observation, slow entry retry and one-line child failure causes passed");
+    if (process.argv.includes("--repaired-config")) {
+      const { recordUpdateActivation, deferredUpdateActivation } = await import("@cotal-ai/workspace");
+      packageAt(source, "0.5.0");
+      const reconciliation = join(home, "reconciled");
+      const workspace = pathToFileURL(join(repo, "packages/workspace/dist/index.js")).href;
+      fs.writeFileSync(join(source, "dist/cotal-program.js"), `
+        import { writeFileSync } from "node:fs";
+        import { clearConnectorActivationDeferral, connectorConfigModeProblem } from ${JSON.stringify(workspace)};
+        if (process.argv[2] === "update") {
+          if (connectorConfigModeProblem(true)) process.exit(4);
+          writeFileSync(${JSON.stringify(reconciliation)}, "0.5.0");
+          clearConnectorActivationDeferral(${JSON.stringify(entry)}, "0.5.0");
+        } else console.log("cotal-ai 0.5.0");
+      `);
+      writeExecutionDescriptor(root, describeExecutionGeneration(root, retainExecutionGeneration(root, source)));
+      const activated: string[] = [], messages: string[] = [];
+      fs.chmodSync(config, 0o777);
+      recordUpdateActivation(entry, "0.5.0", "Connector reconciliation and daemon activation are waiting: fixture config protection", true);
+      stop = watchDaemonGeneration("0.1.0", async version => {
+        assert.equal(fs.readFileSync(reconciliation, "utf8"), version);
+        activated.push(version);
+      }, message => { messages.push(message); });
+      await until(() => messages.some(message => message.includes("activation deferred")));
+      assert.equal(fs.existsSync(reconciliation), false);
+      fs.chmodSync(config, 0o755);
+      await until(() => activated.includes("0.5.0"));
+      assert.equal(deferredUpdateActivation(entry, "0.5.0"), undefined);
+      console.log("daemon generation poll: repaired config released activation");
+    }
   } finally {
     stop();
     fs.readFileSync = read;

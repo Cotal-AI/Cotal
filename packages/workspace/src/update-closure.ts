@@ -131,19 +131,37 @@ function activationPath(installation: string): string {
 }
 
 /** A completed software update may retain its daemon without leaving paused recovery. */
-export function deferredUpdateActivation(installation: string, target: string): string | undefined {
-  let record: { v?: number; installation?: string; target?: string; reason?: string };
+function activationRecord(installation: string, target: string): { reason: string; connectorReconciliation?: true } | undefined {
+  let record: { v?: number; installation?: string; target?: string; reason?: string; connectorReconciliation?: true };
   try { record = JSON.parse(readFileSync(activationPath(installation), "utf8")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
-  if (record.v !== 1 || record.installation !== installation || typeof record.target !== "string" || typeof record.reason !== "string" || !record.reason) throw new Error("invalid deferred update activation record");
-  return record.target === target ? record.reason : undefined;
+  if (record.v !== 1 || record.installation !== installation || typeof record.target !== "string" || typeof record.reason !== "string" || !record.reason || record.connectorReconciliation !== undefined && record.connectorReconciliation !== true) throw new Error("invalid deferred update activation record");
+  return record.target === target ? { reason: record.reason, connectorReconciliation: record.connectorReconciliation } : undefined;
+}
+
+export function deferredUpdateActivation(installation: string, target: string): string | undefined {
+  return activationRecord(installation, target)?.reason;
+}
+
+/** Whether the selected release still needs its guarded connector reconciliation pass. */
+export function deferredConnectorReconciliation(installation: string, target: string): boolean {
+  const record = activationRecord(installation, target);
+  return record?.connectorReconciliation === true || record?.reason.startsWith("Connector reconciliation and daemon activation are waiting:") === true;
+}
+
+/** A successful reconcile clears only its own generation's connector deferral. */
+export function clearConnectorActivationDeferral(installation: string, target: string): void {
+  const release = claimUpdateClosureAccess();
+  try {
+    if (deferredConnectorReconciliation(installation, target)) rmSync(activationPath(installation), { force: true });
+  } finally { release(); }
 }
 
 /** Replace activation authority only while holding this update's live parent capability. */
-export function recordUpdateActivation(installation: string, target: string, reason?: string): void {
+export function recordUpdateActivation(installation: string, target: string, reason?: string, connectorReconciliation = false): void {
   const release = claimUpdateClosureAccess();
   try {
-    if (reason) writeSecretFileAtomic(activationPath(installation), `${JSON.stringify({ v: 1, installation, target, reason })}\n`);
+    if (reason) writeSecretFileAtomic(activationPath(installation), `${JSON.stringify({ v: 1, installation, target, reason, ...(connectorReconciliation ? { connectorReconciliation: true } : {}) })}\n`);
     else rmSync(activationPath(installation), { force: true });
   } finally { release(); }
 }

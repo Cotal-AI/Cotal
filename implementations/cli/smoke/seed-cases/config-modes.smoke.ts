@@ -42,7 +42,7 @@ try {
     // XDG_CONFIG_HOME itself is a folder the operator chose, not one Cotal manages.
     chmodSync(cfg, 0o775);
     const run = cotal(cfg, ["update"], env);
-    check("config modes: update defers reconciliation when the config parent is group-writable", run.status === 0 && run.stderr.includes("Connector reconciliation and daemon activation are waiting:") && run.stderr.includes(`chmod g-w ${realpathSync(cfg)}`), run.stderr);
+    check("config modes: update exits partial when the config parent is group-writable", run.status === 4 && run.stderr.includes("Connector reconciliation and daemon activation are waiting:") && run.stderr.includes(`chmod g-w ${realpathSync(cfg)}`), run.stderr);
     check("config modes: update does not seed or repair below the unsafe folder", !run.stderr.includes("failed to seed") && !run.stdout.includes(repairLine(cfg)), run.stdout + run.stderr);
     check("config modes: the folder Cotal does not manage stays group-writable", mode(cfg) === 0o775, mode(cfg));
     // The check reads the physical path. The ancestor is outside the folders update repairs.

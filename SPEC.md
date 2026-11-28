@@ -69,12 +69,14 @@ An answering holder refuses replacement. Matching issuer and subject alone never
 
 ## Local connector configuration protection
 
-When a hosted Manager cannot start because its connector configuration folder has a single
-repairable POSIX write-mode gap, the daemon reports `reasonCode: "CONNECTOR_CONFIG_UNPROTECTED"`
+When a hosted Manager cannot start because one connector configuration folder fails its POSIX
+ownership or write-mode check, the daemon reports `reasonCode: "CONNECTOR_CONFIG_UNPROTECTED"`
 on that Manager in `manager-start`, `manager-status`, `status` and `status-watch` replies.
-The same row has the diagnosis in `reason`, the shell command in `next`, and `reasonDetail`
+The same row has the diagnosis in `reason`, the shell command or administrator instructions in `next`, and `reasonDetail`
 with `path`, integer `mode` (POSIX permission and special bits, without file type bits), and boolean
 `owned` (whether the folder belongs to the daemon's account).
+For a folder owned by another non-root account, an administrator must make it owned by the
+daemon's account or root. Changing its mode alone does not clear that refusal.
 In CLI setup JSON, these are `error.cause.code` and `error.cause.detail`, with
 `LIFECYCLE_BLOCKED` as the error code. The desktop bridge carries them in `error.native`.
 

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
-import { claimGlobalNpmUpdateLock, connectorConfigModeProblem } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, clearConnectorActivationDeferral, connectorConfigModeProblem, deferredConnectorReconciliation } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
@@ -348,7 +348,7 @@ const composed: Command = { ...command, async run(args) {
           const recovery = readUpdateRecovery();
           if (!recovery || !admission) throw new Error("target admission has no bound update transaction");
           writeUpdateRecovery({ ...recovery, admission });
-          recordUpdateActivation(logicalExecutionEntry()!, version, admission.disposition === "deferred" ? admission.reason : undefined);
+          recordUpdateActivation(logicalExecutionEntry()!, version, admission.disposition === "deferred" ? admission.reason : undefined, Boolean(deferConnectors));
           execution.publish();
         } };
       },
@@ -649,6 +649,7 @@ const composed: Command = { ...command, async run(args) {
   await update(args, runtime);
   if (runtime.connectorConfigDeferred) { refreshPinnedLauncher(); return; }
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
+  if (staged && standaloneReconcile && deferredConnectorReconciliation(logicalExecutionEntry()!, updateRuntime.version())) clearConnectorActivationDeferral(logicalExecutionEntry()!, updateRuntime.version());
   reconcileInstalledLinuxPolicy();
   if (packageCheck !== "current") await collectConnectorSets();
   if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) refreshPinnedLauncher();

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  connectorConfigModeProblem,
   isCommandFailure,
   jsonFlag,
   plainFlag,
@@ -350,6 +351,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   }
   const deferred = childBinding(rt).kind === "none" && await maybeUpdateWithoutConnectorConfig(args, rt, () => recoverInterruptedUpdate(rt, false, targetArgv(args.values)));
   if (deferred) return deferred.entry;
+  if (args.values.json) throw new CommandFailure("refused", "UNSUPPORTED", "structured and plain update reports require --check; the installer keeps its native progress output");
   let connectorSelection: UnreadableConnectorSelection | undefined;
   let preflightChanged = false;
   let permissionsRestored = false;
@@ -522,7 +524,7 @@ export function validateUpdateArguments(args: ParsedArgs): void {
   if (args.values.check === true) {
     if (args.values.self || args.values.space !== undefined || args.values.server !== undefined || args.values.creds !== undefined || args.values.on !== undefined)
       throw new CommandFailure("refused", "USAGE_INVALID", "update --check reads this installation and takes no --self, mesh selection or --on");
-  } else if (args.values.json || args.values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "structured and plain update reports require --check; the installer keeps its native progress output");
+  } else if (args.values.plain || args.values.json && !connectorConfigModeProblem()) throw new CommandFailure("refused", "UNSUPPORTED", "structured and plain update reports require --check; the installer keeps its native progress output");
 }
 
 function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
