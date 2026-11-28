@@ -3,7 +3,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { DaemonRefusal, requireResult, type Frame } from "./model";
 import { icon } from "./icons";
-import { appManagementMessages, appManagementRefusals, installedMessage, isReady, orderedApps, otherCopyMessage, parseApps, refusalDetail, refusalMessage, rowView, serviceOwnerOf, signInUrl, suggestedApp, unknownAppChange, type Activity, type AgentApp, type AppManagement, type RowView, type ServiceOwner, type ServiceRefresh } from "./agent-apps-model";
+import { appManagementMessages, appManagementRefusals, installedMessage, orderedApps, otherCopyMessage, parseApps, refusalDetail, refusalMessage, rowView, serviceOwnerOf, signInUrl, unknownAppChange, type Activity, type AgentApp, type AppManagement, type RowView, type ServiceOwner, type ServiceRefresh } from "./agent-apps-model";
 import claudeLogo from "../../assets/agents/claude-code.svg";
 import codexLogo from "../../assets/agents/codex.svg";
 import opencodeLogo from "../../assets/agents/opencode.svg";
@@ -15,9 +15,9 @@ const LOGOS: Record<string, { src: string; fill?: true }> = {
   claude: { src: claudeLogo }, codex: { src: codexLogo }, opencode: { src: opencodeLogo, fill: true },
   pi: { src: piLogo }, hermes: { src: hermesLogo, fill: true }, jcode: { src: jcodeLogo, fill: true },
 };
-export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
+function logo(name: string): HTMLElement {
   const box = document.createElement("span");
-  box.className = `app-logo app-logo-${size}`;
+  box.className = "app-logo app-logo-row";
   const known = LOGOS[name];
   if (known) {
     const img = document.createElement("img");
@@ -61,7 +61,7 @@ export function renderRow(row: HTMLElement, app: AgentApp, view: RowView, act: (
     name.replaceChildren(document.createTextNode(app.title), ...(app.maker ? [document.createTextNode(" "), maker] : []));
   }
   const status = copy.querySelector<HTMLElement>(".app-status")!;
-  const mark = view.tone === "ready" ? "check" : view.tone === "warn" || view.tone === "failed" ? "warning" : view.tone === "busy" ? "spinner" : undefined;
+  const mark = view.tone === "warn" || view.tone === "failed" ? "warning" : view.tone === "busy" ? "spinner" : undefined;
   if (status.dataset.text !== `${mark}:${view.status}`) {
     status.dataset.text = `${mark}:${view.status}`;
     status.replaceChildren(...(mark ? [icon(mark)] : []), document.createTextNode(view.status));
@@ -82,7 +82,7 @@ export function renderRow(row: HTMLElement, app: AgentApp, view: RowView, act: (
   holder.dataset.key = key;
   if (view.action) {
     const button = document.createElement("button");
-    button.type = "button"; button.className = `button ${view.action.primary ? "primary" : "secondary"}`;
+    button.type = "button"; button.className = "button secondary";
     if (view.action.kind === "open-page") button.className = "text-button";
     button.textContent = view.action.label;
     button.setAttribute("aria-label", `${view.action.label}: ${app.title}`);
@@ -90,8 +90,10 @@ export function renderRow(row: HTMLElement, app: AgentApp, view: RowView, act: (
     button.addEventListener("click", () => act(kind));
     holder.replaceChildren(button);
   } else if (view.tone === "ready") {
-    const pill = document.createElement("span"); pill.className = "app-pill"; pill.textContent = "Ready";
-    holder.replaceChildren(pill);
+    const ready = document.createElement("span"); ready.className = "app-pill";
+    const dot = document.createElement("span"); dot.className = "dot connected"; dot.setAttribute("aria-hidden", "true");
+    ready.append(dot, "Ready", icon("chevron"));
+    holder.replaceChildren(ready);
   } else holder.replaceChildren();
 }
 
@@ -99,13 +101,11 @@ export interface AgentAppsHost {
   platform(): string;
   announce(message: string): void;
   openUrl(url: string): void;
-  /** Show the Agent apps screen. */
-  openPanel(): void;
   /** Something the main window shows changed: readiness, a running action or the list. */
   changed(): void;
 }
 
-/** The Agent apps state and its two views: the full screen and the Ready screen's section. */
+/** State and actions for the Agent apps pane. */
 export class AgentApps {
   apps: AgentApp[] | undefined;
   management: AppResult["management"];
@@ -134,7 +134,6 @@ export class AgentApps {
   constructor(private readonly host: AgentAppsHost) {}
 
   get busy(): boolean { return [...this.activity.values()].some(item => item.kind === "installing" || item.kind === "signing-in"); }
-  get readyCount(): number { return this.apps?.filter(isReady).length ?? 0; }
 
   observeRunningAgents(count: number | undefined, now = Date.now()): void {
     if (typeof count !== "number") return;
@@ -279,54 +278,4 @@ export class AgentApps {
     });
   }
 
-  /** The Ready screen's section: the apps that are installed, or a prompt to install one. */
-  /** With an app ready, a compact button beside Open dashboard, so the spaces list keeps its room. With
-   *  none ready, a callout above it with the one step that matters. */
-  renderStrip(root: HTMLElement, chip: HTMLButtonElement): void {
-    const apps = this.apps ?? [];
-    renderChip(chip, apps.filter(app => app.state !== "missing"));
-    if (!apps.length || apps.some(isReady)) { root.hidden = true; delete root.dataset.key; return; }
-    root.hidden = false;
-    const signedOut = apps.find(app => app.state === "signed-out");
-    const suggested = this.readOnly ? undefined : signedOut ?? suggestedApp(apps);
-    const key = JSON.stringify([apps.map(app => [app.name, app.state]), suggested?.name, this.busy]);
-    if (root.dataset.key === key) return;
-    root.dataset.key = key;
-    const open = document.createElement("button");
-    open.type = "button"; open.className = "text-button"; open.textContent = "See all apps";
-    open.addEventListener("click", () => this.host.openPanel());
-    const logos = document.createElement("div"); logos.className = "apps-logos"; logos.setAttribute("aria-hidden", "true");
-    logos.append(...apps.map(app => logo(app.name, "tile")));
-    const heading = document.createElement("h2"); heading.textContent = signedOut ? `Sign in to ${signedOut.title}` : "Install an agent app";
-    const copy = document.createElement("p");
-    copy.textContent = signedOut ? `${signedOut.title} is installed but not signed in, so your spaces can’t start agents in it yet.` : "Agents run in an app on this computer, such as Claude Code or Codex. None is installed yet, so your spaces can’t start agents here.";
-    const actions = document.createElement("div"); actions.className = "actions";
-    if (suggested) {
-      const go = document.createElement("button");
-      go.type = "button"; go.className = "button primary"; go.disabled = this.busy;
-      go.textContent = signedOut ? `Sign in to ${signedOut.title}` : `Install ${suggested.title} from ${suggested.install!.source}`;
-      go.addEventListener("click", () => { this.host.openPanel(); void (signedOut ? this.signIn(signedOut.name) : this.install(suggested.name)); });
-      actions.append(go);
-    }
-    actions.append(open);
-    root.replaceChildren(logos, heading, copy, actions);
-  }
-}
-
-const listed = (items: string[]): string => new Intl.ListFormat("en", { type: "conjunction" }).format(items);
-/** The compact button: the installed apps' logos and "Agent apps", with their states in its name. */
-function renderChip(chip: HTMLButtonElement, shown: AgentApp[]): void {
-  const key = JSON.stringify(shown.map(app => [app.name, app.state]));
-  if (chip.dataset.key === key) return;
-  chip.dataset.key = key;
-  const signedOut = shown.filter(app => app.state === "signed-out").map(app => app.title);
-  const ready = shown.filter(isReady).map(app => app.title);
-  const summary = [ready.length ? `${listed(ready)} ready` : "", signedOut.length ? `${listed(signedOut)} not signed in` : ""].filter(Boolean).join("; ");
-  chip.setAttribute("aria-label", `Agent apps: ${summary}`);
-  chip.title = summary;
-  const logos = document.createElement("span"); logos.className = "apps-chip-logos"; logos.setAttribute("aria-hidden", "true");
-  logos.append(...shown.slice(0, 4).map(app => logo(app.name, "tile")));
-  const label = document.createElement("span"); label.textContent = shown.length > 4 ? `Agent apps +${shown.length - 4}` : "Agent apps";
-  const badge = document.createElement("span"); badge.className = "app-badge warn"; badge.setAttribute("aria-hidden", "true"); badge.append(icon("warning"));
-  chip.replaceChildren(logos, label, ...(signedOut.length ? [badge] : []));
 }
