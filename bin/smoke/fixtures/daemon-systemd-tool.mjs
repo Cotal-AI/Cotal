@@ -4,6 +4,13 @@ import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync } fr
 import { basename } from "node:path";
 const context = JSON.parse(readFileSync(process.env.DAEMON_UNIT_FIXTURE, "utf8"));
 const args = process.argv.slice(2);
+function fileState() {
+  return context.unitFileState ?? "enabled";
+}
+function rememberFileState(state) {
+  context.unitFileState = state;
+  writeFileSync(process.env.DAEMON_UNIT_FIXTURE, `${JSON.stringify(context)}\n`);
+}
 function changeDuringLinger(phase) {
   if (context.changeSourceDuringLinger === phase) writeFileSync(context.publication[0], "changed unit\n");
   if (context.changeDirectoryDuringLinger === phase) chmodSync(context.config, 0o777);
@@ -32,10 +39,12 @@ if (basename(process.argv[1]) === "loginctl") {
   operation = "unit-read";
   const unit = args[args.indexOf("show") + 1];
   if (!context.units.includes(unit)) process.exit(89);
-  console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=\nNeedDaemonReload=no`);
+  if (args.includes("--value")) console.log(fileState());
+  else console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=\nNeedDaemonReload=no`);
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);
+  if (operation === "enable" || operation === "disable") rememberFileState(operation === "enable" ? "enabled" : "disabled");
   if (operation === "stop" && context.changeSourceDuringStop) appendFileSync(context.changeSourceDuringStop, "\n# changed during stop\n");
   if (operation === "start" && context.nativeEntry) {
     spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {

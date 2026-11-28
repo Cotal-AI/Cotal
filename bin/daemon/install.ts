@@ -212,7 +212,9 @@ export interface NativeService {
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
   isEnabled?(receipt: UnitReceipt): boolean;
-  start(receipt: UnitReceipt): void;
+  start(receipt: UnitReceipt, resume = false): void;
+  /** Turn off automatic start, then stop the job. The source and receipt stay. */
+  stop(receipt: UnitReceipt): Promise<void> | void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
   remove(receipt: UnitReceipt, preserveSource?: boolean): void;
 }
@@ -507,16 +509,45 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   };
 }
 
-/** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
-export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
+/** Start only the recorded, unchanged service. This does not restart an already-running daemon.
+ *  `resume` is only for `cotal daemon start`: a service stopped with `cotal daemon stop` is disabled,
+ *  and only that command turns automatic start back on. Setup and install omit it, so they do not
+ *  undo the stop. */
+export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void, resume = false): Promise<UninstallPlan> {
   const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
   try {
   assertDesktopSetupComplete();
-  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
+  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true, undefined, resume);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service) service.start(receipt);
+  if (!service && resume && process.platform === "linux") {
+    const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
+    if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
+    const state = read.stdout.trim();
+    if (state === "disabled") submitSystemdUnitRegistration("enable", plan.unit);
+    else if (state !== "enabled" && state !== "static") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded service ${plan.unit} is ${state || "unreadable"}; automatic start was not changed and it was not started`);
+  }
+  if (service) service.start(receipt, resume);
   else submitSystemdUnitControl("start", plan.unit);
   return plan;
+  } finally { lock?.release(); }
+}
+
+/** Turn off automatic start, then stop the recorded service. The unit, plist or task stays installed,
+ *  and so do the sign-in and the spaces. `cotal daemon start` turns automatic start back on. */
+export async function stopInstalled(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallPlan> {
+  const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  try {
+    const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+    if (service) await service.stop(receipt);
+    else {
+      submitSystemdUnitRegistration("disable", plan.unit);
+      const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
+      if (read.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `systemctl --user show ${plan.unit} did not confirm UnitFileState after disable (${read.detail}); the service was not stopped`);
+      const state = read.stdout.trim();
+      if (state !== "disabled" && state !== "static") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the recorded service ${plan.unit} did not confirm automatic start off (${state || "empty"}); it was not stopped`);
+      submitSystemdUnitControl("stop", plan.unit);
+    }
+    return plan;
   } finally { lock?.release(); }
 }
 
@@ -905,7 +936,7 @@ interface WindowsAutomaticRestart {
 }
 
 /** Restart the recorded Windows task only after the pinned daemon lifetime exits. */
-async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart, resume = false): Promise<UninstallPlan> {
   const remaining = (limit: number): number => {
     if (!automatic) return limit;
     const left = automatic.deadline - Date.now();
@@ -1013,9 +1044,9 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
         // The replacement must acquire the lock itself. Never Run while holding exclusion.
         exclusion.release(); exclusion = undefined;
-        progress("enabling and starting the verified owned scheduled task");
+        progress(startOnly ? "starting the verified owned scheduled task" : "enabling and starting the verified owned scheduled task");
         if (automatic && !pauseAttempted) task.startEnabled(receipt);
-        else task.start(receipt);
+        else task.start(receipt, resume);
       } else if (!(startOnly || automatic) || native.instances !== 1 || native.enabled !== true) {
         throw new Error("the owned task is absent or still has native instances");
       }
