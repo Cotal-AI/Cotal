@@ -915,6 +915,9 @@ Removing an extension or cleaning up a failed add keeps unrelated file-based ext
 installed copies, rather than turning them into links to their source or the built-in seed store.
 Removal uses the same peer policy as installation. Cotal relinks its shared packages without npm
 looking up peer dependencies for the remaining extensions in the registry.
+Extension installs, updates and removals maintain `package-lock.json` inside Cotal's extensions
+prefix even when npm configuration sets `package-lock=false`, without changing your `.npmrc` or
+other projects.
 On Windows, background extension installs and seeding do not open a terminal window.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
