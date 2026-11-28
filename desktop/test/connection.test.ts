@@ -83,7 +83,7 @@ test("launch readiness, application retry and polling follow the selected space"
   };
   const button = (id: string) => doc.getElementById(id) as HTMLButtonElement;
   const title = () => doc.getElementById("connection-title")!.textContent;
-  const disconnectedTitle = () => doc.getElementById("connected-panel")!.hidden ? "Ready to connect" : managers.size ? "This computer is connected" : "This computer is connected to your account";
+  const disconnectedTitle = () => doc.getElementById("connected-panel")!.hidden ? "Ready to connect" : managers.size ? "This computer is connected" : "This computer is not set up";
   const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
   const select = async (space: string) => {
     (doc.getElementById("space") as HTMLSelectElement).value = space;
