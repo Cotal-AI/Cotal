@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/seat",
   "description": "Local PTY seat custody and authenticated terminal control for managers. Depends on nothing else in the repo.",
-  "version": "0.184.0",
+  "version": "0.184.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

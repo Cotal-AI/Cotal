@@ -105,8 +105,10 @@ check("help service remove lists --instance <full-id> in its usage and options",
     extraName.status === 1 && error?.code === "USAGE_INVALID" && inventory?.status === 0 &&
     JSON.parse(inventory.stdout).result.definitions.some((row: { name: string }) => row.name === "tick"), shown(extraName));
   const again = run(["service", "add", "tick", "--file", forA, "--json"], a);
-  check("control: a file for sa under its existing name is still refused as already existing",
-    again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
+  check("a duplicate definition is refused and its removal command keeps the space and JSON output",
+    again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists") && again.stdout.includes("`cotal svc remove tick --space sa --yes --json`"), shown(again));
+  const duplicatePlain = run(["service", "add", "tick", "--file", forA, "--space", "sa", "--plain"], b);
+  check("the removal command for a duplicate keeps plain output", duplicatePlain.status === 2 && duplicatePlain.stderr.includes("svc remove tick --space sa --yes --plain`"), shown(duplicatePlain));
 
   for (const [flag, value, location] of [["--file", "", []], ["-f", "  ", ["--space", "missing-space"]]] as const) {
     const empty = run(["service", "add", "blank-file", flag, value, ...location, "--json"], a);
