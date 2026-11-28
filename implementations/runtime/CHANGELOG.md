@@ -1,5 +1,27 @@
 # @cotal-ai/runtime
 
+## 0.184.0
+
+### Patch Changes
+
+- 4974e08: Report a conflict when local workflow resume receives a file that differs from the recorded program, and explain how to resume with the original source.
+- Updated dependencies [68fc37d]
+- Updated dependencies [14aa844]
+- Updated dependencies [f9301f2]
+- Updated dependencies [902f3c3]
+- Updated dependencies [50b7040]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [5efbfdc]
+- Updated dependencies [274a820]
+- Updated dependencies [aa7d8a2]
+- Updated dependencies [c3db9e3]
+- Updated dependencies [ec3c29f]
+  - @cotal-ai/core@0.184.0
+  - @cotal-ai/workspace@0.184.0
+  - @cotal-ai/lang@0.184.0
+
 ## 0.183.1
 
 ### Patch Changes
@@ -87,7 +109,7 @@
 ### Minor Changes
 
 - e22d95e: Workflow runs can pin separate effect budgets for spawns, turns and other effect kinds.
-  
+
   The optional ceilings record is saved with the run pins, checked on resume and enforced from the journal across restarts. Existing records retain their total-only ceiling. A per-kind refusal names its limit with L4029 before dispatch, without consuming another kind's allowance.
 
 ### Patch Changes
@@ -1337,8 +1359,9 @@
 
 - d7888be: Hosted runs record their final status after a broker outage instead of remaining marked as running after the driver releases them. The manager retains the attempt while retrying the status write, including when NATS returns before JetStream, stops recovery when its connection closes, and never overwrites a successor's status.
 - 3d2e1f4: Simulation results files now report their path, cause and next step when they cannot be read or parsed, and accept a leading UTF-8 byte-order mark.
-  
+
   The results-file reader shares the program reader's regular-file checks and keeps rejecting invalid UTF-8 before simulation.
+
 - Updated dependencies [b4eba66]
 - Updated dependencies [8d15e70]
 - Updated dependencies [7aaa5bf]
@@ -1394,8 +1417,9 @@
 ### Patch Changes
 
 - dd3d984: Hosted workflow answers from the same OS login and host on a static-auth mesh now record one operator.
-  
+
   The run command's control instrument keeps that actor across commands. Each command still mints a fresh credential and lifecycle. The OS login is read only after a static-auth instrument mint is selected. Signed-in users, managed seats, explicit credentials, and open meshes do not use it.
+
 - Updated dependencies [dd3d984]
 - Updated dependencies [f84069e]
   - @cotal-ai/workspace@0.151.1
@@ -1407,7 +1431,7 @@
 ### Minor Changes
 
 - 87e1810: A migration commit ends pending orphan pauses before recording the migration.
-  
+
   `MigrateOrphan` now includes its journal state, and callers supplying a `commitMigration` handler must provide `endPause` beside `discharge`. Pass the run's `MeshHandler` and journal entries so removed pending steps can release their timers and wait consumers. Missing cleanup custody or a failed cleanup refuses the commit before it records success. Settled orphans are not ended again.
 
 ### Patch Changes
@@ -1598,8 +1622,9 @@
 ### Patch Changes
 
 - 32f93ed: Make `EndpointReply` a union on `ok`. Failed replies require an error; successful replies cannot carry one. TypeScript callers must construct the matching reply arm and narrow `ok` before using a required error. Interfaces that extended `EndpointReply` must use a type intersection instead.
-  
+
   Keep acceptance data on local failed goal-follow results. The wire parser still rejects failed replies carrying data or missing their error. Narrowed readers no longer need fallback text for missing errors.
+
 - Updated dependencies [3ad82f7]
 - Updated dependencies [e16b8d9]
 - Updated dependencies [32f93ed]
@@ -1709,11 +1734,11 @@
 ### Minor Changes
 
 - bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
-  
+
   A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
-  
+
   A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
-  
+
   Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
 
 ### Patch Changes
@@ -3124,8 +3149,9 @@
 ### Patch Changes
 
 - 29c67fe: A records-KV value that is not JSON is refused as `internal` and names its key from every reader of that bucket. `decodeRecordJson` is that decoder. The goal, checkpoint, service, lease, answer, notice, migration, lifecycle and issued-authority readers use it, and the private copies are gone, so a caller that classifies `EpEnvelopeError` no longer sees a bare `SyntaxError` for the same corruption.
-  
+
   Presence readers share `isPresenceRow`. A row needs a non-empty `card.id` equal to its key, a string `card.name`, a known status, a finite `ts`, string display fields, and a condition that is either absent or an object with a string code. The core observer, the runtime and the CLI inventory call that guard.
+
 - Updated dependencies [38fc031]
 - Updated dependencies [c1ff7d8]
 - Updated dependencies [29c67fe]
@@ -3417,7 +3443,7 @@
 ### Minor Changes
 
 - 0ae11a6: One manager can host seats on different terminal runtimes at the same time.
-  
+
   `cotal spawn --runtime <name>` with `-d` or `--on`, `cotal_spawn` with `runtime`, and a workflow `spawn(persona, { runtime })`, choose the runtime of that one seat. A seat that names none keeps the runtime the manager was started with. An unknown or unreachable runtime, and `auto`, refuses the launch and starts nothing. Stopping, attaching, and recovery follow the runtime recorded for that seat, so a later seat does not move one that is already running.
 
 ### Patch Changes
@@ -3681,7 +3707,7 @@
   name on the next.
 - b432707: A step that a race cancelled in a losing branch now says so. `run show` labels its row
   `cancelled, <branch> won <race>`, and `run answer` at that step is refused with `that step was
-  cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
+cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
 - 66af07b: `run show` names the branch a settled `race` took, and marks `not acted on` an answer whose step was in a losing branch, or whose pause was cancelled after accepting it. Such an answer used to be listed as acted on, or not at all. The journal rows carry the race's `winner` and each losing step's `lostRace` in `--json`.
 - 985f634: Refusals that named no next step now carry a remedy, in the JSON envelope's `error.remedy` and under Next in the text report: an unknown or missing `config` key, a `config` value, space name or `--space` it refuses, `persona show` and `persona remove` for a persona that does not exist, `persona create` for one that does, `run validate` of a file that cannot be read, and `service show` or `service remove` of a definition that is not saved. The envelope reference now says that `remedy` is present when a refusal names a step.
 - d92c955: `cotal run show` now explains that a released status records no reason and points to the executing
