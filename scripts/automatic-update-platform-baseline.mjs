@@ -21,6 +21,7 @@ import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
+import { prepareProjectTrustMigration } from './project-trust-upgrade.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -409,6 +410,9 @@ export async function matrixCell(options) {
   const foreignSnapshot = options['foreign-config-snapshot'] === 'true';
   const interruptedSnapshot = options['interrupt-snapshot-copy'] === 'true';
   if (interruptedSnapshot) assert(process.platform === 'linux' && layout === 'npm' && state === 'configured' && method === 'self', 'interrupted snapshot copy requires Linux configured npm self-update');
+  const projectTrustMigration = options['project-trust-migration'] === 'true';
+  if (options['project-trust-migration'] !== undefined) assert.equal(options['project-trust-migration'], 'true', 'project-trust-migration accepts only true');
+  if (projectTrustMigration) assert(['linux', 'darwin', 'win32'].includes(process.platform) && layout === 'npm' && state === 'configured' && method === 'self' && options.prepare === undefined, 'project trust migration requires configured npm self-update without a competing composition');
   const containerManager = options['container-manager'] === 'true';
   if (containerManager) assert(hosted && process.platform === 'linux' && state === 'configured', 'container Manager cell requires disposable hosted Linux configured state');
   if (foreignSnapshot) assert(state === 'recovery' && process.platform === 'linux', 'foreign snapshot cell requires Linux recovery state');
@@ -418,7 +422,7 @@ export async function matrixCell(options) {
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? localMatrixRoot(), 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stopped-daemon-before-update'] === 'true' ? 'stopped-daemon' : '', options['disabled-daemon-before-update'] === 'true' ? 'disabled-daemon' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['other-home-auth'] === 'true' ? 'other-home-auth' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
-  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}${interruptedSnapshot ? '-interrupted-snapshot-copy' : ''}`;
+  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}${interruptedSnapshot ? '-interrupted-snapshot-copy' : ''}${projectTrustMigration ? '-project-trust-migration' : ''}`;
   const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
   const omit = exclusion({ layout, method, state });
@@ -463,7 +467,7 @@ export async function matrixCell(options) {
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
   let bootstrapEnvironment;
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup, compositionCleanupReturned = false;
   let removeClaudeFixture;
   const transcript = [];
   async function captureServiceEvidence(stage) {
@@ -642,6 +646,8 @@ export async function matrixCell(options) {
       assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
       compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, options });
       assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
+    } else if (projectTrustMigration) {
+      compositionCleanup = await prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options, adoptCleanup: cleanup => { compositionCleanup = cleanup; } });
     }
     if (containerManager) {
       assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'container Manager regression requires a selected remote-user participant composition, not a local host control');
@@ -1464,7 +1470,11 @@ export async function matrixCell(options) {
       report.nextHop.passed = report.nextHop.passed === true && report.assertions.every(row => row.passed);
     }
     if (compositionCleanup && !daemonHostedManager) {
-      try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
+      try {
+        await compositionCleanup();
+        compositionCleanupReturned = true;
+        report.compositionCleanup = 'owned composition stopped before reporting';
+      }
       catch (error) { uncertain = true; report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (container) {
@@ -1542,6 +1552,7 @@ export async function matrixCell(options) {
     if (compositionCleanup && daemonHostedManager) {
       try {
         await compositionCleanup();
+        compositionCleanupReturned = true;
         report.compositionCleanup = report.managerHost?.stop?.exit === 0
           ? 'owned composition stopped after confirmed hosted Manager removal'
           : 'owned composition stopped; hosted Manager removal not confirmed';
@@ -1557,7 +1568,14 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    const compositionStopped = compositionCleanupConfirmed({ compositionCleanup, returned: compositionCleanupReturned });
+    const cleanupPassed = !uncertain && !report.cleanupFailure
+      && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')
+      && (!stackStarted || report.ownedStackCleanup?.exit === 0)
+      && (!container || report.foreignStackEnd?.passed === true)
+      && (!daemonHostedManager || report.managerHost?.stop?.exit === 0)
+      && compositionStopped;
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, compositionCleanup: report.compositionCleanup ?? null, passed: cleanupPassed };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
@@ -1570,6 +1588,12 @@ export async function matrixCell(options) {
     if (process.env.GITHUB_STEP_SUMMARY) writeFileSync(process.env.GITHUB_STEP_SUMMARY, `| Cell | Target | Result | Exact refusal |\n|---|---|---|---|\n| ${id} | ${report.target ?? 'unresolved'} | ${report.result} | ${(report.refusal ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>')} |\n`, { flag: 'a' });
   }
   return report;
+}
+
+/** Cleanup passed when there was no owned composition, or its callback returned without throwing.
+ *  The sentence a cell writes afterwards is a report, not the fact. */
+export function compositionCleanupConfirmed({ compositionCleanup, returned }) {
+  return !compositionCleanup || returned === true;
 }
 
 export function bootstrapVersion(latest, direction) {

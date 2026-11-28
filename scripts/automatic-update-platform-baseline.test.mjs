@@ -560,7 +560,7 @@ test('workflow bounds diagnostics and cancels only the replaced head of a pull r
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 47 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 53 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
@@ -949,4 +949,32 @@ test('matrix includes each requested source, state and method', () => {
   assert(exclusion({ layout: 'npm', method: 'installer', state: 'fresh' }));
   assert(exclusion({ layout: 'npm', method: 'scheduler', state: 'fresh' }));
   assert.equal(exclusion({ layout: 'npm', method: 'scheduler', state: 'daemon' }), undefined);
+});
+
+test('project-trust-migration option validates coordinate shape and hooks into composition lifecycle', async () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(source.includes("const projectTrustMigration = options['project-trust-migration'] === 'true'"));
+  assert(source.includes('prepareProjectTrustMigration({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, launcher, options, adoptCleanup: cleanup => { compositionCleanup = cleanup; } })'));
+  for (const invalid of [
+    { 'project-trust-migration': 'false', layout: 'npm', state: 'configured', method: 'self' },
+    { 'project-trust-migration': 'true', layout: 'installer', state: 'configured', method: 'self' },
+    { 'project-trust-migration': 'true', layout: 'npm', state: 'fresh', method: 'self' },
+    { 'project-trust-migration': 'true', layout: 'npm', state: 'configured', method: 'scheduler' },
+    { 'project-trust-migration': 'true', layout: 'npm', state: 'configured', method: 'self', prepare() {} },
+  ]) {
+    await assert.rejects(() => baseline.matrixCell(invalid));
+  }
+});
+
+test('composition cleanup is the callback returning, not the sentence a cell reports', () => {
+  const outcomes = [
+    'owned composition stopped before reporting',
+    'owned composition stopped after confirmed hosted Manager removal',
+    'owned composition stopped; hosted Manager removal not confirmed',
+  ];
+  for (const sentence of outcomes) {
+    assert.equal(baseline.compositionCleanupConfirmed({ compositionCleanup: true, returned: true, sentence }), true, sentence);
+  }
+  assert.equal(baseline.compositionCleanupConfirmed({ compositionCleanup: undefined, returned: false }), true);
+  assert.equal(baseline.compositionCleanupConfirmed({ compositionCleanup: true, returned: false, sentence: outcomes[0] }), false);
 });

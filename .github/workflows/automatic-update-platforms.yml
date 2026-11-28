@@ -378,7 +378,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 47
+      max-parallel: 53
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -548,7 +548,7 @@ jobs:
           } else {
           const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'candidate-next-foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
-          if (cell.scenario === 'interrupted-snapshot-copy') states[cell.scenario] = 'configured';
+          if (['interrupted-snapshot-copy', 'project-trust-migration', 'project-trust-migration-0.182.1'].includes(cell.scenario)) states[cell.scenario] = 'configured';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', (cell.deadUpdater || cell.otherHomeAuth ? 'daemon' : states[cell.scenario]), '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           const paired = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.scenario === 'candidate-next-foreign-config-recovery' || Boolean(cell.followOnAction) || cell.chain === true || cell.deadUpdater === true || cell.otherHomeAuth === true;
           const candidate = process.env.RUNNER_TEMP + '/release-candidate';
@@ -572,6 +572,7 @@ jobs:
           if (['foreign-config-recovery', 'candidate-next-foreign-config-recovery'].includes(cell.scenario)) args.push('--foreign-config-snapshot', 'true');
           if (cell.scenario === 'container-manager') args.push('--container-manager', 'true');
           if (cell.scenario === 'interrupted-snapshot-copy') args.push('--interrupt-snapshot-copy', 'true');
+          if (['project-trust-migration', 'project-trust-migration-0.182.1'].includes(cell.scenario)) args.push('--project-trust-migration', 'true');
           if (cell.platform === 'darwin' && method === 'scheduler') {
             args.push('--launchd-proof', 'transition');
             if (process.env.PHASE === 'published') args.push('--published-launchd', 'true');
@@ -781,7 +782,7 @@ jobs:
               const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'candidate-next-foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
-              if (cell.scenario === 'interrupted-snapshot-copy') states[cell.scenario] = 'configured';
+              if (['interrupted-snapshot-copy', 'project-trust-migration', 'project-trust-migration-0.182.1'].includes(cell.scenario)) states[cell.scenario] = 'configured';
               assert.equal(report.state, (cell.deadUpdater || cell.otherHomeAuth ? 'daemon' : states[cell.scenario]));
               assert.equal(report.method, method);
               const next = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.scenario === 'candidate-next-foreign-config-recovery' || Boolean(cell.followOnAction) || cell.deadUpdater === true || cell.otherHomeAuth === true;
@@ -790,7 +791,7 @@ jobs:
               assert.equal(report.source, cell.sourceVersion);
               assert.equal(report.sourceRequested, cell.sourceVersion);
               assert.equal(report.target, cell.finalTargetVersion ?? cell.targetVersion);
-              if (!paired) {
+              if (!paired && !cell.pinnedTrustSource) {
                 assert.equal(cell.sourceVersion, plan.sourceVersion);
                 assert.equal(cell.targetVersion, plan.targetVersion);
               }
@@ -872,9 +873,13 @@ jobs:
               const otherHomeAssertions = cell.otherHomeAuth
                 ? (await import('./scripts/other-home-auth-evidence.mjs')).verifyOtherHomeAuthEvidence({ report, cell })
                 : undefined;
+              const projectTrustAssertions = ['project-trust-migration', 'project-trust-migration-0.182.1'].includes(cell.scenario)
+                ? (await import('./scripts/project-trust-upgrade.mjs')).verifyProjectTrustEvidence({ report, cell, output: directory })
+                : undefined;
               const assertions = {
                 ...otherHomeAssertions,
                 ...deadUpdaterEvidence?.assertions,
+                'project-trust-migrated': projectTrustAssertions?.['project-trust-migrated'] === true && ok('existing project trust migrates and untrusted projects still refuse'),
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
                 'candidate-next-target': report.candidateNext?.targetVersion === (cell.followOnAction ? cell.targetVersion : finalTarget),
                 'next-hop-success': pairedEvidence?.nextHopSuccess === true,

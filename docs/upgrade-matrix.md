@@ -67,6 +67,7 @@ product coordinates:
 | Linux paused record pointing to a real snapshot under another config home | 1 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
 | Linux npm upgrade followed by interruption during a connector snapshot copy and two self-update retries | 1 |
+| Existing project `.cotal` trust across `status`, foreground `spawn`, background Manager `spawn --detach`, prepared spaces, symlinks and untrusted-project refusals on all three platforms, from the frozen predecessor and from pinned 0.182.1 | 6 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
 | POSIX manual updater to a synthetic next version with the recorded user service disabled (`systemctl --user disable --now` on Linux, `launchctl disable` + `launchctl bootout` on macOS), staying stopped and reporting `service is disabled; not started` | 2 |
@@ -78,6 +79,20 @@ product coordinates:
 The Linux hosted stop-consent cell also puts a Claude Code executable fixture on the service's
 PATH. It checks that the hosted Manager resolves the official Claude Code connector before and after
 the update. It does not launch a Claude Code seat.
+
+The project-trust cells prepare real `.cotal` project configurations with MCP servers,
+`spawn.env` names and persona `launchOptions` on the published source release, verify pre-update
+launches, and run `cotal update --self`. The predecessor cell follows the frozen published source.
+A second cell on each platform pins source 0.182.1, the last release without project trust. The cell
+names which case it ran. A source without project trust has no trust seed before the update and gains
+one from the first post-update command. A source with project trust records each prepared folder with
+`cotal trust` before the first launch, and that record survives the update unchanged. After the update
+both cases verify `status`-first migration, `spawn`-first migration without a prior `status`, a
+foreground launch and a background Manager launch from `cotal up --detach` (no native service is
+installed), a prepared space that was never started before the update, canonical root seeding through
+a symbolic link or Windows junction, and refusals for unregistered pre-existing `.cotal` folders and
+projects created after the update. The refusal prints `cotal.cmd trust` on Windows and `cotal trust`
+elsewhere. A failure during preparation still stops every stack the cell started.
 
 The killed-updater cells use the installed target's public updater and native service. They hold the
 snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.
@@ -196,7 +211,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all 42 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 53 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the

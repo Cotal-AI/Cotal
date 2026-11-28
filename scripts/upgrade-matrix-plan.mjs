@@ -149,6 +149,18 @@ export function boundedCells(plan) {
   add("linux", "npm", "container-manager");
   add("linux", "npm", "interrupted-snapshot-copy");
   cells.at(-1).requiredAssertions.push("interrupted-snapshot-reclaimed");
+  for (const platform of platforms) {
+    add(platform, "npm", "project-trust-migration");
+    cells.at(-1).requiredAssertions.push("project-trust-migrated");
+  }
+  // The predecessor cell above follows the frozen published source. Once that source itself has
+  // project trust, the migration from a release without it is a separate cell with this source.
+  for (const platform of platforms) {
+    add(platform, "npm", "project-trust-migration-0.182.1", null, {
+      sourceVersion: "0.182.1", sourceKind: "npm-exact-source", pinnedTrustSource: true,
+    });
+    cells.at(-1).requiredAssertions.push("project-trust-migrated");
+  }
   for (const platform of platforms) add(platform, "npm", "daemon-self");
   for (const platform of ["linux", "darwin"]) add(platform, "installer", "daemon-self");
   {
