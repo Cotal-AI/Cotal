@@ -28,7 +28,7 @@ export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; serviceOwner?: { kind: "app" | "command line" }; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; serviceOwner?: { kind: "app" | "cli"; location?: string }; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
@@ -111,11 +111,12 @@ export class AgentApps {
   private message = "";
   /** The last install outcome is a warning, not a success: the service has not picked the app up. */
   private messageWarning = false;
-  /** Another Cotal installation owns the background service, so this copy's own re-check cannot
-   *  succeed. Check again stays hidden until something changes the owner. */
-  private ownerBlocked = false;
   /** An install the service could not pick up while agents ran. Checked again once they stop. */
   waitingForAgents = false;
+  /** Another Cotal installation owns the background service, so this copy's own re-check cannot
+   *  succeed. The panel hides Check again while this is set, and the periodic re-read with refresh
+   *  clears it by itself once the other copy fixes the service. */
+  ownerBlocked = false;
   /** The message says the service has not picked an install up; a refresh that succeeds clears it. */
   private servicePending = false;
   constructor(private readonly host: AgentAppsHost) {}
@@ -128,10 +129,14 @@ export class AgentApps {
     if (this.loading) return this.loading;
     this.loading = (async () => {
       try {
-        const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
+        // Another installation owning the service is not something time fixes, but the person can fix
+        // the other copy; while that is pending, a periodic re-read with refresh clears this box by
+        // itself once the service really is refreshed, with no button this copy could press.
+        const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents || this.ownerBlocked ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
         // Only a refresh that ran clears the warning: "unchanged" also comes back when the service does not answer.
         if (result.service === "refreshed" && this.servicePending) { this.message = ""; this.messageWarning = false; this.ownerBlocked = false; this.servicePending = false; }
+        if (result.service === "failed" && !this.servicePending) { this.message = ""; this.messageWarning = false; this.ownerBlocked = false; }
         if (result.service === "refreshed" || result.service === "unchanged") this.waitingForAgents = false;
       } catch (error) { this.error = refusalMessage(error); }
       finally { this.loading = undefined; this.host.changed(); }

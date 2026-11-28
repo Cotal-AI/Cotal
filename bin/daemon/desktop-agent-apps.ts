@@ -358,6 +358,6 @@ async function answer(req: AgentAppRequest, service: ServiceOptions, emit: (fram
   try { return { ...done, service: await refreshService(service, installed.dirs, installed.before, progress) }; }
   catch (error) {
     const owner = error instanceof CommandFailure && error.native?.code === "ANOTHER_INSTALLATION" && (error.native.detail as { owner?: { kind?: unknown } } | undefined)?.owner;
-    return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error), ...(owner && (owner.kind === "app" || owner.kind === "command line") ? { serviceOwner: { kind: owner.kind } } : {}) };
+    return { ...done, service: "failed", serviceError: error instanceof Error ? error.message : String(error), ...(owner && (owner.kind === "app" || owner.kind === "cli") ? { serviceOwner: { kind: owner.kind } } : {}) };
   }
 }

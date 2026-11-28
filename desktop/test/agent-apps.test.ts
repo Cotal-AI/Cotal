@@ -74,14 +74,24 @@ test("a finished install says it is installed, also when the background service 
 });
 
 test("another Cotal installation owning the service is a warning naming the copy and the step that works there", () => {
-  // The app copy: the step that works is that copy's own Agent apps check, which refreshes its PATH.
-  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app" } }), {
+  // The app copy with a known Applications folder: the folder is named.
+  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app", location: "/Applications" } }), {
     text: "OpenCode is installed. Another copy of Cotal runs the background service (the Cotal app in your Applications folder), so OpenCode can't be used yet. Open that copy and choose Check again in its Agent apps.",
     warning: true,
   });
-  // A command-line owner names the install kind and offers its own setup step; no path in prose.
-  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "command line" } }, true), {
-    text: "OpenCode is signed in. Another copy of Cotal runs the background service (a command-line install of Cotal), so OpenCode can't be used yet. Run setup again from that install, or use Repair here once it is available.",
+  // An app copy elsewhere: the folder it is in is named, still plain words and no executable path.
+  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app", location: "/opt/Cotal" } }), {
+    text: "OpenCode is installed. Another copy of Cotal runs the background service (the Cotal app in /opt/Cotal), so OpenCode can't be used yet. Open that copy and choose Check again in its Agent apps.",
+    warning: true,
+  });
+  // An app copy with no known folder: only what is known is said.
+  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "app" } }), {
+    text: "OpenCode is installed. Another copy of Cotal runs the background service (the Cotal app), so OpenCode can't be used yet. Open that copy and choose Check again in its Agent apps.",
+    warning: true,
+  });
+  // A command-line owner names the install kind and its own setup step; no path in prose.
+  assert.deepEqual(installedMessage("OpenCode", { service: "failed", serviceOwner: { kind: "cli" } }, true), {
+    text: "OpenCode is signed in. Another copy of Cotal runs the background service (a command-line install of Cotal), so OpenCode can't be used yet. Run setup again from that install.",
     warning: true,
   });
   // No owner: the service reason is kept and the panel still offers its own Check again.

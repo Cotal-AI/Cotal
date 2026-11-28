@@ -937,7 +937,7 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version "))))) clearDetails();
   renderAgentRows(status);
-  if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0))) { appsLoadedAt = Date.now(); void agentApps.load(); }
+  if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0) || agentApps.ownerBlocked)) { appsLoadedAt = Date.now(); void agentApps.load(); }
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();

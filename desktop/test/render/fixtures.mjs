@@ -54,7 +54,8 @@ export function nativeStub(scenario) {
       if (request.op === "agent-apps") {
         state.appsRequests = [...(state.appsRequests ?? []), request.refresh === true];
         if (state.appsHold) await new Promise(() => {});
-        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: state.refreshService ?? "unchanged" } : {}) });
+        // A refresh follows the live service state: once the other copy has fixed it, the service picks the app up.
+        return ok({ apps: state.agentApps ?? defaultApps, ...(request.refresh ? { service: state.appService ?? state.refreshService ?? "unchanged" } : {}) });
       }
       if (request.op === "agent-app-install" || request.op === "agent-app-sign-in") {
         state.appActions = [...(state.appActions ?? []), `${request.op}:${request.name}`];
@@ -256,14 +257,14 @@ const appsScenarios = [
     await page.click("#apps-refresh");
     await page.waitForFunction(n => window.__renderState.appsRequests.length > n && !document.querySelector("#apps-refresh").disabled, asked);
     assert.equal(await page.locator("#apps-message").textContent(), reason);
-    await page.evaluate(() => { window.__renderState.refreshService = "refreshed"; });
+    await page.evaluate(() => { window.__renderState.appService = "refreshed"; });
     await page.click("#apps-refresh");
-    await page.waitForFunction(() => document.querySelector("#apps-message").textContent === "");
+    await page.waitForFunction(() => document.querySelector("#apps-message")?.textContent === "");
     assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).at(-1), true);
   } },
   // Another Cotal copy owns the background service: the install stands, but the outcome is a
   // warning naming that copy and its step, and this copy's own Check again cannot succeed, so it is not offered.
-  { name: "agent-apps-install-other-owner", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
+  { name: "agent-apps-install-other-owner", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app", location: "/Applications" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
     const warning = "pi is installed. Another copy of Cotal runs the background service (the Cotal app in your Applications folder), so pi can't be used yet. Open that copy and choose Check again in its Agent apps.";
     assert.equal(await page.locator("#apps-message").textContent(), warning);
     assert.equal(await page.locator("#apps-message.warning").count(), 1, "the box is a warning, never success");
@@ -272,11 +273,36 @@ const appsScenarios = [
     assert.ok(!(await page.locator("#apps-message").textContent()).includes("/"), "no path in the prose");
   } },
   // A command-line owner names the install kind and its own step.
-  { name: "agent-apps-install-command-line-owner", state: { ...connectedApps, agentApps: noApps, platform: "linux", appService: "failed", serviceOwner: { kind: "command line" } }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="ready"]').waitFor(); }, expect: async page => {
-    const warning = "Jcode is installed. Another copy of Cotal runs the background service (a command-line install of Cotal), so Jcode can't be used yet. Run setup again from that install, or use Repair here once it is available.";
+  { name: "agent-apps-install-command-line-owner", state: { ...connectedApps, agentApps: noApps, platform: "linux", appService: "failed", serviceOwner: { kind: "cli" } }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="ready"]').waitFor(); }, expect: async page => {
+    const warning = "Jcode is installed. Another copy of Cotal runs the background service (a command-line install of Cotal), so Jcode can't be used yet. Run setup again from that install.";
     assert.equal(await page.locator("#apps-message").textContent(), warning);
     assert.equal(await page.locator("#apps-message.warning").count(), 1, "the box is a warning, never success");
     assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
+  } },
+  // A Linux app owner: the folder it is in is named, never "your Applications folder".
+  { name: "agent-apps-install-linux-app-owner", state: { ...connectedApps, agentApps: noApps, platform: "linux", appService: "failed", serviceOwner: { kind: "app", location: "/opt/apps" } }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="ready"]').waitFor(); }, expect: async page => {
+    const warning = "Jcode is installed. Another copy of Cotal runs the background service (the Cotal app in /opt/apps), so Jcode can't be used yet. Open that copy and choose Check again in its Agent apps.";
+    assert.equal(await page.locator("#apps-message").textContent(), warning);
+    assert.equal(await page.locator("#apps-message.warning").count(), 1, "the box is a warning, never success");
+    assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
+  } },
+  // A macOS app outside Applications: the folder is named, no Applications claim.
+  { name: "agent-apps-install-app-outside-applications", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app", location: "/Users/david/Downloads" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
+    const warning = "pi is installed. Another copy of Cotal runs the background service (the Cotal app in /Users/david/Downloads), so pi can't be used yet. Open that copy and choose Check again in its Agent apps.";
+    assert.equal(await page.locator("#apps-message").textContent(), warning);
+    assert.ok(!(await page.locator("#apps-message").textContent()).includes("your Applications folder"), "the folder is named only when it is known");
+    assert.equal(await page.locator("#apps-message.warning").count(), 1);
+    assert.equal(await page.locator("#apps-refresh").isHidden(), true, "Check again is not offered where it cannot succeed");
+  } },
+  // The warning clears by itself once the other copy fixes the service: no button needed here.
+  { name: "agent-apps-install-other-owner-clears", state: { ...connectedApps, agentApps: noApps, platform: "darwin", appService: "failed", serviceOwner: { kind: "app", location: "/Applications" } }, act: async page => { await openApps(page); await appButton(page, "Install: pi").click(); await page.locator('[data-app="pi"][data-state="ready"]').waitFor(); }, expect: async page => {
+    await page.locator("#apps-message:not(:empty)").waitFor();
+    // The person fixed the other copy; time passes (the reload only re-reads after 30s), then the
+    // next status-driven re-read notices and the box clears by itself.
+    await page.evaluate(() => { window.__renderState.appService = "refreshed"; const now = Date.now; Date.now = () => now() + 45_000; window.__pushStatus(); });
+    await page.waitForFunction(() => document.querySelector("#apps-message")?.textContent === "", null, { timeout: 20000 });
+    assert.equal(await page.locator("#apps-message.warning").count(), 0, "the warning style leaves with the warning");
+    assert.equal(await page.locator("#apps-refresh").isHidden(), false, "Check again returns once it can succeed again");
   } },
   { name: "agent-apps-install-failed", state: { ...connectedApps, appInstallFails: true }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="failed"]').waitFor(); }, expect: async page => {
     assert.match(await page.locator('[data-app="jcode"] .app-status').textContent(), /Couldn’t install: The installer stopped with exit code 1/);

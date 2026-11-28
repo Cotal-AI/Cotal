@@ -57,16 +57,15 @@ export function rowView(app: AgentApp, activity: Activity | undefined, platform:
 
 /** What the app says once an install finished, and again once the sign-in that follows it finished, so
  *  a background service that has not picked the app up yet is still said, with its reason. */
-export interface InstallOwner { kind: "app" | "command line" }
-export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string; serviceOwner?: InstallOwner }, signedIn = false): { text: string; warning: boolean } {
+export type InstallOwner = "app" | "cli";
+export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string; serviceOwner?: { kind: InstallOwner; location?: string } }, signedIn = false): { text: string; warning: boolean } {
   const state = signedIn ? "signed in" : "installed";
   if (result.service === "waiting") return { text: `${title} is ${state}. Your spaces can start it once the agents running on this computer stop.`, warning: false };
   if (result.service === "failed") {
     if (result.serviceOwner) {
-      const copy = result.serviceOwner.kind === "app"
-        ? `Another copy of Cotal runs the background service (the Cotal app in your Applications folder), so ${title} can't be used yet. Open that copy and choose Check again in its Agent apps.`
-        : `Another copy of Cotal runs the background service (a command-line install of Cotal), so ${title} can't be used yet. Run setup again from that install, or use Repair here once it is available.`;
-      return { text: `${title} is ${state}. ${copy}`, warning: true };
+      const where = result.serviceOwner.kind === "app" ? result.serviceOwner.location?.includes("Applications") ? "the Cotal app in your Applications folder" : result.serviceOwner.location ? `the Cotal app in ${result.serviceOwner.location}` : "the Cotal app" : "a command-line install of Cotal";
+      const step = result.serviceOwner.kind === "app" ? `Open that copy and choose Check again in its Agent apps.` : `Run setup again from that install.`;
+      return { text: `${title} is ${state}. Another copy of Cotal runs the background service (${where}), so ${title} can't be used yet. ${step}`, warning: true };
     }
     return { text: `${title} is ${state}, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`, warning: true };
   }
