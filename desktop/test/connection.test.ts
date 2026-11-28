@@ -521,3 +521,48 @@ test("another installation's service offers no setup button and no command line"
     assert.equal(calls.filter(call => call.op === "setup").length, 0, "nothing runs setup again");
   } finally { win.close(); }
 });
+
+test("a space that is not connected shows its reason and never a command line", async () => {
+  const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
+  assert.ok(!Array.isArray(output) && "output" in output);
+  const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
+  assert.ok(bundle && "code" in bundle);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
+  const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const win = dom.window;
+  const doc = win.document as Document;
+  const calls: Request[] = [];
+  win.setTimeout = () => 1;
+  win.clearTimeout = () => {};
+  win.isTauri = true;
+  win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+  win.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    unregisterCallback() {},
+    async invoke(cmd: string, args: { request?: Request } = {}) {
+      if (cmd === "first_paint") return true;
+      if (cmd !== "daemon_request") return cmd === "desktop_presence" ? { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" } : cmd === "app_update_check" || cmd === "app_update_apply" ? { phase: "unconfigured" } : null;
+      const req = args.request!;
+      calls.push(req);
+      if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "darwin", arch: "arm64", memoryBytes: 0 } };
+      if (req.op === "status") return { v: 1, event: "result", ok: true, result: { state: "ready", version: "0.164.15", managers: [{ space: "first", state: "starting", reason: "the space is not answering", next: "run `cotal daemon status --space first`" }] } };
+      if (req.op === "status-watch") return await new Promise<Frame>(() => {});
+      if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://example.com/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://example.com/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
+      if (req.op === "service-status") return { v: 1, event: "result", ok: true, result: { state: "disconnected" } };
+      throw new Error(`Unexpected request ${req.op}`);
+    },
+  };
+  const settle = async () => { for (let i = 0; i < 40; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  try {
+    win.eval(bundle.code);
+    await settle();
+    (doc.getElementById("space") as HTMLSelectElement).value = "first";
+    doc.getElementById("space")!.dispatchEvent(new win.Event("change"));
+    await settle();
+    doc.getElementById("refresh")!.click();
+    await settle();
+    const detail = doc.getElementById("refusal-detail")!.textContent ?? "";
+    assert.match(detail, /the space is not answering/, "Details keeps the reason");
+    assert.equal(/`|cotal daemon/.test(detail), false, "Details shows no command line");
+  } finally { win.close(); }
+});
