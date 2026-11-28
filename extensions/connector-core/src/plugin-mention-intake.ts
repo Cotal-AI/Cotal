@@ -1,4 +1,4 @@
-import { isConcreteChannel, PLUGIN_MENTION_POINTER_KEY, type CotalEndpoint, type CotalMessage, type Delivery, type PluginMentionPointer } from "@cotal-ai/core";
+import { isConcreteChannel, PLUGIN_MENTION_POINTER_KEY, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "@cotal-ai/core";
 import { isPluginChannel } from "./agent-channels.js";
 
 const MAX_PENDING = 64;
@@ -16,7 +16,7 @@ function pointerOf(message: CotalMessage): PluginMentionPointer | undefined {
   return { channel, message: id, seq };
 }
 
-type Pending = { sender: string; pointer: PluginMentionPointer; delivery: Delivery; expires: number };
+type Pending = { message: CotalMessage; meta: MessageMeta; pointer: PluginMentionPointer; delivery: Delivery; expires: number };
 
 /** Quarantine reserved notice data until the admitted route and independent lease read agree. */
 export class PluginMentionIntake {
@@ -30,6 +30,7 @@ export class PluginMentionIntake {
   constructor(
     private readonly endpoint: () => CotalEndpoint,
     private readonly resolve: (pointer: PluginMentionPointer, delivery: Delivery) => Promise<void>,
+    private readonly deliverLegacy: (message: CotalMessage, delivery: Delivery, meta: MessageMeta) => void,
   ) {}
 
   get dropped(): number { return this.lost; }
@@ -37,19 +38,21 @@ export class PluginMentionIntake {
   clearDropped(seen: number): void { this.lost = Math.max(0, this.lost - seen); }
 
   /** In admitted legacy mode the reserved pointer has no meaning and DM behavior stays unchanged. */
-  accept(message: CotalMessage, delivery: Delivery): boolean {
-    if (this.endpoint().channelRoutingMode() === "legacy") return false;
+  accept(message: CotalMessage, delivery: Delivery, meta: MessageMeta): boolean {
+    const mode = this.endpoint().channelRoutingMode();
+    if (mode === "legacy") return false;
     const pointer = pointerOf(message);
     if (!pointer) return false;
     if (this.stopped) return true;
-    const sender = message.from.id;
-    const key = JSON.stringify([sender, pointer.channel, pointer.message, pointer.seq]);
+    // Two ordinary DMs can carry identical data. Only a broker retry of the same message
+    // replaces its pending delivery handle here. Resolved plugin posts deduplicate in the inbox.
+    const key = JSON.stringify([message.from.id, message.id]);
     const old = this.pending.get(key);
     if (old) {
       if (delivery.durable) old.delivery = delivery;
     } else if (this.pending.size < MAX_PENDING) {
-      this.pending.set(key, { sender, pointer, delivery, expires: performance.now() + WAIT_MS });
-    } else {
+      this.pending.set(key, { message, meta, pointer, delivery, expires: performance.now() + WAIT_MS });
+    } else if (mode === "isolated") {
       this.drop(delivery);
     }
     this.pump();
@@ -80,9 +83,14 @@ export class PluginMentionIntake {
     const ep = this.endpoint();
     const mode = ep.channelRoutingMode();
     for (const [key, item] of this.pending) {
-      if (mode === "legacy" || item.expires <= now) {
+      if (mode === "legacy") {
         this.pending.delete(key);
-        this.drop(item.delivery);
+        this.deliverLegacy(item.message, item.delivery, item.meta);
+      } else if (item.expires <= now) {
+        this.pending.delete(key);
+        // While the mode is unknown this could still be ordinary mail. Its DM durable retains
+        // the unacked copy for redelivery without holding it in memory or reporting a notice loss.
+        if (mode === "isolated") this.drop(item.delivery);
       }
     }
     if (!this.pending.size) return;
@@ -101,7 +109,7 @@ export class PluginMentionIntake {
       const now = performance.now();
       for (const [key, item] of this.pending) {
         this.pending.delete(key);
-        if (item.expires <= now || item.sender !== lease.holder) this.drop(item.delivery);
+        if (item.expires <= now || item.message.from.id !== lease.holder) this.drop(item.delivery);
         else void this.resolve(item.pointer, item.delivery);
       }
     } catch {

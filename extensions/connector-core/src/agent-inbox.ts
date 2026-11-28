@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { channelInAllow, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "@cotal-ai/core";
-import { isPluginChannel } from "./agent-channels.js";
-import type { AgentConfig } from "./config.js";
+import { CHANNEL_ROUTING_NOT_READY, hasPluginChannelRoot, isPluginChannel } from "./agent-channels.js";
+import { isAuthed, type AgentConfig } from "./config.js";
 import { CHANNEL_CATCHUP_AGE_MS, afterRecallMark, MAX_INBOX, TAKE_WAIT_MS, TAKE_RETRY_MS, MAX_IN_FLIGHT, MAX_AHEAD, CLASSIFICATION_CAP, FOCUS_EXCLUSION_CAP, IDLESS_READS, PROTECTED_DISPOSITION_CAP, handOver, idlessDigest, ingestDedupKey } from "./agent-inbox-model.js";
 import type { AgentInboxDeps, InboxItem, InboxSnapshot, Pending, IdlessTally, IdlessCopy, RecallMark, InboxScope, ExactDrainResult, DeliveryNotice } from "./agent-inbox-model.js";
 export { deliveryNoticeOf, afterRecallMark, MAX_INBOX } from "./agent-inbox-model.js";
@@ -1248,10 +1248,23 @@ export class AgentInbox {
     return Object.fromEntries(this.channelModes);
   }
 
+  sharedChannelModes(legacy: boolean): Record<string, ChannelMode> {
+    return legacy ? this.channelModeEntries() : Object.fromEntries(
+      [...this.channelModes].filter(([channel]) => !hasPluginChannelRoot(channel)),
+    );
+  }
+
+  refreshSharedChannelModes(): Promise<void> {
+    // The endpoint has already recorded the transport edge. Reset its mirror synchronously,
+    // before the first presence write on a replacement wire.
+    if (![...this.channelModes.keys()].some(hasPluginChannelRoot)) return Promise.resolve();
+    return this.ep.setChannelModes(this.sharedChannelModes(this.ep.channelRoutingMode() === "legacy"));
+  }
+
   /** Set (or clear, with `"normal"`) one channel's attention override. Validates the channel is
    *  concrete and within this agent's read ACL (`allowSubscribe` — so a mode can be pre-set for a
    *  channel it may read but hasn't joined yet), updates the AUTHORITATIVE in-memory map, then mirrors
-   *  the whole map to presence (best-effort; advisory). Per-instance + runtime: it NEVER writes the
+   *  the shared subset to presence (advisory). Per-instance + runtime: it NEVER writes the
    *  agent file (a shared template) and resets on restart.
    *
    *  It does not purge messages already buffered from that channel. Quiet makes its buffered ambient
@@ -1261,15 +1274,18 @@ export class AgentInbox {
   async setChannelMode(channel: string, mode: ChannelMode | "normal"): Promise<void> {
     if (!isConcreteChannel(channel))
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
-    if (!channelInAllow(this.config.allowSubscribe, channel, this.ep.channelRoutingMode() === "isolated"))
-      throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
     await this.inOrder(() => {
+      const route = this.ep.channelRoutingMode();
+      if (route === undefined && isAuthed(this.config) && hasPluginChannelRoot(channel))
+        throw new Error(CHANNEL_ROUTING_NOT_READY);
+      if (!channelInAllow(this.config.allowSubscribe, channel, route === "isolated"))
+        throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
       if (mode === "normal") this.channelModes.delete(channel);
       else {
         this.channelModes.set(channel, mode);
         this.lowerBuffered(channel, mode === "muted");
       }
-      return this.ep.setChannelModes(this.channelModeEntries());
+      return this.ep.setChannelModes(this.sharedChannelModes(route === "legacy"));
     });
   }
 

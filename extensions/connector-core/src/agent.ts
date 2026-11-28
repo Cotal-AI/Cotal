@@ -97,6 +97,7 @@ export class MeshAgent extends EventEmitter {
   private readonly pluginMentions = new PluginMentionIntake(
     () => this.ep,
     (pointer, delivery) => this.inboxState.ingestPluginMention(pointer, delivery, (p) => this.ep.readPluginMentionHistory(p)),
+    (message, delivery, meta) => this.ingestOrdinaryDirected(message, delivery, meta),
   );
   private readonly inboxState = new AgentInbox({
     endpoint: () => this.ep,
@@ -187,7 +188,8 @@ export class MeshAgent extends EventEmitter {
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
       allowSubscribe: config.allowSubscribe, // the complete ACL decides whether a DLV durable exists
-      channelModes: this.channelModeEntries(), // seed presence so file defaults are visible at boot
+      channelModes: this.inboxState.sharedChannelModes(false),
+      readChannelRoutingProjection: true,
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
       watchPresence: false,
@@ -259,6 +261,7 @@ export class MeshAgent extends EventEmitter {
       this._transportConnected = e.connected;
       this.inboxState.onTransport(e.connected);
       this.pluginMentions.onTransport();
+      void this.inboxState.refreshSharedChannelModes().catch((err: Error) => this.handleEndpointWarning(err));
       this.emit("transport", e);
       // A notice lost while the transport was down can only matter to a turn this seat holds: the
       // manager repeats the notice for a turn the seat has not pulled yet. So only a holder pulls.
@@ -283,7 +286,11 @@ export class MeshAgent extends EventEmitter {
   }
 
   private ingestDirected(m: CotalMessage, delivery: Delivery, meta: MessageMeta): void {
-    if (this.pluginMentions.accept(m, delivery)) return;
+    if (m.space === this.config.space && this.pluginMentions.accept(m, delivery, meta)) return;
+    this.ingestOrdinaryDirected(m, delivery, meta);
+  }
+
+  private ingestOrdinaryDirected(m: CotalMessage, delivery: Delivery, meta: MessageMeta): void {
     const notice = deliveryNoticeOf(m);
     if (notice !== undefined) void this.inboxState.ingestNotice(m, delivery, meta, notice);
     else this.inboxState.ingest(m, delivery, meta);
@@ -957,7 +964,7 @@ export class MeshAgent extends EventEmitter {
   /** Set (or clear, with `"normal"`) one channel's attention override. Validates the channel is
    *  concrete and within this agent's read ACL (`allowSubscribe` — so a mode can be pre-set for a
    *  channel it may read but hasn't joined yet), updates the AUTHORITATIVE in-memory map, then mirrors
-   *  the whole map to presence (best-effort; advisory). Per-instance + runtime: it NEVER writes the
+   *  the shared subset to presence (advisory). Per-instance + runtime: it NEVER writes the
    *  agent file (a shared template) and resets on restart.
    *
    *  It does not purge messages already buffered from that channel. Quiet makes its buffered ambient

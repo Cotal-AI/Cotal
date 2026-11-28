@@ -35,6 +35,7 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
+  unicastSubject,
   CONTROL_DELIVERY,
   DEV_OWNER,
   type CotalMessage,
@@ -83,7 +84,7 @@ const channels = ["normal-ch", "quiet-ch", "muted-ch"];
 const legacyChannel = `${PLUGIN_CHANNEL_ROOT}.linear.legacy`;
 const legacyGrant = `${PLUGIN_CHANNEL_ROOT}.>`;
 const ageChannel = "age-control";
-const reviewRetry = "The connection is not ready to route plugin channels. Try again once connected.";
+const routingRetry = "The connection is not ready to route plugin channels. Try again once connected.";
 const runTool = (seat: MeshAgent, name: string, args: Record<string, unknown> = {}) =>
   cotalToolSpecs(seat.config, "smoke").find((tool) => tool.name === name)!.run(seat, seat.config, args);
 const waitFor = async (test: () => boolean) => {
@@ -164,6 +165,13 @@ async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, pu
     !agent.peekInbox().some((item) => item.kind === "dm" && item.fromId === daemonId));
 
   await agent.setChannelMode(plugin, "muted");
+  await agent.setChannelMode(chat, "muted");
+  const rawModes = (await chatOnly.ep.readPresence()).find((p) => p.card.id === agent.id)?.channelModes;
+  const roster = await run(chatOnly, "cotal_roster");
+  check("a CHAT-only peer sees ordinary mute but no plugin name in presence or the roster",
+    agent.channelMode(plugin) === "muted" && rawModes?.[chat] === "muted" &&
+    Object.keys(rawModes).every((name) => !name.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) &&
+    !roster.isError && roster.text.includes(`locally muted #${chat}`) && !roster.text.includes(`#${PLUGIN_CHANNEL_ROOT}.`), { rawModes, roster });
   const muted = await publisher.multicast("muted plugin mention", { channel: plugin, mentions: [agent.displayName] });
   chatOnly.drainInbox();
   const outside = await publisher.multicast("plugin mention for chat-only seat", { channel: plugin, mentions: [chatOnly.displayName] });
@@ -203,7 +211,7 @@ async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, pu
   }
 }
 
-async function checkPluginReviewTools(limited: MeshAgent, wildcard: MeshAgent, readOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string) {
+async function checkPluginToolPermissions(limited: MeshAgent, wildcard: MeshAgent, readOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string) {
   const family = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
   const root = `${PLUGIN_CHANNEL_ROOT}.>`;
   const rootJoin = await runTool(wildcard, "cotal_join", { channel: root });
@@ -248,8 +256,17 @@ async function checkPluginReviewTools(limited: MeshAgent, wildcard: MeshAgent, r
     const rootWhileUnknown = await runTool(limited, "cotal_join", { channel: root });
     const chatSend = await runTool(limited, "cotal_send", { channel: chat, text: "ordinary chat control" });
     check("unknown routing refuses plugin sends and joins at the client while ordinary CHAT sends still work",
-      [send, omit, join, rootWhileUnknown].every((r) => r.isError && r.text.endsWith(reviewRetry)) && !chatSend.isError &&
+      [send, omit, join, rootWhileUnknown].every((r) => r.isError && r.text.endsWith(routingRetry)) && !chatSend.isError &&
       await publisher.channelFrontier(plugin) === before, { send, omit, join, rootWhileUnknown, chatSend });
+    const priorMode = limited.channelMode(plugin);
+    const attention = await runTool(limited, "cotal_channel_mode", { channel: plugin, mode: "muted" });
+    const chatAttention = await runTool(limited, "cotal_channel_mode", { channel: chat, mode: "quiet" });
+    check("unknown routing refuses plugin attention without changing local state and permits CHAT attention",
+      attention.isError === true && attention.text.endsWith(routingRetry) && limited.channelMode(plugin) === priorMode &&
+      !chatAttention.isError && limited.channelMode(chat) === "quiet", { attention, chatAttention });
+    const spawn = await limited.spawn("not-ready-helper", undefined, { join: [plugin] });
+    check("unknown routing refuses spawn delegation of a plugin join with the retry sentence",
+      !spawn.ok && spawn.error === `join: ${routingRetry}`, spawn);
   } finally {
     readOnly.ep.channelRoutingMode = mode;
     limited.ep.channelRoutingMode = chatMode;
@@ -295,20 +312,70 @@ async function checkPluginPointerAdmission(seat: MeshAgent, publisher: CotalEndp
     seat.ep.readDeliveryLeaseEntry = lease;
   }
 
-  seat.ep.channelRoutingMode = () => undefined;
+  seat.ep.readDeliveryLeaseEntry = async () => { throw new Error("fixture lease read unavailable past deadline"); };
   try {
     const post = await publish("mention past admission deadline");
     const dropped = await waitFor(() => received(post) && seat.droppedPluginMentionNotices === 1);
-    seat.ep.channelRoutingMode = mode;
+    seat.ep.readDeliveryLeaseEntry = lease;
     const peek = await runTool(seat, "cotal_inbox", { peek: true });
     const drain = await runTool(seat, "cotal_inbox");
     const again = await runTool(seat, "cotal_inbox", { peek: true });
     const note = "Dropped plugin mention notices: 1.";
-    check("a notice that exceeds the admission deadline is counted in inbox without a body and clears only on read",
+    check("a notice in isolated mode that exceeds the lease-read deadline is counted without a body and clears only on read",
       dropped && noRaw() && peek.text.includes(note) && drain.text.includes(note) && !again.text.includes(note) &&
       !peek.text.includes("mention past admission deadline") && !drain.text.includes("mention past admission deadline"));
   } finally {
-    seat.ep.channelRoutingMode = mode;
+    seat.ep.readDeliveryLeaseEntry = lease;
+  }
+}
+
+async function checkLegacyEndpoint(config: AgentConfig, publisher: CotalEndpoint, publisherCreds: string, seatCreds: string, lifecycleUid: string) {
+  const seat = new MeshAgent({ ...config, kind: "endpoint", name: "legacy-endpoint-seat", role: undefined,
+    id: undefined, creds: seatCreds, lifecycleUid, subscribe: [], muted: [legacyChannel] });
+  seat.on("error", () => {});
+  try {
+    void seat.start().catch(() => {});
+    await seat.waitUntilConnected();
+    const join = await runTool(seat, "cotal_join", { channel: legacyChannel });
+    const send = await runTool(seat, "cotal_send", { channel: legacyChannel, text: "ordinary chat from an endpoint seat" });
+    const presence = (await seat.ep.readPresence()).find((p) => p.card.id === seat.id);
+    check("a scoped endpoint seat admits legacy routing and can join and send on a plugin-shaped CHAT name",
+      seat.ep.channelRoutingMode() === "legacy" && !join.isError && !send.isError && presence?.card.kind === "endpoint" &&
+      presence.channelModes?.[legacyChannel] === "muted", { join, send, presence });
+
+    const parts: CotalMessage["parts"] = [{ kind: "data", data: {
+      [PLUGIN_MENTION_POINTER_KEY]: { channel: legacyChannel, message: "ordinary-dm-data", seq: 1 },
+    } }];
+    const received = new Set<string>();
+    seat.ep.on("message", (m: CotalMessage) => received.add(m.id));
+    const mode = seat.ep.channelRoutingMode;
+    seat.ep.channelRoutingMode = () => undefined;
+    try {
+      const one = await publisher.unicast(seat.id, "", { parts });
+      const two = await publisher.unicast(seat.id, "", { parts });
+      const waiting = await waitFor(() => received.has(one.id) && received.has(two.id)) && seat.inboxCount() === 0;
+      const sender = publisher.principal;
+      const nc = await connect({ servers: config.servers, authenticator: credsAuthenticator(new TextEncoder().encode(publisherCreds)), inboxPrefix: `_INBOX_${sender.actor}` });
+      try {
+        const recipient = seat.ep.principal;
+        const subject = unicastSubject(config.space, recipient.owner, recipient.actor, sender.owner, sender.actor);
+        const otherSpace = { ...one, id: "ordinary-other-space-envelope", space: "another-space" };
+        await jetstream(nc).publish(subject, JSON.stringify(otherSpace), { msgID: otherSpace.id });
+        check("pointer-shaped mail declaring another space does not enter this space's routing hold",
+          await waitFor(() => seat.peekInbox("automatic").some((i) => i.id === otherSpace.id && i.kind === "dm")));
+      } finally {
+        await nc.close();
+      }
+      seat.ep.channelRoutingMode = mode;
+      const delivered = await waitFor(() => [one.id, two.id].every((id) => seat.peekInbox("automatic").some((i) => i.id === id && i.kind === "dm")));
+      const inbox = await runTool(seat, "cotal_inbox", { peek: true });
+      check("two ordinary DMs with identical pointer-shaped data reach the inbox on legacy admission without a drop count",
+        waiting && delivered && seat.droppedPluginMentionNotices === 0 && !inbox.text.includes("Dropped plugin mention notices:"));
+    } finally {
+      seat.ep.channelRoutingMode = mode;
+    }
+  } finally {
+    await seat.stop();
   }
 }
 
@@ -420,10 +487,10 @@ async function checkEnabledPluginChannels(): Promise<void> {
   try {
     const { servers, space, channel: plugin, chatChannel: chat } = fixture;
     const daemon = await fixture.startDelivery();
-    const startSeat = async (name: string, read: string[], post: string[], subscribe: string[], allowed = read) => {
+    const startSeat = async (name: string, read: string[], post: string[], subscribe: string[], options: Partial<Pick<AgentConfig, "allowSubscribe" | "quiet" | "muted" | "kind">> = {}) => {
       const grant = await fixture.mintAgent({ read, post });
       const seat = new MeshAgent({ name, servers, space, kind: "agent", tls: false, id: grant.actor,
-        creds: grant.creds, lifecycleUid: grant.lifecycleUid, subscribe, allowSubscribe: allowed, allowPublish: post });
+        creds: grant.creds, lifecycleUid: grant.lifecycleUid, subscribe, allowSubscribe: read, allowPublish: post, ...options });
       seats.push(seat);
       seat.on("error", () => {});
       await seat.start();
@@ -431,11 +498,16 @@ async function checkEnabledPluginChannels(): Promise<void> {
     };
     const publisher = await startSeat("plugin-publisher", [chat, plugin], [chat, plugin], []);
     const seat = await startSeat("plugin-seat", [chat, plugin], [chat, plugin], []);
-    const chatOnly = await startSeat("chat-only-seat", [">"], [">"], [">"], [">", plugin]);
+    const chatOnly = await startSeat("chat-only-seat", [">"], [">"], [">"], { allowSubscribe: [">", plugin] });
     const limited = await startSeat("limited-seat", [">"], [">"], [">"]);
     const wildcard = await startSeat("wildcard-seat", [`${PLUGIN_CHANNEL_ROOT}.linear.>`], [], []);
     const readOnly = await startSeat("read-only-seat", [plugin], [">"], [plugin]);
     const pending = await startSeat("pending-seat", [plugin], [], []);
+    const endpointSeat = await startSeat("plugin-endpoint-seat", [chat, plugin], [plugin], [], { kind: "endpoint", quiet: [chat, plugin] });
+    const endpointModes = (await limited.ep.readPresence()).find((p) => p.card.id === endpointSeat.id)?.channelModes;
+    check("an endpoint seat admits isolated routing and keeps boot plugin attention out of shared presence",
+      endpointSeat.connected && endpointSeat.ep.channelRoutingMode() === "isolated" && endpointSeat.channelMode(plugin) === "quiet" &&
+      endpointModes?.[chat] === "quiet" && !Object.hasOwn(endpointModes, plugin), endpointModes);
     const replay = await startSeat("pointer-replay-seat", [plugin], [], []);
     const lease = await daemon.acquireDeliveryLease(0);
     const ready = await daemon.markDeliveryLeaseReady(0, lease);
@@ -445,7 +517,7 @@ async function checkEnabledPluginChannels(): Promise<void> {
       rosterReady() && await seat.ep.deliveryLeaseHolder(0) === daemon.card.id);
     await checkPluginToolDelivery(seat, chatOnly, publisher.ep, plugin, chat, daemon.card.id);
     const renewed = await daemon.renewDeliveryLease(0, ready);
-    await checkPluginReviewTools(limited, wildcard, readOnly, publisher.ep, plugin, chat);
+    await checkPluginToolPermissions(limited, wildcard, readOnly, publisher.ep, plugin, chat);
     await checkPluginPointerAdmission(pending, publisher.ep, plugin, daemon.card.id);
     const replayRevision = await daemon.renewDeliveryLease(0, renewed);
     await checkNarrowedPluginPointer(fixture.provisioner, publisher.ep, seat, plugin, chat);
@@ -806,6 +878,11 @@ try {
     agent.peekInbox("automatic").some((m) => m.id === ordinaryDm.id && m.kind === "dm" && !m.historical));
   agent.drainInbox();
 
+  const legacyEndpointId = newIdentity();
+  const legacyEndpointUid = mintLifecycleUid();
+  const legacyEndpointCreds = await provisionAgent(mgr, auth, legacyEndpointId, { ...chACL, lifecycleUid: legacyEndpointUid });
+  await checkLegacyEndpoint(cfg, agent.ep, ottoCreds, legacyEndpointCreds, legacyEndpointUid);
+
   const ageDaemon = await newDaemon("delivery-age");
   try {
     const nc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(pubbyCreds)), inboxPrefix: `_INBOX_${pubbyId.id}` });
@@ -838,7 +915,7 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 await checkEnabledPluginChannels();
-const EXPECTED_CELLS = 73;
+const EXPECTED_CELLS = 80;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
