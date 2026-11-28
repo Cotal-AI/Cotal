@@ -267,7 +267,7 @@ async function projectedClosureDiagnostics(): Promise<void> {
     for (const key of Object.keys(process.env)) if (/^npm_config_/i.test(key)) delete process.env[key];
     process.env.PATH = `${root}${delimiter}${process.env.PATH ?? ""}`;
     for (const [failure, user] of [["ETARGET", "cotal"], ["ENOSPC", "npm"]]) {
-      const token = failure === "ENOSPC" ? "code ENOSPC" : "fixture-env-token-for-closure";
+      const token = failure === "ENOSPC" ? "code ENOSPC" : "No matching version found for";
       process.env.FIXTURE_CLOSURE_TOKEN = token;
       writeFileSync(original, `registry=http://127.0.0.1:1/\n//127.0.0.1:1/:username=${user}\n//127.0.0.1:1/:_password=eA==\n//127.0.0.1:1/:_authToken=\${FIXTURE_CLOSURE_TOKEN}\n`);
       writeFileSync(join(root, "npm"), `#!${process.execPath}
