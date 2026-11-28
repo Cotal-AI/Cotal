@@ -924,6 +924,36 @@ export const scenarios = [
     assert.equal(await page.locator("#dashboard-spaces-note").isVisible(), false);
     assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "ok");
   } },
+  { name: "account-sign-in-lost-on-connect", state: { installed: true, signedIn: true, platform: "win32", serviceState: "unavailable", waiting: true, trackAppNavigation: true }, act: async page => {
+    await page.waitForFunction(() => window.__pushStatus && !document.querySelector("#connect-panel").hidden);
+    await page.evaluate(() => {
+      const state = window.__renderState;
+      // The first account heartbeat can return 401 before this daemon has recorded host support.
+      state.account = { mode: "sign-in-required", hostSupport: "unknown", idpUrl: "https://cloud.cotal.ai/api/auth", spaces: [] };
+      state.signedIn = false;
+      window.__pushStatus();
+    });
+    await page.waitForFunction(() => document.querySelector("#sidebar-status-word").textContent === "Sign in required");
+  }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected", "the page follows the canonical sign-in-required state");
+    assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
+    assert.match(await page.locator("#connection-status").getAttribute("title"), /^Sign in required · /);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: "Sign in required" });
+    assert.equal(await page.locator("#journey [data-stage=sign-in][data-state=done]:visible").count(), 0);
+    assert.equal(await page.locator("#connect:visible, #refresh:visible, #retry-login:visible").count(), 0);
+    assert.deepEqual(await page.locator(".connection-card button.primary:visible").allTextContents(), ["Sign in"]);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.locator("#approval-code").waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__renderState.connectionActions), ["login"]);
+    assert.equal(await page.evaluate(() => window.__renderState.loginRequests[0].idp), "https://cloud.cotal.ai/api/auth");
+  } },
+  { name: "connect-refresh-action-row", state: { installed: true, signedIn: true, platform: "win32", serviceState: "unavailable" }, expect: async page => {
+    const connect = await page.locator("#connect").boundingBox(), refresh = await page.locator("#refresh").boundingBox();
+    assert.ok(connect && refresh, "both connection actions are reachable");
+    assert.ok(Math.abs(connect.y - refresh.y) <= 2 && refresh.x >= connect.x + connect.width, `Refresh status is beside Connect this computer (${JSON.stringify({ connect, refresh })})`);
+    await page.locator("#refresh").click();
+    assert.equal(await page.locator("#connect").isVisible(), true);
+  } },
   ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
     name: `account-${observed.replaceAll(" ", "-")}`,
     state: { installed: true, signedIn: true, connected: observed === "connected", account: { mode: observed === "sign-in-required" ? observed : "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed, ...(observed === "refusal" ? { lastRefusal: "Ask the space owner to approve this computer." } : {}) }] } },
