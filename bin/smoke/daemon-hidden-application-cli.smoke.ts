@@ -4,8 +4,9 @@
  * The daemon holds a cached hosted-Manager refusal and one sign-in record. No network sign-in
  * happens. The sentence appears on `status` and on a non-local `setup` only while that record is
  * unexpired and the recorded unit pins this CLI. A second sign-in, an expired record, no unit, a
- * unit that pins another entry, and a local setup stay quiet. Once the unit gains this shell's folder and the cached row reads available,
- * the sentence is gone.
+ * unit that pins another entry, no sign-in, and a local setup stay quiet, and the
+ * application line stays. Once the unit gains this shell's folder and the cached row reads
+ * available, the sentence is gone.
  *
  * Run: tsx bin/smoke/daemon-hidden-application-cli.smoke.ts
  */
@@ -92,6 +93,10 @@ const run = (args: string[]) => new Promise<{ code: number | null; out: string; 
   child.on("close", (code) => resolve({ code, out, err }));
 });
 const sentence = "the background service cannot see aa";
+const quiet = (result: { code: number | null; out: string }) => {
+  const line = lineOf(result.out, "Agent applications:");
+  return result.code === 0 && line.includes("aa") && !result.out.includes(sentence);
+};
 try {
   writeFileSync(unitPath, own, { mode: 0o600 });
   writeSecretFile(join(paths.state, "service-unit.json"), receipt(own));
@@ -112,18 +117,21 @@ try {
   writeFileSync(unitPath, foreign, { mode: 0o600 });
   writeSecretFile(join(paths.state, "service-unit.json"), receipt(foreign));
   const other = await run(["status", "--plain"]);
-  check("a unit recorded by another installation stays quiet", other.code === 0 && !other.out.includes(sentence));
+  check("a unit recorded by another installation stays quiet", quiet(other));
   rmSync(join(paths.state, "service-unit.json"), { force: true });
   const none = await run(["status", "--plain"]);
-  check("no recorded unit stays quiet", none.code === 0 && !none.out.includes(sentence));
+  check("no recorded unit stays quiet", quiet(none));
   writeFileSync(unitPath, own, { mode: 0o600 });
   writeSecretFile(join(paths.state, "service-unit.json"), receipt(own));
   writeSecretFile(sessionFile, session(false));
   const expired = await run(["status", "--plain"]);
-  check("an expired sign-in stays quiet", expired.code === 0 && !expired.out.includes(sentence));
+  check("an expired sign-in stays quiet", quiet(expired));
   writeSecretFile(sessionFile, session(true, true));
   const several = await run(["status", "--plain"]);
-  check("several sign-ins stay quiet", several.code === 0 && !several.out.includes(sentence));
+  check("several sign-ins stay quiet", quiet(several));
+  rmSync(sessionFile, { force: true });
+  const unsigned = await run(["status", "--plain"]);
+  check("no sign-in stays quiet while the application line remains", quiet(unsigned));
   writeSecretFile(sessionFile, session(true));
   const narrow = readFileSync(unitPath, "utf8");
   const accountPath = `${bin}${delimiter}/usr/bin${delimiter}/bin`;
@@ -132,10 +140,13 @@ try {
   writeFileSync(unitPath, widened, { mode: 0o600 });
   writeSecretFile(join(paths.state, "service-unit.json"), receipt(widened));
   writeFileSync(refusal, JSON.stringify({ space: "seen", state: "refused", restarts: 0, connectors: [{ agent: "aa", state: "available" }] }), { mode: 0o600 });
+  const served = daemon.status().managers?.flatMap((manager) => manager.connectors ?? []) ?? [];
   const repaired = await run(["status", "--plain"]);
   const repairedLine = lineOf(repaired.out, "Agent applications:");
   check("the sentence is gone once the repaired unit's report says the application is available",
-    repaired.code === 0 && repairedLine.includes("aa") && !repaired.out.includes(sentence) && readFileSync(unitPath, "utf8").includes(bin));
+    repaired.code === 0 && repairedLine.includes("aa") && !repaired.out.includes(sentence)
+    && readFileSync(unitPath, "utf8").includes(bin)
+    && served.some((connector) => connector.agent === "aa" && connector.state === "available"));
 } finally {
   await daemon.close();
   rmSync(unitPath, { force: true });
