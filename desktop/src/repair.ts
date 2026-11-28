@@ -21,8 +21,13 @@ export function consentCopy(plan: RepairPlanView): string {
 
 /** The button label: one plain verb for what applying does. */
 export function applyLabel(plan: RepairPlanView): string {
-  if (!plan.steps.some(step => step.outcome === "fix")) return "Done";
+  if (!plan.steps.some(step => step.outcome === "fix")) return signInNeeded(plan) ? "Sign in" : "Done";
   return plan.steps.some(step => step.consent === "takeover" && step.outcome === "fix") ? "Use this app" : "Repair";
+}
+
+/** A sign-in only the person can give: Repair cannot fix it, so its one button is Sign in. */
+export function signInNeeded(plan: RepairPlanView): boolean {
+  return plan.steps.some(step => step.step === "account" && step.outcome === "needs-you");
 }
 
 /** Consents the person gives by choosing the apply button. */

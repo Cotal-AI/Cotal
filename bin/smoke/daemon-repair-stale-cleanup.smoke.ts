@@ -60,3 +60,17 @@ for (const [name, answer] of [["permission-denied", refused("permission-denied")
   await assert.rejects(run(r => ({ ...removed(r), instanceId: "manager-new" })), /another instance/);
   console.log("PASS an answer for another instance changes nothing");
 }
+
+// The account step: only a sign-in the person must give appears; a Cloud read that is retrying does not.
+{
+  const { accountSteps } = await import("../daemon/repair.js");
+  const status = (accounts: Record<string, unknown>[]) => ({ state: "ready", protocol: 1, version: "x", pid: 1, startedAt: "", uptimeMs: 0, account: { mode: "account", hostSupport: "supported", spaces: [], accounts } }) as never;
+  const base = { hostSupport: "supported", spaces: [], idpUrl: "https://cotal.cloud/api/auth" };
+  const removedSteps = accountSteps(status([{ ...base, mode: "sign-in-required", reason: "computer-removed" }]));
+  assert.deepEqual(removedSteps.map(step => [step.outcome, step.found]), [["needs-you", "This computer was removed from your account. Sign in to add it back."]]);
+  const expired = accountSteps(status([{ ...base, mode: "sign-in-required" }]));
+  assert.deepEqual(expired.map(step => step.found), ["Sign in to cotal.cloud again to keep using this computer from your spaces."]);
+  assert.equal(accountSteps(status([{ ...base, mode: "account", cloud: { state: "retrying", since: "x", reason: "refused" } }])).length, 0, "a retrying read is left to the service");
+  assert.equal(accountSteps(status([{ ...base, mode: "account" }, { ...base, idpUrl: "https://hack.cotal.ai/api/auth", mode: "sign-in-required" }])).length, 1, "one step per account that needs it");
+  console.log("PASS account step: removed and expired sign-ins need the person, a retrying read gets 0 steps");
+}

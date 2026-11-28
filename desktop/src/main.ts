@@ -10,7 +10,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { forTerminal, canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
-import { consents, readPlan, renderRepair, type RepairPlanView, type RepairStepView } from "./repair";
+import { consents, readPlan, renderRepair, signInNeeded, type RepairPlanView, type RepairStepView } from "./repair";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
 import "./components.css";
@@ -866,7 +866,13 @@ el("repair-cancel").addEventListener("click", () => { if (!busy) closeRepair(); 
 el("repair-apply").addEventListener("click", () => {
   const plan = repairPlan;
   if (!plan || busy) return;
-  if (repairDone || !plan.steps.some(step => step.outcome === "fix")) { closeRepair(); void action(refresh); return; }
+  if (repairDone || !plan.steps.some(step => step.outcome === "fix")) {
+    const signIn = !repairDone && signInNeeded(plan);
+    closeRepair();
+    if (signIn) { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+    else void action(refresh);
+    return;
+  }
   void action(async () => {
     try {
       const result = await request({ op: "repair-apply", digest: plan.digest, consent: consents(plan) });
