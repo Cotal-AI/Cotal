@@ -27,7 +27,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   const entry = realpathSync(join(root, meta.cotalPreinstall.entry));
   const rel = relative(realpathSync(root), entry);
   if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error("target pre-install entry escapes retained package");
-  const request: ExecutionPreinstallRequest = { v: 1, nonce: randomBytes(16).toString("hex"), installedEntry,
+  const request: ExecutionPreinstallRequest = { v: 1, nonce: randomBytes(16).toString("hex"), installedEntry, supportsExtendedLaunchWait: true,
     daemonArgv, flags: Object.fromEntries(Object.entries(flags).filter(([key, value]) => ["space", "server", "creds", "on"].includes(key) && typeof value === "string")),
   };
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {

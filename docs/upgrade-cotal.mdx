@@ -486,12 +486,15 @@ A daemon carrying the dead-updater recovery releases only the preserving holds w
 
 Pre-install checks can observe a seatless preserving Manager for up to five seconds while its daemon releases a dead updater's hold. The check requires complete fenced-zero evidence and keeps the daemon and Manager process lifetimes and instance pinned. It reads the existing update-closure owner record and refuses a live foreign or unknown owner. It never releases a hold, restarts a service or changes the record. A refusal reports the recorded closure age, observed seat count or unknown, and `cotal update --self` as the retry command.
 
-An update waits up to three minutes for a pending daemon-hosted launch to settle. If the launch is
-still in progress, let it finish and retry the update. If only unconfirmed shared PTY launches
-remain, the update waits at most 15 more seconds within that limit. The
-updater names the held launch and exits without replacing installed packages. Save work in that
-space before running `cotal daemon service-disconnect --space <space>` to clear the hold. Disconnecting
-stops the space's hosted Manager and its seats. Then retry the update.
+An update waits up to three minutes for a pending daemon-hosted launch to settle. The staged
+pre-install check for a released updater uses an 80-second deadline to answer before that updater's
+120-second timeout. If an ordinary launch is still pending at the staged deadline, the software
+update finishes, but activation is deferred. Run `cotal update` again after the launch settles and
+the hosted agents finish. The updater does not stop them. If only unconfirmed shared PTY launches
+remain, the update waits at most 15 more seconds within the deadline. It names the held launch and
+exits without replacing installed packages. Save work in that space before running
+`cotal daemon service-disconnect --space <space>` to clear the hold. Disconnecting stops the space's
+hosted Manager and its seats. Then retry the update.
 
 This protection does not change an already installed older daemon. The 0.165.1 updater checks its own Manager admission before invoking the target's pre-install hook, so installing a target with this fix cannot clear that earlier refusal. A service whose recorded program is missing needs its old daemon stopped before retrying the update. A stopped service belonging to another installation stays stopped. Preserve its sign-in and hosting records.
 

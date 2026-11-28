@@ -8,7 +8,7 @@ import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
-import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
+import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, deferredUpdateActivation, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -19,6 +19,7 @@ import { cleanupExecutionStore } from "../execution-store.js";
 import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
+import { pendingLaunchDeferral } from "./execution-preinstall.js";
 import { readSettledHostedStatus } from "./update-launch-settlement.js";
 import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
@@ -621,6 +622,11 @@ const composed: Command = { ...command, async run(args) {
     }
     if (localVerdict === "legacy" || (packageCheck === "offline" && blockedAgents.length > 0)) return "legacy";
     if (blockedAgents.length) {
+      const entry = logicalExecutionEntry();
+      if (standaloneReconcile && entry && deferredUpdateActivation(entry, updateRuntime.version()) === pendingLaunchDeferral) {
+        deferActivation("running agents were not stopped; run `cotal update` after they finish");
+        return "none";
+      }
       const summary = blockedAgents.map(row => `${row.space}: ${row.describe}`).join("; ");
       let consent = flags["stop-agents"] === true && process.env.COTAL_AUTO_UPDATE !== "1";
       if (!consent && !askedToStop && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT && process.stdin.isTTY && process.stdout.isTTY) {

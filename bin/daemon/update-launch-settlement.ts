@@ -7,7 +7,9 @@ import { inspectHostedLaunches } from "./client.js";
 import type { DaemonPaths } from "./endpoint.js";
 import type { HostedLaunches } from "./protocol.js";
 
-export class HostedLaunchSettlementTimeout extends Error {}
+export class HostedLaunchSettlementTimeout extends Error {
+  constructor(message: string, readonly pending: "ordinary" | "held") { super(message); }
+}
 
 // No readiness field is needed on the Manager wire. Cover the longest shipped connector
 // readiness window (Jcode, three minutes), including against a Manager without inspection.
@@ -16,7 +18,7 @@ const HELD_LAUNCH_WAIT_MS = 15_000;
 
 type LaunchStatus = { instanceId?: unknown; agentCount?: number; custody?: string; stopImpact?: { reservedLaunches?: number } };
 
-export function readSettledHostedStatus(paths: DaemonPaths, space: string, instanceId: string, retry: "update" | "update --self", report: (line: string) => void): Promise<LaunchStatus> {
+export function readSettledHostedStatus(paths: DaemonPaths, space: string, instanceId: string, retry: "update" | "update --self", report: (line: string) => void, deadline?: number): Promise<LaunchStatus> {
   return withIdpSessionDir(homeCotalDir(), async () => {
     const target = await resolveControlTarget({ space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
     const client = { versionSkew: (text: string) => text, roster: async () => [] };
@@ -24,7 +26,7 @@ export function readSettledHostedStatus(paths: DaemonPaths, space: string, insta
       const reply = await askManager(client, space, target.server, "managerStatus", undefined, target.auth, "owner", timeoutMs, { instanceId });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
       return reply.data as LaunchStatus;
-    }, timeoutMs => inspectHostedLaunches(paths, space, instanceId, timeoutMs), retry, report);
+    }, timeoutMs => inspectHostedLaunches(paths, space, instanceId, timeoutMs), retry, report, undefined, deadline);
   });
 }
 
@@ -34,8 +36,9 @@ export async function waitForHostedLaunches(
   inspect: (timeoutMs: number) => Promise<HostedLaunches | undefined>,
   retry: "update" | "update --self", report: (line: string) => void,
   clock = { now: () => performance.now(), sleep: (ms: number) => delay(ms) },
+  outerDeadline = Infinity,
 ): Promise<LaunchStatus> {
-  const deadline = clock.now() + ORDINARY_LAUNCH_WAIT_MS;
+  const deadline = Math.min(outerDeadline, clock.now() + ORDINARY_LAUNCH_WAIT_MS);
   let heldDeadline = deadline;
   let reported = false;
   let launches: HostedLaunches | undefined;
@@ -44,10 +47,10 @@ export async function waitForHostedLaunches(
   const cli = displayCmd();
   const retryCommand = `\`${cli} ${retry}\``;
   const timedOut = () => {
-    const named = launches?.held ? `${launches.names.map(name => JSON.stringify(name)).join(", ")}${launches.held > launches.names.length ? ` and ${launches.held - launches.names.length} more` : ""}` : undefined;
+    const named = launches?.held && launches.held === launches.reserved ? `${launches.names.map(name => JSON.stringify(name)).join(", ")}${launches.held > launches.names.length ? ` and ${launches.held - launches.names.length} more` : ""}` : undefined;
     return new HostedLaunchSettlementTimeout(named
       ? `Hosted PTY launch still held in space ${space}: ${named}. No installed packages were changed. Save work in this space before clearing the hold: \`${cli} daemon service-disconnect --space ${shellPath(space)}\` stops its hosted Manager and seats. Then retry ${retryCommand}.`
-      : `A hosted spawn in space ${space} is still in progress. No installed packages were changed. When it finishes, retry ${retryCommand}.`);
+      : `A hosted spawn in space ${space} is still in progress. No installed packages were changed. When it finishes, retry ${retryCommand}.`, named ? "held" : "ordinary");
   };
   for (;;) {
     if (remaining() <= 0) throw timedOut();

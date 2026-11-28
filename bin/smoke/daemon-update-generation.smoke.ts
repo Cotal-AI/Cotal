@@ -12,6 +12,7 @@ import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { inspectHostedLaunches, managerViaDaemon, queryDaemon } from "../daemon/client.js";
 import { validHostedLaunches, type HostedLaunches } from "../daemon/protocol.js";
 import { HostedLaunchSettlementTimeout, waitForHostedLaunches } from "../daemon/update-launch-settlement.js";
+import { stagedCustodyDeferral, stagedLaunchDeadline } from "../daemon/execution-preinstall.js";
 import { daemonPaths, EndpointRefusal } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
@@ -33,11 +34,11 @@ async function proveLaunchSettlementPolicy(): Promise<void> {
     assert.equal(validHostedLaunches(invalid), false);
   const observation = (reserved: number, instanceId = "original") => ({ instanceId, agentCount: 7, stopImpact: { reservedLaunches: reserved } });
   const ordinary = { reserved: 1, held: 0, names: [] };
-  const fixture = (read: (elapsed: number) => ReturnType<typeof observation>, inspect: (elapsed: number) => HostedLaunches | undefined) => {
-    let elapsed = 0, inspections = 0;
+  const fixture = (read: (elapsed: number) => ReturnType<typeof observation>, inspect: (elapsed: number) => HostedLaunches | undefined, deadline?: number, start = 0) => {
+    let elapsed = start, inspections = 0;
     const lines: string[] = [];
     const run = () => waitForHostedLaunches("example", "original", async () => read(elapsed), async () => { inspections++; return inspect(elapsed); },
-      "update --self", line => lines.push(line), { now: () => elapsed, sleep: async ms => { elapsed += ms; } });
+      "update --self", line => lines.push(line), { now: () => elapsed, sleep: async ms => { elapsed += ms; } }, deadline);
     return { run, lines, elapsed: () => elapsed, inspections: () => inspections };
   };
   const idle = fixture(() => observation(0), () => { throw new Error("settled seats must not trigger launch inspection"); });
@@ -65,6 +66,15 @@ async function proveLaunchSettlementPolicy(): Promise<void> {
   const replaced = fixture(t => observation(1, t ? "successor" : "original"), () => undefined);
   await assert.rejects(replaced.run, /identity changed/);
   assert.equal(replaced.inspections(), 1, "do not consult holds after a Manager identity change");
+
+  const legacy = fixture(t => observation(t < 121_000 ? 1 : 0), () => undefined, stagedLaunchDeadline({}, 0), 15_000);
+  const deferred = await legacy.run().catch(stagedCustodyDeferral);
+  assert.deepEqual(deferred, { disposition: "deferred", occupied: null, hostedSpaces: [], reason: "a hosted spawn is still in progress" });
+  assert.equal(legacy.elapsed(), 80_000, "legacy budget includes earlier custody checks and leaves 40 seconds of the released watchdog");
+  assert.equal(legacy.lines.length, 1);
+  const modern = fixture(t => observation(t < 175_000 ? 1 : 0), () => undefined, stagedLaunchDeadline({ supportsExtendedLaunchWait: true }, 0), 15_000);
+  assert.equal((await modern.run()).agentCount, 7);
+  assert.equal(modern.elapsed(), 175_000, "an opted-in caller waits beyond the released watchdog");
 }
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ug-")));
@@ -507,10 +517,9 @@ async function pauseHostedProcess(row: Lifetime): Promise<void> {
   assert.equal(processStatFields(row.pid)?.[0], "T");
 }
 
-async function provePublicHostedDisconnect(ctx: HostedPtyProof, cell: HostedPair, seatRoot: string): Promise<void> {
+async function provePublicHostedDisconnect(ctx: HostedPtyProof, cell: HostedPair): Promise<void> {
   const { host, manager, rows } = cell;
-  const reply = JSON.parse(hostedCli(ctx, ["daemon", "service-disconnect", "--space", ctx.space, "--json"],
-    { ...ctx.env, COTAL_SEAT_ROOT: seatRoot }));
+  const reply = JSON.parse(hostedCli(ctx, ["daemon", "service-disconnect", "--space", ctx.space, "--json"]));
   assert.equal(reply.result.space, ctx.space);
   assert.equal(reply.result.state, "disconnected");
   assert.equal(reply.result.manager?.state, "stopped");
@@ -518,7 +527,7 @@ async function provePublicHostedDisconnect(ctx: HostedPtyProof, cell: HostedPair
   assert.ok(unitGone(ctx, host), "public disconnect drained the exact unit before success");
   const status = await queryDaemon({ paths: ctx.paths });
   assert.ok(status.ok && status.result.pid === ctx.daemon().pid, "public disconnect kept the original daemon answering");
-  console.log("Hosted shared PTY: public service-disconnect with COTAL_SEAT_ROOT ended the exact unit and its seats");
+  console.log("Hosted shared PTY: public service-disconnect ended the exact unit and its seats");
 }
 
 function makeUninstallReceipt(ctx: HostedPtyProof, directory: string) {
@@ -574,7 +583,7 @@ async function provePublicHostedStops(ctx: HostedPtyProof, launchPair: (label: s
   assert.ok(!existsSync(unitReceiptFile(ctx.paths)), "the hosted fixture has no pre-existing daemon receipt");
   const seatRoot = mkdtempSync(join(dirname(ctx.project), "exported-seat-root-"));
   try {
-    await provePublicHostedDisconnect(ctx, await launchPair("public_disconnect"), seatRoot);
+    await provePublicHostedDisconnect(ctx, await launchPair("public_disconnect"));
     await provePublicHostedUninstall(ctx, await launchPair("public_uninstall_default"));
     await ctx.start();
     await provePublicHostedUninstall(ctx, await launchPair("public_uninstall_exported"), seatRoot);
