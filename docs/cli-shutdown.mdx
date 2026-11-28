@@ -66,7 +66,7 @@ removed its credential. Duplicate names and `--instance` with multiple names are
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
 `TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Its next step is the folder
-where `cotal up` started a stack, or, when this machine has no stack started or registered at all,
+where `cotal up` started the intended stack. Repeat your original command there with its options unchanged. When this machine has no stack started or registered at all, the next step is
 `cotal up` in a project, as `cotal status` says. A bare `down` in such a folder refuses the same
 way, including with `--json` or `--plain`. Its JSON target names the current root rather than
 replacing the missing-stack diagnosis with an unsupported-output refusal. A root whose stack is
@@ -109,8 +109,9 @@ that stack without requesting agent retirement, run `cotal down --yes`. Pending 
 stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
 retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
-`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. So does a
-process record under the root that may front a process, such as a daemon an earlier release
+`cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. After those services stop, run the suggested retry from the same project folder.
+It names the stack’s space and keeps the requested confirmation, agent handling, preview and output flags.
+A stop also refuses for a process record under the root that may front a process, such as a daemon an earlier release
 started; the message and the Next name each record's path and pid. A record whose process is gone,
 or whose pid now runs another start than its identity pin records because the pid was reused, fronts
 nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dry-run` names it, and
@@ -144,8 +145,7 @@ they wait on, in the stack journal, where `reset store` lists them. A read that 
 with its reason and does not stop the `down`; the JSON receipt carries the record as
 `operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
-stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
-manager keeps running, then run `cotal down`. On Linux, when the owned broker is suspended by a
+stop, from a managed seat's shell too. From the stack's project folder, run the suggested startup command to restart the broker from its recorded inputs while the manager keeps running. Then run the suggested stop. It names the same space and keeps `--yes`, `--with-agents` and the requested output format. On Linux, when the owned broker is suspended by a
 signal such as SIGSTOP, `down --yes` rechecks its exact launch and process creation pin, sends
 SIGCONT, then continues the guarded stop. On an interactive terminal, `down` first asks permission
 to resume that broker so it can read the manager's impact, then asks for the usual stop confirmation.
@@ -231,6 +231,7 @@ no stack of its own.
 
 A manual or catalog connection records the folder that uses it. If a named stop or preview finds
 only that connection in another folder, run the stop or preview in the project that started the stack.
+A preview retry keeps `--dry-run` and the requested output format. It does not suggest stopping a service.
 
 When the folder of a running controller stack is deleted, its stack journal and broker
 configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
@@ -561,7 +562,8 @@ you to confirm that no such component still runs for the folder, because cotal c
 that names no process and a manager that does not answer on the mesh may still be running. It then
 names `rm <pidfile>` and the same `cotal down`. A bare `down` or
 `down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
-`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
+`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The preview keeps
+`--json` or `--plain` when requested. The
 `-f` / `--run` forms tear down a [manifest deploy](cli-startup.mdx#manifest-deploys) without stopping the whole mesh
 and cannot be combined with service names or `--space`.
 

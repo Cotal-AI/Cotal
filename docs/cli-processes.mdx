@@ -69,8 +69,9 @@ optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cot
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
-(`status` reports `classSpawn: false`). A launch, model catalog or status read checks unavailable
-applications again. Finding the first available application enables the class rail without a restart.
+(`status` reports `classSpawn: false`). A launch, model catalog or status read checks available and
+unavailable applications again. Finding the first available application enables the class rail
+without a restart, and losing the last available application drops it.
 `describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
 on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
@@ -646,7 +647,7 @@ search permission to group and other accounts, such as an owned `.config` direct
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
 Relative paths, control characters and malformed quoting are refused.
 
-On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
+On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation. It leaves the unit, receipt and running daemon unchanged. It reports `Already installed` when the unit is enabled and linger is on. Otherwise, it reports why autostart is unavailable or could not be verified. `cotal daemon status` reports confirmed autostart problems even when the daemon is running. A modified source or another installation still refuses installation.
 
 On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
 installation reports a conflict and leaves the running daemon alone.
@@ -680,8 +681,14 @@ Other providers get no assumed page or section name. JSON carries the same expla
 `result.message`, the command and its description in `result.next`, and the dashboard alternative
 in `result.dashboard`.
 
-Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
-refresh the service's PATH when the daemon is signed in to one provider. The provider comes
+On macOS and Linux, a newly installed or refreshed service appends the per-user installer folders
+declared by seeded and installed connectors (`~/.local/bin`, `~/.opencode/bin`, and
+`~/.pi/agent/bin` for the built-in connectors) after the caller's `PATH` when missing, so hosted
+Managers find applications installed there later without setting up the service again.
+Services installed by an earlier release keep their recorded `PATH` until refreshed, and
+applications installed outside those folders also need a refresh. Run `cotal daemon setup` from a
+terminal that finds the newly installed application to refresh the service's `PATH` when the daemon
+is signed in to one provider. The provider comes
 from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
 the CLI selects Cloud when no provider is known. Outside an interactive terminal, a sole
 known provider from saved accounts or registered spaces is selected even without a saved sign-in.
@@ -901,6 +908,13 @@ available connector. Open dashboard is the primary action on that screen and on 
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
 reports, while original diagnostics and exact refusals remain under Details. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
+
+In the desktop app, **Connection**, **Agent apps**, and **Settings** are separate views. You can
+open **Agent apps** before connecting, including while Cotal sign-in is waiting. The app can list,
+install, and start sign-in for supported agent apps on this computer without setting up Cotal first.
+Once the background service runs, it uses the same installed apps and app-owned sign-ins. A service
+owned by another copy of Cotal allows viewing the apps but not changing them from this copy. While
+ownership is uncertain, the app checks again automatically. Checking apps does not restart the service.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` (`NOT_ANSWERING`), includes a
 startup refusal from that launch's `daemon.log` when one was written, and offers Check status in
@@ -1118,9 +1132,10 @@ a system unit, a LaunchDaemon or a Windows service account, is not offered.
 On Linux it is a systemd user service. It writes one unit to the user manager's own
 configuration directory, enables it, and starts it. The unit starts at login, restarts the daemon
 when it dies, and keeps running after you log out, which on a headless server is what linger
-provides. `install` enables linger for the invoking user and says so in its receipt. A linger it
-cannot enable fails the install, naming `loginctl enable-linger <user>`, because a unit without it
-stops at logout. The unit sets `OOMPolicy=continue`, so an out-of-memory kill of one seat child
+provides. If `install` cannot enable linger, it keeps the unit and its receipt and refuses.
+The refusal asks an administrator to run `sudo loginctl enable-linger <user>`. Then run
+`systemctl --user enable --now <unit>` from your own session. The unit sets `OOMPolicy=continue`,
+so an out-of-memory kill of one seat child
 process does not cause systemd to stop the daemon, Manager, or other running seats. On Linux, `cotal update`
 reconciles the default daemon home's recorded user unit (`cotal-daemon.service` under `~/.cotal/daemon`) when it
 belongs to the same installation, is unmodified, has no systemd drop-ins and no loaded user unit has a pending reload, adding
@@ -1237,6 +1252,10 @@ before linger is enabled. Publication checks the directory again before any ling
 After the linger calls, installation verifies the published unit's digest and directory protection
 again before submitting reload, enable or start. A changed source or unsafe path stops registration
 and keeps the source and receipt for inspection.
+If logind denies linger, the unit and receipt remain so you can recover without reinstalling.
+The refusal names the command to enable linger with administrator privileges and then enable and
+start the service as the original user. Until then, manually starting the daemon does not make
+it survive logout or start after a reboot.
 
 `serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
 resuming connections. The value must be whole milliseconds from `1` to `2147483647`.
@@ -1568,7 +1587,11 @@ A broker connection lost during startup's ready call is also retried. Recovery n
 `service-connect`. Other refusals, including ended authority and damaged local records, stop these
 retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
 daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. With no current
+`service-status` reads the daemon's current answer without contacting the space. For a space
+whose hosted Manager is running, it reports that Manager and succeeds only while the Manager
+answers with no lost connection. Otherwise it refuses with the code `OFFLINE` (this computer cannot
+look up the space's host) or `SPACE_UNREACHABLE` (it can, and the space does not answer), or with
+`MANAGER_<STATE>`, such as `MANAGER_STARTING`, for the Manager's own state. With no current
 answer or saved register request, a space that is not registered locally reports `NOT_REGISTERED`
 (`TARGET_NOT_FOUND`). Check the name or run `cotal space` to list registered spaces. A registered
 user-auth space without a request reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`), including after a

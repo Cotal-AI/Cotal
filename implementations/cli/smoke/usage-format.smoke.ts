@@ -879,7 +879,10 @@ for (const [args, usage, foreign] of [
       };
       bind(tree);
       const visit = (node: ts.Node): void => {
-        const text = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
+        // The argument of codeSpan() is printed inside backticks, so a shell line there, such as
+        // `cd <dir> && cotal down`, already has its command in a code span.
+        const spanned = node.parent !== undefined && ts.isCallExpression(node.parent) && node.parent.expression.getText(tree) === "codeSpan" && node.parent.arguments[0] === node;
+        const text = spanned ? undefined : ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text
           : ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map((span) => (display.has(span.expression.getText(tree)) ? "cotal" : "${}") + span.literal.text).join("") : undefined;
         if (text !== undefined && !exempt.some(([path, literal]) => path === file && literal.test(text)))
           for (const at of bare(text)) offenders.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}: ${JSON.stringify(text.slice(Math.max(0, at - 40), at + 40))}`);

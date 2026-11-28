@@ -57,6 +57,7 @@ import {
   type Report,
   type UserBundle,
 } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { forgetChatSessions } from "@cotal-ai/workspace/chat";
 import { recordNewProjectTrust } from "./up-project-trust.js";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
@@ -65,6 +66,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
 import { removeStep } from "../lib/registry-errors.js";
+import { showSpaceCommand } from "../lib/space-show-command.js";
 import { displayCmd, displayRemedy, selfArgv } from "../lib/self-exec.js";
 import { adoptionRefusal, adoptStackJournal, goneStackRoot, journalRecordedElsewhere, readStackJournal, releaseStackDefinitions, runningStackRoles, stackRootGone, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { pruneEmptyServiceSpace } from "../lib/service-process.js";
@@ -181,11 +183,13 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
 export function handAddedRegistration(name: string, force: boolean, target: unknown, presentation: Presentation = "rich"): MeshEntry | undefined {
   const prepared = findPreparedSpace(name);
   if (prepared) {
-    const problem = projectRootProblem(prepared.root);
-    if (problem === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
-      `restore the original project folder at its recorded path, or run ${codeSpan(`${displayCmd()} space forget ${shellWord(name)}`)} to register the other broker, then repeat the add with the same options`);
-    const start = codeSpan(`${displayCmd()} up --root ${shellWord(prepared.root)} --space ${name}`);
-    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${codeSpan(`${displayCmd()} space forget ${name}`)}, then repeat the add with the same options`);
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    const forget = codeSpan(`${cli} space forget ${shellWord(name)}${format}`);
+    if (projectRootProblem(prepared.root) === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
+      `restore the original project folder at its recorded path, or run ${forget} to register the other broker, then repeat the add with the same options`);
+    const start = codeSpan(`${cli} up --root ${shellWord(prepared.root)} --space ${shellWord(name)}${format}`);
+    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${forget}, then repeat the add with the same options`);
   }
   const existing = findMesh(name);
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
@@ -401,7 +405,7 @@ export type SelfHostedSpace =
  * connection file that `space add --file` would accept. A connection file for a space already
  * registered must name the same space and broker, so a rerun with the same answers changes nothing.
  */
-export function checkSelfHostedSpace(space: string, project: string, connectionFile: string | undefined): SelfHostedSpace {
+export function checkSelfHostedSpace(space: string, project: string, connectionFile: string | undefined, presentation: Presentation): SelfHostedSpace {
   const target = { space };
   if (findPreparedSpace(space)) throw refuse("CONFLICT", `"${space}" is a space prepared on this machine`, target, "set it up with --destination local");
   const entry = findMesh(space);
@@ -416,22 +420,22 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
     if (bundle.space !== space) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${space}": a bundle adds the space it was exported for`, target);
     const server = take(checkServer(bundle.server, "the bundle's server"), target);
     if (server !== entry.server)
-      throw refuse("CONFLICT", `"${space}" is registered at ${entry.server}, and the bundle names ${server}`, target, `forget it first with \`cotal space forget ${space}\``);
+      throw refuse("CONFLICT", `"${space}" is registered at ${entry.server}, and the bundle names ${server}`, target, `inspect the registration with ${showSpaceCommand(space, presentation)}; if its broker is the one you intend, repeat setup without --connection-file and its value; otherwise confirm the intended broker with the space operator before changing the registration`);
   }
   if (canonicalRoot(entry.root) !== canonicalRoot(project)) {
     const custodyRoot = entry.origin === "catalog" ? entry.catalogRoot ?? entry.root : undefined;
     const unboundCatalog = custodyRoot !== undefined && canonicalRoot(entry.root) === canonicalRoot(custodyRoot);
     if (unboundCatalog) {
       const pathProblem = rootPathProblem(project) ?? rootPathProblem(canonicalRoot(project));
-      if (pathProblem) throw refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, "rename the folder without those characters, or choose another --project <dir>");
+      if (pathProblem) throw localDiagnostic(refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, "rename the folder without those characters, or choose another --project <dir>"));
       const control = rootControlProblem(project);
-      if (control) throw refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(project), controlDirectory: control.controlDirectory }, control.project === undefined
+      if (control) throw localDiagnostic(refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(project), controlDirectory: control.controlDirectory }, control.project === undefined
         ? "choose a project folder outside this machine's Cotal home"
-        : `run cotal from the project folder ${shellWord(control.project)}, or choose a folder outside any .cotal`);
+        : `if you meant the enclosing project, repeat setup with ${codeSpan(`--project ${shellWord(control.project)}`)}, or choose a folder outside any .cotal`));
       protectedLocalDirectory(project, "the project folder");
       return { kind: "bind", entry, project: canonicalRoot(project) };
     }
-    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass ${codeSpan(`--project ${shellWord(entry.root)}`)}`);
+    throw localDiagnostic(refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass ${codeSpan(`--project ${shellWord(entry.root)}`)}`));
   }
   return { kind: "registered", entry };
 }
@@ -461,7 +465,7 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
   const root = resolve(rootFlag ?? process.cwd());
   const kind = projectRootKind(root);
   if (kind !== "directory" && (kind !== "missing" || rootFlag === undefined || adopt))
-    throw usage(`--root ${root} is not a directory`, "pass an existing directory");
+    throw usage("the project root is not a directory", `pass an existing directory instead of ${codeSpan(root)}`);
   if (adopt) {
     // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
     let found: ReturnType<typeof journalRecordedElsewhere>;
@@ -526,26 +530,25 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
   // Such a space could be prepared but never started: its first `up` would refuse to record the root.
   const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
-  if (pathProblem) throw refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, `rename the folder without those characters, or create the space in another folder with ${flag} <dir>`);
+  if (pathProblem) throw localDiagnostic(refuse("USAGE_INVALID", `${pathProblem}; nothing was written`, target, `rename the folder without those characters, or create the space in another folder with ${flag} <dir>`));
   const control = rootControlProblem(root);
-  if (control) throw refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(root), controlDirectory: control.controlDirectory }, control.project === undefined
+  if (control) throw localDiagnostic(refuse("CONFLICT", `${control.message}; nothing was written`, { ...target, root: resolve(root), controlDirectory: control.controlDirectory }, control.project === undefined
     ? `create the space in a project folder with ${flag} <dir>`
-    : `run cotal from the project folder ${shellWord(control.project)}, or create the space in a folder outside any .cotal with ${flag} <dir>`);
+    : `if you meant the enclosing project, repeat your command with ${codeSpan(`${flag} ${shellWord(control.project)}`)}, or choose a folder outside any .cotal with ${flag} <dir>`));
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
   const registered = findMesh(name);
   if (registered) {
     if (again === true && registered.origin === "up" && here(registered.root)) return "started";
-    throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with \`cotal space show ${name}\``);
+    throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with ${showSpaceCommand(name, presentation)}`);
   }
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
     const problem = projectRootProblem(prepared.root);
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem === "missing"
-      ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again`
-      : problem ? displayRemedy(preparedRootRemedy(name, problem)) : flag === "--project"
+    throw localDiagnostic(refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem
+      ? displayRemedy(preparedRootRemedy(name, problem, `run ${flag === "--project" ? "setup" : "this create"} again`), presentation === "json" ? "cotal" : undefined) : flag === "--project"
         ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
-        : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+        : `inspect the prepared space with ${showSpaceCommand(name, presentation)}, or choose another space name for this project`));
   }
   // Missing member records do not prove another home. Do not prepare over the running stack.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
@@ -568,7 +571,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   }
   const accounts = take(spacesAtRoot(root), target);
   const registrations = loadMeshes().filter((m) => here(m.root));
-  const held = [...new Set([...accounts, ...registrations.map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
+  const preparation = preparedSpaceAt(root);
+  const recorded = [...new Set([...registrations.map(m => m.space), ...(preparation ? [preparation.space] : [])])];
+  const held = [...new Set([...accounts, ...recorded])];
   // A space started here before and stopped since keeps its trust in this root.
   if (again === true && held.length === 1 && held[0] === name) return "started";
   if (held.length > 0) {
@@ -590,18 +595,16 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       throw refuse("CONFLICT", link !== undefined ? `${join(root, ".cotal")} is a link to ${link}, which holds the records of "${held[0]}" at ${origin}` : `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
     }
     const conflict = `${root} is already the root of "${held.join('", "')}"`;
-    const manual = registrations.filter((m) => m.origin === "manual");
-    if (manual.length) {
-      const cli = presentation === "json" ? "cotal" : displayCmd();
-      const steps = manual.map(({ space }) => `for "${space}", start its broker where it runs, inspect the registration with ${codeSpan(`${cli} space show ${shellWord(space)}`)}, or forget it with ${codeSpan(`${cli} space forget ${shellWord(space)}`)}`);
-      throw refuse("CONFLICT", conflict, target, `create "${name}" in another folder with ${flag} <dir>; ${steps.join("; ")}`);
+    if (recorded.length) {
+      const inspections = recorded.map(space => showSpaceCommand(space, presentation)).join(", ");
+      throw localDiagnostic(refuse("CONFLICT", conflict, target, `inspect what uses this folder with ${inspections}; to create "${name}", choose another folder with ${flag} <dir>`));
     }
-    const stopped = held.length === 1 && journaled === undefined && !registrations.length && preparedSpaceAt(root) === undefined;
+    const stopped = held.length === 1 && journaled === undefined;
     // The next step names the space already here, so whoever meant it can start, select or forget it.
     const which = held.length === 1 ? held[0]! : "<space>";
-    throw refuse("CONFLICT", conflict, target, stopped
+    throw localDiagnostic(refuse("CONFLICT", conflict, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
-      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``);
+      : `create "${name}" in another folder with ${flag} <dir>; for "${held.join('", "')}", which ${held.length === 1 ? "uses" : "use"} this folder, start it with \`cotal up\` from ${root}, select it with \`cotal use ${which}\`, or forget it with \`cotal space forget ${which}\``));
   }
   return "created";
 }
@@ -619,7 +622,7 @@ export function recordLocalSpace(name: string, root: string, flag: "--root" | "-
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
     if (!unwritable(error)) throw localWriteFailure(error, dir, { requested: name, root });
-    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`);
+    throw localDiagnostic(refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`));
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
@@ -641,7 +644,9 @@ function projectRootKind(path: string): "directory" | "missing" | "other" {
   try {
     return statSync(path).isDirectory() ? "directory" : "other";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "other";
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") throw refuse("PERMISSION_DENIED", "this account cannot inspect the project root", { root: path }, `check access to ${codeSpan(path)} and its parent directories, then retry`);
+    return code === "ENOENT" ? "missing" : "other";
   }
 }
 
@@ -718,6 +723,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     try { if (projectRootProblem(p.root) !== "not-directory") runningOwner = liveMeshOwner(p.root, name); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code ?? ((error as Error)?.cause as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ELOOP") throw refuse("LIFECYCLE_BLOCKED", "a symbolic link loop prevents checking whether the prepared space is running; nothing was forgotten", { ...target, root: p.root }, "inspect the project folder and its process records for a symbolic link loop; restore the original path, then retry");
       if (code !== "EACCES" && code !== "EPERM") throw error;
       throw refuse("PERMISSION_DENIED", "this account cannot check whether the prepared space is running; nothing was forgotten", { ...target, root: p.root },
         "restore access to the project folder and its process records, then try again");

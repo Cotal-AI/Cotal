@@ -19,19 +19,19 @@ scenarios.splice(0, scenarios.length,
     });
     await page.getByRole('button', { name: 'Add Acme team', exact: true }).click();
   }, expect: async page => {
-    console.log('REPRO Settings disabled during held Add:', await page.locator('#open-settings').isDisabled());
-    assert.equal(await page.locator('#open-settings').isDisabled(), false);
+    console.log('REPRO Settings disabled during held Add:', await page.locator('#view-settings').isDisabled());
+    assert.equal(await page.locator('#view-settings').isDisabled(), false);
     assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /Adding/);
     assert.equal(await page.locator('#connection-status').isEnabled(), true);
-    await page.click('#open-settings');
+    await page.click('#view-settings');
     assert.equal(await page.locator('#settings-panel').isVisible(), true);
-    await page.click('#open-settings');
+    await page.click('#view-connection');
     await page.waitForFunction(() => document.querySelector('#refusal-detail').textContent.includes('did not finish within 15 seconds'), null, { timeout: 20000 });
     assert.equal(await page.locator('#details').evaluate(el => el.open), true);
     assert.equal(await page.locator('[data-testid="connected-space-row"] button').isEnabled(), true);
   } })),
   ...['content', 'empty', 'error'].map(mode => ({ name: `service-log-${mode}`, state: { installed: true, signedIn: true, connected: true, logText: mode === 'content' ? 'daemon startup refused: local test reason\n' : '', logTruncated: mode === 'content', logError: mode === 'error' }, act: async page => {
-    await page.click('#open-settings'); await page.click('#service-log summary');
+    await page.click('#view-settings'); await page.click('#service-log summary');
   }, expect: async page => {
     assert.equal(await page.evaluate(() => window.__renderState.logReads), 1);
     assert.match(await page.locator('#service-log-status').textContent(), mode === 'content' ? /most recent 8 KB/ : mode === 'empty' ? /No background service log/ : /could not be read/);
@@ -41,7 +41,7 @@ scenarios.splice(0, scenarios.length,
   { name: 'unknown-refusal-after-ready', state: { installed: true, signedIn: true, connected: true }, act: async page => {
     await page.locator('#connected-panel:visible').waitFor();
     await page.evaluate(() => { window.__renderState.offline = true; window.__renderState.offlineCode = 'NEW_SERVICE_REFUSAL'; });
-    await page.click('#open-settings'); await page.click('#open-settings');
+    await page.click('#view-settings'); await page.click('#view-connection');
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.locator('#recovery-panel:visible').waitFor();
   }, expect: async page => {
@@ -85,6 +85,7 @@ scenarios.splice(0, scenarios.length,
     const row = await page.locator('[data-testid="connected-space-row"]').textContent();
     console.log('REPRO account row:', row);
     assert.match(row, /local test Manager reason/);
+    assert.doesNotMatch(row, /cotal daemon status/);
   } },
   { name: 'all-spaces-connected', state: { installed: true, signedIn: true, connected: true }, act: page => page.click('#another-space'), expect: async page => {
     assert.match(await page.locator('#no-other-spaces').textContent(), /Every space in this account is already connected/);

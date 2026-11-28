@@ -66,6 +66,7 @@ import { preparedRootWriteProblem } from "../lib/paths.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
+import { localDiagnostic } from "../telemetry.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ScatterReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
@@ -115,12 +116,16 @@ export function managedAgentComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
+function checkAgentNameCount(args: ParsedArgs, operation: "stop" | "attach"): void {
+  if (args.positionals.length > 1 || (args.positionals.length && typeof args.values.name === "string"))
+    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent to ${operation}`, { remedy: "in the original command, keep one positional name or one --name <name>, leaving the other options unchanged", selfContained: true });
+}
+
 /** The named target grammar, checked before any command preparation. */
 export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", allowPicker = false): string | undefined {
+  checkAgentNameCount(args, operation);
   const v = args.values;
   const named = typeof v.name === "string" ? v.name : undefined;
-  if (args.positionals.length > 1 || (args.positionals.length && named !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: \`cotal ${operation} <name>\``);
   const name = args.positionals[0] ?? named;
   const { server, on } = v;
   if (typeof server === "string" && (typeof on === "string" || !name?.trim())) {
@@ -357,7 +362,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest:
   if (loc.kind === "absent" && verb === "cotal status" && loc.instances.includes(agent))
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent, options.openMesh === true, v) });
   if (loc.kind === "absent")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: `run ${codeSpan(rosterCommand(v))} to see the agents each manager runs` });
+    throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: `run ${codeSpan(rosterCommand(v))} to see the agents each manager runs` }));
   const shown = oneLine(agent);
   if (loc.kind === "several")
     throw new AgentManagerUnsettled(`"${shown}" is held on each of these ${loc.instances.length} managers. Which one should run this?`, managersByInstance(loc.instances, loc.managers), "TARGET_AMBIGUOUS", message, { space: loc.space ?? null, agent, managerInstanceIds: loc.instances });
@@ -1230,8 +1235,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
 
 export async function attach(args: ParsedArgs): Promise<void> {
   if (args.values.creds !== undefined) {
-    if (args.positionals.length > 1 || (args.positionals.length && typeof args.values.name === "string"))
-      throw new CommandFailure("refused", "USAGE_INVALID", "choose one agent: `cotal attach <name>`");
+    checkAgentNameCount(args, "attach");
     refuseControlCreds(args.values.creds, args.values.space);
   }
   const name = managedTarget(args, "attach", true);
@@ -1286,7 +1290,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const name = positionalName ?? values.name;
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
-  if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
+  if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text=<value> for a value beginning with a dash");
   if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values)), managerRosterHint(values));
   return { name, text };
 }

@@ -1220,6 +1220,14 @@ function journalIdRemedy(verb: string, values: RunValues): string {
   return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
 }
 
+function managerPinRemedy(values: RunValues): string {
+  const retry = "then repeat the original command with --on <instance> and all other options unchanged";
+  if (values.creds !== undefined || (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server))
+    return `obtain a full Manager instance ID for the same space, broker and caller, ${retry}`;
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  return `find the full Manager instance ID with ${codeSpan(`cotal ps${retryFlag("space", values.space)}${retryFlag("server", values.server)}${output}`)}, ${retry}`;
+}
+
 function runInventory(values: RunValues, mode: "local" | "hosted"): string {
   const list = mode === "local" ? "cotal run list --local" : "cotal run list";
   const output = values.json ? " --json" : values.plain ? " --plain" : "";
@@ -1307,7 +1315,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (paging) usage(`run ${raw}: diagnostic inventory options are not available here`, `remove ${paging} to read the journal, or use \`cotal run --page --on <instance>\` for diagnostic inventory`);
   } else if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
     if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
-      usage("diagnostic paging requires run --page --on <instance> without --local");
+      usage("diagnostic paging requires run --page --on <instance> without --local",
+        verb === "ps" && values.page === true && !values.local && values.on === undefined ? managerPinRemedy(values) : undefined);
     if (values.limit !== undefined && (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 16))
       usage("run --page: --limit must be between 1 and 16");
     if (values.cursor !== undefined && (values.cursor.length > 3072 || !/^[A-Za-z0-9_-]+$/.test(values.cursor)))
@@ -1358,7 +1367,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   if (values.on !== undefined) {
     if (values.local === true || ["validate", "plan", "simulate", "turns", "yield", "revoke"].includes(verb)) usage("--on pins a hosted run command; local and offline commands take no manager instance");
     try { assertLifecycleToken(values.on, "instanceId"); }
-    catch { usage("--on requires the full manager instance id as `cotal ps` prints it"); }
+    catch { usage("--on requires a full Manager instance ID", managerPinRemedy(values)); }
   }
   // A local drive, a revoke and a check print text only. Name the manager's form where one takes the
   // flag, and the same command without it where none does.

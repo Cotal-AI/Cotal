@@ -53,6 +53,13 @@ export function freePort(host: string, requestedPort = 0): Promise<number> {
   });
 }
 
+/** Only replay switches that cannot carry local values. Other invocations must be repeated in their original folder. */
+export function retryRecordedStackAddress(raw: readonly string[], invokedFrom: string): string | undefined {
+  if (raw.every(word => ["--foreground", "--no-manager", "--plain", "--json"].includes(word)))
+    return `run ${codeSpan([displayCmd(), "up", ...raw].join(" "))} from ${shellWord(invokedFrom)}`;
+  return undefined;
+}
+
 export async function retryStackAddress(raw: readonly string[], invokedFrom: string, stackServer: string, host: string): Promise<string | undefined> {
   const server = await stackRetryServer(stackServer, host);
   if (server !== undefined) return `start this stack at another address with ${codeSpan(upAtAddress(raw, server))} from ${shellWord(invokedFrom)}`;

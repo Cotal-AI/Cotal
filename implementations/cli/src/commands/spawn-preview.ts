@@ -1,3 +1,4 @@
+import { localDiagnostic } from "../telemetry.js";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
@@ -125,9 +126,9 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
       definition = parseAgentFileSource(DEFAULT_AGENT, path);
       if (!blockedDefault) personaWrite = "shipped-default";
     } else if (code === "ENOENT") {
-      throw missingPersonaFailure(site, ref, from, path, { ...target, path });
+      throw missingPersonaFailure(site, ref, from, path, { ...target, path }, presentationOf(values));
     } else if (error instanceof PersonaSourceError) {
-      throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, { target: { ...target, path }, ...(error.remedy ? { remedy: error.remedy } : {}) });
+      throw localDiagnostic(new CommandFailure("refused", "SCHEMA_INVALID", error.message, { target: { ...target, path }, ...(error.remedy ? { remedy: error.remedy } : {}) }));
     } else if (code === "ELOOP") {
       throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
         target: { ...target, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",

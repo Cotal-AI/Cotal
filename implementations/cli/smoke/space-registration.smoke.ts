@@ -280,7 +280,7 @@ setCurrent("keep");
   const beforeSend = registryFiles();
   const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
   check("send to an unreachable registration refuses with space forget in its JSON remedy",
-    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "check the address and connection to the host; start the broker there if it is stopped. To unregister this space, run `cotal space forget open1`", shown(offline));
   const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
   check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
     offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
@@ -370,7 +370,16 @@ setCurrent("keep");
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
-  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message.includes("pass an existing folder; for an open space it may be empty"), shown(noRoot));
+  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message === "--root must name an existing directory" && noRoot.env.error.remedy.includes(join(home, "missing")) && noRoot.env.error.remedy.includes("for an open space it may be empty"), shown(noRoot));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const parent = projectRoot("sealed-parent"), child = join(parent, "project");
+    mkdirSync(child);
+    chmodSync(parent, 0o600);
+    try {
+      const hidden = await json(["space", "add", "r2", "--server", LIVE, "--root", child]);
+      check("a registration root hidden by parent permissions is not reported as a missing directory", refused(hidden, 2, "PERMISSION_DENIED") && hidden.env?.error?.remedy.includes(child) && !findMesh("r2"), shown(hidden));
+    } finally { chmodSync(parent, 0o700); }
+  }
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
   const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);
@@ -838,6 +847,15 @@ setCurrent("keep");
           denied.env.error.remedy.includes("restore access to the project folder") && findPreparedSpace("prepdone")?.root === prepRoot, shown(denied));
       } finally { chmodSync(prepRoot, mode); }
     }
+    const control = join(prepRoot, ".cotal"), parked = join(prepRoot, "saved-control");
+    renameSync(control, parked);
+    try {
+      symlinkSync(".cotal", control);
+      try {
+        const loop = await json(["space", "forget", "prepdone"]);
+        check("a project record link loop blocks forget before any change", refused(loop, 2, "LIFECYCLE_BLOCKED") && loop.env?.error?.message.includes("nothing was forgotten") && findPreparedSpace("prepdone")?.root === prepRoot && lstatSync(control).isSymbolicLink(), shown(loop));
+      } finally { unlinkSync(control); }
+    } finally { renameSync(parked, control); }
     const prepared = await json(["space", "forget", "prepdone"]), other = await json(["space", "forget", "prepother"]);
     check("forgetting a prepared space removes the stack definitions saved for its root",
       prepared.status === 0 && JSON.stringify(prepared.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("prepdone").read("stack-broker") === undefined, shown(prepared));
@@ -1294,7 +1312,7 @@ if (process.platform === "linux") {
     refused(inCopy, 2, "CONFLICT") && inCopy.env?.error?.message === `${accountCopy} holds records copied or moved from ${accountRoot}, the root of "held"`, shown(inCopy));
   const heldElsewhere = await json(["space", "add", "alias", "--server", AUTH_LIVE, "--root", accountRoot]);
   check("an auth broker whose --root holds another space's trust is refused naming that space first",
-    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
+    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && heldElsewhere.env?.error?.message === "the broker requires auth, but this folder holds trust for a different space" && heldElsewhere.env.error.remedy.includes('holds the trust for "held", not "alias"') && heldElsewhere.env.error.remedy.includes(AUTH_LIVE), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   const rootFile = join(home, "plain-file-root");
   writeFileSync(rootFile, "keep");
@@ -1318,6 +1336,16 @@ if (process.platform === "linux") {
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+    if (process.platform !== "win32") {
+      const child = join(readOnly, "project");
+      mkdirSync(child);
+      chmodSync(readOnly, 0o600);
+      try {
+        const inaccessible = await json(["space", "create", "other", "--root", child]);
+        check("create distinguishes an inaccessible root from a non-directory", refused(inaccessible, 2, "PERMISSION_DENIED") && inaccessible.env?.target?.root === child && inaccessible.env.error.remedy.includes("parent directories"), shown(inaccessible));
+      } finally { chmodSync(readOnly, 0o700); }
+      check("create wrote nothing below the inaccessible parent", !existsSync(join(child, ".cotal")) && findPreparedSpace("other") === undefined);
+    }
     // A Cotal home this account cannot write is refused too, and the empty .cotal the attempt made is removed.
     const lockedHome = join(home, "locked-home");
     const homeless = join(home, "homeless");
@@ -1344,7 +1372,7 @@ if (process.platform === "linux") {
     const outer = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-control-")));
     const project = join(outer, "project"), control = join(project, ".cotal");
     mkdirSync(join(control, "agents"), { recursive: true, mode: 0o700 });
-    const next = `run cotal from the project folder ${project}, or create the space in a folder outside any .cotal with --root <dir>`;
+    const next = `if you meant the enclosing project, repeat your command with \`--root ${project}\`, or choose a folder outside any .cotal with --root <dir>`;
     const nested = () => readdirSync(control, { recursive: true }).map(String).filter((entry) => entry.split("/").includes(".cotal"));
     for (const [label, args, cwd, root] of [
       ["run in the control directory", ["space", "create", "inner"], control, control],
@@ -1386,7 +1414,7 @@ if (process.platform === "linux") {
     const upInside = await json(["up", "--server", DEAD, "--no-manager"], control);
     check("up in a control directory that holds a .cotal of its own is CONFLICT, exit 2, naming the project, and starts nothing",
       refused(upInside, 2, "CONFLICT") && upInside.env?.error?.message === `${control} is the control directory ${control}, which holds the Cotal records of the project ${project}, so it cannot be a project folder; nothing was started or written` &&
-        upInside.env.error.remedy === `run \`cotal up\` from the project folder ${project}` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
+        upInside.env.error.remedy === `repeat your original startup command with \`--root ${project}\` for the enclosing project` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
     const upRoot = await json(["up", "--root", control, "--server", DEAD, "--no-manager"], outer);
     check("so is up --root naming it", refused(upRoot, 2, "CONFLICT") && (upRoot.env?.error?.message ?? "").startsWith(`${control} is the control directory ${control}`) && readdirSync(join(control, ".cotal")).length === 0, shown(upRoot));
     rmSync(join(control, ".cotal"), { recursive: true });
@@ -1429,10 +1457,14 @@ if (process.platform === "linux") {
     setCurrent("moving");
     const moved = await json(["up", "--server", DEAD], after);
     check("a bare up in the moved folder refuses TARGET_UNAVAILABLE, exit 2, naming the gone folder and the step",
-      refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && (moved.env?.error?.remedy ?? "").includes("cotal space forget moving") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
+      refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && moved.env?.error?.remedy?.startsWith("restore the original project folder at its recorded path, then repeat your startup command in that folder") === true && !moved.env.error.remedy.includes("space forget") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
     const again = await json(["space", "create", "moving"], after);
-    check("create there names the gone folder and says to forget it first",
-      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "forget it with `cotal space forget moving`, then run this create again", shown(again));
+    check("create there offers restoring the original folder before forgetting its space",
+      refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "restore the original project folder at its recorded path, or forget it with `cotal space forget moving`, then run this create again", shown(again));
+    renameSync(after, before);
+    const restored = await json(["space", "show", "moving"], before);
+    check("restoring the original folder makes the same preparation usable without forgetting it", restored.status === 0 && restored.env?.result?.root === before && restored.env.result.rootMissing === false && getCurrent() === "moving", shown(restored));
+    renameSync(before, after);
     check("control: forget clears the way", (await json(["space", "forget", "moving"])).status === 0);
     if (previous === undefined) clearCurrent(); else setCurrent(previous);
     rmSync(after, { recursive: true, force: true });
@@ -1484,7 +1516,10 @@ if (process.platform === "linux") {
   removePreparedSpace("y".repeat(100));
   rmSync(earlier, { recursive: true, force: true });
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
-  check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
+  const addPlain = await run(["space", "add", "demo", "--server", LIVE, "--root", root, "--plain"]);
+  for (const [format, advice] of [["--json", add.env?.error?.remedy ?? ""], ["--plain", addPlain.stderr]] as const) {
+    check(`adding a prepared name preserves ${format} on both recovery commands`, refused(add, 2, "CONFLICT") && addPlain.status === 2 && advice.includes(`--space demo ${format}\``) && advice.includes(`space forget demo ${format}\``) && findMesh("demo") === undefined, advice);
+  }
 
   const list = await json(["space"]);
   check("space lists it apart from the registrations", list.env?.result.prepared.some((p: { space: string; root: string }) => p.space === "demo" && p.root === fresh) && !list.env.result.items.some((s: { space: string }) => s.space === "demo"), list.env?.result);
@@ -1853,13 +1888,13 @@ if (process.platform === "linux") {
     { status: repairedComponents.status, health: repairedHealth, stderr: repairedComponents.stderr });
   unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and effective broker inputs. A different --server
-  // or --host refuses before anything is written, naming the recorded value and the bare up
-  // that starts the stack there.
+  // or --host refuses before anything is written and names how to start at the recorded value.
   const recordedRoot = realpathSync(fresh), journalBefore = readFileSync(stackJournalPath(fresh), "utf8");
   const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
-  check("up --server naming another address is CONFLICT, exit 2, naming the recorded address and bare cotal up from the root",
+  const retryAtRecorded = `repeat your original startup command from the same folder with \`--server ${server}\` and all other options unchanged`;
+  check("up --server naming another address is CONFLICT, exit 2, changing only the address in the retry",
     refused(moved, 2, "CONFLICT") && (moved.env?.error?.message ?? "").includes(`recorded at ${server}`) &&
-      moved.env?.error?.remedy === `run bare \`cotal up\` from ${recordedRoot} to start it at ${server}`, shown(moved));
+      moved.env?.error?.remedy === retryAtRecorded, shown(moved));
   // While another program holds the recorded address, bare up refuses too, so this refusal names that
   // address and the process of this account that listens there, and says no command moves the stack.
   const occupier = createServer();
@@ -1868,7 +1903,7 @@ if (process.platform === "linux") {
     const held = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("...and while another program holds that address, it names the address and that process, and says no command moves the stack",
       refused(held, 2, "CONFLICT") && new RegExp(`a recorded stack is not moved to another address, and another process holds that address 127\\.0\\.0\\.1:${port}, where process ${process.pid} \\(\\S+\\) of this account listens$`).test(held.env?.error?.message ?? "") &&
-        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then run bare \`cotal up\` from ${recordedRoot}; no command moves a stack that ran to another address, so it starts only at ${server}`, shown(held));
+        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then ${retryAtRecorded}`, shown(held));
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   // Omit --server to use the recorded address and reach the recorded-input comparison.
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);

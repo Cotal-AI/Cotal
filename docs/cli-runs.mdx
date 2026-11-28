@@ -199,7 +199,7 @@ be displayed safely, the refusal asks you to remove the output flag from your or
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
 `nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
-ownership ([Diagnostic inventory](workflows.mdx#diagnostic-inventory)).
+ownership ([Diagnostic inventory](workflows.mdx#diagnostic-inventory)). If the Manager ID is missing or malformed, look it up in the roster for the same space and broker, then retry the original page request with that ID. Keep any cursor and limit unchanged.
 `revoke` writes the run's revocation marker from the project folder; `--by` and `--reason` are
 required ([workflows](workflows.mdx)).
 `answer` resolves an open
