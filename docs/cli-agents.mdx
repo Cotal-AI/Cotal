@@ -77,6 +77,7 @@ with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, b
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
+If the requested name is missing from a prepared or registered catalog, `cotal persona --space <space>` lists the names there. A preview keeps the requested output format in that suggestion.
 Foreground spawn and its preview refuse an unreadable persona file with `PERMISSION_DENIED` (exit 2).
 On POSIX, if you own the regular file and it lacks owner read permission, the refusal suggests
 `chmod u+r <path>` and a retry. The CLI does not change the file's permissions.

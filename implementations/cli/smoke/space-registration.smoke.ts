@@ -370,7 +370,16 @@ setCurrent("keep");
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
-  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message.includes("pass an existing folder; for an open space it may be empty"), shown(noRoot));
+  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message === "--root must name an existing directory" && noRoot.env.error.remedy.includes(join(home, "missing")) && noRoot.env.error.remedy.includes("for an open space it may be empty"), shown(noRoot));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const parent = projectRoot("sealed-parent"), child = join(parent, "project");
+    mkdirSync(child);
+    chmodSync(parent, 0o600);
+    try {
+      const hidden = await json(["space", "add", "r2", "--server", LIVE, "--root", child]);
+      check("a registration root hidden by parent permissions is not reported as a missing directory", refused(hidden, 2, "PERMISSION_DENIED") && hidden.env?.error?.remedy.includes(child) && !findMesh("r2"), shown(hidden));
+    } finally { chmodSync(parent, 0o700); }
+  }
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
   const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);
@@ -1303,7 +1312,7 @@ if (process.platform === "linux") {
     refused(inCopy, 2, "CONFLICT") && inCopy.env?.error?.message === `${accountCopy} holds records copied or moved from ${accountRoot}, the root of "held"`, shown(inCopy));
   const heldElsewhere = await json(["space", "add", "alias", "--server", AUTH_LIVE, "--root", accountRoot]);
   check("an auth broker whose --root holds another space's trust is refused naming that space first",
-    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
+    refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && heldElsewhere.env?.error?.message === "the broker requires auth, but this folder holds trust for a different space" && heldElsewhere.env.error.remedy.includes('holds the trust for "held", not "alias"') && heldElsewhere.env.error.remedy.includes(AUTH_LIVE), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   const rootFile = join(home, "plain-file-root");
   writeFileSync(rootFile, "keep");
@@ -1363,7 +1372,7 @@ if (process.platform === "linux") {
     const outer = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-control-")));
     const project = join(outer, "project"), control = join(project, ".cotal");
     mkdirSync(join(control, "agents"), { recursive: true, mode: 0o700 });
-    const next = `run cotal from the project folder ${project}, or create the space in a folder outside any .cotal with --root <dir>`;
+    const next = `if you meant the enclosing project, repeat your command with \`--root ${project}\`, or choose a folder outside any .cotal with --root <dir>`;
     const nested = () => readdirSync(control, { recursive: true }).map(String).filter((entry) => entry.split("/").includes(".cotal"));
     for (const [label, args, cwd, root] of [
       ["run in the control directory", ["space", "create", "inner"], control, control],
@@ -1405,7 +1414,7 @@ if (process.platform === "linux") {
     const upInside = await json(["up", "--server", DEAD, "--no-manager"], control);
     check("up in a control directory that holds a .cotal of its own is CONFLICT, exit 2, naming the project, and starts nothing",
       refused(upInside, 2, "CONFLICT") && upInside.env?.error?.message === `${control} is the control directory ${control}, which holds the Cotal records of the project ${project}, so it cannot be a project folder; nothing was started or written` &&
-        upInside.env.error.remedy === `run \`cotal up\` from the project folder ${project}` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
+        upInside.env.error.remedy === `repeat your original startup command with \`--root ${project}\` for the enclosing project` && readdirSync(join(control, ".cotal")).length === 0, shown(upInside));
     const upRoot = await json(["up", "--root", control, "--server", DEAD, "--no-manager"], outer);
     check("so is up --root naming it", refused(upRoot, 2, "CONFLICT") && (upRoot.env?.error?.message ?? "").startsWith(`${control} is the control directory ${control}`) && readdirSync(join(control, ".cotal")).length === 0, shown(upRoot));
     rmSync(join(control, ".cotal"), { recursive: true });
@@ -1448,7 +1457,7 @@ if (process.platform === "linux") {
     setCurrent("moving");
     const moved = await json(["up", "--server", DEAD], after);
     check("a bare up in the moved folder refuses TARGET_UNAVAILABLE, exit 2, naming the gone folder and the step",
-      refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && (moved.env?.error?.remedy ?? "").includes("cotal space forget moving") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
+      refused(moved, 2, "TARGET_UNAVAILABLE") && (moved.env?.error?.message ?? "").includes(`"moving" is prepared in ${before}, which no longer exists`) && moved.env?.error?.remedy?.startsWith("restore the original project folder at its recorded path, then repeat your startup command in that folder") === true && !moved.env.error.remedy.includes("space forget") && findMesh("main") === undefined && !existsSync(join(after, ".cotal", "auth")), shown(moved));
     const again = await json(["space", "create", "moving"], after);
     check("create there offers restoring the original folder before forgetting its space",
       refused(again, 2, "CONFLICT") && (again.env?.error?.message ?? "").endsWith("which no longer exists") && again.env?.error?.remedy === "restore the original project folder at its recorded path, or forget it with `cotal space forget moving`, then run this create again", shown(again));

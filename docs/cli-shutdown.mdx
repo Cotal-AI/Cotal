@@ -231,6 +231,7 @@ no stack of its own.
 
 A manual or catalog connection records the folder that uses it. If a named stop or preview finds
 only that connection in another folder, run the stop or preview in the project that started the stack.
+A preview retry keeps `--dry-run` and the requested output format. It does not suggest stopping a service.
 
 When the folder of a running controller stack is deleted, its stack journal and broker
 configuration go with it, so no member's own stop can run. A running broker writes `.cotal/nats`
@@ -561,7 +562,8 @@ you to confirm that no such component still runs for the folder, because cotal c
 that names no process and a manager that does not answer on the mesh may still be running. It then
 names `rm <pidfile>` and the same `cotal down`. A bare `down` or
 `down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
-`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
+`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The preview keeps
+`--json` or `--plain` when requested. The
 `-f` / `--run` forms tear down a [manifest deploy](cli-startup.mdx#manifest-deploys) without stopping the whole mesh
 and cannot be combined with service names or `--space`.
 

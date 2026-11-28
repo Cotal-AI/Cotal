@@ -127,7 +127,7 @@ export class StatusAndModels {
       return { ok: false, error: rejectionText(e) };
     }
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
+      await this.parts.connectorInventory.refreshConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
@@ -209,7 +209,7 @@ export class StatusAndModels {
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
   managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
-    this.parts.connectorInventory.refreshUnavailableConnectors(undefined, setupClaude);
+    this.parts.connectorInventory.refreshConnectors(undefined, setupClaude);
     const machine = hostMachine();
     return {
       instanceId: this.managerInstanceId,
