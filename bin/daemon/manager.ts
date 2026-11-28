@@ -335,6 +335,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return { state: "unreachable", reason: `the space is not answering, and its address could not be checked: ${safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 300)}` };
     }
   };
+  const serviceStatus = async (space: string): Promise<HostedManager> => {
+    const l = live.get(space), child = l?.child;
+    if (!l || !child || l.view.state !== "answering" || generationPending || l.stopping || l.starting) return refresh(space);
+    const bound = await readServeBound(child).catch(() => undefined);
+    const view = status(space);
+    // An older child does not answer this question. A pinned probe still tests its readiness.
+    if (bound === undefined || child !== l.child || view.state !== "answering" || generationPending || l.stopping) return refresh(space);
+    return { ...view, connection: bound ? undefined : view.connection ?? await describeLoss(space) };
+  };
   /** The Manager's own grade of its serve connection. A Manager that came up and then lost it reports
    *  why. Once it reconnects the problem clears, and a Manager a failed status probe left `starting`
    *  is read again until it answers. */
@@ -742,7 +751,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return current.starting;
   };
   return {
-    start, status, refresh,
+    start, status, refresh, serviceStatus,
     ...hostedAgentActions(home, live),
     async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {

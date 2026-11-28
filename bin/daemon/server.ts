@@ -254,7 +254,6 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     });
   };
   const snapshotStatus = async (cachedAgents: boolean): Promise<DaemonStatus> => {
-    if (!cachedAgents) await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
     const result = { ...status(), agents: await managers.agents(cachedAgents) };
     if (!result.update) return result;
     // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
@@ -504,7 +503,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           const result = await run;
           counters.serviceAnswered++;
           if (req.op === "service-connect" && result.state === "not-registered") return result;
-          const manager = req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space);
+          const manager = req.op === "service-status" ? await managers.serviceStatus(req.space) : managers.status(req.space);
           // Read guidance only for these replies, after disconnect has finished removing records.
           if (!manager.registrationCleanup && ((req.op === "service-status" && (result.state === "not-requested" || result.state === "unsupported")) ||
               (req.op === "service-disconnect" && result.state === "disconnected"))) {

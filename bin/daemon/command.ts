@@ -32,7 +32,7 @@ import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@co
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
-import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { connectCheckViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
@@ -208,7 +208,11 @@ async function status(args: ParsedArgs): Promise<void> {
     throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
-  const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
+  const result: DaemonStatus = space ? {
+    ...reply.result,
+    agents: reply.result.agents?.filter(row => row.space === space),
+    managers: [reply.result.managers?.find(row => row.space === space) ?? { space, state: "stopped", restarts: 0 }],
+  } : reply.result;
   const warning = linuxAutostartWarning(paths, home);
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result, ...(warning ? { warnings: [{ code: "TARGET_UNAVAILABLE", target: null, message: warning }] } : {}) }, statusView);
 }
