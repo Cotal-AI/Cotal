@@ -79,6 +79,8 @@
  * Late Claude Code install: --hosting-only --claude-wake-late-repro.
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
+ * Sleep and wake: --hosting-only --sleep-wake-repro freezes the service and its hosted Manager past
+ * a 40 s standing credential, then requires the same Manager answering within 30 s, renewed, unrestarted.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
  * Add --manual-admission-empty-repro instead for empty admission fencing and failure release.
  * Uses private same-source upgrade archives and holds then fails npm before replacement.
@@ -515,7 +517,7 @@ try {
   }
   const svc = await Promise.all(ctx.map((c, i) => startAuthService({ context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: c.space, servers,
     store: c.store, storeIdentity: c.store.identity, stateDir: c.stateDir, publicFace: { port: 0, trustedProxy: false },
-    ...(process.argv.includes("--renewal-abort-repro") ? { standingRenewableTtlSeconds: 40 } : {}),
+    ...(process.argv.includes("--renewal-abort-repro") || process.argv.includes("--sleep-wake-repro") ? { standingRenewableTtlSeconds: 40 } : {}),
     ...(i === 1 || (process.argv.includes("--account-hosted") && (i === 0 || i === 2)) ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) } } }) })));
   handles.push(...svc);
@@ -4187,6 +4189,56 @@ process.exit(result.status ?? 93);
           finally { process.kill(child.pid!, "SIGCONT"); }
           console.log("  R2-2 renewal counts", JSON.stringify({ initial, atAbort, after: standingRenewals }));
           check("R2-2 remote standing renewal continues after aborted preservation", standingRenewals > atAbort, { atAbort, standingRenewals });
+          return;
+        }
+        if (process.argv.includes("--sleep-wake-repro")) {
+          // A computer that sleeps freezes the background service, its hosted Manager and every
+          // process under them at once, while the space and its auth service keep running. Freeze
+          // that whole tree past the standing credential's expiry (40 s TTL here), then wake it and
+          // require it to come back by itself: the same Manager answering, a renewal after waking,
+          // and no restart. SIGSTOP keeps the monotonic clock running, which a real suspend does not,
+          // so timers here fire sooner after waking than they would after a real sleep.
+          const tree = (rootPid: number): number[] => {
+            const parents = new Map<number, number[]>();
+            for (const entry of readdirSync("/proc")) {
+              if (!/^\d+$/.test(entry)) continue;
+              try {
+                const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+                const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+                parents.set(ppid, [...(parents.get(ppid) ?? []), Number(entry)]);
+              } catch { /* the process exited while listing */ }
+            }
+            const out: number[] = [];
+            const walk = (pid: number) => { out.push(pid); for (const kid of parents.get(pid) ?? []) walk(kid); };
+            walk(rootPid);
+            return out;
+          };
+          const SLEEP_MS = 50_000, WAKE_BOUND_MS = 30_000;
+          const before = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 25_000));
+          check("SW-0 the hosted Manager answers before sleep", before.state === "answering" && before.pid === manager.pid, before);
+          const frozen = tree(child.pid!);
+          check("SW-1 the frozen tree holds the service and its hosted Manager", frozen.includes(child.pid!) && frozen.includes(manager.pid), { frozen, daemon: child.pid, manager: manager.pid });
+          for (const pid of frozen) { try { process.kill(pid, "SIGSTOP"); } catch { /* exited */ } }
+          let wokeAt = 0;
+          try { await sleep(SLEEP_MS); }
+          finally {
+            for (const pid of [...frozen].reverse()) { try { process.kill(pid, "SIGCONT"); } catch { /* exited */ } }
+            wokeAt = Date.now();
+          }
+          const atWake = standingRenewals;
+          let after: Record<string, any> = {};
+          let answeredAfterMs = -1;
+          while (Date.now() - wokeAt < WAKE_BOUND_MS + 15_000) {
+            try { after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 20_000)); } catch (error) { after = { error: String(error) }; }
+            if (after.state === "answering" && standingRenewals > atWake) { answeredAfterMs = Date.now() - wokeAt; break; }
+            await sleep(500);
+          }
+          console.log("  SW counts", JSON.stringify({ sleptMs: SLEEP_MS, ttlSeconds: 40, renewalsAtWake: atWake, renewalsAfter: standingRenewals, answeredAfterMs, pidBefore: manager.pid, pidAfter: after.pid, restartsBefore: before.restarts, restartsAfter: after.restarts, stateAfter: after.state, reason: after.reason }));
+          check("SW-2 the Manager answers again within 30 s of waking", answeredAfterMs >= 0 && answeredAfterMs <= WAKE_BOUND_MS, { answeredAfterMs, after });
+          check("SW-3 the standing credential is renewed after waking", standingRenewals > atWake, { atWake, standingRenewals });
+          check("SW-4 waking does not restart the Manager", after.pid === manager.pid && after.restarts === before.restarts, { before: { pid: manager.pid, restarts: before.restarts }, after: { pid: after.pid, restarts: after.restarts } });
+          const service = await cli("service-status", "--space", ON);
+          check("SW-5 a fresh service-status after waking confirms the same instance", service.code === 0 && service.doc.result?.manager?.instanceId === manager.instanceId && service.doc.result?.manager?.state === "answering", service);
           return;
         }
         if (process.argv.includes("--hosted-login-repro")) {

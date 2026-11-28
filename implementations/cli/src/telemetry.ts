@@ -20,7 +20,7 @@ import {
   type TelemetrySettings,
 } from "@cotal-ai/workspace";
 import { metadataPositionals } from "./lib/command-path.js";
-import { cliVersion } from "./seed/paths.js";
+import { cliVersion, SeedWriterRefusal } from "./seed/paths.js";
 
 /**
  * Anonymous usage telemetry for the CLI: one small event per command, sent as the process exits, and
@@ -87,7 +87,7 @@ export function localDiagnostic<T extends Error>(error: T): T {
 }
 
 export function telemetryErrorText(command: string, error: unknown): ErrorText {
-  if (error instanceof Error && localDiagnostics.has(error)) return { message: null, stack: null };
+  if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
   // Help shows the requested topic and can suggest commands from local extensions.
   if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   // A spawn diagnostic can include native terminal output or the original launch arguments.
