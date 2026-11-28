@@ -567,18 +567,17 @@ function refuseSpaceElsewhere(root: string, space: string, values: ParsedArgs["v
     connection = mesh?.origin === "manual" || mesh?.origin === "catalog";
   } catch { return; }
   if (at === undefined || at === root || existsSync(at) && canonicalRoot(at) === canonicalRoot(root)) return;
-  if (connection) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the connection to space "${space}" is registered at ${at}; its registration does not identify the folder that started the stack`, {
-    target: { root, space, registeredRoot: at },
-    remedy: `run ${codeSpan(sameDown(values))} in the project that started the stack`,
-  });
+  if (connection) throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `the connection to space "${space}" is registered at ${at}; its registration does not identify the folder that started the stack`, {
+    target: { root, space, registeredRoot: at }, remedy: downInOwningRoot(undefined, values),
+  }));
   refuseInaccessibleDownRoot(at, space);
   let controller = false;
   try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
-  const stop = values["dry-run"] ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and \`cotal down\` stops only the stack recorded where it runs`, {
+  const stop = controller ? "cotal down --yes" : "cotal down";
+  throw localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and \`cotal down\` stops only the stack recorded where it runs`, {
     target: { root, space, spaceRoot: at },
-    remedy: blockedDownRootRemedy(at, stop) ?? `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
-  });
+    remedy: values["dry-run"] ? downInOwningRoot(at, values) : blockedDownRootRemedy(at, stop) ?? `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
+  }));
 }
 
 /** `cotal down`. It owns stdout's errors for its whole run, so a reader that goes away, as with
