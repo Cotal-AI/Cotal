@@ -1,8 +1,23 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { CommandFailure, connectorConfigDir, homeCotalDir, isCommandFailure, loadExtensionsManifest, prepareConnectorConfigForUpdate, protectedLocalDirectory, repairConnectorSelection, restoreConnectorManifestAccessForUpdate, type UnreadableConnectorSelection } from "@cotal-ai/workspace";
 import { reclaimAbandonedExtensionStages, recoverExtensionPromotion } from "./extension-stage.js";
+
+/** First-use setup is pending only when there is no sign of earlier connector setup. */
+export function connectorBootstrapPending(): boolean {
+  try {
+    const absent = (root: string, names: string[]): boolean => names.every(name => !lstatSync(join(root, name), { throwIfNoEntry: false }));
+    const global = globalConfigDir();
+    for (const config of new Set([connectorConfigDir(), global])) {
+      if (!absent(config, ["seed", "extensions", ".extensions.lock", ".extensions-promotion.json"])) return false;
+    }
+    if (!absent(homeCotalDir(), ["claude-plugin", "codex-plugin"])) return false;
+    const installs = join(global, "installs");
+    const directory = lstatSync(installs, { throwIfNoEntry: false });
+    return !directory || directory.isDirectory() && !readdirSync(installs).some(name => /^[a-f0-9]{64}$/.test(name));
+  } catch { return false; }
+}
 
 /** Check the closest existing ancestor outside the Cotal folder, whose modes update does not repair. */
 export function assertConfigAncestorProtected(): void {

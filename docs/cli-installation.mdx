@@ -415,6 +415,15 @@ During `cotal update --self`, Cotal reports that it skipped a Claude refresh own
 It leaves that registration unchanged and continues the CLI upgrade and the other refreshes.
 
 
+### First-use connector setup
+
+When no newer release is available, a manual `cotal update --self` without a mesh selector leaves
+built-in connector setup to the first command that needs it. This applies only if no installation
+under your account has recorded connector state, no harness registration or daemon is recorded,
+and no update recovery is pending. Choosing a different npm prefix does not make an existing setup
+fresh. First-use connector setup does not print internal store paths. To see those paths when
+connector files are written, run `cotal ext seed` explicitly.
+
 ### Manager continuity
 
 When `update --self` finds no newer release and verifies the installed package closure is current,

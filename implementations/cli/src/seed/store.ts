@@ -39,7 +39,7 @@ function writableDirectories(path: string): void {
  * dir and renamed into place, so a crash mid-copy never leaves a half-written payload at the final
  * path for a later run to `ext add` from.
  */
-export function stageSeedPayload(generation: string, name: string, opts: { force?: boolean } = {}): string {
+export function stageSeedPayload(generation: string, name: string, opts: { force?: boolean; quiet?: boolean } = {}): string {
   const dest = seedStorePath(generation, name);
   if (!opts.force && existsSync(join(dest, "package.json"))) return dest;
   assertReleasedSeedWriter(generation, "write");
@@ -61,6 +61,7 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
     copyFileSync(source, to);
   }
   renameSync(staging, dest); // atomic within the store: the final path only ever holds a complete payload
+  if (opts.quiet) return dest;
   // Announce the write on the provenance channel. This store is operator-global (a sibling of the
   // shared `extensions/` prefix, moved only by `XDG_CONFIG_HOME`), so re-seeding it from a non-released
   // checkout silently makes those bytes the machine-wide payload for that generation key; naming the
