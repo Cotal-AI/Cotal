@@ -58,6 +58,7 @@ State shows the instance's recorded state, as `service status` does. If several 
 different recorded states, it lists each distinct state. An HTTP readiness deadline leaves `unknown`,
 even when the process is still running, and an exit before readiness leaves `failed`. These are recorded
 outcomes, not fresh readiness checks. The instance table shows the separate process observation.
+For a stopped stack member, the suggested start command names the stack’s project folder and space so it works from another project.
 Next still names `status` while any instance's process is running, so a failed start that left a
 process does not suggest starting another. Nothing starts a
 dependency for you: starting the manager does not start its broker. A member of a controller stack,

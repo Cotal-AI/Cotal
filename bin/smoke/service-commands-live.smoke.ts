@@ -707,9 +707,10 @@ try {
     check("the prepared stack's broker shutdown log is available through service logs",
       brokerLog.status === 0 && brokerLog.stdout.includes("Initiating JetStream Shutdown") &&
       brokerLog.stdout.includes("Server Exiting") && !existsSync(join(controllerRoot, ".cotal", "nats.log")), out(brokerLog));
-    const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
+    const controllerList = cotal(["service", "--space", controllerSpace, "--json"]);
     const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
-    check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);
+    const upCommand = `cotal up --root '${controllerRoot}' --space ${controllerSpace}`;
+    check("a stopped controller member listed from another project names its own stack root and space", row(controllerRows, "stack-broker")?.next === upCommand, controllerRows);
     for (const action of ["start", "restart"]) {
       const refused = controller(["service", action, "stack-broker", "--space", controllerSpace, "--json", ...(action === "restart" ? ["--yes"] : [])]);
       const refusal = JSON.parse(refused.stdout) as { error?: { code?: string } };
@@ -727,7 +728,6 @@ try {
     const beforeOverride = stackManagerStatus();
     const overridePreview = controller(["manager", "start", "--space", controllerSpace, "--dry-run", "--console-port", consolePort, "--json"]);
     const override = JSON.parse(overridePreview.stdout);
-    const upCommand = `cotal up --root '${controllerRoot}' --space ${controllerSpace}`;
     check("a stack manager override names working stack commands and the separate manager preset",
       overridePreview.status === 2 && override.error?.code === "CONFLICT" && override.target?.name === "stack-manager"
       && override.error.remedy?.includes(`\`${upCommand}\``) && override.error.remedy?.includes(`\`${upCommand} --no-manager\``)
