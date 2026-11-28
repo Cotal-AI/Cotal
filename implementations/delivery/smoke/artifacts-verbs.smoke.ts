@@ -37,7 +37,7 @@ import {
   artifactAttachBucket, artifactBucket, artifactPossessBucket, artifactReserveBucket, composeSpaceAuth, confirmAttach,
   CotalEndpoint, createBrokerAuth, createSpaceAccountAuth, DEV_OWNER, fetchArtifact, idFromCreds, isReachable,
   listArtifacts, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity,
-  objectStoreStream, pinArtifact, provisionAgentDurables, putArtifact, serverConfig, setupSpaceStreams, type SecretStore,
+  objectStoreStream, pinArtifact, provisionAgentDurables, putArtifact, serverConfig, setupSpaceStreams, fitPutChunk, type SecretStore,
 } from "@cotal-ai/core";
 import {
   ARTIFACT_SWEEPER_CREDS_KIND, DAEMON_ENDPOINT_BOOTSTRAPS, bootstrapDaemonEndpoint, connectionEvictorCredsKey, daemonEndpointKey,
@@ -50,7 +50,7 @@ import { DigestLocks } from "../src/artifact-verbs.js";
 import { metaSubject } from "../src/artifact-objects.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 23;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -139,6 +139,20 @@ try {
   check("after confirm-attach the artifact is listed in the channel", listed.rows.length === 1 && listed.rows[0]!.digest === digest, listed);
   const fetched = await fetchArtifact(bob, digest, channel);
   check("a reader of the channel fetches the bytes and the client verifies the digest", sha(fetched.bytes) === digest && fetched.name === "report.bin", { size: fetched.bytes.byteLength });
+
+  // ---- E6: the client sizes each chunk on the real frame, per call ----
+  // A broker this small cannot serve describe (the contract artifact floor), so the cell measures the
+  // client against a reduced budget over the REAL resolved service and request builder.
+  const service = await alice.describeService(ARTIFACTS_ENDPOINT);
+  const uploadIdProbe = "a".repeat(32);
+  const at = (maxPayload: number, seq: number) => fitPutChunk({ space, maxPayload }, service, uploadIdProbe, seq, 1 << 20);
+  const fitAt9 = at(8192, 9), fitAt10 = at(8192, 10);
+  check("the fit is measured per call: the chunk at seq 10 fits one raw byte fewer or so than at seq 9, never more",
+    fitAt9 > 0 && fitAt10 > 0 && fitAt10 <= fitAt9, { fitAt9, fitAt10 });
+  let floor = "";
+  try { at(600, 0); } catch (e) { floor = `${(e as { code?: string }).code}: ${(e as Error).message}`; }
+  check("below the request floor the client refuses before any publish, naming the limit",
+    /^resource-exhausted: put-chunk: the broker's 600-byte message limit cannot carry one raw byte/.test(floor), floor);
 
   // ---- the read gate first (S7) ----
   const unknownDigest = sha(new Uint8Array([9, 9, 9]));

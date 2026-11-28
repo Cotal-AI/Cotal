@@ -49,6 +49,9 @@ async function call<T>(ep: ArtifactsCaller, command: string, args: Record<string
 /** The largest raw byte count whose `put-chunk` request fits the broker's limit, measured on the real
  *  frame for this `uploadId` and `seq`. Throws when not even one byte fits. */
 export function fitPutChunk(ep: Pick<ArtifactsCaller, "space" | "maxPayload">, service: ResolvedService, uploadId: string, seq: number, maxRaw: number): number {
+  // The contract bounds one chunk; a larger ask is clamped to it, never sent.
+  maxRaw = Math.min(maxRaw, ARTIFACT_CHUNK_MAX);
+  if (maxRaw < 1) throw new RangeError(`fitPutChunk: maxRaw must be at least 1, got ${maxRaw}`);
   const resolved = service.commands.get(ARTIFACTS_PUT_CHUNK_COMMAND);
   if (resolved === undefined) throw new EpEnvelopeError("not-found", `${ARTIFACTS_ENDPOINT} does not serve ${ARTIFACTS_PUT_CHUNK_COMMAND}`, undefined, "not-executed");
   const budget = ep.maxPayload - HEADER_ALLOWANCE;
