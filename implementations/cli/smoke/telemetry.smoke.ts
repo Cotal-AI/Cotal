@@ -206,12 +206,16 @@ for (const level of ["regular", "minimal"]) {
 
 for (const level of ["regular", "minimal"]) {
   const s = sandbox();
+  const windows = process.platform === "win32";
+  writeFileSync(join(s.project, windows ? "npm.cmd" : "npm"),
+    windows ? "@echo off\r\necho fixture npm failure 1>&2\r\nexit /b 1\r\n" : "#!/bin/sh\nprintf 'fixture npm failure\\n' >&2\nexit 1\n",
+    { mode: 0o700 });
   const r = await s.run(["ext", "remove", "not-installed"], {
     COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: level,
     PATH: s.project, APPDATA: s.home, LOCALAPPDATA: s.home,
   });
   const commands = r.sent.filter((body) => body.event === "command");
-  check(`a seed child failed before removal at ${level}`, r.status === 1 && r.stderr.includes("failed to seed connector") && r.stderr.includes("npm install failed"), shown(r));
+  check(`a seed child failed before removal at ${level}`, r.status === 1 && r.stderr.includes("failed to seed connector") && r.stderr.includes("npm install failed: fixture npm failure"), shown(r));
   check(`only the operator's command reports at ${level}`, commands.length === 1 && commands[0]?.command === "ext" && commands[0]?.exitCode === 1 && commands[0]?.outcome === "error" && (level === "minimal" ? sameKeys(commands[0], MINIMAL) : commands[0]?.subcommand === "remove"), commands.map((body) => body.subcommand));
   check(`the seed child sends no install event at ${level}`, r.sent.filter((body) => body.event === "install").length === (level === "regular" ? 1 : 0));
 }
