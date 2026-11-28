@@ -1,5 +1,6 @@
 ---
 "cotal-ai": patch
+"@cotal-ai/cli": patch
 ---
 
-`cotal daemon status --space <name>` now refuses with `TARGET_NOT_FOUND` (exit 2) and lists any hosted spaces when the background service does not host a Manager for `<name>`, instead of reporting a stopped Manager and exiting 0.
+`cotal daemon status --space <name>` now exits 2 when the background service does not host that Manager, with a next step for the space or `DEPENDENCY_UNAVAILABLE` with the path and recovery advice if a local record could not be read.

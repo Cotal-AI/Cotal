@@ -1270,10 +1270,26 @@ Its log lines, such as a recovered socket, go to stderr. That
 success line is plain text; `--json` shapes its refusals. `status` prints the
 state, version, protocol, process ID, start time and uptime. It also lists each hosted Manager's state,
 instance, PID, restart count, last refusal and Next. `--space <s>` selects one hosted space, including a
-hosted Manager that is stopped or refused. If the daemon does not host a Manager for `<s>`, `status`
-refuses `TARGET_NOT_FOUND` (exit 2), lists any spaces hosted on this computer, and uses `NOT_REQUESTED`
-for a registered space or `NOT_REGISTERED` (with `target.requested`) for an unregistered name. JSON
-carries the same facts. `service-status` reports the machine connection and Manager separately.
+hosted Manager that is stopped or refused. When the background service does not host a Manager for `<s>`,
+`status` refuses with exit 2 instead of reporting a stopped Manager. The refusal lists the spaces
+the background service hosts, or says it hosts none, unless it could not read a local record.
+
+- For an unreadable registration or prepared-space file or folder, or unreadable user-auth state,
+  `DEPENDENCY_UNAVAILABLE` (`UNAVAILABLE`) sets `target: { space, file }` and names the path and how to
+  restore access, recover from backup, or forget a damaged record with `cotal space forget <s>`.
+- For a space enabled on this account computer, `LIFECYCLE_BLOCKED` (`ACCOUNT_DESIRED`) sets
+  `target: { space }`. If the Manager has not started yet, there is nothing to run. If starting it is
+  blocked, status gives the reason and the next step.
+- For a registered remote user-auth space not requested by the account, `TARGET_NOT_FOUND`
+  (`NOT_REQUESTED`) sets `target: { space }` and points to `cotal daemon setup --space <s>`.
+  For a local space the same code names the recorded folder and explains that the background service
+  does not run local spaces. Read the registered stack with `cotal status --space <s>`, or run
+  `cotal up` in the recorded folder if the space is prepared but not running.
+- For an unregistered name, `TARGET_NOT_FOUND` (`NOT_REGISTERED`) sets `target: { requested }` and
+  gives one command: `cotal daemon setup --space <s>` when signed in, setup with the provider's URL
+  when sign-in is required and the provider is known, or `cotal space` when signed out.
+
+JSON carries the same facts. `service-status` reports the machine connection and Manager separately.
 `state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 

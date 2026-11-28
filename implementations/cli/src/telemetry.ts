@@ -97,6 +97,8 @@ export function telemetryErrorText(command: string, error: unknown): ErrorText {
   // A spawn diagnostic can include native terminal output or the original launch arguments.
   if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
       || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
+  // Unhosted or unreadable space status diagnostics name local spaces, hosted sets, and record paths.
+  if (command === "daemon" && isCommandFailure(error) && ["NOT_REGISTERED", "NOT_REQUESTED", "ACCOUNT_DESIRED", "UNAVAILABLE"].includes(String(error.native?.code))) return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
