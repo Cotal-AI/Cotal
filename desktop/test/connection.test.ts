@@ -205,7 +205,7 @@ test("launch readiness, application retry and polling follow the selected space"
     daemonVersion = "older";
     button("refresh").click(); await settle();
     assert.equal(button("connect").disabled, false, "an app replacement keeps stock setup available");
-    assert.equal(title(), "Your connection needs an update");
+    assert.equal(title(), "Cotal was updated");
   } finally { win.close(); }
 });
 
@@ -390,7 +390,7 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
       win.eval(bundle.code);
       await settle();
       assert.equal(doc.documentElement.dataset.watchMode, "refused-unknown-op");
-      assert.equal(doc.getElementById("connection-title")!.textContent, "Your connection needs an update");
+      assert.equal(doc.getElementById("connection-title")!.textContent, "Cotal was updated");
       assert.equal(delays.at(-1), 60_000, "VERSION_MISMATCH schedules a 60 s status recheck");
 
       // First 60 s recheck while daemon is still 0.164.14 stays in VERSION_MISMATCH.
@@ -398,7 +398,7 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
       await tickFn!();
       await settle();
       assert.equal(calls.filter(c => c.op === "status").length, statusBeforeStillSkewed + 1);
-      assert.equal(doc.getElementById("connection-title")!.textContent, "Your connection needs an update");
+      assert.equal(doc.getElementById("connection-title")!.textContent, "Cotal was updated");
 
       // Another process updates the daemon to 0.164.15; next 60 s recheck notices and opens status-watch without a click.
       daemonUpgraded = true;

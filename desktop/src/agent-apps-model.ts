@@ -57,12 +57,21 @@ export function rowView(app: AgentApp, activity: Activity | undefined, platform:
 
 /** What the app says once an install finished, and again once the sign-in that follows it finished, so
  *  a background service that has not picked the app up yet is still said, with its reason. */
-export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string }, signedIn = false): string {
+export interface InstallOwner { kind: "app" | "command line" }
+export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string; serviceOwner?: InstallOwner }, signedIn = false): { text: string; warning: boolean } {
   const state = signedIn ? "signed in" : "installed";
-  if (result.service === "waiting") return `${title} is ${state}. Your spaces can start it once the agents running on this computer stop.`;
-  if (result.service === "failed") return `${title} is ${state}, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`;
+  if (result.service === "waiting") return { text: `${title} is ${state}. Your spaces can start it once the agents running on this computer stop.`, warning: false };
+  if (result.service === "failed") {
+    if (result.serviceOwner) {
+      const copy = result.serviceOwner.kind === "app"
+        ? `Another copy of Cotal runs the background service (the Cotal app in your Applications folder), so ${title} can't be used yet. Open that copy and choose Check again in its Agent apps.`
+        : `Another copy of Cotal runs the background service (a command-line install of Cotal), so ${title} can't be used yet. Run setup again from that install, or use Repair here once it is available.`;
+      return { text: `${title} is ${state}. ${copy}`, warning: true };
+    }
+    return { text: `${title} is ${state}, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`, warning: true };
+  }
   const done = signedIn ? `${title} is ready.` : `${title} is installed.`;
-  return result.pathAdded ? `${done} Cotal added its folder to PATH in ${result.pathAdded}.` : done;
+  return { text: result.pathAdded ? `${done} Cotal added its folder to PATH in ${result.pathAdded}.` : done, warning: false };
 }
 
 /** Where Install downloads from, said before the click: the executables when they are not the app's

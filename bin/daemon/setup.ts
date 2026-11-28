@@ -227,7 +227,8 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   // A Windows task pins no PATH: restarted unchanged, its daemon reads the current user PATH, whichever
   // installation registered it, and keeps the version it runs. A unit or LaunchAgent is rewritten, which
   // only its own installation does. The message names no command line; the terminal remedy still does.
-  if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}` });
+  // The native detail names the owning installation as data, so the app can say it in plain words.
+  if (!installation.same && process.platform !== "win32") throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}`, native: { code: "ANOTHER_INSTALLATION", detail: { owner: { kind: installation.installed.includes(".app/") ? "app" : "command line" } } } });
   const { version: _version, ...unversioned } = opts;
   const expected: InstallOptions = installation.same ? opts : unversioned;
   const unit = process.platform === "win32" ? "" : planUninstall(opts.paths, opts.daemonHome).unit;
