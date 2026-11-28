@@ -35,8 +35,8 @@
  *     with that refusal. Once that service stops, `down` stops the stack and removes the record.
  *  7. Started again with its delivery member stopped with SIGSTOP, as a hang, `down --yes` sends
  *     SIGKILL once 15 seconds pass after SIGTERM, and a `STOP_ESCALATED` warning names the member
- *     and its pid. It keeps the delivery credential, since that daemon never released its lease, so
- *     an `up` right after waits the lease out and starts the stack.
+ *     and its pid. When the lease has expired before the stop, the receipt reports that the delivery
+ *     credential was removed, and the next `up` starts the stack.
  *  8. With the delivery member stopped with SIGSTOP again, once its lease expires `status` names
  *     its pid as alive with no lease, starting or not responding, never `cotal up`, and its Next
  *     names `cotal service status stack-delivery`, then `cotal down --yes` and `cotal up`.
@@ -56,7 +56,7 @@ import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, identityRecord, readProcessCommand } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, identityRecord, readProcessCommand } from "@cotal-ai/workspace";
 
 const PORT = await freePort();
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -399,14 +399,25 @@ try {
   const once = cli("up");
   check("up starts the stack once more", once.status === 0, once.out);
   const frozen = Number(readFileSync(record, "utf8").trim());
+  const credential = join(root, ".cotal", deliveryCredsKey("crash", { injected: false, root }));
+  const credentialBefore = existsSync(credential);
   process.kill(frozen, "SIGSTOP");
+  // A frozen daemon cannot renew. Establish that the lease row is absent, not merely unready.
+  let leaseProbe = "";
+  const leaseAbsent = () => /^\s*delivery\s+not-serving[^\n]* · ready lease absent(?: ·|$)/m.test(leaseProbe);
+  for (const deadline = Date.now() + 60_000; Date.now() < deadline && !leaseAbsent();) {
+    leaseProbe = cli("status", "--components").out;
+    if (!leaseAbsent()) await sleep(1_000);
+  }
   const killed = cli("down", "--yes", "--json");
   const escalated = doc(killed)?.warnings?.find((w) => w.code === "STOP_ESCALATED");
   check("down --yes stops a hung delivery member with SIGKILL and names it in a STOP_ESCALATED warning",
     killed.status === 0 && escalated?.message === `the delivery member, pid ${frozen}, did not exit within 15 s of SIGTERM, so it was stopped with SIGKILL` && !alive(frozen), killed.out);
-  check("...and keeps the delivery credential, as for a daemon already gone", (doc(killed)?.result as { cleanup?: string } | undefined)?.cleanup === "registration-removed-delivery-credential-kept", killed.out);
-  const waited = cli("up");
-  check("up right after waits out the killed daemon's lease and starts the stack", waited.status === 0, waited.out);
+  check("the escalated stop removes the delivery credential when its lease has expired",
+    leaseAbsent() && credentialBefore && !existsSync(credential) &&
+    (doc(killed)?.result as { cleanup?: string } | undefined)?.cleanup === "delivery-credential-and-registration-removed", { leaseProbe, credentialBefore, stop: killed.out });
+  const afterExpiry = cli("up");
+  check("up starts the stack after the expired lease and credential removal", afterExpiry.status === 0, afterExpiry.out);
 
   // 8. A delivery member that runs but holds no lease: status names its pid and the way out.
   const silent = Number(readFileSync(record, "utf8").trim());
