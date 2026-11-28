@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1154,
+    "total": 1164,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 932
+    "non-render/control": 942
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -44,6 +44,13 @@
       "anchor": "blockedDownRootRemedy(at, stop)",
       "class": "non-render/control",
       "rationale": "Down refusal remedy: names what blocks the stack root path and the stop to retry; a filesystem fact, not agent presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "downInOwningRoot(at, values)",
+      "class": "non-render/control",
+      "rationale": "Down dry-run refusal remedy: names the stop command to run from the folder that owns the stack; a registration and filesystem fact, not presence."
     },
     {
       "path": "implementations/cli/src/commands/ext.ts",
@@ -5770,7 +5777,7 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare \\`${displayCmd()} up\\` from ${root}; this stack keeps its recorded address`",
+      "anchor": "recordedAddressRemedy(request, stopHolder)",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -8177,6 +8184,69 @@
       "anchor": "releaseMaintenanceLock(lock)",
       "class": "non-render/control",
       "rationale": "Preserve control flow: releases the maintenance lock; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "where` from cwd.\n  if (!npmEngine(resolved) && basename(dirname(res",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: checks whether the path from `asdf which npm` is already a direct npm or Corepack entry; `result.status` is the asdf child process exit code, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "e(resolved) && basename(dirname(resolved)) === \"shims\" &&\n      b",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: inspects the parent directory name of the resolved npm path to detect an asdf plugin shim; filesystem path control flow, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "asename(dirname(dirname(dirname(resolved)))) === \"plugins\") {\n   ",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: inspects the ancestor directory name of the resolved npm path to detect an asdf plugin shim; filesystem path control flow, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "here\", basename(dirname(dirname(resolved)))]);\n    if (timedOut(w",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: extracts the asdf plugin directory name to pass to `asdf where`; child process argv construction, not peer presence or rendered output."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "timedOut(where)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: checks whether `asdf where` timed out (`ETIMEDOUT`) so a transient timeout is not cached as a permanent negative; child process error handling, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "isAbsolute(installed)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: validates that `asdf where` stdout is an absolute directory path (`where.status` is the child exit code); path validation, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "resolve(installed)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: normalizes the `asdf where` install directory before joining `bin/npm`; filesystem path construction, not peer presence or rendered output."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "resolveOnPath(resolved, env)",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: verifies that the unwrapped npm binary is executable before returning it for child process launch; executable lookup, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/npm-invocation.ts",
+      "kind": "derived-output",
+      "anchor": "d, env) === resolved && npmEngine(resolved) ? { resolved } : {};\n}\n",
+      "class": "non-render/control",
+      "rationale": "Update npm resolution: accepts `asdf which npm` / `asdf where` output only when `npmEngine` recognises it as npm or Corepack; executable identity check, not peer presence."
     }
   ]
 }

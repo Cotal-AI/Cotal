@@ -50,9 +50,10 @@ import {
   type Report,
 } from "@cotal-ai/workspace";
 import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
-import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
+import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, validateAgentSkillsManifest, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
+import { localDiagnostic } from "../telemetry.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
@@ -213,8 +214,6 @@ interface SetupCancelled {
 }
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
-const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name> [--runtime <name>]";
-const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>] [--runtime <name>]";
 /** What to do about a harness setup cannot set up. */
 const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
@@ -292,6 +291,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
  *  then reconcile `~/.agents/skills`. Does not seed personas, offer a global install, or write the
  *  onboarded stamp. */
 async function runSkillsOnly(): Promise<void> {
+  validateAgentSkillsManifest();
   await reconcileConnectorSkills();
   seedAgentSkills();
 }
@@ -303,7 +303,7 @@ function destinationOf(value: string): Destination {
   if (value === "local" || value === "self-hosted") return value;
   if (value === "cloud")
     throw new CommandFailure("refused", "UNSUPPORTED", "setup has no separate Cloud destination: a Cloud space is set up as a registered space", { remedy: "sign in with `cotal login`, which registers your Cloud spaces here (`cotal space` lists them), then run `cotal setup --destination self-hosted --space <name>`" });
-  throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
+  throw localDiagnostic(usage(`--destination ${value} is not a destination: pass local or self-hosted`));
 }
 
 /** The inputs of a run that asks nothing: every one is a flag. With `--yes`, a missing local project folder is created. No
@@ -311,13 +311,13 @@ function destinationOf(value: string): Destination {
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
   if (missing.length > 0) {
-    const form = v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM;
-    const remedy = v.json === true ? form : `${setupLauncher()}${form.slice("cotal".length)}`;
+    const additions = setupFlags.flatMap(flag => "value" in flag && missing.some(name => name === flag.name) ? [`--${flag.name} ${flag.value}`] : []);
+    const remedy = `repeat your original setup command, adding ${codeSpan(additions.join(" "))} with your values`;
     throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, remedy);
   }
   const project = resolve(v.project!);
   const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
-  if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
+  if (!isDir(project) && !createProject) throw localDiagnostic(usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one"));
   return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 
@@ -584,7 +584,7 @@ function runtimeChoices(): RuntimeChoice[] {
 function runtimeFlags(names: readonly string[], choices: readonly RuntimeChoice[]): string[] {
   for (const name of names) {
     const choice = choices.find((r) => r.name === name);
-    if (!choice) throw usage(`--runtime ${name} is not a runtime: pass ${choices.map((r) => r.name).join(", ")}`, "install a third-party runtime with `cotal ext add <package>` first");
+    if (!choice) throw localDiagnostic(usage(`--runtime ${name} is not a runtime: pass ${choices.map((r) => r.name).join(", ")}`, "install a third-party runtime with `cotal ext add <package>` first"));
     if (choice.tools.length > 0 && choice.found === null)
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${name} runtime drives ${choice.tools.join(" or ")}, which is not on PATH`, { remedy: `install ${choice.tools[0]}, then run the same setup again` });
   }
@@ -617,7 +617,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
   if (candidate.launchRestriction) throw new CommandFailure("refused", "UNSUPPORTED", candidate.launchRestriction, { target });
   assertPreferencesFolderProtected();
-  if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
+  if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile, presentation) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
   let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true, false, presentation);
   if (state === "started") {
@@ -661,6 +661,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
   if (opts.demo) checkDemoPersonaPaths(inputs);
+  validateAgentSkillsManifest();
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });

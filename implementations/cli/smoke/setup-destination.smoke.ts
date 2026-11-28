@@ -5,7 +5,7 @@
  * registry serves the tmux and herdr runtimes packed from this checkout.
  *
  * Scripted: every input is a flag, a missing one is refused before anything is written with the
- * scripted form of the destination, a bad space name or harness gets a remedy, Cloud is
+ * missing flags to add to the original command, a bad space name or harness gets a remedy, Cloud is
  * refused with the route a Cloud space takes today, and a refusal leaves the sandbox as it was. A local space is prepared
  * the way `space create` prepares it, its default persona lands in the project's `.cotal/agents`,
  * and the application becomes the space's `harness` preference, and yours when you have none. A
@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { SMOKE_BROKER_TOKEN, createSuite, freePort, listenOn, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { clean, nodePty, wait, type Pty } from "./_console-pty.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -288,21 +289,18 @@ if (process.getuid && process.getuid() !== 0) {
   const before = files();
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
-    refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+    refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && missing.env?.error?.remedy === "repeat your original setup command, adding `--harness <connector> --project <dir> --space <name>` with your values", shown(missing));
   const emptyProject = await json([...FULL("empty-project", ""), "--configure-only", "--yes"], dirs.name);
   check("an empty --project refuses before preparing the current directory",
     refused(emptyProject, 1, "USAGE_INVALID") && /--project \./.test(emptyProject.env?.error?.remedy ?? "") && !existsSync(join(dirs.name, ".cotal")) && findPreparedSpace("empty-project") === undefined, shown(emptyProject));
   const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
-  check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
+  check("a self-hosted setup missing only --project keeps its other inputs",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
-      && (missingHosted.env?.error?.remedy ?? "").startsWith("cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>]"), shown(missingHosted));
-  const windowsLauncher = process.platform === "win32" ? join(more, "cotal.cmd") : undefined;
-  if (windowsLauncher) writeFileSync(windowsLauncher, `@"${process.execPath}" "${BIN}" %*\r\n`);
-  const yes = await run(["setup", "--yes"], home, windowsLauncher ? withMore : undefined);
-  if (windowsLauncher) rmSync(windowsLauncher);
-  check("setup --yes alone is refused the same way, exit 1, with the scripted form and no command help",
+      && missingHosted.env?.error?.remedy === "repeat your original setup command, adding `--project <dir>` with your values", shown(missingHosted));
+  const yes = await run(["setup", "--yes"], home);
+  check("setup --yes alone lists both destination choices and the missing flags without command help",
     yes.status === 1 && /pass --destination, --harness, --project, --space/.test(yes.stderr) &&
-    yes.stderr.includes(`${windowsLauncher ? "cotal.cmd" : commandPrefix} setup --destination local --harness <connector>`) && !/^Usage$/m.test(yes.stderr), shown(yes));
+    yes.stderr.includes("--destination <local|self-hosted> --harness <connector>") && !/^Usage$/m.test(yes.stderr), shown(yes));
   const cloud = await json(FULL("c1", dirs.cloud).map((a) => (a === "local" ? "cloud" : a)));
   check("--destination cloud is UNSUPPORTED, exit 2, naming the self-hosted route after cotal login",
     refused(cloud, 2, "UNSUPPORTED") && /no separate Cloud destination/.test(cloud.env?.error?.message ?? "") && /`cotal login`.*--destination self-hosted --space <name>/.test(cloud.env?.error?.remedy ?? ""), shown(cloud));
@@ -369,8 +367,8 @@ if (process.getuid && process.getuid() !== 0) {
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
-  check("...and its next step creates it in another folder with --project, or starts, selects or forgets research",
-    literal(`create "research2" in another folder with --project <dir>; for "research", which uses this folder, start it with \`cotal up\` from ${dir}, select it with \`cotal use research\`, or forget it with \`cotal space forget research\``).test(other.env?.error?.remedy ?? ""), other.env?.error);
+  check("...and its next step inspects the existing space or creates the new one in another folder",
+    other.env?.error?.remedy === 'inspect what uses this folder with `cotal space show research --json`; to create "research2", choose another folder with --project <dir>', other.env?.error);
   const moved = await json(FULL("research", project("elsewhere")));
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
@@ -532,6 +530,14 @@ if (process.platform !== "win32") {
   check("a space prepared here is not self-hosted: CONFLICT", refused(local, 2, "CONFLICT") && /--destination local/.test(local.env?.error?.remedy ?? ""), shown(local));
   check("those refusals wrote nothing", JSON.stringify(files()) === JSON.stringify(before));
 
+  const intake = await openTelemetryIntake();
+  try {
+    const marker = "fixture-folder-marker", wrongRoot = project(`other ${marker}`);
+    const wrong = await json(hosted("team", wrongRoot), notTeam, { DO_NOT_TRACK: "0", COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url });
+    const event = intake.received.find(row => row.event === "command");
+    check("a hosted project mismatch names the requested folder only locally", refused(wrong, 2, "CONFLICT") && wrong.stdout.includes(marker) &&
+      event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(intake.received).includes(marker), shown(wrong));
+  } finally { intake.server.close(); }
   const ok = await json(hosted("team", teamRoot));
   const target = resolveMeshTarget(home, { space: "team" });
   check("a registered space is set up where spawn reads its personas",
@@ -614,7 +620,10 @@ ${block.slice("bash\n".length).replaceAll("research", "scripted-hosted-research"
   check("the same connection file refreshes the plugin without registering again", again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && again.env.result.spaceState === "registered", shown(again));
   writeFileSync(join(home, "moved.json"), JSON.stringify({ ...bundle, server: "nats://127.0.0.1:4998" }));
   const moved = await json(hosted("hosted", userRoot, ["--connection-file", join(home, "moved.json")]));
-  check("a connection file naming another broker for a registered space is CONFLICT", refused(moved, 2, "CONFLICT") && /cotal space forget hosted/.test(moved.env?.error?.remedy ?? ""), shown(moved));
+  const advice = moved.env?.error?.remedy ?? "";
+  const inspect = /`cotal (space show hosted --json)`/.exec(advice);
+  const inspected = inspect && await run(inspect[1]!.split(" "), notTeam);
+  check("a conflicting bundle points to the unchanged registration before suggesting a retry", refused(moved, 2, "CONFLICT") && inspected?.status === 0 && inspected.stdout.includes(AUTH_LIVE) && advice.includes("without --connection-file") && !advice.includes("space forget") && findMesh("hosted")?.server === AUTH_LIVE, shown(moved));
 }
 
 // ── Runtimes ──────────────────────────────────────────────────────────────────────────────────────
@@ -960,5 +969,16 @@ if (process.platform !== "win32") {
       && existsSync(probed) && !existsSync(join(startDir, ".cotal")), shown(started));
 }
 
+// Keeping --yes matters: this local project does not exist until the corrected invocation creates it.
+{
+  const dir = join(home, "setup retry project");
+  const original = ["setup", "--destination", "local", "--harness", "codex", "--project", dir, "--yes", "--configure-only"];
+  const missing = await json(original);
+  const addition = missing.env?.error?.remedy?.match(/`(--space) <name>`/)?.[1];
+  check("the refusal names only the missing space and creates no project", refused(missing, 1, "USAGE_INVALID") && addition === "--space" && !existsSync(dir), shown(missing));
+  const retried = addition ? await json([...original, addition, "setup-retry"]) : undefined;
+  check("adding the printed option prepares the intended project without starting it", retried?.status === 0 && retried.env?.result?.startup?.state === "not-requested"
+    && findPreparedSpace("setup-retry")?.root === dir && harnessOf("setup-retry") === "codex" && existsSync(join(dir, ".cotal", "agents", "default.md")) && !existsSync(join(dir, ".cotal", "stack-controller.json")), retried && shown(retried));
+}
 finish();
 process.exit(process.exitCode ?? 0);

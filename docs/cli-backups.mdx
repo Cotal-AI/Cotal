@@ -72,11 +72,13 @@ to wait for it. A create that finds the root's maintenance lock held, such as by
 Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
 refusal, because create writes only a new directory. If an otherwise eligible destination's parent
 does not exist, create refuses `TARGET_NOT_FOUND` (exit 2) and names that parent. Create makes only
-the artifact's own folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a
+the artifact's own folder. If a link on the way to that parent has no target, the refusal names the
+link. Repair the linked folder or choose a destination in an existing directory.
+A destination check that finds a non-directory parent (`ENOTDIR`) or a
 symbolic-link loop (`ELOOP`) refuses `USAGE_INVALID` (exit 1), naming the destination and its parent. Choose a destination
 with a directory parent; no attempt was started and the preservation journal is unchanged.
-A destination that overlaps the maintenance attempt directory refuses `USAGE_INVALID` (exit 1).
-Choose a destination outside that directory. The same refusal covers the maintenance journal
+A destination that overlaps the maintenance attempt directory refuses `USAGE_INVALID` (exit 1),
+even when its parent does not yet exist. Choose a destination outside that directory. The same refusal covers the maintenance journal
 directory `.cotal/maintenance/v1`, the lock path `.cotal/maintenance/lock.json`, and the lock
 recovery path `.cotal/maintenance/lock-reaper.json`, including a destination that is either lock
 path. A backup stored directly under `.cotal/maintenance`, beside those paths, is still accepted.
@@ -144,7 +146,7 @@ such as one with `../` or an absolute path, has the fault `invalid-name` and is 
 A `manifest.json` that is not a regular file, is larger than 1 MiB or is not a valid manifest
 has the fault `manifest-not-regular`, `manifest-too-large` or
 `manifest-invalid`. `backup restore` and `up --restore` refuse these schema and integrity faults
-with `SCHEMA_INVALID` and the same file and fault as `backup verify`.
+with `SCHEMA_INVALID` and the same file and fault as `backup verify`. The suggested verification command keeps the requested JSON or plain output. File diagnostics stay local; command telemetry keeps the refusal code without the diagnostic message or stack.
 For a ready cut, these permission, schema and integrity refusals do not claim or move the
 preserved store. Restore removes any partial stage it made. If restore finds a stale earlier
 attempt, it can roll that attempt back before checking the artifact contents. This can move the
@@ -162,9 +164,9 @@ interrupted before it wrote a file is still an incomplete artifact. A path that 
 `TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
 `backup restore` does. If this account cannot search the path to the artifact, these commands refuse
 `PERMISSION_DENIED` (exit 2) before reading the artifact or staging a restore. Grant search access on
-the folder that blocks traversal, or use an accessible copy. `backup inspect` and `backup verify`
-need both read and search access on the artifact folder itself. If either is denied, they report
-`PERMISSION_DENIED` and leave the backup unchanged. A path through a symbolic-link loop
+the folder that blocks traversal, or use an accessible copy. `backup inspect`, `backup verify`,
+`backup restore` and `up --restore` need both read and search access on the artifact folder itself.
+If either is denied, they report `PERMISSION_DENIED`, name the folder and leave the backup unchanged. A path through a symbolic-link loop
 refuses `USAGE_INVALID` (exit 1) before the artifact is read or a restore attempt is staged. Fix the
 link or use a path that avoids it.
 A full artifact of an authenticated space
@@ -289,9 +291,7 @@ store it set aside. A reopened step accepts an answer again. `cotal status` and 
 the prior run journals on the same isolated copy of the store it sets aside, so such a restore takes
 longer and needs disk space for that copy.
 
-If `--store-dir` names a symbolic link to an existing directory, restore refuses `USAGE_INVALID`
-(exit 1) before staging. Choose an unused path inside an existing writable directory instead of
-using the link's target.
+Restore refuses `USAGE_INVALID` (exit 1) before staging if `--store-dir` names a symbolic link or a regular file, or if a regular file blocks the path. The only store path allowed inside `.cotal` is the project's default store. For an alternate store, choose an unused path in an existing writable directory outside `.cotal`. The restore creates the store directory.
 
 `up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
 creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after

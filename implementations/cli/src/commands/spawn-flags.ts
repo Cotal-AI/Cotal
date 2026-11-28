@@ -11,7 +11,7 @@ import { displayCmd } from "../lib/self-exec.js";
 export const spawnFlags = [
   spaceFlag,
   serverFlag,
-  { ...credsFlag, description: "control-caller creds for an off-registry manager (with --detach or --on)" },
+  { ...credsFlag, description: "retained credential-file option; a raw file cannot authorize a managed launch" },
   ...launchFlags,
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "application connector; an explicit flag wins over persona and saved defaults" },
   { name: "foreground", type: "boolean", description: "run the application in this terminal, as a spawn without --detach or --on does; terminal exit may end it" },

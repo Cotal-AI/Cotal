@@ -436,11 +436,30 @@ test('source-root refuses non-repositories and untracked product inputs', () => 
   const outside = mkdtempSync(join(tmpdir(), 'not-git-'));
   assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
 });
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('excluded cell uses hosted RUNNER_TEMP unless the caller names an output directory', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'matrix-temp-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const driver = join(import.meta.dirname, 'automatic-update-platform-baseline.mjs');
+  const runner = join(root, 'runner');
+  const run = (...args) => JSON.parse(execFileSync(process.execPath, [driver, '--state', 'fresh', '--method', 'scheduler', ...args], {
+    env: { ...process.env, RUNNER_TEMP: runner, GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', GITHUB_SHA: '0'.repeat(40) },
+    encoding: 'utf8',
+  }));
+  const output = join(root, 'explicit evidence');
+  const explicit = run('--output', output);
+  assert.equal(explicit.result, 'excluded');
+  assert.deepEqual(JSON.parse(readFileSync(join(output, `${explicit.id}.json`), 'utf8')), explicit);
+  assert(!existsSync(runner));
+  const hosted = run();
+  assert.equal(hosted.result, 'excluded');
+  assert.deepEqual(JSON.parse(readFileSync(join(runner, 'upgrade-evidence', `${hosted.id}.json`), 'utf8')), hosted);
+});
 
 test('old ready daemon verifying installed generation is not target readiness', () => {
   assert(!nativeGenerationReady({ state: 'ready', version: '0.160.7', generation: { installed: '0.164.2', running: '0.160.7', waiting: 'verifying the installed entry' } }, '0.164.2'));
@@ -490,9 +509,10 @@ test('bootstrap versions bracket stable published releases', () => {
   assert.throws(() => bootstrapVersion('0.164.2-beta.1', 'B'));
 });
 
-test('workflow bounds diagnostics and preserves every immutable release head without cancellation', () => {
+test('workflow bounds diagnostics and cancels only the replaced head of a pull request', () => {
   const workflow = parseYaml(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
-  assert.equal(workflow.concurrency, undefined);
+  assert.equal(workflow.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}");
+  assert(workflow.concurrency.group.endsWith('|| github.run_id }}'));
   assert(workflow.on.pull_request.types.includes('synchronize'));
   assert.deepEqual(workflow.on.workflow_run.workflows, ['Changesets']);
   assert(workflow.jobs.priority);

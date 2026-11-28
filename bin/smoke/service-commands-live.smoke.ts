@@ -392,10 +392,14 @@ try {
       check(`a running manager preview diagnoses invalid ${flag} without advising a stop`,
         invalid.status === 2 && JSON.parse(invalid.stdout).error?.code === code && !out(invalid).includes("manager stop"), out(invalid));
     }
-    const other = cotal(["manager", "start", "--max-sessions", "5", "--dry-run"]);
-    check("a valid replacement for a running manager refuses and names the stop",
-      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --max-sessions") && out(other).includes(`cotal manager stop --space ${SPACE}`)
-      && inventory().running.filter((name) => name === "manager").length === 1, out(other));
+    for (const preview of [true, false]) {
+      const other = cotal(["manager", "start", "--max-sessions", "5", ...(preview ? ["--dry-run"] : []), "--json"]);
+      const { error } = JSON.parse(other.stdout);
+      check(`a running manager refuses changed settings and suggests a scoped ${preview ? "stop preview" : "stop"} in JSON`,
+        other.status === 2 && error?.code === "LIFECYCLE_BLOCKED" && error.message.includes("manager is running with another --max-sessions")
+        && error.remedy.includes(`\`cotal manager stop --space ${SPACE}${preview ? " --dry-run" : ""} --json\``)
+        && inventory().running.filter((name) => name === "manager").length === 1, out(other));
+    }
 
     // ---- A program of your own: add with --exec, start, status, logs, stop -----------------------
     const script = join(root, "hello.sh");

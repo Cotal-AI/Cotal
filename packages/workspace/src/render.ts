@@ -40,11 +40,11 @@ export interface WorkspaceErrorParts {
 const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy === undefined ? { message } : { message, remedy });
 
 /** The choices when a prepared space's recorded path cannot be used. */
-export function preparedRootRemedy(space: string, problem: ProjectRootProblem): string {
+export function preparedRootRemedy(space: string, problem: ProjectRootProblem, retryAfterMissing?: string): string {
   if (problem === "inaccessible") return "restore access to the original project folder, then try again";
   const name = shellPath(space);
-  const reprepare = `forget it with ${codeSpan(`cotal space forget ${space.startsWith("-") ? "-- " : ""}${name}`)}, then prepare it again with ${codeSpan(`cotal space create ${space.startsWith("-") ? "<name>" : name} --root <dir>`)}`;
-  return problem === "missing" ? reprepare : `restore the original project folder at its recorded path, or ${reprepare}`;
+  const next = problem === "missing" && retryAfterMissing ? retryAfterMissing : `prepare it again with ${codeSpan(`cotal space create ${space.startsWith("-") ? "<name>" : name} --root <dir>`)}`;
+  return `restore the original project folder at its recorded path, or forget it with ${codeSpan(`cotal space forget ${space.startsWith("-") ? "-- " : ""}${name}`)}, then ${next}`;
 }
 
 /** A workspace failure as its message and remedy, for a caller that reports them apart, such as a
@@ -135,6 +135,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
           ? parts(`${message}, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
           : parts(message, preparedRootRemedy(d.space, problem));
       }
+      if (d.firstStartServer !== undefined && d.space !== undefined && d.root !== undefined) {
+        const message = `"${d.space}" is prepared but not started`;
+        if (d.firstStartServer === null) return parts(message, "check the requested broker and select its registered space; this prepared project has no recorded broker");
+        const start = `cotal up --root ${shellPath(d.root)} --space${d.space.startsWith("-") ? "=" : " "}${shellPath(d.space)} --server ${shellPath(d.firstStartServer)}`;
+        return { message, remedy: `start it with ${codeSpan(start)}`, restartRoot: d.root };
+      }
       if (d.space !== undefined) return d.unsettled !== undefined
         ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
         : d.stopped !== undefined
@@ -212,12 +218,12 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // space, so the folder is what to name, with the step that prepares a space in it again.
       if (t.namesNoSpace)
         return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${shellPath(t.root)}\`, or select one with \`cotal use <name>\``);
-      // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
-      // remedy here — this machine can only wait for it or stop pointing at it.
-      if (t.origin === "manual" || t.origin === "catalog")
-        return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, t.origin === "catalog"
-          ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
-          : `start it where it runs, or ${codeSpan(`cotal space forget ${shellPath(t.space)}`)} to unregister it`);
+      // Missing a registered broker from here says nothing about whether it still serves its host.
+      if (t.origin === "manual" || t.origin === "catalog") {
+        const unregister = t.origin === "catalog" ? "remove it from the provider's catalog and run `cotal sync`" : `run ${codeSpan(`cotal space forget ${shellPath(t.space)}`)}`;
+        return parts(`no broker answered at ${server} from this machine; "${t.space}" is still registered here`,
+          `check the address and connection to the host; start the broker there if it is stopped. To unregister this space, ${unregister}`);
+      }
       if (projectRootProblem(t.root) === "not-directory")
         return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which is not a directory`, preparedRootRemedy(t.space, "not-directory"));
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`

@@ -42,6 +42,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
+import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-events-home-"));
@@ -236,6 +238,22 @@ async function checkPersonaRefusals() {
   check("a bad explicit name is not blamed on the persona", explicit.status === 1 && explicit.stderr.includes('unsafe name "Invalid Name"') &&
     !explicit.stderr.includes("frontmatter name"), explicit.stderr);
   if (process.platform === "win32") return;
+  const marker = "private launch directory";
+  const longDir = join(home, `${marker} ${"x".repeat(100)}`);
+  mkdirSync(longDir);
+  const intake = await openTelemetryIntake();
+  try {
+    const connector = new URL("../../../extensions/connector-codex/dist/index.js", import.meta.url).href;
+    const result = await foregroundCliProbe(binary, connector, caller, {
+      ...env, HOME: home, TMPDIR: longDir, COTAL_CODEX_BIN: process.execPath,
+      DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url,
+    }, ["spawn", "--foreground", "--agent", "codex", "--file", persona, ...selectors]);
+    const event = intake.received.find(body => body.event === "command");
+    check("an overlong control socket path stays in the local launch refusal", result.code === 1 &&
+      result.err.includes(marker) && /Point TMPDIR at a shorter directory/.test(result.err.replace(/\s+/g, " ")) &&
+      event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null &&
+      !JSON.stringify(intake.received).includes(marker), result);
+  } finally { intake.server.close(); }
   const parentFile = join(realpathSync(caller), "plain-parent");
   writeFileSync(parentFile, "not a directory");
   const fileArgs = ["--file", "plain-parent/nested/persona.md", ...selectors];
@@ -351,6 +369,10 @@ try {
       if (pin === undefined) delete process.env.COTAL_OPENCODE_BIN; else process.env.COTAL_OPENCODE_BIN = pin;
     }
   }
+  const outside = await openRun(["--agent", "fg-probe-live", "--subscribe", "other"]);
+  check("a foreground subscription outside the persona policy refuses before launch and explains how to retry",
+    outside.exited === 1 && outside.opts === undefined && outside.stderr.includes('subscribe "other" is not within allowSubscribe') &&
+    outside.stderr.includes("omit the conflicting channel override"), outside.stderr);
   // CONTROL FIRST. Without it every assertion below could be passing because the launch never
   // reached the connector at all, which is exactly how the first draft of this suite fooled itself.
   {
@@ -536,7 +558,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 50;
+const EXPECTED = process.platform === "win32" ? 42 : 52;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

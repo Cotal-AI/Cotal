@@ -88,6 +88,10 @@ The effective value is the channel override, then the space default, then `true`
 `replayWindow` bounds the backfill horizon, for example `"24h"`. It uses the channel override or the space default.
 Without either window, backfill covers the retained history. See [SPEC §7](../SPEC.md#7-channels).
 
+Join replay reads and delivers history in pages. Overlapping subscriptions do not deliver a second historical copy of the same post during that join.
+If a connection change interrupts a join during a session, the join reports how many posts it replayed and leaves the channel unjoined.
+Retry the join to finish replay and catch up on retained posts sent before the new subscription was confirmed, without receiving posts already delivered during either attempt.
+
 <Callout type="warn" title="Replay does not restrict history access">
 `replay: false` suppresses automatic history backfill on join. It does not restrict an ACL holder's on-demand reads of retained content.
 The read ACL is the confidentiality boundary. Confidential content uses a DM or anycast.

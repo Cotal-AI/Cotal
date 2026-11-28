@@ -124,6 +124,7 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const home = join(dir, "home");
 mkdirSync(home, { recursive: true });
 process.env.COTAL_HOME = home;
+process.env.DO_NOT_TRACK = "1"; // Fixture CLI calls must not create a telemetry identity or send events.
 const workspaceRoot = join(dir, "ws");
 const sinkDir = join(dir, "sinks");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });

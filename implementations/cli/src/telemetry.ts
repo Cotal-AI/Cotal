@@ -11,6 +11,8 @@ import {
   extensionProvides,
   homeCotalDir,
   isCommandFailure,
+  isConnectRefusal,
+  isWorkspaceTargetError,
   loadExtensionsManifest,
   markTelemetryNoticeShown,
   readMeshRegistry,
@@ -20,7 +22,7 @@ import {
   type TelemetrySettings,
 } from "@cotal-ai/workspace";
 import { metadataPositionals } from "./lib/command-path.js";
-import { cliVersion } from "./seed/paths.js";
+import { cliVersion, SeedWriterRefusal } from "./seed/paths.js";
 
 /**
  * Anonymous usage telemetry for the CLI: one small event per command, sent as the process exits, and
@@ -47,10 +49,10 @@ const PATH = /(?:~|[A-Za-z]:)?(?:[\\/][^\s\\/'"`:)]+){2,}/g;
 const TOKEN = /[A-Za-z0-9_-]{32,}/g;
 const FRAME_PATH = /(?:file:\/\/)?(?:[A-Za-z]:)?[\\/][^\s()]+/g;
 
-/** An error message with what could identify someone masked: quoted words (the CLI quotes every
- *  user value it echoes), URLs, email addresses, IPv4 addresses, paths (the home directory first,
- *  so a path under it reads as one) and any token-shaped run of 32 characters or more. */
+/** Mask identifying values before sending a diagnostic. The local read-policy refusal includes
+ *  the entire allow list in brackets, with no quotes around its individual channel names. */
 export function scrubErrorText(text: string, max = MAX_MESSAGE): string {
+  if (text.includes(" is not within allowSubscribe [")) return "subscription is not within allowSubscribe".slice(0, max);
   return text
     .split(HOME).join("~")
     .replace(QUOTED, "$1<value>$1")
@@ -78,12 +80,37 @@ interface ErrorText {
   readonly stack: string | null;
 }
 
-export function telemetryErrorText(command: string, error: unknown): ErrorText {
+const localDiagnostics = new WeakSet<Error>();
+
+/** Keep this error's operator text and stack out of telemetry without changing the local failure. */
+export function localDiagnostic<T extends Error>(error: T): T {
+  localDiagnostics.add(error);
+  return error;
+}
+
+export function telemetryErrorText(command: string, error: unknown, flags: readonly string[] = []): ErrorText {
+  // A pinned input usage error can repeat the terminal text in the original command's retry.
+  if (command === "input" && flags.includes("--on") && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
+  if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
+  // A preferences validation or read error can include a path and text from the operator's file.
+  if (isCommandFailure(error) && error.code === "SCHEMA_INVALID" && error.target !== null &&
+      typeof error.target === "object" && "preferencesFile" in error.target) return { message: null, stack: null };
+  // Credential-file refusals name the local file, even after a command restates the connection error.
+  if (flags.includes("--creds") && (isConnectRefusal(error) || isCommandFailure(error)) && error.target !== null &&
+      typeof error.target === "object" && "path" in error.target && typeof error.target.path === "string") return { message: null, stack: null };
+  // The connection error includes the stopped project's local restart instructions in its text.
+  if (isConnectRefusal(error) && isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") return { message: null, stack: null };
   // Help shows the requested topic and can suggest commands from local extensions.
   if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
+  // A manager's negative attach lookup names the agent and the answering instance.
+  if (command === "attach" && isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.native?.code === "not-found") return { message: null, stack: null };
   // A spawn diagnostic can include native terminal output or the original launch arguments.
   if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
       || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
+  // A missing Manager pin names the requested instance, its space and any running instances.
+  if (isCommandFailure(error) && (error.code === "TARGET_NOT_FOUND" || error.code === "TARGET_UNAVAILABLE") &&
+      error.target !== null && typeof error.target === "object" && "requestedManagerInstance" in error.target &&
+      typeof error.target.requestedManagerInstance === "string") return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
@@ -173,7 +200,7 @@ export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode | null,
 /** Record the error a command threw, once: the first one recorded is the original, and a wrapper
  *  the kernel builds from it afterwards does not replace it. */
 export function recordTelemetryError(error: unknown): void {
-  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error);
+  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error, pending.flags);
 }
 
 /**

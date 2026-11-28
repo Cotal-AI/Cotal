@@ -230,7 +230,7 @@ export class SeatStart {
     // spawns could overshoot the ceiling or pick the same name.
     let occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
     if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
-    const recheck = this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
+    const recheck = this.parts.connectorInventory.refreshConnectors(connector.name, true);
     if (recheck) {
       await recheck;
       occupancy = this.namesCapacity.occupancy();
@@ -241,7 +241,7 @@ export class SeatStart {
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
     const harness = this.parts.harnessResolution.launchHarness(connector);
-    if ("refusal" in harness) return { ok: false, error: this.harnessUnavailableError(harness.refusal, opts.route ?? "inst") };
+    if ("refusal" in harness) return { ok: false, error: this.harnessUnavailableError(harness.refusal, opts.route) };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.

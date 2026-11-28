@@ -8,6 +8,9 @@ export async function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () =
   finally { clearTimeout(timer); }
 }
 
+/** Default budget for an endpoint operation waiting on connection recovery. */
+export const CONNECTION_RECOVERY_MS = 10_000;
+
 /** The wait a `Retry-After` header names, in whole seconds. Only one to eight digits above zero, or
  *  an IMF date at most about three years ahead, counts. Anything else, including zero, is absent. */
 export function retryAfterSeconds(value: string | null): number | undefined {

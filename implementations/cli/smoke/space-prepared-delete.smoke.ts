@@ -21,7 +21,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { spaceSegment } from "@cotal-ai/workspace";
+import { shellPath, spaceSegment } from "@cotal-ai/workspace";
 import { ptySpawn, screen } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -93,6 +93,13 @@ for (const verb of ["describe", "invoke"]) {
 }
 
 const server = "nats://127.0.0.1:43842";
+const roster = run(["ps", "--space", "b4b", "--server", server, "--json"], home);
+check("a prepared roster lookup keeps the root, space and loopback port on the first start",
+  roster.status === 2 && roster.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+  roster.envelope.error.remedy === `start it with \`cotal up --root ${shellPath(realpathSync(root))} --space b4b --server ${shellPath(server)}\``, shown(roster));
+const remoteRoster = run(["ps", "--space", "b4b", "--server", "nats://broker.example.test:43842", "--json"], home);
+check("a remote dial address is not a first local start command",
+  remoteRoster.status === 2 && remoteRoster.envelope?.error?.remedy?.includes("no recorded broker") === true && !remoteRoster.stdout.includes("cotal up"), shown(remoteRoster));
 const beforeMint = readdirSync(join(root, ".cotal")).sort();
 const out = join(home, "alice.creds");
 const mint = run(["auth", "mint", "alice", "--server", server, "--out", out, "--json"]);
@@ -368,8 +375,8 @@ const addedOffline = run(["space", "add", "offline", "--server", server, "--root
 const manualConflict = run(["space", "create", "new-local", "--plain"], noSpace);
 check("space create at a manual registration's root points to its broker host and exact registration",
   addedOffline.status === 0 && manualConflict.status === 2 && /Code: +CONFLICT/.test(manualConflict.stderr) &&
-    manualConflict.stderr.includes('create "new-local" in another folder with --root <dir>; for "offline", start its broker where it runs') &&
-    ["cotal", "pnpm cotal"].some((cli) => manualConflict.stderr.includes(`inspect the registration with \`${cli} space show offline\`, or forget it with \`${cli} space forget offline\``)) &&
+    manualConflict.stderr.includes('to create "new-local", choose another folder with --root <dir>') &&
+    manualConflict.stderr.includes("space show offline --plain`") && !manualConflict.stderr.includes("space forget") &&
     !/`(?:pnpm )?cotal up`/.test(manualConflict.stderr), shown(manualConflict));
 const offline = run(["space", "delete", "offline", "--dry-run", "--json"]);
 check("a failed deletion preview names the recorded broker and how to inspect its registration",
@@ -395,8 +402,7 @@ check("delete help describes -y without the add text first", help.status === 0 &
 const second = run(["space", "create", "b4c", "--root", root, "--json"]);
 check("space create in a folder another space holds is CONFLICT, exit 2, naming the steps for that space",
   second.status === 2 && second.envelope?.error?.code === "CONFLICT"
-    && Boolean(second.envelope.error.remedy?.startsWith('create "b4c" in another folder with --root <dir>; for "b4b", which uses this folder, start it with `cotal up` from '))
-    && Boolean(second.envelope.error.remedy?.endsWith(", select it with `cotal use b4b`, or forget it with `cotal space forget b4b`")), second.envelope?.error);
+    && second.envelope.error.remedy === 'inspect what uses this folder with `cotal space show b4b --json`; to create "b4c", choose another folder with --root <dir>', second.envelope?.error);
 
 // --yes belongs to space delete too; the refusal named space add alone.
 const forgetYes = run(["space", "forget", "b4b", "--yes"]);
@@ -417,8 +423,8 @@ const sharedConflict = run(["space", "create", "new-local", "--json"], workshop)
 const sharedRemedy = sharedConflict.envelope?.error?.remedy ?? "";
 check("a shared manual root names each registration in the JSON remedy without suggesting local startup",
   sharedConflict.status === 2 && sharedConflict.envelope?.error?.code === "CONFLICT" &&
-    workshops.every((space) => sharedRemedy.includes(`for "${space}", start its broker where it runs, inspect the registration with \`cotal space show ${space}\`, or forget it with \`cotal space forget ${space}\``)) &&
-    !sharedRemedy.includes("`cotal up`"), shown(sharedConflict));
+    workshops.every((space) => sharedRemedy.includes(`\`cotal space show ${space} --json\``)) &&
+    !sharedRemedy.includes("`cotal up`") && !sharedRemedy.includes("space forget"), shown(sharedConflict));
 const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], workshop);
 check("doctor keeps the local open-space no-op and warns that the mode was not checked",
   unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&

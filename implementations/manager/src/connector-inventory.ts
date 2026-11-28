@@ -17,10 +17,13 @@ export interface ConnectorInventorySettings {
 /** The connector inventory taken at boot: which harnesses resolve on this host and the notes for those that do not.
  *  It owns the rows; other parts hold this object and read them at use. */
 export class ConnectorInventory {
-  /** Connector harness inventory. Available paths stay pinned; unavailable rows are retried when
-   * launch, model lookup or status asks, without stopping unrelated Manager work. */
+  /** Connector harness inventory. Available paths stay pinned while they still exist and resolve on
+   *  PATH. Missing or removed rows are rechecked when launch, model lookup or status asks, without
+   *  stopping unrelated Manager work, and a once-available connector never silently switches to a
+   *  different executable path across flaps. */
   connectorStatuses: ManagerConnectorStatus[] = [];
   private connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
+  private pinnedBinaries = new Map<string, Readonly<Record<string, string>>>();
   private claudeWakeRecheck?: Promise<void>;
   /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
   bootNotes: string[] = [];
@@ -37,6 +40,7 @@ export class ConnectorInventory {
    * boot continues, names it once start completes and records it on both manager status surfaces. */
   async inspectConnectorsAtBoot(): Promise<void> {
     this.bootNotes = [];
+    this.pinnedBinaries.clear();
     if (this.settings.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
     let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; pkg?: string }>;
@@ -71,6 +75,7 @@ export class ConnectorInventory {
         rows.push({ agent: name, state: "unavailable", ...facts, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
+        this.pinnedBinaries.set(name, { ...binaries });
         rows.push({ agent: name, state: "available", ...facts });
       }
     }
@@ -90,25 +95,39 @@ export class ConnectorInventory {
       cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
       await provider.connector.run({ cotal, machineHost: true });
     } catch (error) {
-      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
-      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.settings.machineSetupCommand}\` on this computer.`;
+      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800)).replace(/[.!?]+$/, "");
+      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.settings.machineSetupCommand}\` on this computer`;
     }
   }
 
-  /** Retry unavailable applications without changing resolved available rows. Claude launches
-   *  join the status or launch that started wake setup, before any name or capacity is reserved. */
-  refreshUnavailableConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
+  /** Recheck available applications and retry unavailable ones. Claude launches join the status or
+   *  launch that started wake setup, before any name or capacity is reserved. */
+  refreshConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
     const wasEnabled = this.parts.seatLaunch.classSpawnEnabled();
     let pending: Promise<void> | undefined;
     for (const row of this.connectorStatuses) {
-      if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
+      if (name !== undefined && row.agent !== name) continue;
       const requirements = this.connectorRequirements.get(row.agent);
+      if (row.state === "available") {
+        const pinned = this.pinnedBinaries.get(row.agent) ?? { ...row.binaries };
+        this.pinnedBinaries.set(row.agent, pinned);
+        const requires = requirements?.requires ?? Object.keys(pinned);
+        const { binaries, reason } = resolveHarness(row.agent, requires, pinned);
+        row.binaries = binaries;
+        if (reason) {
+          row.state = "unavailable";
+          row.reason = reason;
+          this.parts.harnessResolution.forgetCatalog(row.agent);
+        }
+        continue;
+      }
       if (!requirements) continue;
       if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
         pending = this.claudeWakeRecheck;
         continue;
       }
-      const { binaries, reason } = resolveHarness(row.agent, requirements.requires);
+      const pinned = this.pinnedBinaries.get(row.agent);
+      const { binaries, reason } = resolveHarness(row.agent, requirements.requires, pinned);
       if (reason) {
         row.binaries = binaries;
         row.reason = reason;
@@ -116,21 +135,24 @@ export class ConnectorInventory {
         const release = setupClaude ? this.beginLifecycle(true) : undefined;
         if (!release) continue;
         pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
-          row.binaries = binaries;
-          if (failure) { row.reason = failure; return; }
+          const rechecked = resolveHarness(row.agent, requirements.requires, pinned ?? binaries);
+          row.binaries = rechecked.binaries;
+          if (failure || rechecked.reason) { row.reason = failure ?? rechecked.reason; return; }
           const alreadyEnabled = this.parts.seatLaunch.classSpawnEnabled();
+          this.pinnedBinaries.set(row.agent, { ...rechecked.binaries });
           row.state = "available";
           delete row.reason;
-          if (!alreadyEnabled) this.parts.servePlane.enableClassSpawn();
+          if (!alreadyEnabled) this.parts.servePlane.syncClassSpawn();
         }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
         void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
       } else {
+        this.pinnedBinaries.set(row.agent, { ...binaries });
         row.binaries = binaries;
         row.state = "available";
         delete row.reason;
       }
     }
-    if (!wasEnabled && this.parts.seatLaunch.classSpawnEnabled()) this.parts.servePlane.enableClassSpawn();
+    if (wasEnabled !== this.parts.seatLaunch.classSpawnEnabled()) this.parts.servePlane.syncClassSpawn();
     return pending;
   }
 }

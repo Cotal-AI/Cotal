@@ -85,7 +85,7 @@ const loose = join(rosters, "loose.yaml");
 writeFileSync(loose, "agents: []\n");
 chmodSync(loose, 0o666);
 const link = join(rosters, "link.yaml");
-symlinkSync(roster, link);
+symlinkSync("roster.yaml", link);
 
 // ---- The adapter declares the roster path and the foreground mode ------------------------------
 const adapter = registry.all<LocalProcess>("local-process").find((row) => row.name === "manager-service");
@@ -102,7 +102,7 @@ else {
   const writable = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: loose }));
   check("a roster others can write is refused", writable?.startsWith("PERMISSION_DENIED") === true, writable);
   const linked = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: link }));
-  check("a symlinked roster is refused as a link", linked?.startsWith("PERMISSION_DENIED") === true && linked.includes("crosses a symlink"), linked);
+  check("a symlinked roster is refused without link paths in the diagnostic message", linked?.startsWith("PERMISSION_DENIED") === true && linked.includes("crosses a symlink") && !linked.includes(link) && !linked.includes("roster.yaml"), linked);
   const missing = refusal(() => validateServiceAdapterPaths(declaration, { root, roster: join(rosters, "missing.yaml") }));
   check("a missing roster is refused", missing?.startsWith("DEPENDENCY_UNAVAILABLE") === true, missing);
 
@@ -443,7 +443,7 @@ try {
     const refused = cotal(["down"]);
     check("bare down refuses while the service runs, names its stop then down, and stops nothing",
       refused.status === 2 && out(refused).includes("LIFECYCLE_BLOCKED") && out(refused).includes(`mgr instance ${live?.name}: running`)
-        && out(refused).includes(`\`${stopCommand}\`, then run \`cotal down\` again`) && !out(refused).includes("Service stopped")
+        && out(refused).includes(`\`${stopCommand}\`, then repeat your original shutdown command from this project folder with the same options`) && !out(refused).includes("Service stopped")
         && liveState() === "running" && await isReachable(SERVER) && findMesh(SPACE) !== undefined, out(refused));
     const stop = cotal(stopCommand.split(" ").slice(1));
     check("the stop the refusal names stops the service", stop.status === 0 && liveState() === "stopped", out(stop));

@@ -659,6 +659,8 @@ const envelopes = (r: Run) => {
     [["ps", "--on", "local.UABCDEFG"], /^✗ "local\.UABCDEFG" is a principal id/],
     [["spawn", "dev", "--on", "a".repeat(30)], /^✗ attaching to a manager's launch needs usable input and output terminals.*\n {2}add -d to wait for readiness/],
     [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}omit --on to launch in this terminal, or replace --foreground with -d/],
+    [["stop", "first", "second", "--space", "explicit"], /^✗ choose one agent to stop\n {2}in the original command, keep one positional name or one --name <name>, leaving the other options unchanged/],
+    [["attach", "first", "--name", "second", "--no-reconnect"], /^✗ choose one agent to attach\n {2}in the original command, keep one positional name or one --name <name>, leaving the other options unchanged/],
     [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}`cotal run` lists the runs; run `cotal run show <run-id>`/],
     [["run", "revoke", "--local", "--by", "operator", "--reason", "audit"], /^✗ run revoke takes one identifier\n {2}add a run ID after `run revoke` in the original command\. A revoke requires `--local --by <actor> --reason <text>`/],
@@ -666,6 +668,15 @@ const envelopes = (r: Run) => {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
   }
+  for (const flags of [[], ["--foreground"], ["--runtime", "pty"]]) {
+    const raw = cotal(["spawn", ...flags, "--creds", "unused.creds", "--json"], undefined, noSeed);
+    const remedy = JSON.parse(raw.stdout).error?.remedy;
+    check("the managed alternative to a raw credential requires the registered caller as well as managed mode",
+      raw.status === 1 && remedy?.includes(`or omit --creds, use a registered --space you can access, and ${flags.includes("--foreground") ? "replace --foreground with -d" : "add -d"}`) && !remedy.includes("unused.creds"), shown(raw));
+  }
+  const pipedRuntime = cotal(["spawn", "--runtime", "pty"], undefined, noSeed);
+  check("a runtime request without a terminal offers detach, not a pin that would attach",
+    pipedRuntime.status === 1 && pipedRuntime.stderr.includes("add -d (with --on <instance> to select a manager)") && !pipedRuntime.stderr.includes("-d or --on"), shown(pipedRuntime));
   const foregroundJson = cotal(["spawn", "--foreground", "--json"], undefined, noSeed);
   const foregroundReceipt = JSON.parse(foregroundJson.stdout);
   check("foreground spawn keeps its mode and offers two compatible ways past --json",

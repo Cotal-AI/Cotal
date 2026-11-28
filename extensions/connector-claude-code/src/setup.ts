@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ import {
   type McpServerSpec,
   type SignedInSpace,
 } from "@cotal-ai/core";
-import { ENV_REFERENCE, isConfigProtected } from "@cotal-ai/connector-core";
+import { ENV_REFERENCE, isConfigProtected, isDirectoryProtected } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 import { desktopConfigPath, desktopEntryCurrent, desktopNameClash, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
 import { claudeUserMcpPath, claudeUserMcpServers } from "./user-mcp.js";
@@ -280,8 +280,27 @@ function assertRegistrationHome(): void {
   if (foreign) throw Object.assign(new Error(foreign), { name: "ForeignConnectorRegistrationError" });
 }
 
+function protectedMarketplaceCause(remedyCommand: string): string | undefined {
+  const market = marketplaceDir();
+  if (!isDirectoryProtected(market)) return undefined;
+  try {
+    const link = lstatSync(market, { throwIfNoEntry: false });
+    if (link?.isSymbolicLink() && !statSync(market, { throwIfNoEntry: false })) {
+      const target = readlinkSync(market);
+      return `${market} is a symbolic link to a missing target (${target}). Restore the link's target or replace the broken link, then run \`${remedyCommand}\`.`;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      return `${market} is a symbolic-link loop. Replace the broken link with a writable and searchable directory, then run \`${remedyCommand}\`.`;
+    }
+  }
+  return `${market} is read-only. Make that directory writable and searchable, then run \`${remedyCommand}\`.`;
+}
+
 /** Keep materialization, native registration and verification in one cross-process transaction. */
 function withPluginLock<T>(run: () => T): T {
+  const blocked = protectedMarketplaceCause("cotal setup");
+  if (blocked) throw new Error(blocked);
   const locks: ReturnType<typeof acquireLock>[] = [];
   try {
     const paths = [
@@ -789,11 +808,16 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       const installed = installedPluginForRefresh();
       const path = desktopConfigPath();
       if (!installed && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
+      const blocked = protectedMarketplaceCause("cotal update");
+      if (blocked) {
+        const integration = installed === "cotal-skills" ? "Claude skills refresh" : "Claude integration refresh";
+        return `${integration} deferred because ${blocked}`;
+      }
       const protectedDir = [dirname(claudeUserMcpPath()), pluginCacheDir()]
         .find((dir) => isConfigProtected(join(dir, ".cotal-setup.lock")));
       if (protectedDir) {
         const integration = installed === "cotal-skills" ? "Claude skills refresh" : "Claude integration refresh";
-        return `${integration} deferred because ${protectedDir} is read-only. Make that directory writable, then run \`cotal update\`.`;
+        return `${integration} deferred because ${protectedDir} is read-only. Make that directory writable and searchable, then run \`cotal update\`.`;
       }
       // Re-read installed state under the mutation locks before changing any integration.
       return withPluginLock(() => {

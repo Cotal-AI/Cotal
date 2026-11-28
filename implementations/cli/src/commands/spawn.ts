@@ -1,5 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
-import { realpathSync, rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
@@ -24,7 +24,6 @@ import {
   copyPersonaEndpoints,
   registry,
   resolveAuthProvider,
-  resolveReadAcl,
   peerLabel,
   type AgentDef,
   type CompletionResult,
@@ -66,15 +65,15 @@ import {
   spaceKey,
   workspaceSecretStore,
   refreshRegistrationPolicy,
-  oneLine,
   codeSpan,
   activateTerminalSeat,
   issueTerminalSeat,
   retireTerminalSeat,
   seatExpiryAt,
 } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { c, stderrLine } from "../ui.js";
-import { parseChannelFlag } from "../lib/channel-flags.js";
+import { parseChannelFlag, spawnReadAcl } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { checkLaunch, launchModes } from "../lib/launch-modes.js";
 import { displayCmd, displayProjectTrustFailure } from "../lib/self-exec.js";
@@ -85,7 +84,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, directSpawnCwd, missingConnector, missingHarnessExecutables, missingPersona, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -206,14 +205,16 @@ export function validateSpawnArguments(args: ParsedArgs) {
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
   if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to `cotal team deploy <file>`, not spawn");
   if (values.runtime !== undefined && !values.runtime.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime cannot be empty");
+  const needsDetach = !values["dry-run"] && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY);
+  const managedCaller = values.creds === undefined ? "" : "omit --creds, use a registered --space you can access, and ";
   if (values.runtime !== undefined && direct) {
     const receipt = values["dry-run"] ? undefined : values.json ? "--json" : values.plain ? "--plain" : undefined;
     const without = ["--runtime", receipt, values.detach ? "--detach" : undefined, values.on !== undefined ? "--on" : undefined, values.creds !== undefined ? "--creds" : undefined].filter(Boolean);
     const foreground = `omit ${without.join(", ")} to launch in this terminal`;
-    const modes = values.on !== undefined ? "-d" : receipt ? "-d (with --on <instance> to select a manager)" : "-d or --on <instance>";
-    const alreadyManaged = values.detach || (values.on !== undefined && !receipt);
+    const modes = values.on !== undefined ? "-d" : needsDetach ? "-d (with --on <instance> to select a manager)" : "-d or --on <instance>";
+    const alreadyManaged = values.detach || (values.on !== undefined && !needsDetach);
     const managed = values.foreground ? (alreadyManaged ? "omit --foreground" : `replace --foreground with ${modes}`) : `add ${modes}`;
-    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: directOnly ? foreground : `${foreground}, or ${managed} to launch through a manager` });
+    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: directOnly ? foreground : `${foreground}, or ${managedCaller}${managed} to launch through a manager` });
   }
   // Every manager refuses `auto` for one seat, so it is refused here on any host.
   if (values.runtime?.trim() === "auto") throw new CommandFailure("refused", "USAGE_INVALID", "--runtime auto chooses a manager's own runtime, not the runtime of one seat", { remedy: "omit --runtime to use the serving manager's runtime" });
@@ -226,7 +227,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
     const without = [...(!values["dry-run"] && values.json ? ["--json"] : []), ...(!values["dry-run"] && values.plain ? ["--plain"] : []), ...(values.creds !== undefined ? ["--creds"] : []), ...(values.on !== undefined ? ["--on"] : [])];
     const foreground = `omit ${without.join(", ")} to launch in this terminal`;
     const managed = values.foreground ? "replace --foreground with -d" : "add -d";
-    throw new CommandFailure("refused", "USAGE_INVALID", "a spawn in this terminal takes no structured receipt, manager credential or manager pin", { remedy: directOnly ? foreground : `${foreground}, or ${managed} to launch through a manager and get a receipt once the agent joins`, selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", "a spawn in this terminal takes no structured receipt, manager credential or manager pin", { remedy: directOnly ? foreground : `${foreground}, or ${managedCaller}${managed} to launch through a manager and get a receipt once the agent joins`, selfContained: true });
   }
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
@@ -240,7 +241,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
   }
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   seatExpiry(values, direct);
-  if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
+  if (!direct && !values.detach && needsDetach)
     throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: values.json || values.plain ? "add -d to wait for readiness without attaching" : "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name", "cwd"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
@@ -257,14 +258,8 @@ export function validateSpawnArguments(args: ParsedArgs) {
     "allow-subscribe": parseChannelFlag("--allow-subscribe", values["allow-subscribe"], true),
     "allow-publish": parseChannelFlag("--allow-publish", values["allow-publish"], true),
   };
-  if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined) {
-    try { resolveReadAcl(channels.subscribe, channels["allow-subscribe"]); }
-    catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message), {
-        remedy: "include every --subscribe channel in --allow-subscribe", selfContained: true,
-      });
-    }
-  }
+  if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined)
+    spawnReadAcl(channels.subscribe, channels["allow-subscribe"], "include every --subscribe channel in --allow-subscribe");
   if (!internal && args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "spawn takes one persona; pass the kickoff request with --prompt/-p");
   if (!internal && values.config !== undefined && args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "choose one persona input, not both a positional name and --config");
   return channels;
@@ -309,7 +304,7 @@ function readDirectPersona(target: PersonaSite, path: string, ref: string, from:
   catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (!(implicitDefault && code === "ENOENT")) {
-      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) });
+      if (e instanceof PersonaSourceError) throw localDiagnostic(new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) }));
       if (handoff) stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       else if (code === "ENOENT") throw missingPersonaFailure(target, ref, from, path);
       else if (code === "ELOOP") {
@@ -340,7 +335,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const channels = validateSpawnArguments(args);
   const values = { ...args.values, ...(typeof args.values.harness === "string" ? { agent: args.values.harness } : {}), ...(typeof args.values.file === "string" ? { config: personaFileReference(args.values.file) } : {}) } as FlagValues<typeof spawnFlags>;
-  if (values["dry-run"]) return spawnLaunchPreview({ ...args, values });
+  if (values["dry-run"]) return spawnLaunchPreview({ ...args, values }, channels);
   // Claimed first: custody already removed the file and its variable, so the text lives only here
   // and no refusal below can leave it anywhere.
   const handoffText = claimManagedHandoff();
@@ -480,27 +475,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // A manager runs it only with --detach or --on, and the persona then stays on the manager's
   // execution host. Every other spawn keeps the native custody path below, in this terminal.
   if (!direct) return launchManagedPersona(values, positionals, events, cliLaunchOptions);
-  // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
-  // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
+  // A foreground launch provisions its own credential; never ignore a file override.
   if (values.creds) {
-    stderrLine("✗ ", "--creds is only valid with --detach (it authenticates the manager control call)", c.red);
+    stderrLine("✗ ", "a foreground spawn does not take --creds; omit it to launch in this terminal", c.red);
     process.exit(1);
   }
-  let launchCwd: string | undefined;
-  if (values.cwd !== undefined) {
-    const requestedCwd = resolvePath(values.cwd);
-    let reason: string | undefined;
-    try {
-      launchCwd = realpathSync(requestedCwd);
-      if (!statSync(launchCwd).isDirectory()) reason = "is not a directory";
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      reason = code === "ENOENT" ? "does not exist" : code === "ENOTDIR" ? "is not a directory" : `cannot be used (${oneLine((error as Error).message)})`;
-    }
-    if (reason !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `--cwd ${JSON.stringify(requestedCwd)} ${reason}. Nothing was launched.`, {
-      target: { path: requestedCwd }, remedy: "pass an existing directory to --cwd",
-    });
-  }
+  const launchCwd = values.cwd === undefined ? undefined : directSpawnCwd(values.cwd, values.space);
 
   // An enrollment may bootstrap the stock remote user-mesh record before normal target resolution.
   // Redeem only when the named space is not registered; an existing entry defers redemption until
@@ -725,13 +705,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
   let subscribe = channels.subscribe ?? def.subscribe;
-  let allowSubscribe: string[];
-  try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
-  } catch (e) {
-    stderrLine("✗ ", `${(e as Error).message}`, c.red);
-    process.exit(1);
-  }
+  let allowSubscribe = spawnReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
   let allowPublish = channels["allow-publish"] ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
@@ -983,7 +957,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       });
     } catch (error) {
       if (error instanceof CommandFailure) throw error;
-      throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
+      throw localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } }));
     }
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     spec.env = { ...spec.env, ...modelPolicyEnv(cotalConfig, role) };
