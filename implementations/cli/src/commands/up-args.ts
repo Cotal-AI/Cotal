@@ -493,11 +493,9 @@ export function assertSelectionNotMoved(root: string, space: string): void {
   if (!prepared) return;
   const problem = projectRootProblem(prepared.root);
   if (!problem) return;
-  const recover = problem === "missing"
-    ? `if this is that folder moved, forget it with \`cotal space forget ${current}\`, prepare it here with \`cotal space create ${current}\`, then repeat your startup command with the same options`
-    : `${problem === "not-directory" ? "restore the original project folder at its recorded path" : "restore access to the original project folder"}, then repeat your startup command in that folder`;
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which ${projectRootProblemText(problem)}, and this folder names no space, so up did not start "${space}" here`, {
+  const recover = problem === "inaccessible" ? "restore access to the original project folder" : "restore the original project folder at its recorded path";
+  throw localDiagnostic(new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which ${projectRootProblemText(problem)}, and this folder names no space, so up did not start "${space}" here`, {
     target: { root, space: current, preparedRoot: prepared.root },
-    remedy: `${recover}; to start "${space}" here instead, add \`--space ${space}\` to your original command`,
-  });
+    remedy: `${recover}, then repeat your startup command in that folder; to start "${space}" here instead, add \`--space ${space}\` to your original command`,
+  }));
 }

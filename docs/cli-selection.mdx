@@ -253,10 +253,10 @@ home `COTAL_HOME` redirects may hold project folders beside its records, so unde
 itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
 outside its `.cotal`, is a project of its own. If another space uses the folder, prepare the new
-space in a different folder with `--root <dir>`. For a registration added by hand, the next step
-says to start its broker where it runs and gives `cotal space show <name>` and
-`cotal space forget <name>` for that exact registration. For a local space, the next step names
-how to start, select or forget it. A folder this
+space in a different folder with `--root <dir>`. If the folder belongs to a prepared or registered
+space, the refusal suggests inspecting it with `cotal space show <name>`. It names each registration
+when several share the folder. The inspection keeps `--json` or `--plain` when requested and leaves
+the selection and registrations unchanged. A folder this
 account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
 does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
 does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. A folder whose
@@ -286,8 +286,8 @@ space and repeat the add with the same options. A registration for another broke
 does not prevent a prepared local space from starting there. A prepared space records its folder by path, and moving the folder
 leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
-space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
-folder with `cotal space create <name>`, then repeat your original startup command so it keeps your broker address and Manager options. Until then, `space create` of that name
+space named after the folder there. Restore the original folder to its recorded path and repeat the startup command there.
+If you deliberately moved the project, forget the space with `cotal space forget <name>`, prepare it again in its new folder with `cotal space create <name>`, then repeat your original startup command so it keeps your broker address and Manager options. Until then, `space create` of that name
 says its recorded folder no longer exists. Startup also refuses if a file occupies the selected project path or the account cannot enter it. Restore the folder or its access and retry there. To start a different space in the current folder, name it with `--space`.
 
 
