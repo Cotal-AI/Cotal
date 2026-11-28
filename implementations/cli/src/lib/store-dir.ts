@@ -236,6 +236,8 @@ export function missingRestoreStoreParent(storeDir: string): CommandFailure {
   });
 }
 
+const NEW_RESTORE_STORE = "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it";
+
 function checkStoreDirPath(path: string, root: string, purpose: "start" | "restore"): void {
   // A dangling link has no real path, so its own target is named instead.
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
@@ -246,7 +248,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
     }
     const remedy = purpose === "restore"
-      ? "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it"
+      ? NEW_RESTORE_STORE
       : real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir";
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy });
   }
@@ -260,10 +262,10 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
   const physical = stat ? join(realpathSync.native(existing), relative(existing, path)) : path;
   const control = controlDirectory(path) ?? controlDirectory(physical);
   if (control !== undefined && path !== join(resolve(root), ".cotal", "nats"))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" });
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is ${path === control ? "" : "in "}the control directory ${control}; nothing was started or written`, { target: { storeDir: path, controlDirectory: control }, remedy: purpose === "restore" ? `${NEW_RESTORE_STORE}. Choose a parent outside the control directory.` : "name a directory outside any .cotal with --store-dir, or omit it to use this root's .cotal/nats" });
   if (!stat) return;
   if (!stat.isDirectory())
-    throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: "name a directory, or a path to create in one, with --store-dir" });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: purpose === "restore" ? NEW_RESTORE_STORE : "name a directory, or a path to create in one, with --store-dir" });
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
   if (purpose === "restore" && existing !== dirname(path)) throw missingRestoreStoreParent(path);

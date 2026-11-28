@@ -96,6 +96,8 @@ jobs:
         run: pnpm typecheck
       - name: Windows child process visibility
         run: pnpm check:windows-child-process
+      - name: Channel subject builders
+        run: pnpm check:channel-subjects
       - name: Docs bundle in sync
         run: pnpm check:docsbundle
       # Broker-free and network-free; it reads the connector built by Typecheck.

@@ -21,7 +21,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { spaceSegment } from "@cotal-ai/workspace";
+import { shellPath, spaceSegment } from "@cotal-ai/workspace";
 import { ptySpawn, screen } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -93,6 +93,13 @@ for (const verb of ["describe", "invoke"]) {
 }
 
 const server = "nats://127.0.0.1:43842";
+const roster = run(["ps", "--space", "b4b", "--server", server, "--json"], home);
+check("a prepared roster lookup keeps the root, space and loopback port on the first start",
+  roster.status === 2 && roster.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+  roster.envelope.error.remedy === `start it with \`cotal up --root ${shellPath(realpathSync(root))} --space b4b --server ${shellPath(server)}\``, shown(roster));
+const remoteRoster = run(["ps", "--space", "b4b", "--server", "nats://broker.example.test:43842", "--json"], home);
+check("a remote dial address is not a first local start command",
+  remoteRoster.status === 2 && remoteRoster.envelope?.error?.remedy?.includes("no recorded broker") === true && !remoteRoster.stdout.includes("cotal up"), shown(remoteRoster));
 const beforeMint = readdirSync(join(root, ".cotal")).sort();
 const out = join(home, "alice.creds");
 const mint = run(["auth", "mint", "alice", "--server", server, "--out", out, "--json"]);

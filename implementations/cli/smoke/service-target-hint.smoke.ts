@@ -97,6 +97,13 @@ check("help service remove lists --instance <full-id> in its usage and options",
     other.status === 1 && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.message === 'service definition: the definition names space "sb", and the selected space is "sa"' && refusal.error.remedy === undefined, shown(other));
   const list = run(["service", "--space", "sa", "--json"], b);
   check("sa keeps its service tick", list.status === 0 && list.stdout.includes('"name":"tick"'), shown(list));
+  const extraName = run(["service", "list", "tick", "--space", "sa", "--json"], b);
+  const error = JSON.parse(extraName.stdout).error;
+  const retry = /^cotal (service list --space sa --json)$/.exec(error?.remedy ?? "");
+  const inventory = retry && run(retry[1]!.split(" "), b);
+  check("list with a definition name keeps the explicit space and JSON output in its inventory retry",
+    extraName.status === 1 && error?.code === "USAGE_INVALID" && inventory?.status === 0 &&
+    JSON.parse(inventory.stdout).result.definitions.some((row: { name: string }) => row.name === "tick"), shown(extraName));
   const again = run(["service", "add", "tick", "--file", forA, "--json"], a);
   check("control: a file for sa under its existing name is still refused as already existing",
     again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
@@ -186,11 +193,11 @@ check("help service remove lists --instance <full-id> in its usage and options",
     for (const [flags, cwd, space, saved, absent] of [[["--space", "sb"], neutral, "sb", "retry", "tick"], [[], b, "sa", "tick", "retry"]] as const) {
       const missing = run(["service", verb, absent, ...flags, "--json"], cwd);
       const receipt = JSON.parse(missing.stdout);
-      const listFlags = /^see the saved definitions with `cotal service (--space s[ab])`$/.exec(receipt.error?.remedy)?.[1];
+      const listFlags = /^see the saved definitions with `cotal service (--space s[ab] --json)`$/.exec(receipt.error?.remedy)?.[1];
       check(`${verb} with ${flags.length ? "an explicit" : "a selected"} space points to ${space}'s inventory`,
         missing.status === 2 && receipt.outcome === "refused" && receipt.error?.code === "TARGET_NOT_FOUND" &&
-        receipt.target?.space === space && receipt.target.name === absent && listFlags === `--space ${space}`, shown(missing));
-      const inventory = listFlags === undefined ? undefined : run(["service", ...listFlags.split(" "), "--json"]);
+        receipt.target?.space === space && receipt.target.name === absent && listFlags === `--space ${space} --json`, shown(missing));
+      const inventory = listFlags === undefined ? undefined : run(["service", ...listFlags.split(" ")]);
       const listed = inventory?.status === 0 ? JSON.parse(inventory.stdout) : undefined;
       const names = listed?.result?.definitions.map((row: { name: string }) => row.name);
       check(`following the ${verb} remedy lists ${space} from the neutral folder without starting the saved service`,

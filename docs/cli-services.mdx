@@ -48,6 +48,8 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--tail <1..1000>` | logs: how many records to read (default 100) |
 | `--follow` | logs: keep reading |
 
+`service list` takes no definition name. If you supply one, the suggested list command keeps your space and output format.
+
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
 built-in services (the presets), whether started or not, and the ones you added. For saved services,
@@ -343,7 +345,7 @@ are not publisher signatures or a proof of every executable file. No remote sche
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
 If no definition has that name, `show` and `remove` refuse with `TARGET_NOT_FOUND` (exit 2) and suggest
-`cotal service --space <space>` for the space each checked.
+`cotal service --space <space>` for the space each checked. If you asked for JSON or plain text, the suggested command keeps that output format.
 
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.

@@ -116,9 +116,9 @@
     },
     {
       "name": "initial start leaves resources bound when stop wins the race",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    if (await this.connection.tearDownIfStopped()) return;\n    this.connection.superviseConnection();",
-      "replace": "    this.connection.superviseConnection();",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "    if (await this.tearDownIfStopped()) return;\n    this.superviseConnection();",
+      "replace": "    this.superviseConnection();",
       "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "cell": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

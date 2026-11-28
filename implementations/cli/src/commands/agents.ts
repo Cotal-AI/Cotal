@@ -207,7 +207,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   recordOperationSpace(t.space);
   const reply = await askManager(cliControl, t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { ...pin, instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
-  if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target, onRerun("cotal ps", v, v.on !== undefined && on ? ["--on", on] : []));
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target, rosterCommand(v, v.on !== undefined && on ? ["--on", on] : []));
   const data = reply.data as { name?: unknown; stopped?: unknown; graceful?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.stopped !== "boolean" || typeof data.graceful !== "boolean")
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the stop receipt could not be read; the request was not repeated", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });
@@ -357,7 +357,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest:
   if (loc.kind === "absent" && verb === "cotal status" && loc.instances.includes(agent))
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent, options.openMesh === true, v) });
   if (loc.kind === "absent")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: `run ${codeSpan(onRerun("cotal ps", v))} to see the agents each manager runs` });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: `run ${codeSpan(rosterCommand(v))} to see the agents each manager runs` });
   const shown = oneLine(agent);
   if (loc.kind === "several")
     throw new AgentManagerUnsettled(`"${shown}" is held on each of these ${loc.instances.length} managers. Which one should run this?`, managersByInstance(loc.instances, loc.managers), "TARGET_AMBIGUOUS", message, { space: loc.space ?? null, agent, managerInstanceIds: loc.instances });
@@ -656,10 +656,14 @@ function psLaunchNext(scope: { space?: string; server?: string }, command?: stri
   }
 }
 
+function rosterCommand(v: FlagValues<typeof psFlags>, words: readonly string[] = []): string {
+  const server = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? "<original-server>" : v.server;
+  return onRerun("cotal ps", { space: v.space, server }, [...words, ...(v.json ? ["--json"] : v.plain ? ["--plain"] : [])]);
+}
+
 function psCommand(v: FlagValues<typeof psFlags>, slots = false): string | undefined {
   if (v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server) return undefined;
-  const words = [...(slots ? ["--slots"] : []), ...(v.on === undefined ? [] : ["--on", v.on]), ...(v.wide ? ["--wide"] : []), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
-  return onRerun("cotal ps", v, words);
+  return rosterCommand(v, [...(slots ? ["--slots"] : []), ...(v.on === undefined ? [] : ["--on", v.on]), ...(v.wide ? ["--wide"] : [])]);
 }
 
 function psRerun(v: FlagValues<typeof psFlags>, slots = false): string {
@@ -1303,7 +1307,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(cliControl, t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, pin);
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, agent: v.name };
-  if (!reply.ok) throw unansweredDescribeRefusal(reply, "terminal input", target) ?? managerFailure(reply, "terminal input", target);
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "terminal input", target) ?? managerFailure(reply, "terminal input", target, rosterCommand(v, v.on !== undefined && on ? ["--on", on] : []));
   const data = reply.data as { name?: unknown; bytes?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.bytes !== "number" || !Number.isSafeInteger(data.bytes) || data.bytes < 0)
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the terminal-input receipt was unreadable; the text was not sent again", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });

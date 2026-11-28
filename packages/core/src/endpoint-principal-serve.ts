@@ -1,18 +1,18 @@
 // The principal serve and prompts of CotalEndpoint, as an internal component: binding and arming each
 // principal-route serve, confirming it, re-binding it on a new connection, ending and stopping it, the
 // `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts. The
-// component owns the `prompts` presence field; the endpoint keeps servePrincipal, which a smoke replaces,
-// and the shared fields, and forwards to these. Not re-exported by the index.
+// component owns the `prompts` presence field; the endpoint keeps the shared fields and a servePrincipal
+// forwarder, which a smoke replaces on an instance, and forwards to these. Not re-exported by the index.
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
-import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import { EpEnvelopeError, type EndpointReply } from "./endpoint-envelope.js";
-import type { PrincipalServeIntent } from "./endpoint-options.js";
-import { servePrincipalRoute, describeContracts, type EpPrincipalServeHandle } from "./endpoint-serve.js";
-import type { EpCaller, EpPrincipal, PrincipalAuthority } from "./endpoint-subjects.js";
+import type { PrincipalServe, PrincipalServeIntent } from "./endpoint-options.js";
+import { servePrincipalRoute, describeContracts, type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
+import { assertRuntimeToken, endpointToken, type EpCaller, type EpPrincipal, type PrincipalAuthority } from "./endpoint-subjects.js";
 import { processRuntime } from "./process-runtime.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { spacePrefix } from "./subjects.js";
@@ -51,6 +51,40 @@ export class EndpointPrincipalServe {
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
+
+  servePrincipal(spec: { handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+    if ("endpoint" in spec || "cluster" in spec)
+      throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
+    const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
+    const uid = this.identity.ownLifecycleUid;
+    if (uid === undefined)
+      throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");
+    const nc = this.conn.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    endpointToken(serve.endpoint);
+    if (this.delivery.principalServes.has(serve.endpoint))
+      throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
+    const self: EpPrincipal = { owner: this.identity.owner, actor: this.identity.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
+    const serverKey = `${this.identity.space}\n${self.runtimeId}\n${serve.endpoint}`;
+    if (this.principalServers.has(serverKey))
+      throw new Error(`another endpoint in this process already serves "${serve.endpoint}" for lifecycle ${uid}: both would subscribe the same principal-route subject and answer one request twice (SPEC 13.21); stop that one first`);
+    let resolveReady!: () => void, rejectReady!: (e: Error) => void, resolveFailed!: (e: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
+    const failed = new Promise<Error>((resolve) => { resolveFailed = resolve; });
+    const intent: PrincipalServeIntent = {
+      serve, self, serverKey, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
+    };
+    // Construction refuses an invalid cluster before anything is kept or subscribed.
+    const handle = this.bindPrincipalHandle(intent, nc);
+    this.delivery.principalServes.set(serve.endpoint, intent);
+    this.principalServers.set(serverKey, intent);
+    // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
+    // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
+    if (serve.endpoint === AGENT_ENDPOINT) this.openPrompts();
+    void this.armPrincipalServe(intent, nc, handle);
+    return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
+  }
 
   /** Subscribe `intent` on `nc`. */
   bindPrincipalHandle(intent: PrincipalServeIntent, nc: NatsConnection): EpPrincipalServeHandle {
