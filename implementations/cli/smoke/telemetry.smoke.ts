@@ -450,7 +450,8 @@ if (process.platform === "linux") {
       const event = events[0];
       const diagnostic = subcommand === "status"
         ? error?.message?.includes(space) === true && event?.errorMessage === null && event.errorStack === null && !JSON.stringify(events).includes(space)
-        : event?.errorMessage === "this space is not registered on this machine; add it with `cotal meshes add`; Manager stopped" && typeof event.errorStack === "string";
+        : error?.message === `Space ${space} is not registered on this machine.`
+          && event?.errorMessage === error.message && typeof event.errorStack === "string";
       check(`daemon ${subcommand} sends only its intended NOT_REGISTERED diagnostics`, r.status === 2
         && error?.code === "TARGET_NOT_FOUND" && error.cause?.code === "NOT_REGISTERED"
         && events.length === 1 && event?.command === "daemon" && event.subcommand === subcommand
