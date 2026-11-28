@@ -5,13 +5,16 @@ import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, broke
 import { mergeLaunchOptions, parseLaunchModes, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, directSpawnCwd, missingConnector, missingPersonaFailure, nonDirectoryPersonaPath, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { spawnReadAcl } from "../lib/channel-flags.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { unreadablePersona } from "../lib/persona-files.js";
 import { refuseDirectSpawnName, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
-import type { spawnFlags } from "./spawn.js";
+import type { spawnFlags, validateSpawnArguments } from "./spawn.js";
+
+type Channels = ReturnType<typeof validateSpawnArguments>;
 
 function readPreviewConfig(root: string, target: { space: string; path: string }, trusted: ReturnType<typeof projectTrustForPreview>) {
   try { return loadCotalConfig(root, trusted); }
@@ -42,7 +45,7 @@ function unknownHarness(harness: string | undefined, explicit: boolean, space: s
 /** An offline preview never signs in to a broker or allocates an agent. It
  *  reads whether the recorded brokers answer only where the launch reads it to pick its space, so the
  *  two name the same one. */
-export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
+export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }, channels: Channels): Promise<void> {
   const values = args.values;
   let root: string;
   let space: string;
@@ -134,6 +137,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
+  spawnReadAcl(channels.subscribe ?? definition.subscribe ?? [], channels["allow-subscribe"] ?? definition.allowSubscribe);
   const config = readPreviewConfig(root, { ...target, path }, trusted);
   const cwd = directSpawnCwd(values.cwd ?? ".", space);
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });

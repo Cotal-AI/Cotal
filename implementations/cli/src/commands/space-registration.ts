@@ -178,7 +178,7 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
 /** The registration a name already has when a new one added by hand may replace it. A prepared
  *  space, or a registration this machine started or a catalog lists, is never replaced that way, with
  *  or without `--force`: it is forgotten or stopped first. `space add` and `meshes add` share this. */
-export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
+export function handAddedRegistration(name: string, force: boolean, target: unknown, presentation: Presentation = "rich"): MeshEntry | undefined {
   const prepared = findPreparedSpace(name);
   if (prepared) {
     const problem = projectRootProblem(prepared.root);
@@ -191,16 +191,22 @@ export function handAddedRegistration(name: string, force: boolean, target: unkn
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
   if (existing && existing.origin !== "manual") {
     const owner = existing.origin === "catalog" ? "listed by a signed-in space catalog" : "a space this machine started";
-    throw refuse("CONFLICT", force ? `"${name}" is ${owner}, so --force does not replace it` : `"${name}" is already registered at ${existing.server}; it is ${owner}`, target, `see it with \`cotal space show ${name}\``);
+    const show = codeSpan(`cotal space show ${shellWord(name)}${presentation === "rich" ? "" : ` --${presentation}`}`);
+    throw refuse("CONFLICT", force ? `"${name}" is ${owner}, so --force does not replace it` : `"${name}" is already registered at ${existing.server}; it is ${owner}`, target, `see it with ${show}`);
   }
   return existing;
 }
 
 /** A manual registration can be replaced with `--force` or checked in place when it matches. */
-function registrationBeforeAdd(name: string, force: boolean, target: unknown, matches?: (existing: MeshEntry) => boolean): MeshEntry | undefined {
-  const existing = handAddedRegistration(name, force, target);
-  if (existing && !force && !matches?.(existing))
-    throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
+function registrationBeforeAdd(name: string, force: boolean, target: unknown, presentation: Presentation, matches?: (existing: MeshEntry) => boolean): MeshEntry | undefined {
+  const existing = handAddedRegistration(name, force, target, presentation);
+  if (existing && !force && !matches?.(existing)) {
+    const checks = matches
+      ? "This records the replacement without checking the broker; repeat the same add without --force to verify it."
+      : "The bundle checks still apply.";
+    throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target,
+      `to replace it in place, repeat the add with --force. ${checks} Forgetting it with ${codeSpan(`cotal space forget ${name}`)} instead clears its selection, per-space preferences and remembered chat sessions`);
+  }
   return existing;
 }
 
@@ -232,7 +238,7 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
   if (v.mode === "user" && !bundled)
     throw usage("--mode user needs the space's pinned trust", "pass --file <bundle.json> exported where the space runs, or --from <https url> to fetch its discovery document");
   const prompt = presentation !== "json" && canPrompt();
-  const added = bundled ? await addFromBundle(name, v, prompt, presentation) : await addFromServer(name, v, prompt);
+  const added = bundled ? await addFromBundle(name, v, prompt, presentation) : await addFromServer(name, v, prompt, presentation);
   if (added === undefined) {
     const target = name ? { space: name } : null;
     const result: AddCancelled = { kind: "space-add-cancelled", space: name ?? null };
@@ -245,7 +251,7 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
 
 export type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[]; readonly noOp?: true } | undefined;
 
-async function addFromServer(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
+async function addFromServer(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation): Promise<Added> {
   if (name === undefined) throw usage("name the space to add", `repeat the same command with the space name after \`add\`${v.server === undefined ? " and its broker address in --server <url>" : ""}`);
   const target = { space: name };
   if (v.server === undefined) throw usage("--server <url> is required: a space that runs elsewhere has no address to infer", "pass its broker URL, for example --server nats://100.90.12.34:4222");
@@ -259,7 +265,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const accounts = take(spacesAtRoot(root), target);
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
-  const existing = registrationBeforeAdd(name, v.force === true, target, (existing) =>
+  const existing = registrationBeforeAdd(name, v.force === true, target, presentation, (existing) =>
     brokerUrlKey(existing.server) === brokerUrlKey(server) && canonicalRoot(existing.root) === canonicalRoot(root) && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
@@ -349,7 +355,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), spaceTarget);
   const root = take(checkRoot(v.root, process.cwd()), spaceTarget);
   take(checkMode(space, root, [], "user", true), spaceTarget);
-  const replaced = registrationBeforeAdd(space, v.force === true, spaceTarget) !== undefined;
+  const replaced = registrationBeforeAdd(space, v.force === true, spaceTarget, presentation) !== undefined;
   take(await verifyUserExchange(bundle.userAuth.endpoints.url, userExchangeIssuer(bundle.space)), spaceTarget);
   take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"), spaceTarget);
   const rows: [string, string][] = [

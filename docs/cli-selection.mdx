@@ -30,6 +30,8 @@ cotal use [<space> | --clear] [--json|--plain]
 
 ### Space inventory
 
+If `space show` or `who --space` cannot find the named space, the suggested inventory command keeps the requested `--json` or `--plain` output.
+
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
 project whose root has one running registered space other than the automatically adopted selection,
@@ -134,7 +136,7 @@ A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALI
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
 `UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name
 that is already registered is a `CONFLICT` unless `--server` checks a matching manual registration
-in place or `--force` replaces a manual registration. A broker that does not answer is a
+in place or `--force` replaces a manual registration. Replacing it in place keeps the selection, per-space preferences and remembered chat sessions. Forgetting it before adding it again clears them. After replacing a direct `--server` registration with `--force`, repeat the same add without `--force` to verify the broker. A broker that does not answer is a
 `TARGET_UNAVAILABLE`. For a new registration, its remedy offers `--force`.
 When adding a broker that requires auth, a `--root` that holds another space's trust gives
 `DEPENDENCY_UNAVAILABLE` and names the space the folder holds.
@@ -145,6 +147,7 @@ address, and says when it has no TLS. A port that takes no connection gets the p
 remedy. For a new `--server` registration, the `--force` route follows either one. If a recheck
 finds a different transport on the recorded port, restore the listener with its recorded transport
 and rerun the same check. Changing the URL would conflict with the existing registration.
+When the name belongs to a registration this machine started or a catalog lists, the suggested `space show` command keeps `--json` or `--plain`.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
@@ -1188,8 +1191,10 @@ their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh 
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
 lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
 `cotal setup --skills`. The compact report shows out-of-date `.agents` skills even when no agent
-application is set up. If the skills ownership manifest is corrupt, restore a valid manifest at the
-reported path before running `cotal setup --skills`. `status` takes `--space` / `--server` to pick the
+application is set up. Setup refuses a malformed skills ownership manifest with `SCHEMA_INVALID`
+(exit 1). Restore a valid copy at the reported path before running `cotal setup --skills`. If the
+account cannot read the manifest, setup reports `PERMISSION_DENIED` (exit 2). Restore read access
+and retry without replacing the file. `status` takes `--space` / `--server` to pick the
 mesh to inspect. It starts nothing.
 
 When `status` would suggest restarting the selected stopped local stack,

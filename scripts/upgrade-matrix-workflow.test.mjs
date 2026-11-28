@@ -45,7 +45,12 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
 test('Corepack Node fallback runs on the frozen source independently of the upgrade coordinates', () => {
   const job = workflow.jobs['release-corepack-node-fallback'];
   assert.equal(job.needs, 'select');
-  assert.equal(job.if, "needs.select.outputs.applicable == 'true'");
+  // The frozen-source probe belongs to the release matrix, not the focused push modes.
+  assert.equal(job.if, [
+    "needs.select.outputs.applicable == 'true'",
+    ...['windows-job-only', 'windows-baseline-only', 'mac-controls-only', 'mac-transition-only', 'scheduler-only', 'installer-only']
+      .map(mode => `!contains(github.event.head_commit.message, '[${mode}]')`),
+  ].join(' && '));
   assert.equal(job.steps[0].with.ref, '${{ needs.select.outputs.source }}');
   assert.equal(job.steps[0].with['persist-credentials'], false);
   assert(job.steps.some(step => step.run?.includes('node bin/smoke/update-registry-arrival.smoke.mjs corepack-node-fallback')));
