@@ -44,18 +44,24 @@ async function proveLaunchSettlementPolicy(): Promise<void> {
   assert.equal((await idle.run()).agentCount, 7);
   assert.deepEqual(idle.lines, []);
   for (const value of [undefined, ordinary, held]) {
-    const settling = fixture(t => observation(t < 400 ? 1 : 0), t => value && t >= 400 ? { reserved: 0, held: 0, names: [] } : value);
+    const settlesAt = value === held ? 400 : 174_000;
+    const settling = fixture(t => observation(t < settlesAt ? 1 : 0), t => value && t >= settlesAt ? { reserved: 0, held: 0, names: [] } : value);
     assert.equal((await settling.run()).agentCount, 7);
-    assert.equal(settling.elapsed(), 400);
+    assert.equal(settling.elapsed(), settlesAt);
     assert.deepEqual(settling.lines, [value === held ? "Waiting for a held hosted PTY launch to settle in space example." : "Waiting for a hosted spawn to settle in space example."]);
     if (value === undefined) assert.equal(settling.inspections(), 1, "old peers are not queried again");
   }
   const ordinaryDeadline = fixture(() => observation(1), t => t < 500 ? held : ordinary);
   await assert.rejects(ordinaryDeadline.run, error => error instanceof HostedLaunchSettlementTimeout && /retry `(?:pnpm )?cotal update --self`/.test(error.message) && !error.message.includes(name));
-  assert.equal(ordinaryDeadline.elapsed(), 15_000);
-  const heldDeadline = fixture(() => observation(2), () => held);
+  assert.equal(ordinaryDeadline.elapsed(), 180_000);
+  assert.equal(ordinaryDeadline.lines.length, 1);
+  const heldDeadline = fixture(() => observation(1), () => ({ ...held, reserved: 1 }));
   await assert.rejects(heldDeadline.run, error => error instanceof HostedLaunchSettlementTimeout && error.message.includes(`"${name}"`) && /daemon service-disconnect --space example`/.test(error.message) && error.message.includes("No installed packages were changed"));
   assert.equal(heldDeadline.elapsed(), 15_000);
+  assert.equal(heldDeadline.lines.length, 1);
+  const mixed = fixture(t => observation(t < 175_000 ? 2 : 0), t => t < 175_000 ? held : { reserved: 0, held: 0, names: [] });
+  assert.equal((await mixed.run()).agentCount, 7, "a concurrent hold does not shorten an ordinary launch's readiness window");
+  assert.equal(mixed.lines.length, 1);
   const replaced = fixture(t => observation(1, t ? "successor" : "original"), () => undefined);
   await assert.rejects(replaced.run, /identity changed/);
   assert.equal(replaced.inspections(), 1, "do not consult holds after a Manager identity change");
@@ -183,7 +189,7 @@ if (process.platform === "linux") {
     const report = {};
     const close = await prepareUpdateParticipant({ env: process.env, project: process.cwd(), cotalHome: process.env.COTAL_HOME, report,
       async beforeManagedEnrollment(name) {
-        if (!['update_during_spawn', 'update_spawn_timeout', 'update_staged_spawn'].includes(name)) return;
+        if (!['update_during_spawn', 'update_staged_spawn'].includes(name)) return;
         const path = ${JSON.stringify(directory)} + '/' + name;
         writeFileSync(path + '.entered', 'entered');
         const deadline = Date.now() + 30_000;
@@ -243,8 +249,7 @@ if (process.platform === "linux") {
       if (!("instanceId" in before) || !before.instanceId) throw new Error("the hosted fixture has no Manager instance");
       const instanceId = before.instanceId;
       await withPublicUpdateFixture(ctx, version, async run => {
-        await proveUpdateDuringSpawn(ctx, instanceId, directory, run, false);
-        await proveUpdateDuringSpawn(ctx, instanceId, directory, run, true);
+        await proveUpdateDuringSpawn(ctx, instanceId, directory, run);
         await proveStagedPreinstallDuringSpawn(ctx, instanceId, directory, run);
         await proveHostedPtyFailures(ctx, run);
       });
@@ -317,7 +322,7 @@ function addPtyFixture(entry: string, project: string, directory: string, env: N
     import { join } from 'node:path';
     registry.register({kind:'connector', name:'shared-pty-smoke', requires:['node'], waitsForOperator:()=> 'test terminal',
     buildLaunch:({name})=>{
-      if (['update_during_spawn', 'update_spawn_timeout', 'update_staged_spawn'].includes(name)) throw new Error('ordinary spawn fixture stopped before process launch');
+      if (['update_during_spawn', 'update_staged_spawn'].includes(name)) throw new Error('ordinary spawn fixture stopped before process launch');
       return {command:${JSON.stringify(process.execPath)},args:[${JSON.stringify(seat)},name,join(${JSON.stringify(directory)},name+'.json')],env:{PATH:'/usr/bin:/bin'}};
     }});`);
   const added = spawnSync(process.execPath, [entry, "ext", "add", fixture], { env, cwd: project, encoding: "utf8", timeout: 90_000 });
@@ -374,8 +379,8 @@ async function waitForCommandText(command: PublicCommand, expected: string): Pro
   assert.ok(command.text().includes(expected), `expected ${expected}:\n${command.text()}`);
 }
 
-async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, directory: string, run: PublicRun, expires: boolean): Promise<void> {
-  const name = expires ? "update_spawn_timeout" : "update_during_spawn";
+async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, directory: string, run: PublicRun): Promise<void> {
+  const name = "update_during_spawn";
   const entered = join(directory, `${name}.entered`), release = join(directory, `${name}.release`);
   const launching = run(["spawn", "--agent", "shared-pty-smoke", "--name", name, "--space", ctx.space, "--on", manager, "--detach", "--no-events"]);
   let updating: PublicCommand | undefined;
@@ -386,20 +391,13 @@ async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, dire
     await assert.rejects(inspectHostedLaunches(ctx.paths, ctx.space, "wrong-instance", 3_000), /identity changed/);
     updating = run(["update", "--space", ctx.space]);
     await waitForCommandText(updating, "Waiting for a hosted spawn to settle");
-    if (expires) {
-      const observed = performance.now();
-      assert.equal(await updating.exited, 1, updating.text());
-      assert.ok(performance.now() - observed >= 13_000 && performance.now() - observed < 20_000, "the ordinary timeout is bounded");
-      assert.match(updating.text(), /still in progress\. No installed packages were changed\. When it finishes, retry/);
-      assert.doesNotMatch(updating.text(), /service-disconnect|PTY launch still held/);
-    }
+    await new Promise(resolve => setTimeout(resolve, 16_000));
+    assert.equal(updating.child.exitCode, null, "the updater waits past the old fifteen-second cutoff");
     writeFileSync(release, "release");
     assert.notEqual(await launching.exited, 0, launching.text());
     assert.match(launching.text(), /ordinary spawn fixture stopped before process launch/);
-    if (!expires) {
-      assert.equal(await updating.exited, 0, updating.text());
-      assert.match(updating.text(), /Built-in connectors/);
-    }
+    assert.equal(await updating.exited, 0, updating.text());
+    assert.match(updating.text(), /Built-in connectors/);
     assert.equal(updating.text().split("Waiting for a hosted spawn to settle").length, 2, "the real CLI prints one wait line");
     assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager, 3_000), { reserved: 0, held: 0, names: [] });
   } finally {
@@ -442,8 +440,8 @@ async function proveStagedPreinstallDuringSpawn(ctx: HostedPtyProof, manager: st
   }
 }
 
-function hostedCli(ctx: HostedPtyProof, args: string[]): string {
-  const ran = spawnSync(process.execPath, [ctx.entry, ...args], { cwd: ctx.project, env: ctx.env, encoding: "utf8", timeout: 45_000 });
+function hostedCli(ctx: HostedPtyProof, args: string[], env = ctx.env): string {
+  const ran = spawnSync(process.execPath, [ctx.entry, ...args], { cwd: ctx.project, env, encoding: "utf8", timeout: 45_000 });
   assert.equal(ran.status, 0, `${args.join(" ")}: ${ran.error ?? ""}\n${ran.stdout}${ran.stderr}`);
   return ran.stdout;
 }
@@ -498,6 +496,87 @@ function scopeFromRecord(record: { scope: string }): string {
 
 type HostedManagerIdentity = Lifetime & { id: string };
 type HostedPair = { manager: HostedManagerIdentity; host: HostedUnit; names: string[]; rows: Lifetime[] };
+
+async function pauseHostedProcess(row: Lifetime): Promise<void> {
+  assert.ok(stillLive(row), `fixture process ${row.pid} must be live before SIGSTOP`);
+  process.kill(row.pid, "SIGSTOP");
+  for (let i = 0; i < 20 && processStatFields(row.pid)?.[0] !== "T"; i++) await briefly();
+  assert.equal(processStatFields(row.pid)?.[0], "T");
+}
+
+async function provePublicHostedDisconnect(ctx: HostedPtyProof, cell: HostedPair, seatRoot: string): Promise<void> {
+  const { host, manager, rows } = cell;
+  const reply = JSON.parse(hostedCli(ctx, ["daemon", "service-disconnect", "--space", ctx.space, "--json"],
+    { ...ctx.env, COTAL_SEAT_ROOT: seatRoot }));
+  assert.equal(reply.result.space, ctx.space);
+  assert.equal(reply.result.state, "disconnected");
+  assert.equal(reply.result.manager?.state, "stopped");
+  assertGone([manager, host, ...rows], "public disconnect ended the Manager, host, seats and detached descendants");
+  assert.ok(unitGone(ctx, host), "public disconnect drained the exact unit before success");
+  const status = await queryDaemon({ paths: ctx.paths });
+  assert.ok(status.ok && status.result.pid === ctx.daemon().pid, "public disconnect kept the original daemon answering");
+  console.log("Hosted shared PTY: public service-disconnect with COTAL_SEAT_ROOT ended the exact unit and its seats");
+}
+
+function makeUninstallReceipt(ctx: HostedPtyProof, directory: string) {
+  const config = join(directory, "config"), unit = "cotal-daemon.service";
+  const unitPath = join(config, "systemd", "user", unit), receipt = unitReceiptFile(ctx.paths);
+  mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
+  // Only daemon supervisor registration is simulated. The PTY drain uses the real systemctl.
+  writeFileSync(join(directory, "systemctl"), `#!${process.execPath}
+const args=process.argv.slice(2).filter(a=>a!=='--no-ask-password' && a!=='--no-pager').join(' ');
+if(args==='--user show-environment') console.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});
+else if(!${JSON.stringify([`--user stop ${unit}`, `--user disable ${unit}`, "--user daemon-reload"])}.includes(args)) process.exit(99);
+`, { mode: 0o700 });
+  const source = `ExecStart=${[process.execPath, ctx.entry, "daemon", "serve"].map(value => JSON.stringify(value)).join(" ")}\n`;
+  writeFileSync(unitPath, source, { mode: 0o600 });
+  writeFileSync(receipt, JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600, flag: "wx" });
+  return { unitPath, receipt, path: `${directory}:${ctx.env.PATH}` };
+}
+
+async function provePublicHostedUninstall(ctx: HostedPtyProof, cell: HostedPair, seatRoot?: string): Promise<void> {
+  const { host, manager, rows } = cell;
+  const daemon = ctx.daemon(), pid = daemon.pid!;
+  const start = processStartToken(pid);
+  assert.ok(start);
+  const directory = mkdtempSync(join(dirname(ctx.project), "uninstall-"));
+  const daemonIdentity = { pid, start };
+  try {
+    const { unitPath, receipt, path } = makeUninstallReceipt(ctx, directory);
+    const env = { ...ctx.env, PATH: path, ...(seatRoot === undefined ? {} : { COTAL_SEAT_ROOT: seatRoot }) };
+    await pauseHostedProcess(host);
+    await pauseHostedProcess(daemonIdentity);
+    assert.ok(stillLive(manager));
+    process.kill(manager.pid, "SIGKILL");
+    await killAndAwaitExit(daemon, "SIGKILL");
+    await waitGone([daemonIdentity, manager]);
+    assert.equal(processStatFields(host.pid)?.[0], "T", "the owner observer is paused until uninstall returns");
+    assert.ok([host, ...rows].every(stillLive) && !unitGone(ctx, host), "the exact orphaned unit and all its processes survived until uninstall");
+    const reply = JSON.parse(hostedCli(ctx, ["daemon", "uninstall", "--yes", "--json"], env));
+    assert.equal(reply.result.state, "removed");
+    assertGone([host, ...rows], "public uninstall ended the orphaned host, seats and detached descendants");
+    assert.ok(unitGone(ctx, host), "public uninstall drained the exact unit before success");
+    assert.ok(!existsSync(unitPath) && !existsSync(receipt), "public uninstall removed the private source and receipt");
+    console.log(`Hosted shared PTY: public uninstall ${seatRoot === undefined ? "without" : "with"} COTAL_SEAT_ROOT drained the paused orphaned unit`);
+  } finally {
+    if (stillLive(daemonIdentity)) process.kill(pid, "SIGCONT");
+    if (stillLive(host)) process.kill(host.pid, "SIGCONT");
+    rmSync(directory, { recursive: true, force: true });
+    rmSync(unitReceiptFile(ctx.paths), { force: true });
+  }
+}
+
+async function provePublicHostedStops(ctx: HostedPtyProof, launchPair: (label: string) => Promise<HostedPair>): Promise<void> {
+  assert.equal(ctx.env.COTAL_SEAT_ROOT, undefined);
+  assert.ok(!existsSync(unitReceiptFile(ctx.paths)), "the hosted fixture has no pre-existing daemon receipt");
+  const seatRoot = mkdtempSync(join(dirname(ctx.project), "exported-seat-root-"));
+  try {
+    await provePublicHostedDisconnect(ctx, await launchPair("public_disconnect"), seatRoot);
+    await provePublicHostedUninstall(ctx, await launchPair("public_uninstall_default"));
+    await ctx.start();
+    await provePublicHostedUninstall(ctx, await launchPair("public_uninstall_exported"), seatRoot);
+  } finally { rmSync(seatRoot, { recursive: true, force: true }); }
+}
 
 async function proveUpdateWithHeldPty(ctx: HostedPtyProof, { manager, host, rows }: HostedPair, run: PublicRun): Promise<void> {
   const settled = run(["update", "--space", ctx.space]);
@@ -640,7 +719,7 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof, run: PublicRun): Prom
     const root = findRoot(), record = readHost(root);
     const cgroup = userUnits(ctx, ["show", "--property=ControlGroup", "--value", record.scope]);
     const uid = process.getuid?.();
-    const tag = createHash("sha256").update(JSON.stringify([realpathSync(ctx.entry), uid, join(ctx.home, ".cotal", "seats"), join(ctx.home, ".cotal")])).digest("hex");
+    const tag = createHash("sha256").update(JSON.stringify([realpathSync(ctx.entry), uid, join(ctx.home, ".cotal")])).digest("hex");
     assert.ok(record.scope.startsWith(`cotal-pty-${tag.slice(0, 16)}`), record.scope);
     assert.equal(cgroup, `/user.slice/user-${uid}.slice/user@${uid}.service/app.slice/${record.scope}`);
     const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -695,7 +774,7 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof, run: PublicRun): Prom
     assertGone([fourth.host, ...fourth.rows], "the explicit hosted Managers stop ended host, seats and descendants");
     assert.ok(unitGone(ctx, fourth.host), `${fourth.host.scope} is still running after explicit stop`);
     await proveDeadParentFallback(ctx, store, getManager, launch);
-    await killAndAwaitExit(ctx.daemon(), "SIGTERM");
+    await provePublicHostedStops(ctx, launchPair);
     const copy = readdirSync(store).find(name => /^[a-f0-9]{64}$/.test(name));
     assert.ok(copy, "a real runtime copy remains after teardown");
     assert.equal(statSync(join(store, copy)).mode & 0o777, 0o500, "the runtime copy is read-only before documented removal");
@@ -705,7 +784,7 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof, run: PublicRun): Prom
     }
     assert.equal(existsSync(store), false, "the two documented commands remove the closed shared runtime");
     console.log("Hosted shared PTY: Manager and daemon SIGKILL, dead-parent fallback teardown, stopped host, host crash and explicit hosted Managers stop verified");
-    console.log("Hosted shared PTY public stop cases skipped: the foreground remote-participant fixture has no standalone Manager service, local stack journal or installed daemon receipt for `cotal manager stop`, `cotal down` or `cotal daemon uninstall`");
+    console.log("Hosted shared PTY standalone stop cases skipped: the remote-participant fixture has no standalone Manager service or local stack journal for `cotal manager stop` or `cotal down`");
   } finally {
     if (existsSync(lineage)) for (const name of readdirSync(lineage).filter(name => /^[0-9a-f]{64}$/.test(name))) {
       const root = join(lineage, name);

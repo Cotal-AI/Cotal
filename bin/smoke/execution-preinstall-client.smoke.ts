@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { serveDaemon } from "../daemon/server.js";
 import { processBirth, holdLifetime } from "../daemon/lifetime.js";
 import { observeUpdateDaemon, sameUpdateDaemon, assertUpdateDaemon } from "../daemon/update-lifetime.js";
-import { targetExecutionPreinstall } from "../daemon/execution-preinstall-client.js";
+import { PREINSTALL_TIMEOUT_MS, targetExecutionPreinstall } from "../daemon/execution-preinstall-client.js";
 
 const root = mkdtempSync(join(tmpdir(), "execution-receipt-"));
 try {
@@ -49,7 +49,7 @@ try {
     writeFileSync(check, "process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");
     const started = Date.now();
     await assert.rejects(() => targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {}), /timed out/);
-    assert.ok(Date.now() - started >= 120_000 && Date.now() - started < 130_000, "production timeout and forced child close remain bounded");
+    assert.ok(Date.now() - started >= PREINSTALL_TIMEOUT_MS && Date.now() - started < PREINSTALL_TIMEOUT_MS + 10_000, "production timeout and forced child close remain bounded");
     console.log("execution preinstall timeout: real TERM-resistant child closed under the production deadline");
   }
   const dir = join(root, "r"), state = join(root, "s");

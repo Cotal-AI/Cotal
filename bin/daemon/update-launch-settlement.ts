@@ -9,6 +9,11 @@ import type { HostedLaunches } from "./protocol.js";
 
 export class HostedLaunchSettlementTimeout extends Error {}
 
+// No readiness field is needed on the Manager wire. Cover the longest shipped connector
+// readiness window (Jcode, three minutes), including against a Manager without inspection.
+const ORDINARY_LAUNCH_WAIT_MS = 180_000;
+const HELD_LAUNCH_WAIT_MS = 15_000;
+
 type LaunchStatus = { instanceId?: unknown; agentCount?: number; custody?: string; stopImpact?: { reservedLaunches?: number } };
 
 export function readSettledHostedStatus(paths: DaemonPaths, space: string, instanceId: string, retry: "update" | "update --self", report: (line: string) => void): Promise<LaunchStatus> {
@@ -30,11 +35,12 @@ export async function waitForHostedLaunches(
   retry: "update" | "update --self", report: (line: string) => void,
   clock = { now: () => performance.now(), sleep: (ms: number) => delay(ms) },
 ): Promise<LaunchStatus> {
-  const deadline = clock.now() + 15_000;
+  const deadline = clock.now() + ORDINARY_LAUNCH_WAIT_MS;
+  let heldDeadline = deadline;
   let reported = false;
   let launches: HostedLaunches | undefined;
   let privateSupported = true;
-  const remaining = () => Math.ceil(deadline - clock.now());
+  const remaining = () => Math.ceil(Math.min(deadline, heldDeadline) - clock.now());
   const cli = displayCmd();
   const retryCommand = `\`${cli} ${retry}\``;
   const timedOut = () => {
@@ -55,6 +61,8 @@ export async function waitForHostedLaunches(
     if (privateSupported && remaining() > 0) {
       launches = await inspect(Math.min(3_000, remaining()));
       privateSupported = launches !== undefined;
+      heldDeadline = launches?.held && launches.held === launches.reserved
+        ? Math.min(heldDeadline, clock.now() + HELD_LAUNCH_WAIT_MS) : deadline;
       // The private observation is newer than the public status. Re-read the status for the
       // settled seat inventory rather than admitting from an older snapshot.
       if (launches?.reserved === 0 && remaining() > 0) continue;
@@ -63,6 +71,8 @@ export async function waitForHostedLaunches(
       report(launches?.held ? `Waiting for a held hosted PTY launch to settle in space ${space}.` : `Waiting for a hosted spawn to settle in space ${space}.`);
       reported = true;
     }
-    if (remaining() > 0) await clock.sleep(Math.min(200, remaining()));
+    // An older daemon needs a fresh broker connection for each status read. Keep it below
+    // the default 60-per-minute actor limit rather than turning a slow spawn into a rate refusal.
+    if (remaining() > 0) await clock.sleep(Math.min(privateSupported ? 200 : 2_000, remaining()));
   }
 }

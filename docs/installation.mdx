@@ -261,7 +261,7 @@ chmod -R u+w ~/.cotal/seats/host-runtime
 rm -rf ~/.cotal/seats/host-runtime
 ```
 
-If you set `COTAL_SEAT_ROOT`, use its `host-runtime` directory in both commands.
+Setting `COTAL_SEAT_ROOT` in your shell does not move these daemon-hosted runtimes.
 
 Linux shared PTY custody also retains per-seat records and logs in `p-*` directories under the seat
 root, separate from `host-runtime`. Cotal does not currently remove the completed seat, generation,

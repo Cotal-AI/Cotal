@@ -16,12 +16,13 @@ export const sharedPtyLineage = (entry: string, space: string): string =>
 
 // Cross-release custody contract. Later Managers must still recognize these installation tags,
 // unit names, Description records and cgroups to find and drain hosts from this release.
-// The seat store is part of the tag so two homes for one CLI never share unit authority.
-export const sharedInstallationTag = (entry: string, uid: number | undefined, root: string, daemonHome?: string): string =>
-  digest([entry, uid, root, daemonHome]);
+// The daemon home separates installations' unit authority. The calling shell's seat-root
+// override is not inherited by hosted Managers and must not affect which units a drain sees.
+export const sharedInstallationTag = (entry: string, uid: number | undefined, daemonHome: string): string =>
+  digest([entry, uid, daemonHome]);
 
-export const sharedPtyInstallation = (entry: string, daemonHome?: string): string =>
-  sharedInstallationTag(entry, process.getuid?.(), seatRoot(), daemonHome);
+export const sharedPtyInstallation = (entry: string, daemonHome = join(homedir(), ".cotal")): string =>
+  sharedInstallationTag(entry, process.getuid?.(), resolve(daemonHome));
 
 export const sharedUnitPrefix = (tag: string): string => `cotal-pty-${tag.slice(0, 16)}`;
 

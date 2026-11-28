@@ -6,6 +6,8 @@ import { validUpdateAdmission, type UpdateAdmission } from "@cotal-ai/workspace"
 import type { ExecutionPreinstallRequest } from "./execution-preinstall.js";
 
 export const PREINSTALL_PROGRESS = "COTAL_PREINSTALL_PROGRESS ";
+// Allow the target's three-minute launch settlement and leave time for custody verification.
+export const PREINSTALL_TIMEOUT_MS = 240_000;
 
 export interface ExecutionPreinstallReceipt {
   readonly v: 1;
@@ -45,7 +47,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
     };
     child.stdout.on("data", chunk => collect(chunk, "stdout"));
     child.stderr.on("data", chunk => collect(chunk, "stderr"));
-    const timer = setTimeout(() => { failure = "target pre-install checks timed out"; terminate(); }, 120_000);
+    const timer = setTimeout(() => { failure = "target pre-install checks timed out"; terminate(); }, PREINSTALL_TIMEOUT_MS);
     const clear = () => { clearTimeout(timer); if (escalation) clearTimeout(escalation); };
     child.once("error", error => { clear(); reject(error); });
     child.once("close", status => { clear(); if (failure) reject(new Error(failure)); else resolve({ status, stdout, stderr }); });

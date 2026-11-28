@@ -14,7 +14,7 @@ import { assertSocketPathFits, unsupportedTransport } from "../src/protocol.js";
 import { nativeHelperPath, unsupportedNativeArch } from "../src/peercred.js";
 import { acquireSharedClosureLease, collectSharedRuntimeClosures } from "../src/shared-closure-lease.js";
 import { acquireSharedExecutionLease } from "../src/shared-execution-lease.js";
-import { parseSharedUnitDescription, sharedInstallationTag, sharedUnitCgroup, sharedUnitDescription, sharedUnitPrefix } from "../src/shared-linux.js";
+import { parseSharedUnitDescription, sharedInstallationTag, sharedPtyInstallation, sharedUnitCgroup, sharedUnitDescription, sharedUnitPrefix } from "../src/shared-linux.js";
 import { isSharedScope } from "../src/shared-record.js";
 
 let pass = 0;
@@ -35,14 +35,24 @@ const childEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
 };
 
 {
-  const tag = "fda33c235923dee7fe7984a1ebef6372b8157f02ae03b628a1cb362561f78c06";
+  const tag = "c9dcc0be5cd11bf410b5a7caf0e49b26fa0e16656eecc3927afbd029dc900524";
   const lineage = "p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  const description = "Cotal shared PTY fda33c235923dee7fe7984a1ebef6372b8157f02ae03b628a1cb362561f78c06 p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2357 90901 8d70adf9-6273-4eaf-aca9-e42c83a51189";
+  const description = "Cotal shared PTY c9dcc0be5cd11bf410b5a7caf0e49b26fa0e16656eecc3927afbd029dc900524 p-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2357 90901 8d70adf9-6273-4eaf-aca9-e42c83a51189";
   const owner = { pid: 2357, start: "90901", bootId: "8d70adf9-6273-4eaf-aca9-e42c83a51189" };
-  const scope = "cotal-pty-fda33c235923dee70123456789abcdef.service";
-  check("cross-release shared PTY installation tag", sharedInstallationTag("/opt/cotal/bin/cotal.js", 1001, "/home/alice/.cotal/seats", "/home/alice/.cotal") === tag);
-  check("cross-release shared PTY scope name", sharedUnitPrefix(tag) === "cotal-pty-fda33c235923dee7" && isSharedScope(scope) && !isSharedScope(scope.replace(".service", ".scope")));
-  check("cross-release shared PTY cgroup", sharedUnitCgroup(scope, 1001) === "/user.slice/user-1001.slice/user@1001.service/app.slice/cotal-pty-fda33c235923dee70123456789abcdef.service");
+  const scope = "cotal-pty-c9dcc0be5cd11bf40123456789abcdef.service";
+  const entry = "/opt/cotal/bin/cotal.js", home = "/home/alice/.cotal";
+  check("cross-release shared PTY installation tag", sharedInstallationTag(entry, 1001, home) === tag);
+  const previous = process.env.COTAL_SEAT_ROOT, hostedTag = sharedPtyInstallation(entry, home);
+  try {
+    process.env.COTAL_SEAT_ROOT = join(tmpdir(), "other-seat-root");
+    check("a shell seat root never changes hosted unit authority", sharedPtyInstallation(entry, home) === hostedTag);
+    check("another daemon home has different unit authority", sharedPtyInstallation(entry, `${home}-other`) !== hostedTag);
+  } finally {
+    if (previous === undefined) delete process.env.COTAL_SEAT_ROOT;
+    else process.env.COTAL_SEAT_ROOT = previous;
+  }
+  check("cross-release shared PTY scope name", sharedUnitPrefix(tag) === "cotal-pty-c9dcc0be5cd11bf4" && isSharedScope(scope) && !isSharedScope(scope.replace(".service", ".scope")));
+  check("cross-release shared PTY cgroup", sharedUnitCgroup(scope, 1001) === "/user.slice/user-1001.slice/user@1001.service/app.slice/cotal-pty-c9dcc0be5cd11bf40123456789abcdef.service");
   check("cross-release shared PTY Description stays writable", sharedUnitDescription(tag, `/private/${lineage}`, owner) === description);
   assert.deepEqual(parseSharedUnitDescription(description), { tag, lineage, owner });
   check("cross-release shared PTY Description stays readable and rejects extra data", parseSharedUnitDescription(`${description} suffix`) === undefined);
