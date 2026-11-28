@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +65,42 @@ async function checkDarwinTransport(root: string) {
     await listener.closed;
   }
   assert.equal(lstatSync(address, { throwIfNoEntry: false }), undefined);
+}
+
+async function checkDarwinPreparedExec(root: string): Promise<void> {
+  // Exercise the built gate entry that ships beside the launcher.
+  const { prepareDarwinExec } = await import("../dist/shared-exec-launch-darwin.js");
+  const directory = realpathSync.native(root);
+  const record = join(directory, "published");
+  const observed = join(directory, "dispatched");
+  const source = `const fs = require('node:fs');
+    const pid = Number(fs.readFileSync(process.argv[1], 'utf8'));
+    if (pid !== process.pid || !process.stdout.isTTY) process.exit(9);
+    fs.writeFileSync(process.argv[2], String(process.pid), { flag: 'wx' });`;
+  const options = { socketDirectory: directory, bootstrapCwd: directory, cols: 80, rows: 24,
+    payload: { command: process.execPath, args: ["-e", source, record, observed], cwd: directory, env: {} } };
+  const refused = await prepareDarwinExec(options);
+  const refusedExit = new Promise<number>(resolve => refused.proc.onExit(({ exitCode }) => resolve(exitCode)));
+  try {
+    await refused.ready;
+    await assert.rejects(refused.commit(() => { throw new Error("publication failed"); }), /publication failed/);
+    assert(!refused.commitAttempted);
+    assert.equal(await refusedExit, 1);
+    assert(!lstatSync(observed, { throwIfNoEntry: false }));
+  } finally { refused.abort(); }
+
+  const gate = await prepareDarwinExec(options);
+  const exit = new Promise<number>(resolve => gate.proc.onExit(({ exitCode }) => resolve(exitCode)));
+  try {
+    const identity = await gate.ready;
+    assert(Object.isFrozen(identity));
+    assert.equal(identity.pid, gate.proc.pid);
+    assert(!lstatSync(observed, { throwIfNoEntry: false }));
+    await gate.commit(() => writeFileSync(record, String(identity.pid), { mode: 0o600, flag: "wx" }));
+    assert(gate.commitAttempted);
+    assert.equal(await exit, 0);
+    assert.equal(readFileSync(observed, "utf8"), String(identity.pid));
+  } finally { gate.abort(); }
 }
 
 if (process.argv[2] === "client") {
@@ -157,6 +193,10 @@ if (process.argv[2] === "client") {
       if (process.platform === "darwin") {
         await bounded(checkDarwinTransport(root));
         check("Darwin transport requires exact peer and authority, bounds verification, and preserves an incumbent", () => {});
+        if (typeof (process as typeof process & { execve?: unknown }).execve === "function") {
+          await bounded(checkDarwinPreparedExec(root));
+          check("Darwin prepared exec publishes before dispatch and preserves the exact PTY root", () => {});
+        }
       }
     }
   } catch (error) {
