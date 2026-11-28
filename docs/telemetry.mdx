@@ -92,6 +92,7 @@ If a project command refuses to use a control directory as the project folder, t
 When a foreground launch or its preview refuses a missing persona, the file or catalog path stays in the local diagnostic. A connection refusal for a space that has not started also keeps its restart path and space name local.
 If a foreground connector reports an overlong control socket path, the CLI shows the path and the shorter-directory remedy locally. The command event reports `USAGE_INVALID` without the message or stack.
 If `endpoint check` cannot open its local contract file because of permissions or a refused link, the local diagnostic names the path. The event carries `PERMISSION_DENIED` without the message or stack.
+If `setup` rejects a destination, an unknown runtime, or a scripted project path that is not a directory, its diagnostic stays local. The command event still reports `USAGE_INVALID`.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at

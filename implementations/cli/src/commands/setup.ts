@@ -53,6 +53,7 @@ import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extens
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, validateAgentSkillsManifest, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
+import { localDiagnostic } from "../telemetry.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
@@ -302,7 +303,7 @@ function destinationOf(value: string): Destination {
   if (value === "local" || value === "self-hosted") return value;
   if (value === "cloud")
     throw new CommandFailure("refused", "UNSUPPORTED", "setup has no separate Cloud destination: a Cloud space is set up as a registered space", { remedy: "sign in with `cotal login`, which registers your Cloud spaces here (`cotal space` lists them), then run `cotal setup --destination self-hosted --space <name>`" });
-  throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
+  throw localDiagnostic(usage(`--destination ${value} is not a destination: pass local or self-hosted`));
 }
 
 /** The inputs of a run that asks nothing: every one is a flag. With `--yes`, a missing local project folder is created. No
@@ -316,7 +317,7 @@ function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Setu
   }
   const project = resolve(v.project!);
   const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
-  if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
+  if (!isDir(project) && !createProject) throw localDiagnostic(usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one"));
   return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 
@@ -583,7 +584,7 @@ function runtimeChoices(): RuntimeChoice[] {
 function runtimeFlags(names: readonly string[], choices: readonly RuntimeChoice[]): string[] {
   for (const name of names) {
     const choice = choices.find((r) => r.name === name);
-    if (!choice) throw usage(`--runtime ${name} is not a runtime: pass ${choices.map((r) => r.name).join(", ")}`, "install a third-party runtime with `cotal ext add <package>` first");
+    if (!choice) throw localDiagnostic(usage(`--runtime ${name} is not a runtime: pass ${choices.map((r) => r.name).join(", ")}`, "install a third-party runtime with `cotal ext add <package>` first"));
     if (choice.tools.length > 0 && choice.found === null)
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${name} runtime drives ${choice.tools.join(" or ")}, which is not on PATH`, { remedy: `install ${choice.tools[0]}, then run the same setup again` });
   }
