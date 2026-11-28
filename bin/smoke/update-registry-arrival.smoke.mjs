@@ -1528,6 +1528,9 @@ async function ptyRealChildHangupCell(entry, parent) {
     }
     writeFileSync(join(seed, 'witness.json'), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
     writeFileSync(join(seed, 'stamp.json'), JSON.stringify({ generation: version }), { mode: 0o600 });
+    const extensions = join(env.XDG_CONFIG_HOME, 'cotal/extensions');
+    mkdirSync(extensions, { recursive: true, mode: 0o700 });
+    writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: 'third-party-ext', version: '1.0.0', spec: 'third-party-ext@1.0.0', commands: [] }] }), { mode: 0o600 });
     const driver = join(root, 'real-child-pty.py');
     const resultFile = join(root, 'real-child-result.json');
     writeFileSync(driver, [
@@ -1578,9 +1581,10 @@ async function ptyRealChildHangupCell(entry, parent) {
     assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
     const outcome = JSON.parse(readFileSync(resultFile, 'utf8'));
     assert.equal(outcome.signal, null, outcome.stderr);
-    assert.equal(outcome.code, 0, `real built reconcile child held closed-pty stdout EIO and exited 0 instead of 3:\n${outcome.stderr}`);
-    assert.doesNotMatch(outcome.stderr, /could not write to stdout/, outcome.stderr);
-    assert.deepEqual(readdirSync(env.TMPDIR).filter(name => name.startsWith('cotal-')), [], 'real child removed its cotal-update-* scratch in finally');
+    assert.equal(outcome.code, 3, `real built reconcile child reports lost stdout with exit 3 after finishing cleanup:\n${outcome.stderr}`);
+    assert.equal(outcome.stderr.split('could not write to stdout').length - 1, 1, outcome.stderr);
+    assert.deepEqual(readdirSync(env.TMPDIR).filter(name => name.startsWith('cotal-')), [], 'real built reconcile child held stdout errors through finally and removed its cotal-update-* scratch');
+    assert.deepEqual(readdirSync(join(env.XDG_CONFIG_HOME, 'cotal')).filter(name => name.includes('.lock')), [], 'real built reconcile child released its reconcile and mutation locks');
     const emptyPath = mkdtempSync(join(root, 'no-python-'));
     const missingProbe = spawnSync('python3', ['-c', 'pass'], { env: { ...childEnv, PATH: emptyPath }, encoding: 'utf8' });
     assert(missingProbe.error, 'empty PATH reproduces missing python3');
