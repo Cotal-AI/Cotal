@@ -204,6 +204,17 @@ for (const level of ["regular", "minimal"]) {
     event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
 }
 
+{
+  const s = sandbox(), marker = "fixture-credential-name", file = join(s.home, `ordinary ${marker}`);
+  writeFileSync(file, "invalid fixture text", { mode: 0o600 });
+  for (const [path, code, status] of [[file, "SCHEMA_INVALID", 1], [`${file}-missing`, "TARGET_NOT_FOUND", 2]] as const) {
+    const r = await s.run(["send", "--to", "fixture", "fixture", "--server", "nats://127.0.0.1:1", "--creds", path, "--json"]);
+    const event = r.sent.find(row => row.event === "command");
+    check(`a credential file refusal keeps its path local for ${code}`, r.status === status && r.stdout.includes(marker) &&
+      event?.errorCode === code && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();

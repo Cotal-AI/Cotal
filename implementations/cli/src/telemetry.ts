@@ -92,6 +92,9 @@ export function telemetryErrorText(command: string, error: unknown, flags: reado
   // A pinned input usage error can repeat the terminal text in the original command's retry.
   if (command === "input" && flags.includes("--on") && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
   if (error instanceof Error && (localDiagnostics.has(error) || error instanceof SeedWriterRefusal || error.cause instanceof SeedWriterRefusal)) return { message: null, stack: null };
+  // Credential-file refusals name the local file, even after a command restates the connection error.
+  if (flags.includes("--creds") && (isConnectRefusal(error) || isCommandFailure(error)) && error.target !== null &&
+      typeof error.target === "object" && "path" in error.target && typeof error.target.path === "string") return { message: null, stack: null };
   // The connection error includes the stopped project's local restart instructions in its text.
   if (isConnectRefusal(error) && isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") return { message: null, stack: null };
   // Help shows the requested topic and can suggest commands from local extensions.
