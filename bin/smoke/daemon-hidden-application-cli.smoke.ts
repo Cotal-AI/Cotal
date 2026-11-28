@@ -4,7 +4,7 @@
  * The daemon holds a cached hosted-Manager refusal and one sign-in record. No network sign-in
  * happens. The sentence appears on `status` and on a non-local `setup` only while that record is
  * unexpired and the recorded unit pins this CLI. A second sign-in, an expired record, no unit, a
- * unit that pins another entry, and a local setup stay quiet. Once the cached row reads available,
+ * unit that pins another entry, and a local setup stay quiet. Once the unit gains this shell's folder and the cached row reads available,
  * the sentence is gone.
  *
  * Run: tsx bin/smoke/daemon-hidden-application-cli.smoke.ts
@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ import { skipSuite } from "@cotal-ai/smoke-kit";
 import { spaceSegment } from "@cotal-ai/workspace";
 import { recordMesh, removeMesh } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
+import { refreshedDaemonPath } from "../daemon/install.js";
 import { serveDaemon } from "../daemon/server.js";
 
 if (process.platform !== "linux") skipSuite("daemon-hidden-application-cli: the built CLI reads the Linux service socket");
@@ -64,7 +65,7 @@ const cli = join(fileURLToPath(new URL("..", import.meta.url)), "dist", "cotal.j
 const entry = realpathSync(cli);
 const node = realpathSync(process.execPath);
 const unitPath = join(root, "cotal-daemon.service");
-const render = (file: string) => `[Service]\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${node}" "--max-semi-space-size=1" "${file}" daemon serve\n`;
+const render = (file: string) => `[Service]\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nEnvironment=PATH="/usr/bin:/bin"\nExecStart="${node}" "--max-semi-space-size=1" "${file}" daemon serve\n`;
 const own = render(entry);
 const foreign = render(join(dirname(entry), "cotal-program.js"));
 const receipt = (source: string) => `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: new Date().toISOString() })}\n`;
@@ -124,11 +125,17 @@ try {
   const several = await run(["status", "--plain"]);
   check("several sign-ins stay quiet", several.code === 0 && !several.out.includes(sentence));
   writeSecretFile(sessionFile, session(true));
+  const narrow = readFileSync(unitPath, "utf8");
+  const accountPath = `${bin}${delimiter}/usr/bin${delimiter}/bin`;
+  const widened = refreshedDaemonPath("systemd-user", narrow, accountPath);
+  if (!widened?.includes(bin)) throw new Error("the recorded unit did not gain this shell's application folder");
+  writeFileSync(unitPath, widened, { mode: 0o600 });
+  writeSecretFile(join(paths.state, "service-unit.json"), receipt(widened));
   writeFileSync(refusal, JSON.stringify({ space: "seen", state: "refused", restarts: 0, connectors: [{ agent: "aa", state: "available" }] }), { mode: 0o600 });
   const repaired = await run(["status", "--plain"]);
   const repairedLine = lineOf(repaired.out, "Agent applications:");
-  check("the sentence is gone once the service reports the application available",
-    repaired.code === 0 && repairedLine.includes("aa") && !repaired.out.includes(sentence));
+  check("the sentence is gone once the repaired unit's report says the application is available",
+    repaired.code === 0 && repairedLine.includes("aa") && !repaired.out.includes(sentence) && readFileSync(unitPath, "utf8").includes(bin));
 } finally {
   await daemon.close();
   rmSync(unitPath, { force: true });
