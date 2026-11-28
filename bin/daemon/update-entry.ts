@@ -215,7 +215,7 @@ const composed: Command = { ...command, async run(args) {
       try { consent = /^(y|yes)$/i.test((await input.question("Stop these agents and continue the update? [y/N] ")).trim()); }
       finally { input.close(); }
     }
-    if (!consent) { deferActivation("running agents were left running; run `cotal update` once they have exited", plan.occupied); return; }
+    if (!consent) { deferActivation("running agents were not stopped; save their work and run `cotal update --self --stop-agents` to activate", plan.occupied); return; }
     for (const manager of plan.inventory) await withIdpSessionDir(homeCotalDir(), async () => {
       const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
       const client = { versionSkew: (text: string) => text, roster: async () => [] };
@@ -660,6 +660,7 @@ const composed: Command = { ...command, async run(args) {
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
+    if (recoveryAdmission?.phase === "restoring") return;
     if (systemdActivationDeferred()) {
       console.log(`machine daemon: ${admission.reason}. Activation was not attempted.`);
       return;

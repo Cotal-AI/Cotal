@@ -3362,6 +3362,13 @@ process.stdin.once('data', () => {
             const stopped = await askManager(caller, ON, target.server, "stop", { name }, target.auth, "owner", 20_000, pin);
             assert.equal(stopped.ok, true, `could not stop owned seat ${name}: ${stopped.error}`);
           };
+          const runUpdate = async (...args: string[]) => {
+            const updating = spawn(process.execPath, [cliEntry, "update", ...args], { cwd: root, env: { ...env, npm_config_prefix: globalPrefix }, stdio: ["ignore", "pipe", "pipe"], timeout: 360_000, killSignal: "SIGKILL" });
+            let text = "";
+            updating.stdout.on("data", b => { text += String(b); }); updating.stderr.on("data", b => { text += String(b); });
+            const code = await new Promise<number | null>((resolve, reject) => { updating.once("error", reject); updating.once("close", resolve); });
+            return { code, text };
+          };
           const before = await status();
           console.log("MANUAL_ADMISSION initial real status", JSON.stringify(before));
           assert.ok(before.ok && (before.data as any)?.custody === "legacy" && (before.data as any)?.agentCount === 0, "requires a real empty legacy Manager");
@@ -3493,6 +3500,8 @@ process.exit(result.status ?? 93);
               const pending = readUpdateRecovery() !== undefined;
               const reconciled = output.includes("was restored and reconciled");
               check("Manual failed install restores and reconciles the old generation", code === 1 && output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && reconciled && version === "0.151.2" && !pending, { code, reconciled, version, pending });
+              if (manualAdmissionEmpty) check("Manual empty rollback verifies a fresh empty restart fence", output.includes("daemon verified prepared fences and zero seats"), output);
+              else check("Manual live-seat rollback does not report a finished update or ask to stop agents", !output.includes("software update finished") && !output.includes("--stop-agents"), output);
             } finally { clearTimeout(timer); }
           }
           try {
@@ -3504,16 +3513,21 @@ process.exit(result.status ?? 93);
             finally { if (recovered.ok) await stop("manual_install_released"); }
             if (racedLifecycle) {
               // The retry uses the healthy target from the same loopback registry, without the npm fault shim.
-              const retry = spawn(process.execPath, [cliEntry, "update", "--self"], { cwd: root, env: { ...env, npm_config_prefix: globalPrefix }, stdio: ["ignore", "pipe", "pipe"], timeout: 360_000, killSignal: "SIGKILL" });
-              let text = "";
-              retry.stdout.on("data", b => { text += String(b); }); retry.stderr.on("data", b => { text += String(b); });
-              const code = await new Promise<number | null>((resolve, reject) => { retry.once("error", reject); retry.once("close", resolve); });
-              console.log("MANUAL_ADMISSION plain retry", JSON.stringify({ code, text }));
-              check("Plain self-update after rollback reconciles without asking to stop agents", code === 0 && text.includes("cotal-ai@0.151.3 in use and reconciled") && text.includes("machine daemon activation deferred") && text.includes("run `cotal update` once they have exited") && !text.includes("--stop-agents") && !readUpdateRecovery() && await sameRacedSeat(), { code, text });
+              const retry = await runUpdate("--self");
+              const daemon = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+              console.log("MANUAL_ADMISSION plain retry", JSON.stringify({ ...retry, daemonVersion: daemon.version }));
+              check("Plain self-update reconciles while the old daemon and raced seat stay live", retry.code === 0 && retry.text.includes("cotal-ai@0.151.3 in use and reconciled") && retry.text.includes("machine daemon activation deferred") && daemon.version === "0.151.2" && !readUpdateRecovery() && await sameRacedSeat(), retry);
             }
           } finally { if (raceSeat) await stop("manual_install_race"); }
           const empty = await status();
           check("Manual admission cleanup leaves zero real seats", empty.ok && (empty.data as any)?.agentCount === 0, empty);
+          if (racedLifecycle) {
+            const activation = await runUpdate();
+            const daemon = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+            const evidence = { ...activation, daemonVersion: daemon.version };
+            console.log("MANUAL_ADMISSION post-seat activation", JSON.stringify(evidence));
+            check("Plain update after the raced seat exits activates the reconciled daemon release", activation.code === 0 && daemon.version === "0.151.3", evidence);
+          }
           return;
         }
         if (process.argv.includes("--exchange-retry-repro")) {

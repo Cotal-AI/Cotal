@@ -956,6 +956,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(`could not recheck the installed global CLI: ${message(error)}`);
     return 1;
   }
+
   let execution: ExecutionReplacement | undefined;
   let stagedExecution = false;
   if (rt.prepareExecution) {
@@ -1108,6 +1109,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
   else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
   return interrupted;
+
   async function reconcileVersion(version: string): Promise<boolean> {
     const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);
     const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
@@ -1124,6 +1126,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     return true;
   }
+
   async function repairReplacement(reason: string, failureStatus = 1, skipTargetRetry = false): Promise<number> {
     if (!skipTargetRetry) {
       rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
@@ -1171,7 +1174,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       const detail = `${reason}; repair failed: ${message(error)}`;
       const recovery = readUpdateRecovery();
       if (recovery) writeUpdateRecovery({ ...recovery, previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
-      rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}. Automatic updates are paused. Run \`cotal update --self\` to repair this installation.`));
+      const pause = recovery ? " Automatic updates are paused." : " No recovery record was written.";
+      rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}.${pause} Run \`cotal update --self\` to repair this installation.`));
       return interrupted || failureStatus;
     }
   }
@@ -1194,6 +1198,7 @@ function targetArgv(target: Record<string, unknown>): string[] {
   }
   return argv;
 }
+
 function reportVersion(current: string, latest: string | undefined, rt: UpdateRuntime, reconciled: boolean): void {
   const available = latest !== undefined && compareSemver(latest, current) > 0;
   rt.out(renderReport({ sections: [
