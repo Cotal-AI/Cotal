@@ -97,12 +97,12 @@ function refuseContractDirectory(path: string, presentation: Presentation): void
     remedyIsCommand: command ? true : undefined,
   });
 }
-function missing(path: string, name: string): void {
+function missing(path: string, name: string, presentation: Presentation): void {
   try { lstatSync(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the scaffold target cannot be inspected", { target: { path } }); }
   throw new CommandFailure("refused", "CONFLICT", "a scaffold target already exists; it was not overwritten", {
     target: { path },
-    remedy: `run ${codeSpan(`cotal endpoint init ${shellWord(name)} --dir <new-directory>`)} with an unused directory`,
+    remedy: `run ${codeSpan(`cotal endpoint init ${shellWord(name)} --dir <new-directory>${presentation === "rich" ? "" : ` --${presentation}`}`)} with an unused directory`,
   });
 }
 
@@ -135,7 +135,7 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   parseEndpointContract(JSON.stringify(source));
   const existing = directory(destination);
   const files = [{ path: join(destination, CONTRACT_FILE), bytes: JSON.stringify(source, null, 2) + "\n", mode: 0o600 }, { path: join(destination, "handler.mjs"), bytes: HANDLER, mode: 0o700 }];
-  if (existing) for (const file of files) missing(file.path, name);
+  if (existing) for (const file of files) missing(file.path, name, presentation);
   const changed: ScaffoldChange[] = [];
   try {
     if (!existing) createDirectories(destination, changed);

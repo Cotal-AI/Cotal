@@ -607,7 +607,7 @@ jobs:
           if-no-files-found: error
   release-corepack-node-fallback:
     needs: select
-    if: needs.select.outputs.applicable == 'true'
+    if: needs.select.outputs.applicable == 'true' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
