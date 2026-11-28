@@ -35,9 +35,9 @@ export function reducedViolations(entries) {
     .map(entry => `${entry.name} on ${entry.target} changes ${entry.properties.join(", ")}${entry.iterations === 1 ? "" : `, repeats ${entry.iterations}`}`);
 }
 
-/** Loads the scenario with reduce already on and returns what animated and how many motion elements stood still. */
-export async function reducedRun(browser, address, nativeStub, scenario, viewport, theme) {
-  const context = await browser.newContext({ viewport, colorScheme: theme, reducedMotion: "reduce" });
+/** Loads the scenario in a fresh window, so nothing a check paused or cancelled carries over, and returns what animated. */
+async function freshRun(browser, address, nativeStub, scenario, viewport, theme, reducedMotion) {
+  const context = await browser.newContext({ viewport, colorScheme: theme, reducedMotion });
   try {
     const page = await context.newPage();
     await page.addInitScript(recordMotion);
@@ -48,7 +48,19 @@ export async function reducedRun(browser, address, nativeStub, scenario, viewpor
     if (scenario.act) await scenario.act(page);
     await page.waitForTimeout(300);
     const entries = await readMotion(page);
-    const still = await page.evaluate(selector => [...document.querySelectorAll(selector)].filter(el => !el.getAnimations({ subtree: true }).some(a => a.playState === "running")).length, MOTION_ELEMENTS);
-    return { entries, still };
+    const elements = await page.evaluate(selector => [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length).map(el => el.getAnimations({ subtree: true }).some(a => a.playState === "running")), MOTION_ELEMENTS);
+    return { entries, elements };
   } finally { await context.close(); }
+}
+
+/** The control: in normal motion every visible spinner and progress bar moves, so the reduce check can't pass by showing nothing. */
+export async function normalRun(browser, address, nativeStub, scenario, viewport, theme) {
+  const { entries, elements } = await freshRun(browser, address, nativeStub, scenario, viewport, theme, "no-preference");
+  return { entries, shown: elements.length, moving: elements.filter(Boolean).length };
+}
+
+/** Loads the scenario with reduce already on and returns what animated and how many motion elements stood still. */
+export async function reducedRun(browser, address, nativeStub, scenario, viewport, theme) {
+  const { entries, elements } = await freshRun(browser, address, nativeStub, scenario, viewport, theme, "reduce");
+  return { entries, still: elements.filter(moving => !moving).length };
 }

@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import axe from "axe-core";
 import { nativeStub, scenarios } from "./fixtures.mjs";
 import { sidebarScenarios } from "./sidebar.mjs";
-import { MOTION_ELEMENTS, readMotion, recordMotion, reducedRun, reducedViolations } from "./motion.mjs";
+import { normalRun, recordMotion, reducedRun, reducedViolations } from "./motion.mjs";
 
 const root = resolve(process.env.RENDER_DIST ?? fileURLToPath(new URL("../../dist/", import.meta.url)));
 const output = resolve(process.env.SHOTS ?? "test/render/artifacts");
@@ -158,13 +158,6 @@ try {
         await page.evaluate(() => { for (const a of window.__motion) a.cancel(); });
       }
       await page.waitForTimeout(300);
-      if (reducedMotion === "no-preference") {
-        // The control: what stands still under reduce does move here, so the reduce check can't pass by showing nothing.
-        const shown = await page.evaluate(selector => [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length).map(el => el.getAnimations({ subtree: true }).some(a => a.playState === "running")), MOTION_ELEMENTS);
-        assert.ok(shown.every(Boolean), `${name}: spinner and progress bar animate in normal motion`);
-        motion.normal += (await readMotion(page)).length;
-        motion.normalElements += shown.length;
-      }
       await page.screenshot({ path: `${output}/${name}.png`, fullPage: true });
       if (scenario.expect) { await scenario.expect(page); await page.waitForTimeout(300); }
       assert.equal(await page.evaluate(() => window.__renderState.paintReports), 1, `${name}: first paint reported once, including while daemon status waits`);
@@ -316,7 +309,12 @@ try {
       assert.deepEqual(settled.endless, [], `${name}: reduced motion`);
       assert.deepEqual(settled.running, [], `${name}: reduced motion`);
       // Reduce Motion already on when the app opens, as a person's setting usually is: every animation that starts only fades.
+      // Both motion checks load a fresh window, because the MOTION capture above pauses and cancels this page's animations.
       if (reducedMotion === "no-preference") {
+        const control = await normalRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
+        assert.equal(control.moving, control.shown, `${name}: spinner and progress bar animate in normal motion`);
+        motion.normal += control.entries.length;
+        motion.normalElements += control.shown;
         const fromLoad = await reducedRun(browser, address, nativeStub, scenario, { width, height: 660 }, theme);
         assert.deepEqual(reducedViolations(fromLoad.entries), [], `${name}: reduced motion only fades and never repeats`);
         motion.reduced += fromLoad.entries.length;
