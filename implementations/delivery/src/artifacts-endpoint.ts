@@ -9,7 +9,7 @@
  *  - `artifact-sweeper`: completeness-proven scans of the index buckets (an ordered consumer on the
  *    primary, leader-served), and the artifact store's removals and inventory. `list` pages one
  *    channel with it.
- * The bytes sit in the artifact store this endpoint is built with (A2): the daemon resolved it from the
+ * The bytes sit in the artifact store this endpoint is built with: the daemon resolved it from the
  * space's binding before it dialed anything, and the endpoint opens it over these two connections.
  * The live read ACL rides the daemon's own delivery connection, which holds the ACL KV read.
  *
@@ -137,7 +137,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext, store: Artif
 
   /** Open a candidate set from the store material and prove it, without touching the installed set
    *  (E12, E13). The proof is one STREAM.INFO per index stream the handlers need, each on the
-   *  credential that will use it, and the artifact store's own proof, in A1's order: the three index
+   *  credential that will use it, and the artifact store's own proof, in this order: the three index
    *  buckets on `artifact-data`, then the store (for `jetstream`, the object stream on `artifact-data`),
    *  then the three index buckets on `artifact-sweeper`. A missing stream or an under-granted
    *  credential refuses here, before the serve candidate dials. A credential that has not changed

@@ -1,4 +1,4 @@
-/** The artifact store binding survives a controller repair (A2, engineering E4/E5), through the real
+/** The artifact store binding survives a controller repair, through the real
  * CLI. A prepared root starts its controller-owned stack with `cotal up --serve artifacts` and no
  * binding. The test then writes the binding into the root's own secret store, where an issuer writes
  * the endpoint's material, kills the delivery member, and runs a bare `cotal up`: the stopped-member

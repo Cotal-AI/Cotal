@@ -24,7 +24,7 @@ import { JETSTREAM_ARTIFACT_STORE } from "./stores/jetstream-name.js";
 export const SERVED_ENDPOINT_NAMES: readonly string[] = Object.freeze([ARTIFACTS_ENDPOINT]);
 
 /** One daemon's factories for the endpoints it serves, built once its dependencies are resolved. */
-export type ServedEndpointCatalog = Readonly<Record<string, (ctx: ServedEndpointContext) => DaemonServedEndpoint>>;
+type ServedEndpointCatalog = Readonly<Record<string, (ctx: ServedEndpointContext) => DaemonServedEndpoint>>;
 
 /** What a served endpoint's factory is handed: where to dial, the store holding its material, the
  *  daemon's own endpoint for fresh ACL reads, and the daemon's log. */
@@ -53,7 +53,7 @@ export function parseServeFlag(raw: string | undefined, known: readonly string[]
 }
 
 /** The artifact store a daemon serving `artifacts` for `space` uses, resolved once at start and
- *  before anything dials (A2). The space's binding names it; no binding means the default store. A
+ *  before anything dials. The space's binding names it; no binding means the default store. A
  *  binding that is not a store name, a name nobody registered, or a store whose block size is out of
  *  range refuses by name, and nothing falls back to another store. The daemon logs which store it took. */
 export async function resolveArtifactStore(store: SecretStore, space: string, log: (line: string) => void): Promise<ArtifactStore> {

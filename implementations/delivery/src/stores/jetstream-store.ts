@@ -1,7 +1,6 @@
 /**
- * The `jetstream` artifact store (plan section 4, C5; security S2, S10; A2): the default store, the
- * space's own object stream on the broker. It is the A1 object code, moved behind the
- * `artifact-store` contract and not rewritten.
+ * The `jetstream` artifact store (plan section 4, C5; security S2, S10): the default store, the
+ * space's own object stream on the broker, behind the `artifact-store` contract.
  *
  * Layout: chunk `i` of digest `h` is the one message on `$O.<obj>.C.<h>.<i>`, every chunk but the last
  * {@link ARTIFACT_STORE_CHUNK_BYTES} long whatever transport chunks carried the bytes, and the meta
@@ -29,10 +28,6 @@ import {
 import { digestToken } from "../artifact-keys.js";
 import { JETSTREAM_ARTIFACT_STORE } from "./jetstream-name.js";
 
-/** The commit record: what the store verified, not what any message claims. The stored JSON keeps
- *  its `chunks` key; in memory the count is the contract's `blocks`. */
-export type ArtifactMeta = ArtifactStoreRecord;
-
 /** The size of every stored chunk but the last (E17). Storage framing is fixed and independent of how
  *  the bytes arrived: one digest names one byte string, so it names one chunk at every index, and a
  *  re-put or a retry of a partial commit writes exactly the chunks already there. */
@@ -45,7 +40,7 @@ const STORE_HEADER_ALLOWANCE = 1024;
 export function storedChunkCount(size: number): number {
   return Math.ceil(size / ARTIFACT_STORE_CHUNK_BYTES);
 }
-export function storedChunkLength(size: number, index: number): number {
+function storedChunkLength(size: number, index: number): number {
   return Math.min(ARTIFACT_STORE_CHUNK_BYTES, size - index * ARTIFACT_STORE_CHUNK_BYTES);
 }
 
@@ -69,7 +64,7 @@ export function metaSubject(space: string, digest: string): string {
 }
 
 /** The digest a meta subject names, or `undefined` for one this layout did not write. */
-export function digestOfMetaSubject(space: string, subject: string): string | undefined {
+function digestOfMetaSubject(space: string, subject: string): string | undefined {
   const prefix = `$O.${artifactBucket(space)}.M.`;
   if (!subject.startsWith(prefix)) return undefined;
   const name = Buffer.from(subject.slice(prefix.length), "base64url").toString();
@@ -77,7 +72,7 @@ export function digestOfMetaSubject(space: string, subject: string): string | un
 }
 
 /** The digest a chunk subject names, or `undefined` for one this layout did not write. */
-export function digestOfChunkSubject(space: string, subject: string): string | undefined {
+function digestOfChunkSubject(space: string, subject: string): string | undefined {
   const m = new RegExp(`^\\$O\\.${artifactBucket(space).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.C\\.([0-9a-f]{64})\\.\\d+$`).exec(subject);
   return m ? `sha256:${m[1]}` : undefined;
 }
@@ -101,10 +96,10 @@ export class ArtifactObjects implements ArtifactStoreSpace {
   }
 
   /** The commit record, or `undefined` when the digest has no live meta. A last-by-subject direct get. */
-  async stat(digest: string): Promise<ArtifactMeta | undefined> {
+  async stat(digest: string): Promise<ArtifactStoreRecord | undefined> {
     const m = await (await this.manager()).direct.getMessage(objectStoreStream(artifactBucket(this.space)), { last_by_subj: metaSubject(this.space, digest) });
     if (m === null) return undefined;
-    let o: Partial<Omit<ArtifactMeta, "blocks">> & { chunks?: number; deleted?: boolean };
+    let o: Partial<Omit<ArtifactStoreRecord, "blocks">> & { chunks?: number; deleted?: boolean };
     try { o = JSON.parse(m.string()); } catch { return undefined; }
     if (o.deleted === true || o.digest !== digest || !Number.isSafeInteger(o.size) || !Number.isSafeInteger(o.chunks)
       || typeof o.name !== "string" || typeof o.mediaType !== "string") return undefined;
@@ -169,7 +164,7 @@ export class ArtifactObjects implements ArtifactStoreSpace {
    *  the subject holds something this layout did not write, which refuses the commit before its meta
    *  record. A meta record already there must describe the same size and chunk count; it is kept as
    *  it is (E17). */
-  async put(meta: Omit<ArtifactMeta, "blocks" | "size">, blocks: readonly Uint8Array[], guard: ArtifactStoreGuard): Promise<ArtifactMeta> {
+  async put(meta: Omit<ArtifactStoreRecord, "blocks" | "size">, blocks: readonly Uint8Array[], guard: ArtifactStoreGuard): Promise<ArtifactStoreRecord> {
     const size = blocks.reduce((n, b) => n + b.byteLength, 0);
     if (blocks.some((b, i) => b.byteLength !== storedChunkLength(size, i)) || blocks.length !== storedChunkCount(size))
       throw new Error(`the bytes of ${meta.digest} are not in storage framing; nothing was written`);
@@ -178,8 +173,9 @@ export class ArtifactObjects implements ArtifactStoreSpace {
     const tooSmall = this.admits(size);
     if (tooSmall !== undefined) throw new EpEnvelopeError("resource-exhausted", tooSmall, undefined, "unknown");
     const js = jetstream(this.nc);
-    const record: ArtifactMeta = { ...meta, size, blocks: blocks.length };
-    // The stored JSON keeps A1's `chunks` key, so nothing already stored changes shape.
+    const record: ArtifactStoreRecord = { ...meta, size, blocks: blocks.length };
+    // The stored JSON keeps its `chunks` key, so nothing already stored changes shape; in memory the
+    // count is the contract's `blocks`.
     const stored = { digest: record.digest, name: record.name, mediaType: record.mediaType, size, chunks: blocks.length };
     const createOnly = () => { const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0"); return h; };
     for (const [i, chunk] of blocks.entries()) {
@@ -205,7 +201,7 @@ export class ArtifactObjects implements ArtifactStoreSpace {
   }
 
   /** Purge `digest`'s meta subject on the sweeper connection. The guard runs after the manager is
-   *  ready and immediately before the purge request (E18, E9). */
+   *  ready and immediately before the purge request (E18). */
   async removeRecord(digest: string, guard: ArtifactStoreGuard): Promise<void> {
     const jsm = await this.sweeperManager();
     guard("the meta purge");
@@ -232,7 +228,7 @@ export class ArtifactObjects implements ArtifactStoreSpace {
     return [...out];
   }
 
-  /** The object stream's `STREAM.INFO` on the data connection, with A1's refusal text. */
+  /** The object stream's `STREAM.INFO` on the data connection, refusing by credential and stream. */
   async prove(): Promise<void> {
     const stream = objectStoreStream(artifactBucket(this.space));
     try { await (await this.manager()).streams.info(stream); }

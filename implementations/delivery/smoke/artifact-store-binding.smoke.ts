@@ -1,27 +1,27 @@
 /**
- * The artifact store binding and the store contract behind the `artifacts` endpoint (A2), against a
+ * The artifact store binding and the store contract behind the `artifacts` endpoint, against a
  * real nats-server with real minted credentials and the real delivery daemon.
  *
  * Every hosted context here enters through `../src/delivery.js`, never the package index, and the
  * store module is imported only after the hosted cells, so the default store they find is the one the
- * daemon module registers itself (E6). A cell checks that before anything else runs.
+ * daemon module registers itself. A cell checks that before anything else runs.
  *
- *  1. (BRIEF item 6) a space bound to a store nobody registered refuses at start, by name, and the
+ *  1. a space bound to a store nobody registered refuses at start, by name, and the
  *     broker's cumulative connection counter does not move: not even the unnamed reachability probe
- *     dialed (E5a);
+ *     dialed;
  *  2. the same material bound to `jetstream` starts, moves that counter before any bootstrap, logs the
  *     store it took and binds `artifacts`: the control for cell 1's observer;
  *  3. with no binding the daemon starts on the default and says so;
  *  4. a binding that is not a store name (spaces, a trailing newline, 65 characters) refuses before any
  *     dial without echoing the value, and so does a registered store that declares a bad block size;
- *  5. fetch-chunk from offset 70,001 answers A1's own reply sequence, pinned from the real A1 handler
- *     at bc5f3505a1 (RUNS.md), at the broker's limit and after a restart at max_payload 70,000, with
+ *  5. fetch-chunk from offset 70,001 answers the reply sequence the endpoint gave before the store
+ *     moved behind the contract, pinned below, at the broker's limit and after a restart at max_payload 70,000, with
  *     the received bytes equal to the fixture's suffix; on a second artifact, a stored chunk purged
  *     mid-fetch turns the next reply into `artifact expired` at the pinned offset;
  *  6. the jetstream store's ranged read answers any range inside the artifact (inside one block,
  *     across a boundary, to the end, one aligned block), undefined when a block inside the artifact is
  *     gone, and refuses a range past the end: one crossing a short final block, one crossing the end of
- *     an artifact that ends on a full block, and one wholly past the end (E7, S4, E10);
+ *     an artifact that ends on a full block, and one wholly past the end;
  *  7. census: only the store module names the object stream, only the daemon module imports it, the
  *     default name is written once, the registry is resolved for the kind in one place, no served
  *     endpoint table holds a factory, and the core contract imports no NATS module.
@@ -64,13 +64,17 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dial = async (servers: string, creds: string): Promise<NatsConnection> =>
   connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, reconnect: false });
 
-/** The fetch fixture and the replies A1's real handler gave for it at bc5f3505a1 (RUNS.md). */
+/** The fetch fixture, and the replies the endpoint gave for it before the store moved behind the
+ *  contract. Recorded once from that handler with the same fixture and the same `walk` as below: a
+ *  hosted daemon serving `artifacts`, the two artifacts put and attached, fetch-chunk from FROM until
+ *  complete, then a broker restart at max_payload LOW and the same walk, then the second artifact
+ *  walked with its stored chunk 2 purged after the first reply. */
 const SIZE = 200_000, FROM = 70_001, LOW = 70_000;
 const fixture = (a: number, b: number) => new Uint8Array(SIZE).map((_, i) => (i * a + b) % 251);
 type Step = [offset: number, length: number, complete: boolean] | [offset: number, refusal: string];
-const A1_WIDE: Step[] = [[70001, 129999, true]];
-const A1_NARROW: Step[] = [[70001, 52428, false], [122429, 8643, false], [131072, 52428, false], [183500, 16500, true]];
-const A1_MISSING: Step[] = [[70001, 52428, false], [122429, "not-found: fetch-chunk: artifact expired"]];
+const BEFORE_WIDE: Step[] = [[70001, 129999, true]];
+const BEFORE_NARROW: Step[] = [[70001, 52428, false], [122429, 8643, false], [131072, 52428, false], [183500, 16500, true]];
+const BEFORE_MISSING: Step[] = [[70001, 52428, false], [122429, "not-found: fetch-chunk: artifact expired"]];
 
 const port = await pickFreePort(), monitorPort = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -185,7 +189,7 @@ try {
   const boundState = await bootstrapDaemonEndpoint({ auth, servers, space, store: boundStore, log: () => {} }, DAEMON_ENDPOINT_BOOTSTRAPS[ARTIFACTS_ENDPOINT]!());
   check("the bound daemon binds artifacts", Number.isSafeInteger(boundState.epoch) && boundState.epoch >= 0 && boundState.instanceId.length > 0, boundState);
 
-  // ---- 5. A1's reply boundaries, from the real handler ----
+  // ---- 5. the reply boundaries, from the real handler ----
   const channel = "work.files";
   const uid = mintLifecycleUid(), principal = { owner: DEV_OWNER, actor: "alice" };
   await provisionAgentDurables(provisionerEp, { ...principal, lifecycleUid: uid }, { subscribe: [], allowSubscribe: [channel] });
@@ -227,8 +231,8 @@ try {
     && steps.at(-1)![2] === true && steps.at(-1)![0] + (steps.at(-1)![1] as number) === SIZE;
   const suffix = (src: Uint8Array) => Buffer.from(src.subarray(FROM));
   const wide = await walk(d1);
-  check("at the broker's limit, fetch-chunk from 70,001 gives A1's reply sequence, and the bytes are the fixture's suffix",
-    JSON.stringify(wide.steps) === JSON.stringify(A1_WIDE) && covers(wide.steps) && wide.bytes.equals(suffix(one)), wide.steps);
+  check("at the broker's limit, fetch-chunk from 70,001 gives the pinned reply sequence, and the bytes are the fixture's suffix",
+    JSON.stringify(wide.steps) === JSON.stringify(BEFORE_WIDE) && covers(wide.steps) && wide.bytes.equals(suffix(one)), wide.steps);
   await release();
   await new Promise((r) => nats.once("exit", r));
   writeFileSync(confPath, conf(LOW));
@@ -239,8 +243,8 @@ try {
   await wait(2_000);
   const narrow = await walk(d1);
   const prefixes = narrow.steps.filter((s) => typeof s[1] === "number" && s[1] < Math.min(65_536 - (s[0] % 65_536), SIZE - s[0]));
-  check("at max_payload 70,000 the replies are A1's, at least one is a measured prefix, and the bytes are the fixture's suffix",
-    back && JSON.stringify(narrow.steps) === JSON.stringify(A1_NARROW) && prefixes.length > 0 && covers(narrow.steps) && narrow.bytes.equals(suffix(one)),
+  check("at max_payload 70,000 the replies are the pinned ones, at least one is a measured prefix, and the bytes are the fixture's suffix",
+    back && JSON.stringify(narrow.steps) === JSON.stringify(BEFORE_NARROW) && prefixes.length > 0 && covers(narrow.steps) && narrow.bytes.equals(suffix(one)),
     { back, steps: narrow.steps, prefixes });
   const sweeperCreds = (await boundStore.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_SWEEPER_CREDS_KIND)))!;
   const sweeper = await dial(servers, sweeperCreds);
@@ -249,11 +253,11 @@ try {
   const missing = await walk(d2, async () => {
     await jsm.streams.purge(objectStoreStream(artifactBucket(space)), { filter: `$O.${artifactBucket(space)}.C.${d2.slice(7)}.2` });
   });
-  check("on a second artifact, a stored chunk purged mid-fetch makes the next reply artifact expired at A1's offset",
-    JSON.stringify(missing.steps) === JSON.stringify(A1_MISSING), missing.steps);
+  check("on a second artifact, a stored chunk purged mid-fetch makes the next reply artifact expired at the pinned offset",
+    JSON.stringify(missing.steps) === JSON.stringify(BEFORE_MISSING), missing.steps);
 
   // ---- 6. the jetstream store's ranged read, called directly ----
-  // The store module is imported only now, after every hosted cell (E11).
+  // The store module is imported only now, after every hosted cell.
   const { ArtifactObjects } = await import("../src/stores/jetstream-store.js");
   const data = await dial(servers, (await boundStore.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_DATA_CREDS_KIND)))!);
   conns.push(data);

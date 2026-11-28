@@ -122,11 +122,6 @@ export interface DeliveryNativeConnection extends NativeConnectionBinding {
   label: "endpoint" | "membership-rw" | "timer-writer" | (string & {});
 }
 
-/** The endpoints this daemon can be asked to serve with `--serve` (or hosted `endpoints`), by name. A
- *  name outside the list is refused at start. Each daemon builds its own factories once the artifact
- *  store is resolved. */
-export { SERVED_ENDPOINT_NAMES };
-
 /** A hosted delivery context, with the native bindings of its data-account connections. */
 export interface DeliveryServiceHandle extends HostedServiceHandle {
   /** Every data-account connection this context holds now: the endpoint's, the membership feed's
@@ -283,7 +278,7 @@ async function runStartedDelivery(
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
   const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(root)) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
-  // The artifact store, resolved from the space's binding before anything is dialed; a bad binding stops the daemon here (A2).
+  // The artifact store, resolved from the space's binding before anything is dialed; a bad binding stops the daemon here.
   const artifactStore = serveNames.includes("artifacts") ? await resolveArtifactStore(store ?? workspaceSecretStore(root), space, (line) => log.err(line)) : undefined;
   const credsSrc = resolveCredsStore(v, space, root, store);
   if (v.creds !== undefined)

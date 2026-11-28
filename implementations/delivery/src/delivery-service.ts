@@ -1,7 +1,8 @@
 import { isAbsolute } from "node:path";
 import type { Command, ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled, CommandFailure, DELIVERY_CREDS_KIND, DELIVERY_PROCESS, localProcessPath, observeServiceStartup, protectedCredentialReference, publishServiceStartup, readPidfile, readProcessRecord, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
-import { runDelivery, SERVED_ENDPOINT_NAMES } from "./delivery.js";
+import { runDelivery } from "./delivery.js";
+import { SERVED_ENDPOINT_NAMES } from "./served-endpoints.js";
 
 export const deliveryPreset: ServicePreset = {
   kind: "service-preset", name: "delivery", adapter: "delivery", timeoutMs: 40000,

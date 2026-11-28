@@ -320,7 +320,7 @@ export class ArtifactVerbs {
  *  still fits, or, when not even the rest of the first chunk fits, the largest prefix of it that does (a
  *  measured binary search), so every call makes progress or refuses by name. Stored chunks are fixed
  *  size, so the chunk holding `offset` is found without reading the ones before it. Each read asks the
- *  store for exactly one stored chunk's byte range, in A1's order (A2). */
+ *  store for exactly one stored chunk's byte range, in stored-chunk order. */
 async function collectChunk(
   objects: ArtifactStoreSpace,
   meta: { digest: string; size: number; blocks: number },
