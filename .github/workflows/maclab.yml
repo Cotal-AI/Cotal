@@ -1,0 +1,53 @@
+name: Mac lab
+
+on:
+  push:
+    branches: ['test/maclab-**']
+
+permissions: {}
+
+jobs:
+  lab:
+    name: lab 2222
+    runs-on: macos-15
+    timeout-minutes: 350
+    concurrency:
+      group: maclab-2222
+      cancel-in-progress: true
+    steps:
+      - name: Start the SSH server
+        env:
+          LANE_KEYS: ${{ secrets.WINLAB_LANE_KEYS }}
+        run: |
+          set -eu
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$LANE_KEYS" > "$HOME/.ssh/authorized_keys"
+          chmod 700 "$HOME/.ssh"; chmod 600 "$HOME/.ssh/authorized_keys"
+          chmod go-w "$HOME"
+          sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+          for i in 1 2 3 4 5 6; do nc -z 127.0.0.1 22 && break; sleep 2; done
+          nc -z 127.0.0.1 22
+          mkdir -p "$HOME/lanes"
+          echo "sshd up, $(sw_vers -productName) $(sw_vers -productVersion) $(uname -m), node $(node --version)"
+      - name: Hold the tunnel
+        env:
+          TUN_KEY: ${{ secrets.WINLAB_TUNNEL_KEY }}
+          TUN_HOST: ${{ secrets.WINLAB_TUNNEL_HOST }}
+          TUN_KNOWN: ${{ secrets.WINLAB_TUNNEL_KNOWN }}
+        run: |
+          set -u
+          umask 077
+          dir="$RUNNER_TEMP/tun"; mkdir -p "$dir"
+          printf '%s\n' "$TUN_KEY" | tr -d '\r' > "$dir/key"
+          printf '%s\n' "$TUN_KNOWN" > "$dir/known"
+          chmod 600 "$dir/key"
+          end=$(( $(date +%s) + 340 * 60 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            ssh -N -i "$dir/key" -o UserKnownHostsFile="$dir/known" -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -R 127.0.0.1:2222:127.0.0.1:22 "$TUN_HOST" &
+            pid=$!
+            echo "tunnel started $(date -u +%FT%TZ)"
+            while kill -0 "$pid" 2>/dev/null && [ "$(date +%s)" -lt "$end" ]; do sleep 20; done
+            kill "$pid" 2>/dev/null || true
+            sleep 10
+          done
