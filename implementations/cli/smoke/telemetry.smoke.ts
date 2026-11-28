@@ -270,6 +270,13 @@ for (const level of ["regular", "minimal"]) {
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
     && commands.length === 1 && commands[0]?.errorCode === "USAGE_INVALID" && commands[0]?.errorMessage === "the project root is not a directory" && !JSON.stringify(invalid.sent).includes(marker), shown(invalid));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const root = join(s.project, `read-only ${marker}`);
+    mkdirSync(root, { mode: 0o500 });
+    const denied = await s.run(["space", "create", space, "--root", root, "--json"]), event = denied.sent.find(body => body.event === "command");
+    check("an unwritable project is named only in the local preparation refusal", denied.status === 2 && denied.stdout.includes(root) && !existsSync(join(root, ".cotal")) &&
+      event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
+  }
   const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
   const addEvent = add.sent.find(body => body.event === "command");
   check("a refused registration root stays local", add.status === 1 && add.stdout.includes(marker) && addEvent?.errorCode === "USAGE_INVALID" && addEvent.errorMessage === "--root must name an existing directory" && !JSON.stringify(add.sent).includes(marker), shown(add));
