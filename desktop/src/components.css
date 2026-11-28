@@ -75,7 +75,6 @@
 .progress [data-state=done] .progress-mark { color: var(--green); }
 .progress [data-state=running] .progress-mark { color: var(--amber); }
 .progress [data-state=failed] .progress-mark { color: var(--red); }
-#preferences { margin-top: 16px; }
 details { margin-top: 8px; font-size: 12px; }
 summary { cursor: pointer; min-height: 30px; padding: 6px 0; font-weight: 600; }
 details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
@@ -97,8 +96,7 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .confirming-account #settings-account, .confirming-account #settings-spaces, .confirming-account #account-outcome,
 .account-outcome-view #settings-account, .account-outcome-view #settings-spaces,
 .confirming-account .account-actions:has(#settings-signout), .account-outcome-view .account-actions:has(#settings-signout) { display: none; }
-#settings-startup { padding-block: 4px; }
-#settings-startup > h3, #settings-startup > p, #pin-offer { padding-inline: 12px; }
+#settings-startup > p, #pin-offer { padding-inline: 12px; }
 #settings-startup > p, #pin-offer > p { margin: 4px 0; font-size: 12px; }
 #pin-offer .actions { margin: 4px 0; }
 #service-log { min-height: 44px; margin-top: 0; padding: 6px 12px; }

@@ -6,7 +6,7 @@
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
       <div class="sidebar-status">
-        <button id="connection-status" class="status-pill" type="button"><span id="tray-indicator" class="dot" aria-hidden="true"></span><span id="tray-label">Checking connection</span></button>
+        <button id="connection-status" class="status-pill" type="button"><span id="sidebar-status-dot" class="dot" data-tone="waiting" aria-hidden="true"></span><span id="sidebar-status-word">Starting</span></button>
         <p id="machine-name" title="This computer">This computer</p>
         <p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span>
       </div>
@@ -24,7 +24,7 @@
           <span class="view-label">Settings</span>
         </button>
       </div>
-      <footer class="sidebar-footer"><span id="footer-note">You choose when to connect this computer.</span><span class="version" id="version"></span></footer>
+      <footer class="sidebar-footer"><span id="footer-note" title="Closing this window keeps your agents running.">Closing this window keeps your agents running.</span><span class="version" id="version"></span></footer>
     </aside>
     <main tabindex="0" aria-label="Cotal workspace">
       <section id="settings-panel" class="settings-card" role="tabpanel" aria-labelledby="view-settings" hidden>
@@ -34,6 +34,9 @@
           <div class="row-group">
             <div class="settings-row"><div><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="text-button" type="button">Rename</button></div>
             <form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form>
+            <div id="settings-startup">
+              <div id="preferences" class="preferences settings-row"><div><h3>Open at login</h3><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></div>
+            </div>
           </div>
         </section>
         <section aria-labelledby="updates-heading">
@@ -53,7 +56,6 @@
         <section aria-labelledby="advanced-heading">
           <h2 id="advanced-heading" class="group-heading">Advanced</h2>
           <div class="row-group">
-            <div id="settings-startup"><h3>Startup</h3></div>
             <div class="settings-row"><div><h3>About</h3><p id="settings-versions"></p></div><button id="release-notes" class="text-button" type="button">Release notes</button></div>
             <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
           </div>
@@ -91,7 +93,7 @@
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
             <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button><button id="cloud-host" class="text-button" type="button" hidden>Use Cotal Cloud</button></div>
           </form>
-          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot in-flight" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
           <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
         </div>
         <div id="space-panel" hidden><p id="no-other-spaces" class="muted" role="status"></p><label for="space">Space to connect</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="text-button" type="button">Use this space</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>
@@ -118,11 +120,10 @@
           <div class="actions">
             <button id="dashboard" class="button primary" type="button">Open dashboard</button>
             <button id="disconnect" class="text-button" type="button" hidden>Remove</button>
-            <button id="another-space" class="text-button" type="button">Add to another space</button>
+            <button id="another-space" class="button secondary" type="button">Add to another space</button>
             <button id="sign-in-again" class="button primary" type="button">Sign in</button>
           </div>
         </div>
-        <section id="preferences" class="preferences" hidden><div><h2>Open at login</h2><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></section>
         <div id="recovery-panel" data-testid="recovery-panel" class="actions" hidden><button id="recover" data-testid="recover" class="button primary" type="button">Try again</button><button id="recover-apps" class="text-button" type="button" hidden>Set up agent apps</button><a id="setup-installer" class="text-button" href="https://github.com/Cotal-AI/Cotal/releases/latest" hidden>Download installer</a></div>
         <details id="details" hidden><summary>Details</summary><div class="details-content"><div><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></div></div></details>
         <button id="refresh" class="text-button" type="button" hidden>Refresh status</button>
