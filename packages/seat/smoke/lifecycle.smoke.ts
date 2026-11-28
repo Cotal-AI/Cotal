@@ -888,7 +888,7 @@ async function sharedAmbiguousLaunchCell(
   }
 }
 
-async function sharedCustodyCell(): Promise<void> {
+async function sharedCustodyCell(): Promise<boolean> {
   const entry = new URL("../dist/index.js", import.meta.url).href;
   const absent = spawnSync(process.execPath, ["--input-type=module", "-e",
     `const { linuxSharedCustodyAvailable } = await import(${JSON.stringify(entry)}); process.exitCode = linuxSharedCustodyAvailable() ? 1 : 0;`], {
@@ -899,7 +899,7 @@ async function sharedCustodyCell(): Promise<void> {
   const skip = nativeSharedSkip();
   if (skip) {
     console.log(`  SKIP v2 shared PTY lifecycle: ${skip}`);
-    return;
+    return false;
   }
   const api: typeof import("../src/shared-managed.js") = await import(new URL("../dist/shared-managed.js", import.meta.url).href);
   const { SharedController }: typeof import("../src/shared-controller.js") = await import(new URL("../dist/shared-controller.js", import.meta.url).href);
@@ -921,7 +921,7 @@ async function sharedCustodyCell(): Promise<void> {
     const roots = nativeGenerations(lineage);
     if (!handle && roots.length === 1 && existsSync(join(roots[0]!, "execution.json")) && !existsSync(join(roots[0]!, "host.json"))) {
       console.log("  SKIP v2 shared PTY lifecycle: user manager did not publish a host with delegated memory cgroups");
-      return;
+      return false;
     }
     assert(handle, "managed v2 launch did not admit the fixture");
     handles.push(handle);
@@ -971,6 +971,7 @@ async function sharedCustodyCell(): Promise<void> {
     process.kill(host.pid, "SIGKILL");
     check("v2 host death ends the exact child and reports exit to the original attachment", await until(() =>
       recordedProcess(child.pid, child.start, child.boot) === "gone" && exits === 1 && reopened.status() === "exited", 10_000));
+    return true;
   } finally {
     SharedController.prototype.connect = connectController;
     for (const handle of handles) handle.close();
@@ -996,7 +997,56 @@ async function cleanNativeSharedFixture(base: string, lineage: string): Promise<
   rmSync(base, { recursive: true });
 }
 
-await sharedCustodyCell();
+async function sharedOwnerDeathCell(): Promise<void> {
+  const base = makeSeatRoot("cotal-v2-owner-");
+  const lineage = join(base, `p-${seatId()}${seatId()}`);
+  const entry = new URL("../dist/shared-managed.js", import.meta.url).href;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    import { launchManagedSharedSeat } from ${JSON.stringify(entry)};
+    const [base, lineage] = process.argv.slice(1);
+    const seats = [];
+    for (const name of ['owner-death-one', 'owner-death-two']) {
+      const handle = await launchManagedSharedSeat(lineage, { root: lineage, name, cwd: base,
+        spec: { command: process.execPath, args: ['-e', 'setInterval(()=>{}, 1000)'], env: { PATH: '/usr/bin:/bin' } } });
+      assert(handle?.childIdentity, 'owner fixture did not launch a managed v2 seat');
+      seats.push(handle.childIdentity);
+    }
+    process.send(seats);
+    setInterval(() => {}, 1000);
+  `, base, lineage], {
+    cwd: base, stdio: ["ignore", "ignore", "inherit", "ipc"],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+      HOME: base, XDG_CONFIG_HOME: join(base, "config"), TMPDIR: base, DO_NOT_TRACK: "1" },
+  });
+  const stopped = new Promise<void>(resolve => owner.once("close", () => resolve()));
+  let children: { pid: number; start: string; boot: string }[] | undefined;
+  owner.on("message", (message: typeof children) => { children = message; });
+  try {
+    assert(await until(() => children !== undefined || owner.exitCode !== null || owner.signalCode !== null, 30_000));
+    assert(children?.length === 2, "child owner did not report two seats");
+    const roots = nativeGenerations(lineage);
+    assert.equal(roots.length, 1);
+    const host = readSharedHost(roots[0]!);
+    const ownerStart = processStartToken(owner.pid!);
+    assert(ownerStart && recordedProcess(owner.pid!, ownerStart, host.bootId) === "live");
+    assert.equal(recordedProcess(host.pid, host.start, host.bootId), "live");
+    assert(children.every(child => recordedProcess(child.pid, child.start, child.boot) === "live"));
+    assert(children.every(child => readFileSync(`/proc/${child.pid}/cgroup`, "utf8").includes(`/${host.scope}/seat-`)));
+    assert(owner.kill("SIGKILL"));
+    // No daemon, successor, or fixture stop runs during this wait. Only the host observes owner death.
+    check("v2 owner-only SIGKILL ends the host and both seats within 10 seconds", await until(() =>
+      owner.signalCode === "SIGKILL" && recordedProcess(owner.pid!, ownerStart, host.bootId) === "gone" &&
+      recordedProcess(host.pid, host.start, host.bootId) === "gone" &&
+      children!.every(child => recordedProcess(child.pid, child.start, child.boot) === "gone"), 10_000));
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+    await stopped;
+    await cleanNativeSharedFixture(base, lineage);
+  }
+}
+
+if (await sharedCustodyCell()) await sharedOwnerDeathCell();
 
 console.log(`\nSEAT LIFECYCLE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 process.exitCode = fail === 0 ? 0 : 1;
