@@ -77,7 +77,8 @@ When a separately started service blocks `up`, its name, PID and instance ID sta
 If `--on` names an unregistered Manager instance, the local refusal identifies the requested instance and any running Managers. The command event keeps the error code but omits the message and stack.
 When `backup inspect` or `backup verify` finds no artifact at the requested path, or finds an incomplete artifact without its manifest, the path and recovery advice stay local. The event carries the refusal code without the message or stack.
 If the preferences file is a symbolic link, the event reports the reason without the link path or target. If a file blocks the config folder, the local diagnostic names it and the event carries `SCHEMA_INVALID` without that message or stack.
-When a connection refuses a file supplied with `--creds`, the CLI shows the filename and remedy locally. The command event keeps the error code and omits the diagnostic text and stack.
+When a connection refuses a file supplied with `--creds` or a saved service definition fails its credential file check, the CLI shows the filename and remedy locally. The command event keeps the error code and omits the diagnostic text and stack.
+If a native service target disagrees with its registration, the event reports the conflict. The conflicting roots, space and broker addresses appear in the local remedy.
 If a service adapter path crosses a symbolic link, the event names the option. The link and its destination stay in the local remedy.
 When `space create` refuses a project root that is not a directory, the event reports the reason. The path stays in the local remedy.
 If a project path contains a control character or bidirectional formatting mark, the refusal identifies it locally. The event carries the error code without the diagnostic text or stack.
