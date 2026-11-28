@@ -239,10 +239,10 @@ export class DependencyCheckNoSpace extends Error {}
 
 const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
 
-export function npmRegistryFailure(detail: string): "timeout" | "network" | "offline" | undefined {
+export function npmRegistryFailure(detail: string): "timeout" | "network" | "uncached" | undefined {
   const code = /^(?:target staging failed: )?npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/m.exec(detail)?.[1];
   if (code === "FETCH_ERROR" && /^npm (?:error|ERR!) network timeout at: \S/m.test(detail)) return "timeout";
-  if (code === "ENOTCACHED") return "offline";
+  if (code === "ENOTCACHED") return "uncached";
   if (NETWORK_ERROR_CODE.test(code ?? "")) return "network";
   if (code && code !== "FETCH_ERROR") return undefined;
   const requestCode = /^npm (?:error|ERR!) request to \S+ failed: (?:connect |getaddrinfo )?([A-Z_]+)\b/m.exec(detail)?.[1];
