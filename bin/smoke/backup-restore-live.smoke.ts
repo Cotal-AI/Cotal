@@ -2390,20 +2390,21 @@ async function authenticatedRestoreResourceParity(): Promise<void> {
   writeFileSync(preload, `
 const fs = require('node:fs');
 const cp = require('node:child_process');
-const { basename } = require('node:path');
+const { basename, dirname } = require('node:path');
+const attempts = ${JSON.stringify(join(root, ".cotal", "maintenance", "attempts"))};
 const emit = event => fs.appendFileSync(${JSON.stringify(trace)}, event + '\\n');
 const mkdir = fs.mkdirSync;
 fs.mkdirSync = function(path, ...args) {
   const result = mkdir.call(this, path, ...args);
-  if (typeof path === 'string' && path.startsWith(${JSON.stringify(join(root, ".cotal", "maintenance", "attempts") + "/")}) && path.endsWith('-clone')) emit('clone');
+  if (typeof path === 'string' && dirname(path) === attempts && path.endsWith('-clone')) emit('clone');
   return result;
 };
 const spawn = cp.spawn;
 cp.spawn = function(file, args, ...options) {
   const child = spawn.call(this, file, args, ...options);
   if (child.pid && /^nats-server(?:\\.exe)?$/.test(basename(file))) {
-    const config = args[args.indexOf('-c') + 1];
-    emit(args.includes('-c') && config?.includes('/maintenance/attempts/') ? 'isolated' : 'listener');
+    const config = Array.isArray(args) && args.includes('-c') ? args[args.indexOf('-c') + 1] : undefined;
+    emit(config && dirname(config) === attempts ? 'isolated' : 'listener');
   }
   return child;
 };
