@@ -208,7 +208,8 @@ try {
 
   console.log("\n3) SUBJECT: the RESUMED `cotal up` renders with the root lock free");
   const before = confStamp();
-  const resumed = run(["up", "--detach", "--space", space, "--server", server]);
+  const resumed = run(["up", "--detach", "--recreate-membership-store", "--space", "unexpected-space", "--server", server]);
+  const resumedExit = once(resumed, "exit");
   // Only judge the lock once the OUTER recovery block has finished and the re-entry is underway -
   // otherwise a lucky early acquire would just be racing the outer block, not observing the gap.
   let acquiredDuringResume = false;
@@ -256,6 +257,19 @@ try {
   } finally {
     releaseMaintenanceLock(held);
   }
+
+  await within(resumedExit, 60_000);
+  ok("the mismatched start resumes successfully", resumed.exitCode === 0, logOf(resumed).slice(-1500));
+  const status = run(["status", "--json"]);
+  await within(once(status, "exit"), 30_000);
+  ok("status succeeds after the mismatched start", status.exitCode === 0, logOf(status));
+  const { result } = JSON.parse(logOf(status)) as {
+    result: { selected: { space: string; server: string; connection: string }; meshes: { items: { space: string }[] }; maintenance: unknown };
+  };
+  ok("the recorded space is online and the requested space was not registered",
+    result.selected.space === space && result.selected.server === server && result.selected.connection === "ok" &&
+    result.meshes.items.length === 1 && result.meshes.items[0]?.space === space, result);
+  ok("the mismatched start consumes the preserved cut", result.maintenance === null, result.maintenance);
 
   console.log("\n4) SUBJECT: a FOREGROUND resume can convert a preserved File-backed membership feed");
   const send = run(["send", "-c", "railprobe", "legacy-retained"]);

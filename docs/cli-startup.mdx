@@ -210,6 +210,11 @@ control-plane startup error that arrives while its guarded stop is in progress. 
 outside that stop are still reported. Windows keeps its existing console signal behavior. The `-f` form is a
 [manifest deploy](#manifest-deploys).
 
+When `cotal up` resumes a preserved legacy stack, it starts the space recorded in the cut even
+if `--space` names a different space. This also applies with `--recreate-membership-store`.
+Run `cotal status --json` from the stopped project and check `result.maintenance.space` before
+resuming. Use a separate project to start a different space without consuming the cut.
+
 
 ### Default persona
 
