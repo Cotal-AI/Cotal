@@ -302,8 +302,12 @@ Even when the CLI is already at the latest release, `cotal update --self` reinst
 first-party extension whose entry file is missing, empty, or cannot load with its dependencies.
 It reports a failed reinstall instead of declaring the installation current.
 In npm offline mode, a manual `cotal update --self` skips the release check but can still repair
-damaged first-party extensions installed from npm at the running CLI's version, if npm has the
-packages cached. An unsuccessful offline repair names the affected extensions and still exits 0.
+a missing or empty bundled connector from the copy this CLI ships while that connector's registry
+dependencies are still installed in the prefix, and a damaged first-party extension installed from
+npm at the running CLI's version. A tag, a range, or an omitted spec installs that exact version
+and records `pkg@version` when npm has it cached. An unsuccessful offline repair names the
+affected extensions and still exits 0. When another reconcile already holds the connector lock, the
+command prints `waiting for another connector reconcile to finish` and waits.
 On Linux and macOS, `cotal update --self` also removes abandoned extension staging copies
 from the selected connector configuration, even when the CLI is current. Both `cotal update`
 and `cotal update --self` check the previous connector configuration recorded by the selected

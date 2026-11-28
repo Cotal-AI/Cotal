@@ -338,6 +338,7 @@ export async function installExtensionSet(
     }
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
+    for (const spec of specs) announce(c.dim(`installing ${spec}`));
     // npm's own update notifier can query the registry even in offline mode.
     const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
     const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);

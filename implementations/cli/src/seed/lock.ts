@@ -28,9 +28,15 @@ export interface ReconcileLock {
 /** Acquire the reconcile lock, waiting (bounded) on a live reconcile and reclaiming a dead owner's.
  *  A reconcile installs four connectors via npm, so the wait bound is generous. */
 export function acquireReconcileLock(config?: string): ReconcileLock {
+  let announced = false;
   const held: HeldLock = acquireLock(config === undefined ? reconcileLockPath() : join(config, "seed", "reconcile.lock"), {
     label: "a connector reconcile",
     waitMs: 300000,
+    onWait: () => {
+      if (announced) return;
+      announced = true;
+      console.error("waiting for another connector reconcile to finish");
+    },
     onTimeout: (owner) =>
       new Error(
         `another connector reconcile has held the lock for over 5 minutes (pid ${owner.pid}) - retry once it finishes, or \`cotal ext seed --repair\` if it is wedged`,
