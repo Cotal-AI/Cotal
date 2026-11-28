@@ -82,6 +82,18 @@ try {
     try { await ensureArtifactIndexStores(await jetstreamManager(nc), new Kvm(nc), space); } catch (e) { refusal = (e as Error).message; }
     c("ensureArtifactIndexStores refuses a bucket that allows Direct Get, naming the bucket and the field",
       refusal.includes(`KV_cotal_artattach_${space}`) && refusal.includes("allow_direct"), refusal);
+    // A bucket under the possession name with no per-row size bound: an unbounded row is a storage lever.
+    await new Kvm(nc).create(`cotal_artpossess_${space}`, { history: 1, allow_direct: false });
+    let sizeRefusal = "";
+    try { await ensureArtifactIndexStores(await jetstreamManager(nc), new Kvm(nc), `${space}`); } catch (e) { sizeRefusal = (e as Error).message; }
+    const jsm2 = await jetstreamManager(nc);
+    let sizeOnly = "";
+    try {
+      const { assertArtifactIndexStoreConfig } = await import("../src/index.js");
+      assertArtifactIndexStoreConfig((await jsm2.streams.info(`KV_cotal_artpossess_${space}`)).config, `cotal_artpossess_${space}`);
+    } catch (e) { sizeOnly = (e as Error).message; }
+    c("a bucket with no per-row size bound is refused, naming max_msg_size",
+      sizeRefusal.length > 0 && sizeOnly.includes(`KV_cotal_artpossess_${space}`) && sizeOnly.includes("max_msg_size"), sizeOnly);
     await nc.close();
   }
 

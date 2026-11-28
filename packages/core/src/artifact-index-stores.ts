@@ -48,6 +48,7 @@ export function assertArtifactIndexStoreConfig(config: StreamConfig, bucket: str
   if (config.max_msgs_per_subject !== 1) drift.push(`max_msgs_per_subject is ${config.max_msgs_per_subject}, expected 1`);
   if (config.max_bytes !== -1) drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a positive cap reserves broker storage)`);
   if (config.max_age !== 0) drift.push(`max_age is ${config.max_age}, expected 0 (the sweep owns expiry)`);
+  if (config.max_msg_size !== ARTIFACT_INDEX_MAX_VALUE_SIZE) drift.push(`max_msg_size is ${config.max_msg_size}, expected ${ARTIFACT_INDEX_MAX_VALUE_SIZE} (one index row is small; an unbounded row is a storage lever)`);
   if (config.mirror || config.sources?.length) drift.push("it mirrors or sources another stream");
   if (drift.length) throw new Error(`artifact index store KV_${bucket} has drifted: ${drift.join("; ")} - refusing to adopt it`);
 }
