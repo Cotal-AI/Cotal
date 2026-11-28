@@ -227,6 +227,18 @@ for (const level of ["regular", "minimal"]) {
 }
 
 {
+  const s = sandbox(), marker = "fixture-retained-store", store = join(s.project, `store ${marker}`), config = join(s.project, ".cotal"), missing = join(s.project, "absent");
+  mkdirSync(config, { recursive: true }); mkdirSync(join(store, "jetstream"), { recursive: true });
+  writeFileSync(join(config, "server-open.conf"), `jetstream { store_dir: ${JSON.stringify(store)} }\n`);
+  writeFileSync(join(s.project, "cotal.yaml"), 'apiVersion: cotal/v1\nkind: Mesh\nspace: sample\nbroker: { servers: "nats://127.0.0.1:14222", auth: false }\nchannels:\n  lobby: { description: "fixture" }\n');
+  for (const args of [[], ["--store-dir", missing]]) {
+    const r = await s.run(["up", "-f", "cotal.yaml", "--dry-run", ...args]), event = r.sent.find(row => row.event === "command");
+    check(`last-store conflict keeps its path local with ${args.length ? "a missing" : "no"} store option`, r.status === 2 && r.stderr.replace(/\s+/g, " ").includes(`--store-dir '${store}'`) && !existsSync(missing) &&
+      event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
+}
+
+{
   const s = sandbox(), marker = "fixture-preferences-marker", config = join(s.home, `config ${marker}`);
   const dir = join(config, "cotal"), file = join(dir, "preferences.json");
   mkdirSync(dir, { recursive: true }); writeFileSync(file, "{", { mode: 0o600 });
