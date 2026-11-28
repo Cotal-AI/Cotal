@@ -1102,6 +1102,18 @@ if (process.platform !== "win32") {
   const cursor = gate(["show", "run-0"], { cursor: "AAAAAAAA", limit: "1" });
   c("run show refuses an inventory cursor even with a journal limit", isCommandFailure(cursor) && cursor.code === "USAGE_INVALID" && cursor.remedy?.includes("remove --cursor") === true, cursor);
   c("run ps --limit without --page is still refused", usageRefusal(gate(["ps"], { limit: "5" }), "diagnostic paging requires run --page"));
+  const pagePins: Record<string, string>[] = [{}, { on: "short" }];
+  for (const pin of pagePins) {
+    const page = gate(["list"], { page: true, limit: "3", json: true, space: "other", server: "nats://127.0.0.1:4223", ...pin });
+    c("a missing or malformed page pin offers the roster for its target and output mode", isCommandFailure(page) && page.code === "USAGE_INVALID" &&
+      page.remedy?.includes("`cotal ps --space other --server 'nats://127.0.0.1:4223' --json`") === true && page.remedy.includes("all other options unchanged"), page);
+  }
+  const privateTargets: Record<string, string>[] = [{ creds: "private-caller.creds" }, { server: "nats://sample:private-token@localhost:4222" }];
+  for (const privateTarget of privateTargets) {
+    const page = gate(["list"], { page: true, ...privateTarget });
+    c("page pin advice does not expose private target values or substitute an unscoped roster", isCommandFailure(page) &&
+      !!page.remedy && page.remedy.includes("same space, broker and caller") && !/private-|cotal ps/.test(page.remedy), page);
+  }
   const view = { runId: "run-0", endpoint: "manager", spec: {} as RunStatusView["spec"],
     journal: Array.from({ length: 30 }, (_, n) => ({ n, kind: "activation" as const, holder: "h", epoch: n, replayedTo: 0 })) } satisfies RunStatusView;
   const printed = (limit?: string): string => {

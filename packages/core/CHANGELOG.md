@@ -1,5 +1,24 @@
 # @cotal-ai/core
 
+## 0.184.1
+
+### Patch Changes
+
+- 7c5c7ff: Keep channel joins responsive by streaming retained history in bounded pages and let interrupted joins resume without repeating posts already replayed.
+
+## 0.184.0
+
+### Minor Changes
+
+- 68fc37d: A launch now runs only an effort level or mode its harness lists for the model, and is refused before launch otherwise. A model catalog row can name its default variant, the harness's default model, and modes such as a fast tier, which `cotal models` prints and `cotal spawn --mode id=value` chooses. The Manager's `spawn` takes `modes` (Manager revision 58) and checks a variant or modes against the last catalog it read for that connector, reading one only when it holds none. A mode the account cannot use is listed with an `unavailable` reason, which `cotal models` prints, and a launch that turns it on is refused with that reason. A launch that sets it off, `false` or the choice's default, still runs. A connector declares `supportsModes` to render them, and a resumed seat launches with the modes it was spawned with. A variant on a connector without a catalog, or on a model its catalog does not list, is now refused rather than launched at a setting the harness picks.
+
+### Patch Changes
+
+- e693bb2: Internal refactor: the endpoint's option validation moves out of the `CotalEndpoint` constructor into two functions beside `EndpointOptions`, one for the principal and credential and one for the connection and delivery settings. No behaviour change.
+- 56ff3d1: Internal refactor: the endpoint's status watch, connection supervisor, retry loop and KV watch bookkeeping move to its connection part, the delivery request to its control plane, the chat publish to its messaging part, and the join backfill and replay policy reads to its history part. No behaviour change.
+- 6e28100: Internal refactor: the bodies of the endpoint's `start`, `reconnect`, `requestDeliveryAdmin`, `dmHistoryOf` and `servePrincipal` move to the parts that own their state, and each public method stays on `CotalEndpoint` with the same signature and documentation. No behaviour change.
+- aa7d8a2: Use shared channel address builders for history, credential grants, and backups without changing broker addresses.
+
 ## 0.183.1
 
 ### Patch Changes
