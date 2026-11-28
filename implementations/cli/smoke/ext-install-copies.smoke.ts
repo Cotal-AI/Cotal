@@ -283,7 +283,8 @@ ${damage ? 'writeFileSync(new URL("./package.json", import.meta.url), "{corrupt"
 throw new Error("fixture import failed");`,
       });
       const added = cli(["ext", "add", source]);
-      check(`${name}: metadata-only add succeeds`, added.status === 0 && !existsSync(marker), added.stderr);
+      if (added.status !== 0) console.log(added.stderr.slice(-800));
+      check(`${name}: metadata-only add succeeds`, added.status === 0 && !existsSync(marker));
       check(`${name}: npm installed a valid declaration`, JSON.parse(readFileSync(join(prefix, "node_modules", name, "package.json"), "utf8")).cotal.contract === 1);
       const invoked = cli([name]);
       check(`${name}: first use evaluates the entry and reports its failure`, invoked.status !== 0 && existsSync(marker) && invoked.stderr.includes("fixture import failed"));

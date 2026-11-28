@@ -1,7 +1,7 @@
 /** Installed factory verification and import remedies. Run: pnpm smoke:import-remedy */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -170,19 +170,35 @@ async function physicalCoreBoundary() {
   const { version: coreVersion } = JSON.parse(readFileSync(join(coreDir, "package.json"), "utf8"));
   const coreArchive = pack(coreDir);
   const refusal = /no readable core version inside the extensions prefix.*cotal ext add/;
-  const outer = join(tmp, "outer"), home = join(outer, "home"), real = join(home, "config"), linked = join(home, "linked");
-  mkdirSync(real, { recursive: true });
-  symlinkSync(real, linked, "junction");
+  const outer = join(tmp, "outer"), home = join(outer, "home");
   const outerDecoy = join(outer, "node_modules", "@cotal-ai", "core");
   unpack(coreArchive, outerDecoy);
-  const decoy = join(real, "cotal", "node_modules", "@cotal-ai", "core");
-  unpack(coreArchive, decoy);
   try {
-    for (const [label, config] of [["direct", real], ["linked", linked]]) {
-      process.env.XDG_CONFIG_HOME = config;
-      const corePath = join(extensionsDir(), "node_modules", "@cotal-ai", "core");
-      const install = (suffix: string, expectedCore: string) => {
+    for (const label of ["direct", "linked"]) {
+      const install = (suffix: string, location: "outer" | "decoy" | "hoisted" | "sibling") => {
         const name = `core-location-${label}-${suffix}`, pkg = `@third/${name}`;
+        // Node caches package metadata by directory. Each cell gets a fresh physical config root.
+        const real = join(home, `${name}-config`), linked = join(home, `${name}-linked`);
+        mkdirSync(real, { recursive: true });
+        if (label === "linked") symlinkSync(real, linked, "junction");
+        process.env.XDG_CONFIG_HOME = label === "linked" ? linked : real;
+        const prefix = extensionsDir(), corePath = join(prefix, "node_modules", "@cotal-ai", "core");
+        const decoy = join(dirname(prefix), "node_modules", "@cotal-ai", "core");
+        let expectedCore = outerDecoy;
+        if (location !== "outer") {
+          unpack(coreArchive, decoy);
+          expectedCore = decoy;
+        }
+        if (location === "hoisted") {
+          unpack(coreArchive, corePath);
+          expectedCore = corePath;
+        }
+        if (location === "sibling") {
+          expectedCore = join(dirname(prefix), "extensions-old", "node_modules", "@cotal-ai", "core");
+          unpack(coreArchive, expectedCore);
+          mkdirSync(dirname(corePath), { recursive: true });
+          symlinkSync(expectedCore, corePath, "junction");
+        }
         const ref = { kind: "runtime", name };
         const source = join(tmp, name);
         writePluginFixture(source, { name: pkg, version: "1.0.0", provides: [ref],
@@ -195,20 +211,10 @@ async function physicalCoreBoundary() {
         writeFileSync(extensionsManifestPath(), JSON.stringify({ extensions: [{ pkg, provides: [ref], version: "1.0.0", installId: name, commands: [] }] }));
         return ref;
       };
-      await assert.rejects(materializeFromManifest(install("missing", decoy)), refusal);
-      renameSync(decoy, `${decoy}-hold`);
-      try { await assert.rejects(materializeFromManifest(install("outer", outerDecoy)), refusal); }
-      finally { renameSync(`${decoy}-hold`, decoy); }
-      unpack(coreArchive, corePath);
-      assert.equal((await materializeFromManifest(install("hoisted", corePath))).kind, "runtime");
-      rmSync(corePath, { recursive: true });
-      if (label === "direct") {
-        const sibling = join(dirname(extensionsDir()), "extensions-old", "node_modules", "@cotal-ai", "core");
-        unpack(coreArchive, sibling);
-        symlinkSync(sibling, corePath, "junction");
-        try { await assert.rejects(materializeFromManifest(install("sibling", sibling)), refusal); }
-        finally { rmSync(corePath, { recursive: true }); }
-      }
+      await assert.rejects(materializeFromManifest(install("missing", "decoy")), refusal);
+      await assert.rejects(materializeFromManifest(install("outer", "outer")), refusal);
+      assert.equal((await materializeFromManifest(install("hoisted", "hoisted"))).kind, "runtime");
+      if (label === "direct") await assert.rejects(materializeFromManifest(install("sibling", "sibling")), refusal);
     }
   } finally {
     if (original === undefined) delete process.env.XDG_CONFIG_HOME;

@@ -8,7 +8,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
@@ -179,11 +179,18 @@ async function checkManifestReconcile(): Promise<void> {
       if (!omitted) await wait(25);
     }
     check("the disabled class spawn rail has no subscriber", omitted);
-    const add = writeReconcilePlugin("reconcile-new", `export default host=>host.register({kind:'connector',name:'reconcile-new',buildLaunch:()=>{throw Error('restored rail reached buildLaunch')}});`);
+    const launchMarker = join(root, "restored-rail-launch");
+    const add = writeReconcilePlugin("reconcile-new", `import {writeFileSync} from 'node:fs';
+      export default host=>host.register({kind:'connector',name:'reconcile-new',buildLaunch:()=>{
+        writeFileSync(${JSON.stringify(launchMarker)}, 'launched');
+        throw Error('stop the fixture before starting a seat');
+      }});`);
     publish(add);
     check("adding an available connector re-enables class spawn", internal.managerStatusData().classSpawn);
     const restored = await spawnProbe();
-    check("the restored class spawn rail reaches the newly added connector", !restored.reply.ok && JSON.stringify(restored.reply).includes("restored rail reached buildLaunch"), restored.reply);
+    // The rail acknowledges admission before the lifecycle calls buildLaunch.
+    for (let i = 0; i < 100 && !existsSync(launchMarker); i++) await wait(50);
+    check("the restored class spawn rail reaches the newly added connector", restored.reply.ok && existsSync(launchMarker), restored.reply);
     internal.connectorInventory.startManifestWatch();
     await wait(150);
     publish();
