@@ -237,8 +237,7 @@ try {
   check("cotal help on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
   check("on 40 columns cotal help wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
 
-  // A classified failure is a report: its message, a labeled record of outcome and code, and the
-  // remedy under `Next`, which wraps at spaces with its continuation under its text.
+  // The refusal wraps its diagnosis but keeps the command under Next on its own line.
   const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
   ptys.push(failPty);
   const f = session(failPty);
@@ -247,10 +246,10 @@ try {
   check(
     "a failure on a 40-column terminal wraps under its text",
     f.exitCode === 2 && fit(f.text(), 40).length === 0 &&
-      failLines.join("\n") === [
-        "Request refused", "  no mesh running", "  Outcome", "    refused", "  Code", "    TARGET_NOT_FOUND",
-        "Next", "  sign in to Cotal Cloud with", "  `cotal login`, run `cotal up` in a", "  project, or pass `--server`",
-      ].join("\n"),
+      ["cotal", "cotal.cmd", "pnpm cotal"].some((cli) => failLines.join("\n") === [
+        "Request refused", "  You are not signed in, and no local", "  space is available.",
+        "  Outcome", "    refused", "  Code", "    TARGET_NOT_FOUND", "Next", `  ${cli} login`,
+      ].join("\n")),
     failLines,
   );
 

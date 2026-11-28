@@ -121,16 +121,26 @@ registry.register({ kind: "runtime", name: "probe", available() {
 }
 
 // ── ps, models and run ps: no mesh to read is refused before any request ─────────────────────────
+const firstRunPsMessage = "You are not signed in, and no local space is available.";
 {
   const run = sandbox();
   for (const words of [["ps"], ["models"], ["run", "ps"], ["run", "ps", "--local"]]) {
     const command = words.join(" "), json = run([...words, "--json"]);
+    const message = command === "ps" ? firstRunPsMessage : "no mesh running";
+    const remedy = command === "ps" ? "cotal login" : "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`";
     check(`${command} --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2`,
-      json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.command === words[0] && json.envelope.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
+      json.status === 2 && json.stderr === "" && json.envelope?.outcome === "refused" && json.envelope.command === words[0] && json.envelope.error?.code === "TARGET_NOT_FOUND", shown(json));
     check(`${command} --json with no mesh gives the remedy apart from the message`,
-      json.envelope?.error?.message === "no mesh running" && json.envelope.error.remedy === "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`", json.envelope?.error);
+      json.envelope?.error?.message === message && json.envelope.error.remedy === remedy, json.envelope?.error);
     const human = run(words);
-    check(`${command} with no mesh exits 2 with the sentence on stderr and nothing on stdout`, human.status === 2 && human.stdout === "" && /no mesh running/.test(human.stderr), shown(human));
+    check(`${command} with no mesh exits 2 with the sentence on stderr and nothing on stdout`, human.status === 2 && human.stdout === "" && human.stderr.includes(message), shown(human));
+  }
+  for (const flags of [[], ["--plain"]]) {
+    const result = run(["ps", ...flags]);
+    const next = result.stderr.trimEnd().split(/\r?\n/).slice(-2).join("\n");
+    check(`first-run ps ${flags.join(" ") || "default output"} gives one standalone login command under Next`,
+      result.status === 2 && result.stdout === "" && result.stderr.includes(firstRunPsMessage) &&
+        ["cotal", "cotal.cmd", "pnpm cotal"].some((cli) => next === `Next\n  ${cli} login`), shown(result));
   }
   const named = run(["models", "--json", "--space", "nope"]);
   check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no space named "nope"/.test(named.envelope.error.message), shown(named));
@@ -152,7 +162,7 @@ registry.register({ kind: "runtime", name: "probe", available() {
   for (const command of ["ps", "models"]) {
     const json = run([command, "--json"]);
     check(`${command} --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home`,
-      json.status === 2 && json.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
+      json.status === 2 && json.envelope?.error?.code === "TARGET_NOT_FOUND" && json.envelope.error.message === (command === "ps" ? firstRunPsMessage : "no mesh running"), shown(json));
   }
 }
 

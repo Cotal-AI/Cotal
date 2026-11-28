@@ -67,6 +67,7 @@ import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { localDiagnostic } from "../telemetry.js";
+import { preparedCatalogDiagnostics } from "./sync.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ScatterReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
@@ -744,9 +745,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
   } catch (e) {
     const journalRefusal = psUnusableJournalRefusal(e, v);
     if (journalRefusal) throw journalRefusal;
+    const cause = isConnectRefusal(e) ? e.cause : e;
+    if (v.space === undefined && v.server === undefined && isWorkspaceTargetError(cause) && cause.code === "no-meshes" &&
+        cause.details.root === undefined && preparedCatalogDiagnostics().length === 0) {
+      const cli = presentation === "json" ? "cotal" : displayCmd();
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "You are not signed in, and no local space is available.", {
+        remedy: `${cli} login`, remedyIsCommand: true,
+      });
+    }
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
-      const cause = isConnectRefusal(e) ? e.cause : e;
       const writeProblem = isWorkspaceTargetError(cause) && cause.code === "not-started" && (cause.details.stopped || preparedNeverStarted(cause.details)) ? preparedRootWriteProblem(parts.restartRoot) : undefined;
       const block = writeProblem ?? channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
         ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`)

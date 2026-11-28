@@ -41,6 +41,9 @@ When a single manager returns an empty list, Next checks the local default harne
 
 ### Control credentials
 
+If you are not signed in and no local space is available, `cotal ps` refuses with
+`TARGET_NOT_FOUND` and exits 2. The Next section gives `cotal login` on its own line.
+
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
 in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
 If `stop`, `attach`, `input` or named `status` refuses an empty pin or a roster principal ID, look up
