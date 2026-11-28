@@ -138,6 +138,8 @@ This does not change the Node running Cotal or the caller's `PATH`.
 A timestamp-only change to the npm package manifest keeps the verified release in use.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and
 `cotal status --verbose` and `cotal status --json` report both (`npm lists <old>; in use <new>`).
+On Linux, `volta list cotal-ai` still shows the version Volta installed. `cotal --version` shows
+the release Cotal runs. To update both, follow [Volta installation](#volta-installation).
 Native ownership checks retain the bootstrap's validated logical installation identity when they
 run in a worker, so a restarted retained daemon still matches its recorded native launch source.
 A standalone Manager can keep its
@@ -272,6 +274,18 @@ npm install -g cotal-ai@<target-version>
 
 Open a new terminal or use the installer's absolute launcher path if the shell still selects the previous installation.
 Run `cotal version` and confirm that the selected binary is the target version before continuing.
+
+### Volta installation
+
+After stopping the local stack and other Cotal processes that use this installation, install the target through Volta:
+
+```bash
+volta install cotal-ai@<target-version>
+volta list cotal-ai
+volta run -- cotal --version
+```
+
+Confirm that both commands report the target version, then reconcile the installation below.
 
 ## Reconcile the installation
 
