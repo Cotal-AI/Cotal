@@ -41,7 +41,7 @@ export type AppendRefusal = "out-of-order" | "empty" | "too-large";
 export class StagingLedger {
   /** Uploads taking chunks. */
   private readonly open = new Map<string, StagedUpload>();
-  /** Uploads whose commit has started and not settled: no longer addressable, still charged. */
+  /** Uploads whose commit has started and not settled: not addressable by id, still charged. */
   private readonly committing = new Set<StagedUpload>();
 
   constructor(private readonly ttlMs = ARTIFACT_STAGE_TTL_MS) {}
