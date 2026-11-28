@@ -271,7 +271,7 @@ const member = run(["service", "add", "stack-manager", "--preset", "manager", "-
 check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
 const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
 check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
-  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === `from ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === `inspect the definition with \`cotal service show stack-manager --space b1 --json\`. Only to stop the whole stack and forget its local registration: from ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
     && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same

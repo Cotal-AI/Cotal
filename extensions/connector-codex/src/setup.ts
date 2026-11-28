@@ -5,12 +5,12 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
-import { isConfigProtected } from "@cotal-ai/connector-core";
+import { isConfigProtected, isDirectoryProtected } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -257,7 +257,32 @@ function repairMovedMarketplace(previous: string): string | undefined {
   }
 }
 
+function protectedMarketplaceCause(remedyCommand: string): { cause: string; remedy: string } | undefined {
+  const market = codexMarketplaceDir();
+  if (!isDirectoryProtected(market)) return undefined;
+  try {
+    const link = lstatSync(market, { throwIfNoEntry: false });
+    if (link?.isSymbolicLink() && !statSync(market, { throwIfNoEntry: false })) {
+      const target = readlinkSync(market);
+      return {
+        cause: `${market} is a symbolic link to a missing target (${target})`,
+        remedy: `Restore the link's target or replace the broken link, then run \`${remedyCommand}\`.`,
+      };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      return {
+        cause: `${market} is a symbolic-link loop`,
+        remedy: `Replace the broken link with a writable and searchable directory, then run \`${remedyCommand}\`.`,
+      };
+    }
+  }
+  return { cause: `${market} is read-only`, remedy: `Make that directory writable and searchable, then run \`${remedyCommand}\`.` };
+}
+
 function withLock<T>(run: () => T): T {
+  const blocked = protectedMarketplaceCause("cotal setup");
+  if (blocked) throw new Error(`${blocked.cause}. ${blocked.remedy}`);
   mkdirSync(codexMarketplaceDir(), { recursive: true });
   const lock = acquireLock(join(codexMarketplaceDir(), ".setup.lock"), { label: "Codex plugin setup" });
   try { return run(); } finally { lock.release(); }
@@ -277,6 +302,30 @@ function statusRow({ version }: ConnectorStatusInput): ConnectorStatusRow {
   if (!installed) return row("off", `not installed · ${remedy}`);
   if (installed.disabled) return row("off", "disabled");
   return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", `stale · ${remedy}`);
+}
+
+function readInstalledForRefresh(allowRepair: boolean): { version: string; disabled: boolean } | string {
+  if (!hasCachedPlugin()) return "not installed";
+  try {
+    let listed = codex("plugin", "list");
+    // Codex's diagnostic identifies the failing registration even when no listing is available.
+    const missing = missingMarketplace(listed);
+    if (missing) {
+      if (!allowRepair) {
+        return `Codex marketplace ${MARKETPLACE} could not be refreshed. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
+      }
+      const deferred = repairMovedMarketplace(missing);
+      if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
+      listed = codex("plugin", "list");
+      if (missingMarketplace(listed)) {
+        return `Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
+      }
+    }
+    return installedPlugin(listed) ?? "not installed";
+  } catch (error) {
+    if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
+    throw error;
+  }
 }
 
 export const codexSetupProvider: ConnectorSetupProvider = {
@@ -304,27 +353,21 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     explain: "Rewrites the Cotal plugin that Codex conversations load for this release.",
     context: [DOCS_URL],
     run({ cotal }: ConnectorSetupInput) {
-      return withLock(() => {
-        if (!hasCachedPlugin()) return "not installed";
-        let installed: ReturnType<typeof installedPlugin>;
-        try {
-          let listed = codex("plugin", "list");
-          // Codex's diagnostic identifies the failing registration even when no listing is available.
-          const missing = missingMarketplace(listed);
-          if (missing) {
-            const deferred = repairMovedMarketplace(missing);
-            if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
-            listed = codex("plugin", "list");
-            if (missingMarketplace(listed)) {
-              return `Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
-            }
-          }
-          installed = installedPlugin(listed);
-          if (installed === undefined) return "not installed";
-        } catch (error) {
-          if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
-          throw error;
+      if (!hasCachedPlugin()) return "not installed";
+      const blocked = protectedMarketplaceCause("cotal update");
+      if (blocked) {
+        const installed = readInstalledForRefresh(false);
+        if (typeof installed === "string") {
+          if (installed === "not installed" || installed.startsWith("Codex not installed")) return installed;
+          const desired = resolve(codexMarketplaceDir());
+          if (!installed.includes(`at ${desired},`)) return installed;
+          return `Codex plugin refresh deferred because ${blocked.cause}. ${blocked.remedy}`;
         }
+        return `Codex plugin refresh deferred because ${blocked.cause}. ${PLUGIN}@${MARKETPLACE} remains at ${installed.version}. ${blocked.remedy}`;
+      }
+      return withLock(() => {
+        const installed = readInstalledForRefresh(true);
+        if (typeof installed === "string") return installed;
         const version = pluginVersion(pluginFiles(cotal, ""));
         const cache = pluginCache();
         if (installed.version !== version && isConfigProtected(cache)) {
