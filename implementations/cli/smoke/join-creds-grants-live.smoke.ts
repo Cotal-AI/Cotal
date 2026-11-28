@@ -309,6 +309,15 @@ try {
   check("whoami reports only the legacy channel's read and post grants", JSON.stringify(identity.read) === JSON.stringify([legacyChannel]) &&
     JSON.stringify(identity.post) === JSON.stringify([legacyChannel]) && identity.dms === "own", whoami.output());
   await refused("legacy no-read", other.file, other.uid, /does not grant read access to #ext\.linear\.legacy/, legacyChannel);
+  const bareOff = cli("join", "--space", space, "--name", "bare-off", "--channel", legacyChannel);
+  try {
+    await until(() => bareOff.output().includes("holding presence") || bareOff.proc.exitCode !== null);
+    check("bare static join keeps an ext name on ordinary CHAT when activation is off",
+      bareOff.proc.exitCode === null && bareOff.output().includes("holding presence"), bareOff.output());
+  } finally {
+    await killAndAwaitExit(bareOff.proc);
+    await bareOff.exited;
+  }
   await checkEnabledJoin();
   const unpaired = cli("join", "--space", space, "--creds", allowed.file);
   await until(() => unpaired.proc.exitCode !== null);
