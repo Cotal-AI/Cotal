@@ -75,18 +75,37 @@ fn lost_connection<'a>(states: impl Iterator<Item = &'a serde_json::Value> + Clo
 }
 
 /// Describe verified Manager inventory without treating service-only connectivity as ready.
+#[cfg(test)]
 pub fn tray_status(frame: &serde_json::Value) -> String {
     let base = connection_tray_status(frame);
-    if frame["ok"] != true { return base; }
-    let Some(rows) = frame["result"]["agents"].as_array() else { return base; };
+    let agents = agent_count(frame);
+    if agents.is_empty() { base } else { format!("{base} · {agents}") }
+}
+
+pub fn tray_word(label: &str) -> &str {
+    match label {
+        "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed" => label,
+        _ => "Starting",
+    }
+}
+
+pub fn tray_menu(label: &str, agents: &str) -> String {
+    let word = tray_word(label);
+    if agents.is_empty() { word.into() } else { format!("{word} · {agents}") }
+}
+
+pub fn agent_count(frame: &serde_json::Value) -> String {
+    if frame["ok"] != true { return String::new(); }
+    let Some(rows) = frame["result"]["agents"].as_array() else { return String::new(); };
     if rows.iter().any(|row| row["state"] != "read" || !row["agents"].is_array()) {
-        return format!("{base} · Agents unavailable");
+        return "Agents unavailable".into();
     }
     let count = rows.iter().filter_map(|row| row["agents"].as_array())
         .flatten().filter(|agent| agent["state"] == "running").count();
-    format!("{base} · {count} {} running", if count == 1 { "agent" } else { "agents" })
+    format!("{count} {} running", if count == 1 { "agent" } else { "agents" })
 }
 
+#[cfg(test)]
 fn connection_tray_status(frame: &serde_json::Value) -> String {
     if frame["ok"].as_bool() != Some(true) {
         // A service not set up yet waits for sign-in; one that is set up but stopped needs attention.
@@ -222,6 +241,18 @@ mod tests {
         assert_eq!(tray_status(&frame(json!([{"state":"read","agents":[{"state":"running"},{"state":"exited"}]}]))), "Connected · 1 space · 1 agent running");
         assert_eq!(tray_status(&frame(json!([{"state":"unreadable"}]))), "Connected · 1 space · Agents unavailable");
     }
+    #[test]
+    fn tray_uses_the_window_word_even_when_the_poll_fails() {
+        let failed = serde_json::json!({"ok":false,"error":{"code":"NOT_RUNNING"}});
+        for word in ["Connected", "Starting", "Offline", "Can't connect", "Sign in required", "Service stopped", "Updating", "Not set up", "Disk full", "Repair needed"] {
+            assert_eq!(tray_word(word), word);
+            assert_eq!(tray_menu(word, &agent_count(&failed)), word);
+            assert_eq!(tray_menu(word, "1 agent running"), format!("{word} · 1 agent running"));
+        }
+        assert_eq!(tray_menu("Needs attention", ""), "Starting");
+        assert_eq!(tray_menu("", ""), "Starting");
+    }
+
     #[test]
     fn tray_reports_verified_spaces_and_attention_without_claiming_service_readiness() {
         use serde_json::json;

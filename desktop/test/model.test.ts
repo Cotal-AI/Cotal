@@ -13,8 +13,8 @@ test("a blank space label is the space id and a label with a character stays", (
   assert.equal(shownSpaceKind(""), "Space");
   assert.equal(shownSpaceKind("\n"), "Space");
   assert.equal(shownSpaceKind(undefined), "Space");
-  assert.equal(shownSpaceKind(" ada"), " ada");
-  assert.equal(shownSpaceKind("team"), "team");
+  assert.equal(shownSpaceKind(" ada"), "Ada");
+  assert.equal(shownSpaceKind("team"), "Team");
 });
 
 test("a blank account label is the subject and a label with a character stays", () => {
@@ -113,6 +113,15 @@ test("onboarding boundaries survive special-scheme normalization", () => {
   ]) assert.throws(() => onboardingLink(value), Error, value);
 });
 
+test("the version mismatch says what happened, what the button does and what it costs", () => {
+  assert.deepEqual(refusalView("VERSION_MISMATCH"), {
+    title: "Cotal was updated",
+    description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.",
+    action: "connect",
+    label: "Restart background service",
+  });
+});
+
 test("expired credentials and pending approval refusals map to their recovery actions", () => {
   assert.deepEqual(refusalView("CREDENTIAL_EXPIRED"), {
     title: "Sign in again",
@@ -134,7 +143,7 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
     title: "We cannot reach your connection",
-    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
     action: "refresh",
     label: "Try again",
   });
@@ -156,6 +165,17 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "refresh",
     label: "Check approval",
   });
+});
+
+test("another installation's service offers no action and keeps a command out of the window", () => {
+  assert.deepEqual(refusalView("CONFLICT"), {
+    title: "Another Cotal installation runs the background service",
+    description: "This copy cannot take it over. Nothing was changed.",
+    action: "none",
+    label: "",
+  });
+  const refused = () => { requireResult({ v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js" } }); };
+  assert.throws(refused, (error: { remedy?: string; message: string }) => error.remedy === undefined && !/\/usr\/local|`/.test(error.message));
 });
 
 test("kept credential notice names each well-formed file and is empty otherwise", () => {

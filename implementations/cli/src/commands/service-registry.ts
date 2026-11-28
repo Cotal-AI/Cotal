@@ -7,7 +7,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
 import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, serviceListStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
@@ -48,6 +48,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (mode === "list" && name !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "service list takes no definition name", {
     remedy: `cotal service list${targetWords({ space: args.values.space })}${presentation === "rich" ? "" : ` --${presentation}`}`, remedyIsCommand: true,
   });
+  if ((mode === "status" || mode === "logs") && name === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `service ${mode} needs a definition name`, { remedy: serviceListStep(args.values) });
   if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode !== "list" && mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
   if (name !== undefined) localRecordName(name);
   if (args.values.preset !== undefined) {
@@ -120,11 +121,13 @@ function legacyProcesses(context: LocalProcessContext) {
   });
 }
 
-function stackMemberRemovalRemedy(root: string, space: string, json: boolean): string {
-  const cli = json ? "cotal" : displayCmd({ fromAnyFolder: true });
-  const stop = codeSpan(`${cli} down${targetWords({ space })} --yes`);
+function stackMemberRemovalRemedy(root: string, space: string, name: string, presentation: ReturnType<typeof presentationOf>): string {
+  const cli = presentation === "json" ? "cotal" : displayCmd({ fromAnyFolder: true });
+  const scope = targetWords({ space });
+  const inspect = codeSpan(`${cli} service show ${shellWord(name)}${scope}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  const stop = codeSpan(`${cli} down${scope} --yes`);
   const forget = codeSpan(`${cli} space forget ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`);
-  return `from ${oneLine(root)}, run ${stop}, then run ${forget}`;
+  return `inspect the definition with ${inspect}. Only to stop the whole stack and forget its local registration: from ${oneLine(root)}, run ${stop}, then run ${forget}`;
 }
 
 /** The refusal for a `show` or `remove` whose name matches no saved definition and no preset. Its
@@ -249,7 +252,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   if (mode === "remove") {
     const row = savedService(suppliedName!);
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) {
-      const remedy = stackMemberRemovalRemedy(root, space, presentation === "json");
+      const remedy = stackMemberRemovalRemedy(root, space, row.name, presentation);
       if (args.values.instance !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: { ...target, name: row.name, instanceId: String(args.values.instance) }, remedy });
       throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy });
     }
