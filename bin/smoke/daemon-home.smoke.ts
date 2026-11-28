@@ -127,11 +127,19 @@ const lockFree = (d: string): boolean => {
   return held;
 };
 // Every per-user location the CLI could read or write points into this sandbox, never the real user's.
-const childEnv = {
+const childEnv: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
   HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
   XDG_RUNTIME_DIR: rt, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1", DO_NOT_TRACK: "1",
 };
+const native = join(root, "native"), emptyPath = join(root, "empty-path");
+for (const dir of [native, emptyPath]) mkdirSync(dir, { mode: 0o700 });
+writeFileSync(join(native, "systemctl"), "#!/bin/sh\n[ \"$*\" = '--user show-environment' ] || exit 89\n[ \"$STATUS_MANAGER_DOWN\" != 1 ] || exit 1\nprintf 'XDG_CONFIG_HOME=%s\\n' \"$XDG_CONFIG_HOME\"\n", { mode: 0o700 });
+const statusEnv = { ...childEnv, PATH: `${native}:${childEnv.PATH}` };
+const systemd = existsSync("/run/systemd/system");
+const foregroundStatus = (flags = "") => `The background service requires a running systemd and systemctl on PATH. To run the daemon in the foreground, use \`cotal daemon serve${flags}\`.`;
+const selectedHome = ` --daemon-home '${managed.replaceAll("'", "'\\''")}'`;
+const absentStatus = (flags = "") => systemd ? `Set up the background service with \`cotal daemon setup${flags}\`.` : foregroundStatus(flags);
 const runtimeEntries = (): string[] => existsSync(runtimeDir) ? readdirSync(runtimeDir, { recursive: true }).map(String).sort() : [];
 
 /** Every child this smoke starts, so teardown can wait for each one to exit before removing the root. */
@@ -262,11 +270,19 @@ try {
 
   await cell("G2 failure documents retain their selected operation", async () => {
     const expected = "start it with `cotal daemon serve --daemon-home '" + managed.replaceAll("'", "'\\''") + "'`";
-    const absent = await cli(["status", "--daemon-home", managed, "--json"]);
+    const absent = await cli(["status", "--daemon-home", managed, "--json"], 30_000, statusEnv);
     check("G2 absent status retains its mode and null local target", absent.status === 2 && absent.doc.command === "daemon status" && absent.doc.target === null, absent.doc);
-    check("G2 stopped explicit status names a shell-quoted foreground start", absent.doc.error?.cause?.code === "NOT_RUNNING" && absent.doc.error.remedy === expected, absent.doc);
-    const defaultStatus = await cli(["status", "--json"]);
-    check("G2 stopped default status keeps the bare foreground start", defaultStatus.status === 2 && defaultStatus.doc.error?.cause?.code === "NOT_RUNNING" && defaultStatus.doc.error.remedy === "start it with `cotal daemon serve`", defaultStatus.doc);
+    check("G2 stopped explicit status gives a usable command for the shell-quoted home", absent.doc.error?.cause?.code === "NOT_RUNNING" && absent.doc.error.remedy === absentStatus(selectedHome), absent.doc);
+    const defaultStatus = await cli(["status", "--json"], 30_000, statusEnv);
+    check("G2 stopped default status gives a usable command without a daemon-home flag", defaultStatus.status === 2 && defaultStatus.doc.error?.code === "TARGET_UNAVAILABLE" && defaultStatus.doc.error.cause?.code === "NOT_RUNNING" && defaultStatus.doc.error.remedy === absentStatus(), defaultStatus.doc);
+    const noSystemctl = await cli(["status", "--daemon-home", managed, "--json"], 30_000, { ...statusEnv, PATH: emptyPath });
+    check("G2 no systemctl on PATH gives explicit foreground guidance for the selected home", noSystemctl.status === 2 && noSystemctl.doc.error?.cause?.code === "NOT_RUNNING" && noSystemctl.doc.error.remedy === foregroundStatus(selectedHome), noSystemctl.doc);
+    if (systemd) {
+      const noManager = await cli(["status", "--json"], 30_000, { ...statusEnv, STATUS_MANAGER_DOWN: "1" });
+      check("G2 a missing user manager points to a logged-in session, not setup or start", noManager.status === 2 && noManager.doc.error?.cause?.code === "NOT_RUNNING"
+        && noManager.doc.error.remedy?.startsWith("The systemd user manager is not reachable: run from a logged-in session") === true
+        && !/daemon (setup|start|serve)/.test(noManager.doc.error.remedy), noManager.doc);
+    }
     const invalidSpace = await cli(["status", "--space", "bad.space", "--json"]);
     for (const mode of ["service-connect", "service-disconnect", "service-status"]) {
       const invalid = await cli([mode, "--space", "bad.space", "--json"]);
@@ -345,8 +361,8 @@ try {
     chmodSync(nearLimit, 0o755);
     const env = { ...childEnv, XDG_RUNTIME_DIR: nearLimit };
     const args = ["--daemon-home", managed];
-    const before = await cli(["status", ...args, "--json"], 30_000, env);
-    check("H0e status recommends foreground serve", before.status === 2 && before.doc.error?.cause?.code === "NOT_RUNNING" && before.doc.error.remedy?.includes("cotal daemon serve") === true, before);
+    const before = await cli(["status", ...args, "--json"], 30_000, { ...statusEnv, XDG_RUNTIME_DIR: nearLimit });
+    check("H0e status gives a usable command for the selected home before serve", before.status === 2 && before.doc.error?.cause?.code === "NOT_RUNNING" && before.doc.error.remedy === absentStatus(selectedHome), before);
     const daemon = await serve(args, env);
     try {
       check("H0e serve publishes the 107-byte socket", live(daemon) && Buffer.byteLength(daemon.socket ?? "") === 107, daemon.err);
@@ -745,9 +761,9 @@ try {
     check("H4 the first serve's socket keeps its inode and still answers", lstatSync(derived).ino === ino && (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === killedPid);
     await stop(managedServe, "SIGKILL");
     check("H4 instrument: after SIGKILL the socket is left behind, and the kernel has released the lock while its record still names the dead pid", existsSync(derived) && lstatSync(derived).ino === ino && lockFree(managed) && lockRecordPid(managed) === killedPid, { free: lockFree(managed), recorded: lockRecordPid(managed), killedPid });
-    const stopped = await cli(["status", "--daemon-home", managed, "--json"], 30_000, { ...childEnv, XDG_RUNTIME_DIR: join(root, "rt2") });
-    check("H4 a dead lifetime record leaves the foreground start remedy intact", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING"
-      && stopped.doc.error?.remedy?.startsWith("start it with `cotal daemon serve --daemon-home ") === true, stopped);
+    const stopped = await cli(["status", "--daemon-home", managed, "--json"], 30_000, { ...statusEnv, XDG_RUNTIME_DIR: join(root, "rt2") });
+    check("H4 a dead lifetime record is not an installed service", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING"
+      && stopped.doc.error?.remedy === absentStatus(selectedHome), stopped);
     // No operator step: the successor removes exactly the socket the record names and binds its own.
     // A second name keeps the dead inode allocated through the restart, so the successor's socket
     // cannot be given its number, which some filesystems hand straight back once it is freed. Its

@@ -26,10 +26,11 @@ import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, daemonUserServiceEnv, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
@@ -42,7 +43,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
-import { readReceipt } from "./install-receipt.js";
+import { readReceipt, unitReceiptFile } from "./install-receipt.js";
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
@@ -176,6 +177,25 @@ function statusView(s: DaemonStatus): Report {
   ] };
 }
 
+function stoppedLinuxDaemonRemedy(paths: DaemonPaths, home?: string): string {
+  if (daemonServiceRequirement(home)) {
+    return `The background service requires a running systemd and systemctl on PATH. To run the daemon in the foreground, use ${codeSpan(daemonCommandCopy("serve", home))}.`;
+  }
+  const receipt = readReceipt(paths);
+  if (receipt && (receipt.daemonHome !== home || (receipt.mechanism ?? "systemd-user") !== "systemd-user" || !/^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(receipt.unit))) {
+    return `The service receipt does not match this daemon home or a Linux systemd user service. Check ${codeSpan(unitReceiptFile(paths))} and use the home or platform where the service was installed.`;
+  }
+  try {
+    systemdUserUnitDirectory(daemonUserServiceEnv());
+  } catch (error) {
+    if (!(error instanceof CommandFailure)) throw error;
+    return error.remedy ? `The systemd user manager is not reachable: ${error.remedy}` : error.message;
+  }
+  return receipt
+    ? `Start the recorded service with ${codeSpan(daemonCommandCopy("start", home))}. If it does not start, inspect it with ${codeSpan(`systemctl --user status ${receipt.unit}`)}.`
+    : `Set up the background service with ${codeSpan(daemonCommandCopy("setup", home))}.`;
+}
+
 async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
@@ -188,10 +208,9 @@ async function status(args: ParsedArgs): Promise<void> {
   } catch (e) {
     const refusal = otherRuntimeRefusal(e, paths, home);
     if (refusal !== e) throw asFailure(refusal, home);
-    const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
-    if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
+    if (process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+        remedy: stoppedLinuxDaemonRemedy(paths, home),
         native: { code: e.code },
       });
     }
