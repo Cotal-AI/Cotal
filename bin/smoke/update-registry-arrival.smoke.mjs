@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { connect } from 'node:net';
 import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1334,23 +1335,50 @@ async function corepackNodeFallbackCell(entry, parent) {
 
 async function globalConfigExtensionCell(setting) {
   const root = mkdtempSync(join(tmpdir(), 'global-config-ext-'));
-  const name = 'global-config-extension-fixture', version = '1.0.0';
+  const scoped = setting === 'scoped-auth', tls = setting === 'cafile' || setting === 'strict-ssl';
+  const name = scoped ? '@fixture/global-config-extension' : 'global-config-extension-fixture', version = '1.0.0';
+  const token = scoped ? randomBytes(20).toString('hex') : undefined;
   const home = join(root, 'home'), prefix = join(root, 'npm prefix'), config = join(root, 'config');
   const tmp = join(root, 'tmp'), source = join(root, 'package'), cache = join(root, 'read-only cache');
   const ext = join(config, 'cotal', 'extensions');
   const manifest = { name, version, main: 'index.mjs', peerDependencies: { '@cotal-ai/core': '*' } };
-  const requests = [];
+  const requests = [], proxied = [];
   let registry, bytes;
-  const server = createServer((req, res) => {
-    requests.push(req.url);
-    if (req.url === `/${name}.tgz`) return res.end(bytes);
-    if (req.url !== `/${name}`) return res.writeHead(404).end();
+  const serve = (req, res) => {
+    if (scoped && req.headers.authorization !== `Bearer ${token}`) return res.writeHead(401).end();
+    const path = decodeURIComponent(req.url);
+    requests.push(path);
+    if (path === `/${name}.tgz`) return res.end(bytes);
+    if (path !== `/${name}`) return res.writeHead(404).end();
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ name, 'dist-tags': { latest: version }, versions: { [version]: { ...manifest, dist: {
       tarball: `${registry}/${name}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
     } } } }));
+  };
+  const proxy = createServer((req, res) => {
+    const url = URL.parse(req.url);
+    if (req.method !== 'GET' || url?.origin !== registry) return res.writeHead(403).end();
+    proxied.push(url.pathname);
+    const upstream = request(url, reply => { res.writeHead(reply.statusCode, reply.headers); reply.pipe(res); });
+    upstream.on('error', () => res.destroy());
+    upstream.end();
   });
-  const env = Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/^(?:npm_config_|(?:https?_proxy|all_proxy|no_proxy)$)/i.test(key)));
+  const tunnels = new Set();
+  proxy.on('connect', (req, socket, head) => {
+    if (req.url !== new URL(registry).host) return socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+    proxied.push('CONNECT');
+    tunnels.add(socket);
+    const upstream = connect(new URL(registry).port, '127.0.0.1', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+    socket.once('close', () => { tunnels.delete(socket); upstream.destroy(); });
+  });
+  let server;
+  const env = Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/^(?:npm_config_|(?:https?_proxy|all_proxy|no_proxy|node_extra_ca_certs|node_tls_reject_unauthorized)$)/i.test(key)));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: config, TMPDIR: tmp,
     DO_NOT_TRACK: '1', COTAL_SKIP_CONNECTOR_SEED: '1', npm_config_fetch_retries: '0', npm_config_update_notifier: 'false',
     HTTPS_PROXY: 'http://127.0.0.1:1', HTTP_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
@@ -1366,21 +1394,39 @@ async function globalConfigExtensionCell(setting) {
     for (const dir of [home, join(prefix, 'etc'), tmp, source]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     mkdirSync(cache, { mode: 0o500 });
     writeFileSync(join(source, 'package.json'), JSON.stringify(manifest));
-    writeFileSync(join(source, 'index.mjs'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: '${name}', summary: 'Fixture command', run() {} });`);
+    writeFileSync(join(source, 'index.mjs'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: 'global-config-extension-fixture', summary: 'Fixture command', run() {} });`);
     const archive = join(root, 'fixture.tgz');
     assert.equal(spawnSync('tar', ['-czf', archive, '-C', root, 'package'], { env }).status, 0);
     bytes = readFileSync(archive);
+    const cert = join(root, 'ca.pem'), key = join(root, 'loopback.key');
+    if (tls) {
+      const generated = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+        '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', key, '-out', cert], { env, encoding: 'utf8' });
+      assert.equal(generated.status, 0, generated.error?.message ?? generated.stderr);
+    }
+    server = tls ? createHttpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, serve) : createServer(serve);
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    registry = `http://127.0.0.1:${server.address().port}`;
+    registry = `${tls ? 'https' : 'http'}://127.0.0.1:${server.address().port}`;
     writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
     const npmrc = join(prefix, 'etc/npmrc');
-    const contents = `registry=${registry}/\n${setting === 'cache' ? `cache=${cache}\n` : 'global=true\npackage-lock=false\nsave=false\n'}`;
+    let contents = `registry=${registry}/\n${setting === 'cache' ? `cache=${cache}\n` : 'global=true\npackage-lock=false\nsave=false\n'}`;
+    if (scoped) contents = `registry=http://127.0.0.1:1/\n@fixture:registry=${registry}/\n//${new URL(registry).host}/:_authToken=${token}\n`;
+    if (setting === 'cafile') contents += `cafile=${cert}\n`;
+    if (setting === 'strict-ssl') contents += 'strict-ssl=false\n';
+    if (setting === 'proxy') {
+      delete env.NO_PROXY;
+      proxy.listen(0, '127.0.0.1');
+      await once(proxy, 'listening');
+      contents += `proxy=http://127.0.0.1:${proxy.address().port}\n`;
+    }
     if (setting === 'default') env.npm_config_registry = registry;
     else writeFileSync(npmrc, contents);
     const added = await run('add', name);
+    if (token) assert(!added.output.includes(token), 'fixture token leaked in extension output');
     assert.equal(added.code, 0, added.output);
     assert(requests.includes(`/${name}.tgz`), 'extension install fetched through the fixture registry');
+    if (setting === 'proxy') assert(proxied.includes(`/${name}.tgz`) || proxied.includes('CONNECT'), 'extension install used the configured proxy');
     const dependency = file => JSON.parse(readFileSync(join(ext, file), 'utf8'));
     assert(dependency('package.json').dependencies[name] && dependency('package-lock.json').packages[''].dependencies[name]);
     const removed = await run('remove', name);
@@ -1391,14 +1437,28 @@ async function globalConfigExtensionCell(setting) {
     if (setting !== 'default') assert.equal(readFileSync(npmrc, 'utf8'), contents);
     return { scenario: `global-config-ext-${setting}`, requests };
   } finally {
-    server.closeAllConnections();
-    if (server.listening) await new Promise(done => server.close(done));
+    for (const socket of tunnels) socket.destroy();
+    proxy.closeAllConnections();
+    if (proxy.listening) await new Promise(done => proxy.close(done));
+    server?.closeAllConnections();
+    if (server?.listening) await new Promise(done => server.close(done));
     if (existsSync(cache)) chmodSync(cache, 0o700);
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  if (process.argv[2] === 'global-config-shape') {
+    const { npmInstallShape } = await import('./npm-install-shape.mjs');
+    const baseline = JSON.parse(readFileSync(new URL('./fixtures/npm-install-shape.json', import.meta.url), 'utf8'));
+    const result = await npmInstallShape(repo);
+    const expected = baseline[result.npm];
+    assert(expected, `no unchanged-main install-shape fixture for npm ${result.npm}`);
+    assert.equal(result.cells.length, 33);
+    for (const [index, cell] of result.cells.entries()) assert.deepEqual(cell, expected[index], `${cell.setting}/${cell.mode} on npm ${result.npm}`);
+    emitSentinel({ passed: result.cells.length, failed: 0 });
+    process.exit(0);
+  }
   const mountPoint = mkdtempSync(join(tmpdir(), 'closure-mount-probe-'));
   let canMount;
   try {
@@ -1406,7 +1466,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   } finally { rmSync(mountPoint, { recursive: true }); }
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'config-access-upgrade', 'config-access-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   if (!process.argv[2] && ['linux', 'darwin'].includes(process.platform)) {
-    selected.push('global-config', 'global-config-secret-failure', 'global-config-ext-mirror', 'global-config-ext-default');
+    selected.push('global-config', 'global-config-secret-failure', ...['mirror', 'default', 'scoped-auth', 'proxy', 'cafile', 'strict-ssl'].map(setting => `global-config-ext-${setting}`));
     if (process.getuid?.()) selected.push('global-config-ext-cache');
   }
   for (const scenario of selected) console.log(JSON.stringify(await (scenario.startsWith('global-config-ext-')
