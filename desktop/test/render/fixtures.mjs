@@ -387,6 +387,22 @@ export const scenarios = [
   { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
   } },
+  ...[
+    ["offline", "No internet connection", "Cotal reconnects by itself when this computer is back online.", "Offline", "offline", "this computer cannot look up cotal.cloud (ENOTFOUND)", "No internet connection"],
+    ["unreachable", "Can't reach your space", "Cotal reconnects by itself when the space answers again.", "Can't connect", "warning", "cotal.cloud is not answering", "Can't reach this space"],
+  ].map(([kind, title, description, pill, icon, reason, row]) => ({
+    name: `account-connection-${kind}`,
+    state: { installed: true, signedIn: true, connected: true, managers: [{ space: "research", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }], connection: { state: kind, reason } }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: kind }] } },
+    expect: async page => {
+      assert.equal(await page.locator("#connection-title").textContent(), title, "a lost connection must not claim Connected or Starting");
+      assert.equal(await page.locator("#connection-description").textContent(), description);
+      assert.equal(await page.locator("#tray-label").textContent(), pill);
+      assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
+      assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), icon);
+      assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+      assert.equal(await page.locator('[data-space="research"] small').last().textContent(), `${row}: ${reason}`);
+    },
+  })),
 
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
