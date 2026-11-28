@@ -4,7 +4,8 @@ import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { acquireLock, globalConfigDir, oneLine, parseAgentFileBytes, projectTrustProblem, rejectionText, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
 import { CommandFailure, isCommandFailure, recordOperationWarning } from "./output.js";
-import { assertCotalHomeWriteProtection, localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
+import { assertCotalHomeWriteProtection, configLinkChecks, localRecordAccess, prepareCotalHomeForWrite } from "./protected-records.js";
+import { assertProtectedLinkWrite } from "./protected-link-write.js";
 import { localWriteFailure } from "./local-write.js";
 import { canonicalRoot, homeCotalDir, isMeshRegistryError, readMeshRegistry } from "./mesh-registry.js";
 import { readPreparedSpaces } from "./prepared-spaces.js";
@@ -45,8 +46,7 @@ const invalid = (problem: string): CommandFailure =>
 /** The trusted roots as written, or undefined when there is no file yet. A linked or non-regular
  *  file, one another account owns or may write, and one that does not validate all refuse rather
  *  than read as empty. */
-function readFile(): TrustedProjects | undefined {
-  const path = trustedProjectsPath();
+function readFile(path = trustedProjectsPath()): TrustedProjects | undefined {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (!stat) return undefined;
   if (localRecordAccess() === "posix") {
@@ -80,34 +80,29 @@ function knownSpaceRoots(): string[] {
   return [...readMeshRegistry().entries.map((m) => m.root), ...readPreparedSpaces().spaces.map((p) => p.root)];
 }
 
-/** Check the existing config path before a trust write, without creating directories. */
-function assertTrustConfigWriteProtection(dir: string): void {
-  let existing = dir;
-  while (!lstatSync(existing, { throwIfNoEntry: false }) && dirname(existing) !== existing) existing = dirname(existing);
-  try {
-    protectedLocalDirectory(existing, "the Cotal config folder");
-  } catch (e) {
-    if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
-    throw new CommandFailure(e.outcome, e.code, `${e.message}; no folder was trusted`, { remedy: e.remedy, target: e.target });
-  }
+/** Check the existing config path before a trust write, without creating directories. A symbolic
+ *  link is followed when its physical folder and every link parent are protected, and the returned
+ *  path is the physical directory the write uses. */
+function assertTrustConfigWriteProtection(dir: string): string {
+  return assertProtectedLinkWrite(dir, "the Cotal config folder", configLinkChecks, "no folder was trusted");
 }
 
 /** Run `change` on the current file under its lock and write the returned document, if any. */
 function update(change: (current: TrustedProjects | undefined) => TrustedProjects | undefined): void {
-  const dir = globalConfigDir();
-  assertTrustConfigWriteProtection(dir);
+  const dir = assertTrustConfigWriteProtection(globalConfigDir());
+  const file = join(dir, "trusted-projects.json");
   let lock: ReturnType<typeof acquireLock>;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    lock = acquireLock(`${trustedProjectsPath()}.lock`, { label: "a trusted projects write", waitMs: 10_000 });
+    lock = acquireLock(`${file}.lock`, { label: "a trusted projects write", waitMs: 10_000 });
   } catch (e) {
     throw localWriteFailure(e, trustedProjectsPath(), {});
   }
   try {
-    const next = change(readFile());
+    const next = change(readFile(file));
     if (next === undefined) return;
     try {
-      writeSecretFileAtomic(trustedProjectsPath(), `${JSON.stringify({ ...next, roots: [...new Set(next.roots)].sort() }, null, 2)}\n`);
+      writeSecretFileAtomic(file, `${JSON.stringify({ ...next, roots: [...new Set(next.roots)].sort() }, null, 2)}\n`);
     } catch (e) {
       throw localWriteFailure(e, trustedProjectsPath(), {});
     }

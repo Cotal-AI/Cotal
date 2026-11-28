@@ -92,7 +92,15 @@ export * from "./endpoint-contract.js";
 export * from "./mesh-manifest-schema.js";
 export * from "./launch-persona.js";
 
-export * from "./protected-records.js";
+export {
+  LOCAL_INPUT_LIMIT, localRecordAccess, readLocalRecordSource, unsearchableFolder, shellPath,
+  localRecordName, protectedFileAccessAvailable, assertProtectedFileAccess, prepareCotalHomeForWrite,
+  assertCotalHomeWriteProtection, localRecordObject, localRecordText, privateGroupGap, protectedPathPolicy,
+  localWriterGap, assertProtectedEntry, protectedLocalDirectory, protectedResolvedDirectory,
+  protectedLocalEntry, protectedLocalEntries, protectedCredentialReference, credentialFileExposure,
+  assertExternalCredentialExport, decodeLocalJson, ProtectedRecordStore,
+  type LocalRecordAccess, type SavedLocalRecord, type LocalRecordSnapshot, type AccountDatabase, type ProtectedPathPolicy,
+} from "./protected-records.js";
 export * from "./agent-grants.js";
 export * from "./signer-export.js";
 export * from "./credential-actions.js";
