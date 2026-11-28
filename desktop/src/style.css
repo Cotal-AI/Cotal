@@ -41,7 +41,7 @@ button:disabled { cursor: not-allowed; }
 .brand-mark { width: 28px; height: 28px; }
 .brand strong { font-weight: 800; }
 .sidebar-status { padding: 8px 10px; background: var(--card); border: 1px solid var(--rule); border-radius: 10px; }
-#connection-status { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding: 0; border: 0; border-radius: 4px; background: transparent; text-align: start; font-size: 12px; font-weight: 600; }
+#connection-status { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; text-align: start; font-size: 12px; font-weight: 600; }
 #connection-status:hover { text-decoration: underline; }
 .dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
 #tray-indicator.connected { background: var(--green); }
@@ -89,7 +89,7 @@ select { appearance: none; padding-right: 34px; background: var(--card) url("./c
   .brand, #desktop-views button, #connection-status { justify-content: center; }
   .brand strong, .view-label, #machine-name, #tray-label, #footer-note { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .sidebar-status { padding: 0; }
-  #connection-status { width: 100%; min-height: 30px; }
+  #connection-status { min-height: 30px; }
   .sidebar-footer { padding: 0; text-align: center; overflow-wrap: anywhere; }
   .version { white-space: normal; }
   main { padding-inline: 20px; }
