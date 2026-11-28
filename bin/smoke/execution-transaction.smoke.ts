@@ -7,7 +7,7 @@ import { executionDescriptorPath, executionStore, selectExecutionProgram } from 
 import { cleanupExecutionStore } from "../execution-store.js";
 import { recoverExecutionUpdate, prepareExecutionUpdate } from "../daemon/execution-update.js";
 import { recoverInterruptedUpdate, updateRuntime } from "@cotal-ai/cli/update";
-import { claimUpdateClosureAccess, readUpdateRecovery, recordUpdateActivation, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, deferredConnectorReconciliation, readUpdateRecovery, recordUpdateActivation, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { repairInstallModes } from "../../implementations/cli/src/lib/install-umask.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, repairExecutionInstallModes, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
@@ -178,6 +178,15 @@ if (["linux", "darwin"].includes(process.platform)) {
         rmSync(join(state, "daemon/daemon.lock"));
         staged.publish(); staged.verify("0.2.0");
         staged.restore(); staged.verify("0.1.0"); staged.complete?.();
+        writeFileSync(join(installed, "dist/cotal-program.js"), "setTimeout(() => console.log('cotal-ai 0.1.0'), 31_000);\n");
+        const started = Date.now();
+        recovery.verify("0.1.0");
+        assert.ok(Date.now() - started >= 31_000, "a valid entry taking longer than the former 30 second budget is accepted");
+        writeFileSync(join(installed, "dist/cotal-program.js"), "console.log('cotal-ai 0.9.0');\n");
+        assert.throws(() => recovery.verify("0.1.0"), /version output "cotal-ai 0.9.0"/);
+        writeFileSync(join(installed, "dist/cotal-program.js"), "process.exit(7);\n");
+        assert.throws(() => recovery.verify("0.1.0"), /exit 7/);
+        writeFileSync(join(installed, "dist/cotal-program.js"), "console.log('cotal-ai 0.1.0');\n");
         const config = join(scratch, "unprotected-config");
         mkdirSync(config, { mode: 0o700 }); chmodSync(config, 0o777);
         const previousConfig = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = config;
@@ -185,6 +194,7 @@ if (["linux", "darwin"].includes(process.platform)) {
           for (const published of [false, true]) {
             const update = await prepareExecutionUpdate("0.2.0", dirname(installed), () => {}, true);
             await update.preflight({});
+            const interruptedJournal = update.journal!;
             const reason = "Connector reconciliation and daemon activation are waiting: fixture config protection";
             const release = claimUpdateClosureAccess();
             try {
@@ -194,10 +204,11 @@ if (["linux", "darwin"].includes(process.platform)) {
             const restored = await recoverInterruptedUpdate({ ...updateRuntime, recoverExecution: recoverExecutionUpdate });
             assert.equal(restored?.version, published ? undefined : "0.1.0");
             assert.equal(readUpdateRecovery(), undefined);
+            assert.equal(existsSync(interruptedJournal), false);
             assert.equal(lstatSync(config).mode & 0o777, 0o777);
             assert.deepEqual(readdirSync(config), []);
-            if (published) { update.verify("0.2.0"); update.restore(); }
-            else update.verify("0.1.0");
+            assert.equal(deferredConnectorReconciliation(installedEntry, "0.2.0"), published);
+            update.verify(published ? "0.2.0" : "0.1.0");
           }
           console.log("execution transaction: interrupted release-only install restored or retained the verified selection without touching config");
         } finally {
@@ -210,14 +221,6 @@ if (["linux", "darwin"].includes(process.platform)) {
         if (oldHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = oldHome;
         if (oldRuntime === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = oldRuntime;
       }
-      writeFileSync(join(installed, "dist/cotal-program.js"), "setTimeout(() => console.log('cotal-ai 0.1.0'), 31_000);\n");
-      const started = Date.now();
-      recovery.verify("0.1.0");
-      assert.ok(Date.now() - started >= 31_000, "a valid entry taking longer than the former 30 second budget is accepted");
-      writeFileSync(join(installed, "dist/cotal-program.js"), "console.log('cotal-ai 0.9.0');\n");
-      assert.throws(() => recovery.verify("0.1.0"), /version output "cotal-ai 0.9.0"/);
-      writeFileSync(join(installed, "dist/cotal-program.js"), "process.exit(7);\n");
-      assert.throws(() => recovery.verify("0.1.0"), /exit 7/);
     } finally {
       writeFileSync(join(installed, "dist/cotal-program.js"), oldProgram);
       if (priorIdentity === undefined) Reflect.deleteProperty(globalThis, identityKey);

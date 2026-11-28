@@ -2240,6 +2240,14 @@ process.stdin.once('data', () => {
         }
         saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
       }
+      const assertSeededInventory = (version: string) => {
+        const inventory = spawnSync(cliNode, [cliEntry, "ext", "list", "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+        assert.equal(inventory.status, 0, inventory.stderr);
+        const rows = JSON.parse(inventory.stdout).result.items as { seeded: boolean; version: string }[];
+        const builtins = rows.filter(e => e.seeded);
+        assert.equal(builtins.length, 7, inventory.stdout);
+        assert.ok(builtins.every(e => e.version === version), inventory.stdout);
+      };
       if (upgrading) {
         const fixturePackage = join(root, "daemon-smoke-connector");
         renameSync(pkg, fixturePackage);
@@ -2248,17 +2256,23 @@ process.stdin.once('data', () => {
         adding.stdout.on("data", (b) => { addingOutput += String(b); }); adding.stderr.on("data", (b) => { addingOutput += String(b); });
         const added = await new Promise<number | null>((resolve) => adding.once("exit", resolve));
         if (added !== 0) throw new Error(`owned stand-in ext add failed: ${addingOutput}`);
-        const seed = join(root, "config", "cotal", "seed");
-        mkdirSync(seed, { recursive: true, mode: 0o700 });
-        for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
-        writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
-        writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
-        if (connectorUpgrade) {
-        const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-        let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
-        const code = await new Promise<number | null>((resolve) => seedChild.once("exit", resolve));
-        const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
-        check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+        if (finishConnectorUpdate) {
+          const seed = spawnSync(cliNode, [cliEntry, "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+          assert.equal(seed.status, 0, seed.stdout + seed.stderr);
+          assertSeededInventory("0.151.2");
+        } else {
+          const seed = join(root, "config", "cotal", "seed");
+          mkdirSync(seed, { recursive: true, mode: 0o700 });
+          for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+          writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
+          writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
+          if (connectorUpgrade) {
+            const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
+            const code = await new Promise<number | null>((resolve) => seedChild.once("exit", resolve));
+            const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+            check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+          }
         }
       }
       const cli = async (...args: string[]) => {
@@ -4275,7 +4289,11 @@ process.exit(result.status ?? 93);
             try {
               const deferred = await runUpdate("--self", "--json");
               assert.equal(deferred.code, 4, deferred.output);
-              assert.deepEqual(JSON.parse(deferred.output).result, { version: "0.151.3", releaseInstalled: true, reconciliation: "deferred" });
+              const doc = JSON.parse(deferred.output);
+              assert.equal(doc.outcome, "partial");
+              assert.equal(doc.completeness, "partial");
+              assert.equal(doc.error.code, "OPERATION_PARTIAL");
+              assert.deepEqual(doc.result, { version: "0.151.3", releaseInstalled: true, reconciliation: "deferred" });
               assert.equal((await cli("status")).doc.result.version, "0.151.2");
               assert.equal(child.pid, oldPid);
             } finally { chmodSync(config, 0o755); }
@@ -4295,12 +4313,7 @@ process.exit(result.status ?? 93);
             assert.notEqual(child.pid, oldPid);
             const { deferredUpdateActivation } = await import("@cotal-ai/workspace");
             assert.equal(deferredUpdateActivation(cliEntry, "0.151.3"), undefined);
-            const inventory = spawnSync(cliNode, [cliEntry, "ext", "list", "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
-            assert.equal(inventory.status, 0, inventory.stderr);
-            const rows = JSON.parse(inventory.stdout).result.items as { seeded: boolean; version: string }[];
-            const builtins = rows.filter(e => e.seeded);
-            assert.equal(builtins.length, 7, inventory.stdout);
-            assert.ok(builtins.every(e => e.version === "0.151.3"), inventory.stdout);
+            assertSeededInventory("0.151.3");
             console.log("  ✓ protection repair reconciles connectors and activates the new service without a deferral");
             return;
           }
