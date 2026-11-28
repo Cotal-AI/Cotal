@@ -26,16 +26,12 @@ export interface ObserverOptions {
   lifecycleUid?: string;
 }
 
-const observerPermissions = new WeakMap<CotalEndpoint, ReturnType<typeof importNativeSubjectPermissions>>();
+const observerSubjects = new WeakMap<CotalEndpoint, readonly string[]>();
 
-/** Scoped static channel taps for this admitted observer. Undefined keeps the legacy tap. */
+/** Scoped static channel taps for this admitted observer. Undefined keeps the default CHAT tap. */
 export function observerChannelTapSubjects(ep: CotalEndpoint): readonly string[] | undefined {
-  const permissions = observerPermissions.get(ep);
-  if (!permissions || ep.channelRoutingMode() !== "isolated") return undefined;
-  const chat = projectChannelGrants(permissions, { space: ep.space, mode: "legacy" }).read
-    .filter(({ channel }) => channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
-  const routed = projectChannelGrants(permissions, { space: ep.space, mode: "isolated" }).read;
-  return [...new Set([...chat, ...routed].map(({ subject }) => subject))];
+  const subjects = observerSubjects.get(ep);
+  return subjects && ep.channelRoutingMode() === "isolated" ? subjects : undefined;
 }
 
 /** A read-only endpoint over one space, invisible to peers: it registers no presence, binds no
@@ -69,7 +65,11 @@ export function openObserver({ space, server, name, auth = {}, operator = false,
   if (claims !== undefined) {
     const { pub, sub } = claims.nats ?? {};
     try {
-      observerPermissions.set(ep, importNativeSubjectPermissions({ ...(pub ? { pub } : {}), ...(sub ? { sub } : {}) }));
+      const permissions = importNativeSubjectPermissions({ ...(pub ? { pub } : {}), ...(sub ? { sub } : {}) });
+      const chat = projectChannelGrants(permissions, { space, mode: "legacy" }).read
+        .filter(({ channel }) => channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
+      const routed = projectChannelGrants(permissions, { space, mode: "isolated" }).read;
+      observerSubjects.set(ep, Object.freeze([...new Set([...chat, ...routed].map(({ subject }) => subject))]));
     } catch { /* An unrecognized permission shape cannot add a plugin tap. */ }
   }
   ep.on("error", () => {});
