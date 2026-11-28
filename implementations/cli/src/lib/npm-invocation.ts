@@ -269,6 +269,7 @@ interface NpmCommand {
   node?: string;
   npm?: string;
   lifecycleNode?: boolean;
+  missingOnPath?: true;
 }
 
 export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
@@ -296,7 +297,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     }
   };
   let file = findOnPath("npm");
-  if (!file) return { file: "npm", args, env, cwd };
+  if (!file) return { file: "npm", args, env, cwd, missingOnPath: true };
   let engine = npmEngine(file);
   let selectedNpm: string | undefined;
   const project = npmProjectDirectory.getStore();

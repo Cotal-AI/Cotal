@@ -118,6 +118,14 @@ function assertAttemptsDestinationRefusal(root: string, run: (...args: string[])
   assert.equal(envelope.error.message, message);
   assert.equal(envelope.error.remedy, remedy);
   assert.deepEqual(envelope.target, { directory: destination, attemptId: null, priorClaimAttemptId: null });
+  const nested = join(attempts, "missing-parent", "backup");
+  const missing = run("backup", "create", nested, "--json");
+  const refusal = JSON.parse(missing.stdout);
+  assert.equal(missing.status, 1);
+  assert.equal(refusal.error.code, "USAGE_INVALID");
+  assert.equal(refusal.error.remedy, remedy);
+  assert.deepEqual(refusal.target, { directory: nested, attemptId: null, priorClaimAttemptId: null });
+  assert.equal(existsSync(join(attempts, "missing-parent")), false);
   assert.deepEqual(readFileSync(journal), journalBefore);
   assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
   assert.equal(existsSync(destination), false);
@@ -329,6 +337,17 @@ async function backupStageFaultScenario(): Promise<void> {
       symlinkSync("loop-a", join(root, "loop-b"));
       const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const prior = createHash("sha256").update(readFileSync(journal)).digest("hex");
+      const dangling = join(root, "dangling-parent");
+      symlinkSync("missing-storage", dangling);
+      for (const destination of [join(dangling, "backup"), join(dangling, "nested", "backup")]) {
+        const refused = run("backup", "create", destination, "--json");
+        const reply = JSON.parse(refused.stdout);
+        assert.equal(refused.status, 2);
+        assert.equal(reply.error.code, "TARGET_NOT_FOUND");
+        assert.equal(reply.target.link, dangling);
+        assert.match(reply.error.remedy, /repair the linked folder/);
+        assert.equal(createHash("sha256").update(readFileSync(journal)).digest("hex"), prior);
+      }
       for (const [destination, code] of [[join(notFolder, "backup"), "ENOTDIR"], [join(loop, "backup"), "ELOOP"]] as const) {
         const refused = run("backup", "create", destination, "--json");
         const reply = JSON.parse(refused.stdout) as { error?: { code?: string; message?: string; cause?: { code?: string } }; target?: { directory?: string; folder?: string } };

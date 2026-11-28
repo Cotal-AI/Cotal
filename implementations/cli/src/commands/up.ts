@@ -494,6 +494,13 @@ function removeEmptyRecords(path: string): void {
 
 const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has a maintenance attempt to recover - a resume needs a manager to commit the preserved inventory; recover it (`cotal up` alone) or roll it back first";
 
+function unfinishedPreservedStop(root: string, space: string): CommandFailure {
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the preserved stop committed but has not finished; nothing was started", {
+    target: { root, space, state: "cut-committed" },
+    remedy: `from ${codeSpan(shellWord(root))}, finish the stop with \`cotal down --preserve-state\`, then resume with \`cotal up\``,
+  });
+}
+
 function retainedStartupPresentationRefusal(root: string): CommandFailure {
   return new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
 }
@@ -645,8 +652,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // manager half. The manager half is why the FLAG specifically cannot apply. A settled active
     // restore of this root's own controller stack has nothing left to commit; it takes the
     // controller stack route below, which applies --no-manager as an ordinary start does.
-    if (values["no-manager"] && readMaintenanceJournal(root) && !admittedStackRestore(root))
+    const brokerOnlyJournal = values["no-manager"] ? readMaintenanceJournal(root) : undefined;
+    if (brokerOnlyJournal && !admittedStackRestore(root)) {
+      if (brokerOnlyJournal.state === "cut-committed" && !cutController(brokerOnlyJournal.cut)) throw unfinishedPreservedStop(root, brokerOnlyJournal.space);
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", NO_MANAGER_DURING_RECOVERY, { target: { root } });
+    }
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
@@ -900,6 +910,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: backup attempt ${attempt} stopped before it finished and still holds this root; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `release it with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`` });
       } else if (journal) {
+        if (journal.state === "cut-committed" && !controllerCut) throw unfinishedPreservedStop(root, journal.space);
         throw new Error(`cotal up is refused while maintenance state is ${journal.state}; follow the recorded recovery`);
       }
       // The re-entries run INSIDE this block, under the lock the journal was just written with, and
