@@ -592,7 +592,7 @@ try {
       renameSync(registrations, heldRegistrations);
       try {
         writeFileSync(registrations, "not a folder", { mode: 0o600 });
-        const unreadable = await builtCli(["status", "--daemon-home", g1Home, "--space", knownUser, "--json"]);
+        const unreadable = await builtCli(["status", "--daemon-home", g1Home, `--space=${knownUser}`, "--json"]);
         check("G1 unusable registrations folder preserves the scoped dependency refusal", unreadable.status === 2
           && unreadable.doc.target?.space === knownUser && unreadable.doc.target.file === registrations
           && unreadable.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && unreadable.doc.error.cause?.code === "UNAVAILABLE"
