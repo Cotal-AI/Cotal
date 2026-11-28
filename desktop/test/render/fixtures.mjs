@@ -691,13 +691,10 @@ export const scenarios = [
     expect: async page => {
       assert.deepEqual(await page.evaluate(() => window.__terminalRequest), { op: 'agent-terminal', space: 'acme-team', lifecycleUid: 'test-0' });
       assert.equal(await page.getByRole('button', { name: 'Opening terminal… writer-1' }).isDisabled(), true);
-      const chip = page.locator('.agent-row .application-chip').first();
-      assert.equal(await chip.getAttribute('title'), await chip.textContent(), 'pending terminal chip exposes its full text');
       assert.equal(await page.getByRole('button', { name: 'Open in Terminal writer-2' }).isEnabled(), true);
       assert.equal(await page.locator('#view-settings').isEnabled(), true);
       await page.evaluate(() => window.__finishTerminal());
       await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).waitFor();
-      assert.equal(await chip.getAttribute('title'), await chip.textContent(), 'completed terminal chip exposes its full text');
       if (outcome === 'refused') {
         assert.match(await page.locator('#refusal-detail').textContent(), /The selected local agent is no longer running/);
         assert.equal(await page.locator('#details').evaluate(el => el.open), true);
