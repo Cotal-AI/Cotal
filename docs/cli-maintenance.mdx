@@ -441,8 +441,10 @@ also deregisters. The value is recorded on the instance and never in the saved d
 later start without it runs until stopped. While the manager runs, `status` shows it on the
 `Idle exit` row. Once the manager stopped itself, `status` shows when on the `Stopped` row and names `cotal manager start` under Next, and the
 log's last lines say why. A start with `--idle-exit` while the manager runs with another value, or
-with none, refuses `LIFECYCLE_BLOCKED`. `--idle-exit` on another service refuses before anything
-launches. [`cotal acp`](acp-clients.mdx) passes `--idle-exit 600` when it starts a manager for a thread.
+with none, refuses `LIFECYCLE_BLOCKED`. `--idle-exit` on a regular process service refuses before
+anything launches. Its start preview exits 0, predicts no new instance and warns you to remove
+`--idle-exit` and its value. [`cotal acp`](acp-clients.mdx) passes `--idle-exit 600` when it starts a
+manager for a thread.
 
 A started manager gets the environment of a [service child](cli-services.mdx#service-child-environment)
 and the [`spawn.env`](config.mdx#launcher-variables) names that are set where it starts. Its seats

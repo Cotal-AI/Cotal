@@ -165,8 +165,16 @@ check("a plain restart preview keeps both flags in the printed Next command",
   plainPreview.status === 2 && ["cotal", "pnpm cotal"].some((cli) => plainPreview.stderr.split("\n").some((line) =>
     line.trim() === `${cli} service start worker --space b1 --dry-run --plain`)), shown(plainPreview));
 const foregroundPreview = run(["service", "start", "worker", "--space", "b1", "--foreground", "--dry-run"]);
-check("a foreground start preview can allocate the first instance and changes nothing",
-  foregroundPreview.status === 0 && foregroundPreview.envelope?.result?.newInstanceWouldBeAllocated === true && foregroundPreview.envelope.result.allocated === false && foregroundPreview.envelope.result.signalled === false, shown(foregroundPreview));
+check("a valid foreground start preview predicts the first instance and changes nothing",
+  foregroundPreview.status === 0 && foregroundPreview.envelope?.result?.newInstanceWouldBeAllocated === true && foregroundPreview.envelope.result.allocated === false && foregroundPreview.envelope.result.signalled === false && foregroundPreview.envelope.warnings?.length === 0, shown(foregroundPreview));
+const idleExitPreviewArgs = ["service", "start", "worker", "--space", "b1", "--foreground", "--idle-exit", "5", "--dry-run"];
+const idleExitPreview = run(idleExitPreviewArgs);
+check("a process start preview with the manager-only idle timeout completes and predicts no allocation",
+  idleExitPreview.status === 0 && idleExitPreview.envelope?.outcome === "ok" && idleExitPreview.envelope.result?.newInstanceWouldBeAllocated === false && idleExitPreview.envelope.result.allocated === false && idleExitPreview.envelope.result.signalled === false && idleExitPreview.envelope.warnings?.some((warning) => warning.code === "USAGE_INVALID" && warning.message.includes("Remove `--idle-exit` and its value")) === true, shown(idleExitPreview));
+const plainIdleExitPreview = run([...idleExitPreviewArgs, "--plain"]);
+const afterIdleExitPreview = run(["service", "status", "worker", "--space", "b1"]);
+check("the plain preview explains the refusal and neither preview leaves an instance",
+  plainIdleExitPreview.status === 0 && plainIdleExitPreview.stdout.includes("would not be allocated") && plainIdleExitPreview.stderr.includes("belongs to the manager") && afterIdleExitPreview.status === 0 && afterIdleExitPreview.envelope?.result?.instanceId === null && afterIdleExitPreview.envelope.result.recordedState === "not started", { plain: shown(plainIdleExitPreview), status: shown(afterIdleExitPreview) });
 const firstWorker = run(["service", "start", "worker", "--space", "b1"]);
 const secondWorker = run(["service", "start", "worker", "--new-instance", "--space", "b1"]);
 const [one, two] = [firstWorker, secondWorker].map((r) => r.envelope?.target?.instanceId);
