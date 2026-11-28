@@ -125,6 +125,12 @@ function checkCleanStoreCli(): void {
         check(`clean ${target} ${mode} rejects --attempt and leaves the store intact`,
           result.status === 1 && result.stdout === "" && result.stderr.includes(`clean ${target} cannot be scoped by --attempt.`) &&
             result.stderr.includes("That option selects a restore for clean restore-attempt or clean restore-fallback.") && existsSync(data), result.stderr);
+        const historyOnly = spawnSync(process.execPath, [cli, "clean", target, flag, mode, "--dms"], { ...options, env: { ...options.env, LC_ALL: "C" } });
+        const report = historyOnly.stderr.replace(/\s+/g, " ");
+        check(`clean ${target} ${mode} rejects --dms and leaves the store intact`,
+          historyOnly.status === 1 && historyOnly.stdout === "" && report.includes("USAGE_INVALID") &&
+            report.includes(`clean ${target} does not take --dms`) && report.includes("cotal clean history --dms") &&
+            report.includes("drop --dms and review the preview with --dry-run") && existsSync(data), historyOnly.stderr);
       }
     }
     for (const preview of [true, false]) {

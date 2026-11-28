@@ -99,6 +99,10 @@ export function validateCleanArguments(args: ParsedArgs): void {
   const target = args.positionals[0];
   if ((target === "history" || target === "store" || target === "all") && args.values.attempt !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} cannot be scoped by --attempt. That option selects a restore for clean restore-attempt or clean restore-fallback. Nothing was ${target === "history" ? "purged" : "removed"}.`, { selfContained: true });
+  if (args.values.dms !== undefined && target !== "history" && TARGETS.some((name) => name === target))
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} does not take --dms. Nothing was removed.`, {
+      remedy: `use \`cotal clean history --dms\` to include DMs in a history purge. To ${target === "store" || target === "all" ? "remove local state, drop --dms and review the preview with --dry-run" : "clean the selected restore, drop --dms"}.`, selfContained: true,
+    });
   if (args.values["store-dir"] === undefined) return;
   if (target === "history")
     throw new CommandFailure("refused", "USAGE_INVALID", "clean history targets a running mesh. Nothing was purged. Only clean store and clean all take --store-dir.", { selfContained: true });

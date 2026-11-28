@@ -795,6 +795,8 @@ in both `--dry-run` and `--force` modes. `--attempt` selects a restore only for 
 or `clean restore-fallback`.
 `clean restore-attempt` and `clean restore-fallback` also refuse `--store-dir` with `USAGE_INVALID`
 (exit 1) and change nothing. Remove the option and its value only to act on the restore named by `--attempt`.
+Only `clean history` takes `--dms`. Every other target refuses it with `USAGE_INVALID` (exit 1)
+and removes nothing. To clean a stopped store, drop `--dms` and preview with `--dry-run` before applying.
 Only `history` takes `--space` (or `-s`), `--server` or `--creds`. Local cleanup uses the project found
 from the working directory. When local cleanup refuses these flags, it reports `USAGE_INVALID`
 (exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
