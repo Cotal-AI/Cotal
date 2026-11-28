@@ -137,7 +137,8 @@ function checkUnavailableOperator(entry: string, cwd: string, env: NodeJS.Proces
   const mixed = run(["update"], offline);
   const savedCursor = existsSync(cursor) ? readFileSync(cursor, "utf8") : "";
   const blocked = run(["space", "create", "mixed-failure", "--root", root], offline);
-  const remove = run(["ext", "remove", pkg], offline);
+  // npm remove can reify the remaining prefix; give it the cache that seeded those dependencies.
+  const remove = run(["ext", "remove", pkg], { npm_config_offline: "true" });
   check("a changed packed built-in retains the failed cursor, and ext remove can drop the optional entry",
     mixed.status === 1 && /"failed"/.test(savedCursor) && mixed.stderr.includes("Reconciling built-in web") &&
     blocked.status !== 0 && /previous connector seed failed/.test(blocked.stderr) &&
