@@ -3,7 +3,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { DaemonRefusal, requireResult, type Frame } from "./model";
 import { icon } from "./icons";
-import { installedMessage, isReady, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, type Activity, type AgentApp, type RowView } from "./agent-apps-model";
+import { appManagementMessages, appManagementRefusals, installedMessage, isReady, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, suggestedApp, unknownAppChange, type Activity, type AgentApp, type AppManagement, type RowView, type ServiceRefresh } from "./agent-apps-model";
 import claudeLogo from "../../assets/agents/claude-code.svg";
 import codexLogo from "../../assets/agents/codex.svg";
 import opencodeLogo from "../../assets/agents/opencode.svg";
@@ -28,13 +28,16 @@ export function logo(name: string, size: "row" | "tile" = "row"): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; management?: "service" | "local" | "other-copy" | "checking"; service?: "none" | "unchanged" | "refreshed" | "waiting" | "failed"; serviceError?: string; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; management?: AppManagement; serviceRefresh?: ServiceRefresh; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
   const events = new Channel<Frame & { name?: string }>();
   events.onmessage = frame => { if ((frame.event as string) === "agent-app-progress" && typeof frame.line === "string") onLine?.(frame.line); };
   const result = requireResult(await invoke<Frame>("daemon_request", { request, onEvent: events }));
+  if (request.op === "agent-apps" && result.management !== "local" && result.management !== "service" && (typeof result.management !== "string" || !Object.hasOwn(appManagementMessages, result.management))) {
+    throw new Error("Cotal could not confirm how this copy can manage agent apps.");
+  }
   return { ...result, ...(Array.isArray(result.apps) ? { apps: parseApps(result) } : {}), ...(result.app ? { app: parseApps({ apps: [result.app] })[0] } : {}) } as AppResult;
 }
 
@@ -106,13 +109,22 @@ export interface AgentAppsHost {
 export class AgentApps {
   apps: AgentApp[] | undefined;
   management: AppResult["management"];
-  get readOnly(): boolean { return this.management === "other-copy" || this.management === "checking"; }
+  get readOnly(): boolean { return this.unknownChange || !!this.error || this.management !== undefined && this.management !== "local" && this.management !== "service"; }
+  get showCheckAgain(): boolean { return this.unknownChange || !!this.error || !this.readOnly || this.management === "no-user-services"; }
+  get showFixConnection(): boolean { return this.readOnly && !this.showCheckAgain && this.management !== "checking"; }
+  get retryOwnerCheck(): boolean { return !this.unknownChange && !this.error && this.management === "checking"; }
+  get ownerMessage(): string {
+    const management = this.management;
+    return !this.error && !this.unknownChange && management && management !== "local" && management !== "service" ? appManagementMessages[management] : "";
+  }
+  private unknownChange = false;
   private error: string | undefined;
   private loading: Promise<void> | undefined;
   private readonly activity = new Map<string, Activity>();
   private message = "";
   /** An install the service could not pick up while agents ran. Checked again once they stop. */
   waitingForAgents = false;
+  private lastIdlePickup = -Infinity;
   /** The message says the service has not picked an install up; a refresh that succeeds clears it. */
   private servicePending = false;
   constructor(private readonly host: AgentAppsHost) {}
@@ -120,17 +132,38 @@ export class AgentApps {
   get busy(): boolean { return [...this.activity.values()].some(item => item.kind === "installing" || item.kind === "signing-in"); }
   get readyCount(): number { return this.apps?.filter(isReady).length ?? 0; }
 
+  observeRunningAgents(count: number | undefined, now = Date.now()): void {
+    if (typeof count !== "number") return;
+    if (count !== 0) { this.lastIdlePickup = -Infinity; return; }
+    if (!this.waitingForAgents || this.readOnly || this.busy || this.loading || now - this.lastIdlePickup < 30_000) return;
+    this.lastIdlePickup = now;
+    void this.load();
+  }
+
   /** Read the list again. `refresh` also lets the service pick up applications it cannot find yet. */
   load(refresh = false): Promise<void> {
     if (this.loading) return this.loading;
+    if (this.busy) return Promise.resolve();
+    if (this.unknownChange && !refresh) return Promise.resolve();
+    const observeOnly = this.unknownChange;
     this.loading = (async () => {
       try {
-        const result = await appRequest({ op: "agent-apps", ...(refresh || this.waitingForAgents ? { refresh: true } : {}) });
+        const result = await appRequest({ op: "agent-apps", ...(!observeOnly && (refresh || this.waitingForAgents) ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
         this.management = result.management;
-        // Only a refresh that ran clears the warning: "unchanged" also comes back when the service does not answer.
-        if (result.service === "refreshed" && this.servicePending) { this.message = ""; this.servicePending = false; }
-        if (result.service === "refreshed" || result.service === "unchanged") this.waitingForAgents = false;
+        if (observeOnly) { this.unknownChange = false; this.message = ""; }
+        if (this.readOnly) {
+          if (this.servicePending) this.message = "";
+          this.servicePending = this.waitingForAgents = false;
+        } else if (result.serviceRefresh?.state === "refreshed") {
+          if (this.servicePending) this.message = "";
+          this.servicePending = this.waitingForAgents = false;
+        } else if (result.serviceRefresh?.state === "pending") {
+          this.servicePending = true;
+          this.waitingForAgents = result.serviceRefresh.reason === "agents-running";
+          if (!this.waitingForAgents) this.message = "Cotal couldn't confirm that the background service can use the new apps. Choose Check again.";
+          else if (!this.message) this.message = "Your spaces can use the new apps once the running agents finish.";
+        }
       } catch (error) { this.error = refusalMessage(error); }
       finally { this.loading = undefined; this.host.changed(); }
     })();
@@ -152,12 +185,13 @@ export class AgentApps {
 
   private recheckAfterRefusal(name: string, error: unknown): boolean {
     if (!(error instanceof DaemonRefusal)) return false;
-    if (error.native === "APP_OTHER_COPY") this.management = "other-copy";
-    else if (error.native === "APP_OWNER_CHECKING" || error.code === "OPERATION_UNKNOWN") this.management = "checking";
+    const management = error.native ? appManagementRefusals[error.native] : undefined;
+    if (error.code === "OPERATION_UNKNOWN") this.unknownChange = true;
+    else if (management) this.management = management;
     else return false;
     this.activity.delete(name);
-    this.message = error.code === "OPERATION_UNKNOWN" ? refusalMessage(error) : "";
-    void this.load();
+    this.message = this.unknownChange ? unknownAppChange : "";
+    if (this.unknownChange) this.host.announce(this.message);
     return true;
   }
 
@@ -165,13 +199,14 @@ export class AgentApps {
     if (this.busy || this.readOnly) return;
     const title = this.apps?.find(app => app.name === name)?.title ?? name;
     this.activity.set(name, { kind: "installing" }); this.message = ""; this.host.changed();
+    this.lastIdlePickup = -Infinity;
     this.host.announce(`Installing ${title}.`);
     try {
       const result = await appRequest({ op: "agent-app-install", name }, this.progress(name, "installing"));
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
-      this.waitingForAgents = result.service === "waiting";
-      this.servicePending = result.service === "waiting" || result.service === "failed";
+      this.servicePending = result.serviceRefresh?.state === "pending";
+      this.waitingForAgents = result.serviceRefresh?.state === "pending" && result.serviceRefresh.reason === "agents-running";
       this.message = installedMessage(title, result);
       this.host.announce(this.message);
       if (result.app?.state === "signed-out") await this.signIn(name, result);
@@ -211,7 +246,7 @@ export class AgentApps {
     if (message.textContent !== text) message.textContent = text;
     message.classList.toggle("error", !!this.error);
     refresh.disabled = this.busy || !!this.loading;
-    refresh.hidden = this.readOnly;
+    refresh.hidden = !this.showCheckAgain;
     if (!this.apps) { if (!list.children.length) list.replaceChildren(); return; }
     const keys = new Set(this.apps.map(app => app.name));
     for (const node of Array.from(list.children)) if (!keys.has((node as HTMLElement).dataset.app ?? "")) node.remove();
