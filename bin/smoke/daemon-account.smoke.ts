@@ -161,6 +161,7 @@ try {
   const second = gets;
   await until(() => gets > second && daemon.status().account?.mode === "sign-in-required", "a second bare 401 asks for a sign-in", 15_000);
   assert.equal(daemon.status().account!.message, "sign in again");
+  assert.equal(tokens, deniedTokens + 2, "two bare refusals ask the token route twice and then stop");
   const stoppedBare = gets; await sleep(5_500); assert.equal(gets, stoppedBare, "a bare refusal stops after two");
   await daemon.close(); mode = 200; refusal = undefined; const fresh = gets;
   daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
