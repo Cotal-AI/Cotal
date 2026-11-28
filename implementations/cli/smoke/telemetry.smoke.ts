@@ -11,7 +11,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -283,6 +283,11 @@ for (const level of ["regular", "minimal"]) {
     check(`preparation conflict for ${name} keeps the existing path local`, made.status === 0 && r.status === 2 && r.stdout.includes(marker) && r.stdout.includes("space show existing --json")
       && event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
+  const selected = await s.run(["use", "existing"], { DO_NOT_TRACK: "1" });
+  renameSync(root, `${root}-parked`);
+  const moved = await s.run(["up", "--open", "--server", "nats://127.0.0.1:1", "--json"]), event = moved.sent.find(body => body.event === "command");
+  check("an unavailable selected project is named locally but omitted from the startup event", selected.status === 0 && moved.status === 2 && moved.stdout.includes(marker)
+    && event?.errorCode === "TARGET_UNAVAILABLE" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(moved.sent).includes(marker), shown(moved));
 }
 
 for (const level of ["regular", "minimal"]) {
