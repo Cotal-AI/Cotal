@@ -19,6 +19,7 @@ import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 import { openTelemetryIntake } from "./_telemetry-intake.js";
 
@@ -203,6 +204,13 @@ for (const level of ["regular", "minimal"]) {
   check("a refused command's event carries the outcome and the typed error code", ps.sent.length === 1 && ps.sent[0]?.outcome === "refused" && ps.sent[0]?.errorCode === error?.code && ps.sent[0]?.exitCode === 2, ps.sent[0]);
   check("…and the refusal's message, with no path in it", typeof ps.sent[0]?.errorMessage === "string" && (ps.sent[0]!.errorMessage as string).length > 0 && !(ps.sent[0]!.errorMessage as string).includes(s.home) && !/\/[\w.-]+\/[\w.-]+/.test(ps.sent[0]!.errorMessage as string), ps.sent[0]?.errorMessage);
   check("…and a stack whose frames name no directory outside node_modules", typeof ps.sent[0]?.errorStack === "string" && /^at /.test(ps.sent[0]!.errorStack as string) && !(ps.sent[0]!.errorStack as string).includes(s.home) && !/\(\/|\(file:/.test(ps.sent[0]!.errorStack as string), ps.sent[0]?.errorStack);
+  const watch = await s.run(["watch", "--json", "--space", "absent-watch-fixture"]);
+  const records = watch.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  const event = watch.sent[0];
+  check("the JSON watch refusal reports its stream code without sending the stream diagnostic",
+    watch.status === 2 && records.length === 2 && records[0]?.type === "error" && records[0]?.data?.code === "TARGET_NOT_FOUND" && records[1]?.type === "end"
+    && watch.sent.length === 1 && event?.command === "watch" && event.outcome === "refused" && event.errorCode === records[0].data.code
+    && event.errorMessage === null && event.errorStack === null && !JSON.stringify(event).includes("absent-watch-fixture"));
   const usage = await s.run(["ext", "frobnicate"]);
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
@@ -235,6 +243,14 @@ for (const level of ["regular", "minimal"]) {
   check(`a refused component target reports refused at ${level}`, r.status === 3 && /target\s+refused/.test(r.stdout) && events.length === 1 && event?.outcome === "refused" && event.exitCode === 3);
   check(`component facts stay local at ${level}`, !JSON.stringify(events).includes("missing-fixture-space") && (level === "regular"
     ? sameKeys(event, REGULAR) && event?.errorCode === null && event.errorMessage === null && event.errorStack === null : sameKeys(event, MINIMAL)));
+}
+
+{
+  const space = "private-project";
+  const failure = membershipConversionRefusal(space);
+  const text = telemetryErrorText("up", failure);
+  check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",
+    JSON.stringify(failure.target) === JSON.stringify({ space }) && text.message?.includes("legacy File-backed membership store") === true && !JSON.stringify(text).includes(space));
 }
 
 // Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.

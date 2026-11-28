@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
 import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, parsePrincipalKey, unicastRecvFilter, unicastSubject, type ParsedSubject } from "./subjects.js";
-import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
+import { isConsumerAlreadyExists, isConsumerNotFound, isStreamNotFound } from "./jetstream-missing.js";
 import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
@@ -1004,9 +1004,15 @@ export class EndpointHistory {
           out.push(m);
           if (opts.limit !== undefined && out.length >= opts.limit) return out;
         }
-        if (got < want && stream !== chatStream(this.identity.space))
-          throw new Error("plugin channel history read ended before the requested window was complete");
-        if (got < want) break; // drained early
+        if (got < want) {
+          if (stream === chatStream(this.identity.space)) break;
+          const current = (await consumer.info()).num_pending;
+          if (current === 0) break; // retention may have removed rows since the last count
+          if (got === 0 && current >= pending)
+            throw new Error("plugin channel history read ended before the requested window was complete");
+          pending = current;
+          continue;
+        }
         pending -= got;
       }
     } finally {
@@ -1023,25 +1029,41 @@ export class EndpointHistory {
     return rows[0]?.seq ?? 0;
   }
 
+  async pluginJoinFrontier(channel: string): Promise<number> {
+    try { return await this.channelFrontier(channel); }
+    catch (error) {
+      if (isPermissionDenied(error) || isStreamNotFound(error)) throw error;
+      this.deps.emit("warning", error);
+      return 0;
+    }
+  }
+
   /** Read plugin posts from their authoritative stream, without a stored-copy ACK. */
-  async recoverPluginHistory(channel: string, after: number, through: number, stillJoined: () => boolean): Promise<void> {
-    if (after < through) await this.emitPluginHistory(channel, { seq: after + 1 }, through, stillJoined, false);
+  async recoverPluginHistory(channel: string, after: number, through: number, stillJoined: () => boolean): Promise<boolean> {
+    return after >= through || (await this.emitPluginHistory(channel, { seq: after + 1 }, through, stillJoined, false)) !== undefined;
   }
 
   private async emitPluginHistory(channel: string, start: { seq: number } | { time: Date }, through: number,
-    stillJoined: () => boolean, initialReplay: boolean): Promise<number> {
+    stillJoined: () => boolean, initialReplay: boolean): Promise<number | undefined> {
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
     if (route.kind === "chat" || through < 1) return 0;
     const subject = route.subject("*", "*");
-    const rows = await this.collectHistory(subject, start, { untilSeq: through }, route.stream);
+    const receipts = this.parts.consumers.pluginReceiptSnapshot(channel);
+    let rows: JsMsg[];
+    try { rows = await this.collectHistory(subject, start, { untilSeq: through }, route.stream); }
+    catch (error) {
+      if (isPermissionDenied(error) || isStreamNotFound(error)) throw error;
+      this.deps.emit("warning", error);
+      return undefined;
+    }
     const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false };
     let emitted = 0;
     for (const row of rows) {
       if (!stillJoined()) break;
       const msg = this.deps.decodeHistory(row);
       if (!msg || msg.from.id === this.identity.card.id) continue;
-      const unseen = this.parts.consumers.recordPluginReceipt(row.subject, msg.id);
-      if (!initialReplay && !unseen) continue;
+      if (receipts.has(JSON.stringify([row.subject, msg.id])) ||
+          !this.parts.consumers.recordPluginReceipt(channel, row.subject, msg.id)) continue;
       this.deps.emit("message", msg, delivery, { historical: initialReplay || Date.now() - msg.ts > PLUGIN_CHANNEL_CATCHUP_AGE_MS, kind: "channel" } satisfies MessageMeta);
       if (++emitted % 128 === 0) await delay(0);
     }
@@ -1205,14 +1227,16 @@ export class EndpointHistory {
     let total = 0;
     for (const [ch, frontier] of frontiers) {
       const policy = await this.joinPolicyFresh(ch);
-      if (!policy.replay) continue;
       if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, ch)) {
         const stillJoined = this.parts.consumers.pluginReplayFence(ch);
         if (!stillJoined()) continue;
         const since = policy.windowMs === undefined ? 0 : Date.now() - policy.windowMs;
-        total += await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier,
-          stillJoined, true);
-      } else {
+        const replayed = policy.replay
+          ? await this.emitPluginHistory(ch, since > 0 ? { time: new Date(since) } : { seq: 1 }, frontier, stillJoined, true)
+          : 0;
+        if (replayed !== undefined && stillJoined()) this.parts.consumers.rememberPluginHistory(ch, frontier);
+        total += replayed ?? 0;
+      } else if (policy.replay) {
         total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
       }
     }

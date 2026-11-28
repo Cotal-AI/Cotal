@@ -342,7 +342,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const channels = validateSpawnArguments(args);
   const values = { ...args.values, ...(typeof args.values.harness === "string" ? { agent: args.values.harness } : {}), ...(typeof args.values.file === "string" ? { config: personaFileReference(args.values.file) } : {}) } as FlagValues<typeof spawnFlags>;
-  if (values["dry-run"]) return spawnLaunchPreview({ ...args, values });
+  if (values["dry-run"]) return spawnLaunchPreview({ ...args, values }, channels);
   // Claimed first: custody already removed the file and its variable, so the text lives only here
   // and no refusal below can leave it anywhere.
   const handoffText = claimManagedHandoff();

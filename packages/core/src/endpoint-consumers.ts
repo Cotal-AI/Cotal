@@ -48,7 +48,7 @@ export class EndpointConsumers {
    *  signal now that there is no per-instance chat durable. */
   private firstConnect = true;
   private readonly pluginHistoryFrontiers = new Map<string, { seq: number; epoch: number | undefined }>();
-  private readonly pluginReceipts = new Set<string>();
+  private readonly pluginReceipts = new Map<string, Set<string>>();
   private pluginReceiptEpoch?: number;
   private pluginHistoryRecovery?: Promise<void>;
   /** The refusals a channel's live subscription callback received. nats.js hands a subscription
@@ -129,13 +129,14 @@ export class EndpointConsumers {
         return isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) &&
           (!position || position.epoch !== this.conn.pluginChannelEpoch);
       });
-      const armed = join.length ? await this.armJoin(join) : undefined;
+      const plugin = (channel: string) => isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
+      const armed = await this.armJoin(join.filter((ch) => !plugin(ch)));
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      if (armed) {
-        await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
-        for (const [channel, frontier] of armed) this.rememberPluginHistory(channel, frontier);
+      for (const ch of join.filter(plugin)) {
+        if (this.pluginReplayFence(ch)()) armed.set(ch, await this.parts.history.pluginJoinFrontier(ch));
       }
+      await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
       if (!this.firstConnect) await this.recoverPluginChannels();
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
@@ -167,16 +168,28 @@ export class EndpointConsumers {
 
   /** A live core message has no stream sequence. Coalesce by authenticated subject and ID
    * instead of moving the recovery cursor past rows that might never have been delivered. */
-  recordPluginReceipt(subject: string, id: string): boolean {
+  recordPluginReceipt(channel: string, subject: string, id: string): boolean {
+    if (id === "") return true;
     if (this.pluginReceiptEpoch !== this.conn.pluginChannelEpoch) {
       this.pluginReceiptEpoch = this.conn.pluginChannelEpoch;
       this.pluginReceipts.clear();
     }
     const key = JSON.stringify([subject, id]);
-    if (this.pluginReceipts.has(key)) return false;
-    this.pluginReceipts.add(key);
-    if (this.pluginReceipts.size > PLUGIN_RECENT_RECEIPTS) this.pluginReceipts.delete(this.pluginReceipts.values().next().value!);
-    return true;
+    let receipts = this.pluginReceipts.get(channel);
+    if (!receipts) this.pluginReceipts.set(channel, receipts = new Set());
+    if (receipts.has(key)) return false;
+    let first = true;
+    for (const other of this.pluginReceipts.values()) {
+      if (other !== receipts && other.has(key)) { first = false; break; }
+    }
+    receipts.add(key);
+    if (receipts.size > PLUGIN_RECENT_RECEIPTS) receipts.delete(receipts.values().next().value!);
+    return first;
+  }
+
+  /** Pin the recent live receipts during replay, so replay itself cannot evict a live overlap. */
+  pluginReceiptSnapshot(channel: string): ReadonlySet<string> {
+    return new Set(this.pluginReceiptEpoch === this.conn.pluginChannelEpoch ? this.pluginReceipts.get(channel) : undefined);
   }
 
   recoverPluginChannels(stillCurrent: () => boolean = () => true): Promise<void> {
@@ -199,10 +212,10 @@ export class EndpointConsumers {
       if (!sub || from.epoch !== this.conn.pluginChannelEpoch || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
       const replayFence = this.pluginReplayFence(channel);
       const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
-      const through = await this.parts.history.channelFrontier(channel);
+      const through = await this.parts.history.pluginJoinFrontier(channel);
       if (!stillJoined() || through <= from.seq) continue;
-      await this.parts.history.recoverPluginHistory(channel, from.seq, through, stillJoined);
-      if (stillJoined()) this.pluginHistoryFrontiers.set(channel, { ...from, seq: through });
+      const complete = await this.parts.history.recoverPluginHistory(channel, from.seq, through, stillJoined);
+      if (complete && stillJoined()) this.pluginHistoryFrontiers.set(channel, { ...from, seq: through });
     }
   }
 
@@ -422,6 +435,7 @@ export class EndpointConsumers {
           this.delivery.chatSubDenied.add(channel);
           this.delivery.chatSubs.delete(channel);
           this.pluginHistoryFrontiers.delete(channel);
+          this.pluginReceipts.delete(channel);
           const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
             this.identity.channels.splice(i, 1);
@@ -452,7 +466,7 @@ export class EndpointConsumers {
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.identity.card.id) return; // our own echo
-        if (route.kind !== "chat" && !this.recordPluginReceipt(m.subject, msg.id)) return;
+        if (route.kind !== "chat" && !this.recordPluginReceipt(channel, m.subject, msg.id)) return;
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,
@@ -466,6 +480,7 @@ export class EndpointConsumers {
   /** Close a channel's core subscription (manager-free leave). */
   unsubscribeChat(channel: string): void {
     this.pluginHistoryFrontiers.delete(channel);
+    this.pluginReceipts.delete(channel);
     const sub = this.delivery.chatSubs.get(channel);
     if (sub) {
       try {

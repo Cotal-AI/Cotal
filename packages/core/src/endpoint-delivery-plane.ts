@@ -10,7 +10,7 @@ import { aclRetired, readAcl } from "./acls.js";
 import { ANYCAST_CANCEL_OP, ANYCAST_STATUS_OP, ANYCAST_TAKES_OP } from "./anycast-requests.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT } from "./backup-config.js";
-import { isRestoredConsumer } from "./backup.js";
+import { isRestoredConsumer, validatePersistentConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { channelSubjectInSpace, isRoutedPluginChannel, PLUGIN_CHANNEL_CATCHUP_AGE_MS } from "./endpoint-channel-route.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
@@ -18,17 +18,17 @@ import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-options.js";
 import { EVICT_PRINCIPALS_MAX, type KickTarget } from "./evict.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
-import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
+import { isConsumerAlreadyExists, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, membersForFanout, membershipFamilies, readMember } from "./members.js";
 import { watchNativeConnection, type NativeConnectionBinding } from "./native-connection.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
-import { readPluginChannelSpaceAuthority } from "./plugin-channel-space-state.js";
+import { readPluginChannelSpaceAuthority, type PluginChannelSpaceState } from "./plugin-channel-space-state.js";
 import { fanoutDurableConfig, inboxReaderConfig, pluginFanoutDurableConfig } from "./streams.js";
 import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject, unicastSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "./types.js";
-import { JetStreamApiCodes, jetstreamManager, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
+import { DeliverPolicy, JetStreamApiCodes, jetstreamManager, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
 import { headers, type NatsConnection } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
@@ -136,7 +136,18 @@ export class EndpointDeliveryPlane {
   /** True once {@link quiescePlane3} has stopped serving this shard pending an ownership answer.
    *  Guards {@link armPlane3} so a RECONNECT cannot silently resume serving mid-question. */
   private plane3Quiesced = false;
-  private daemonRouteWire?: { nc: NatsConnection; watch: ReturnType<typeof watchNativeConnection>; admitted?: NativeConnectionBinding; validating?: symbol };
+  private daemonRouteWire?: {
+    nc: NatsConnection;
+    watch: ReturnType<typeof watchNativeConnection>;
+    admitted?: NativeConnectionBinding;
+    validating?: symbol;
+    boundRoute?: PluginChannelSpaceState;
+  };
+  private daemonRouteUnknown = false;
+
+  private withheldChannel(channel: string): boolean {
+    return this.daemonRouteUnknown && isRoutedPluginChannel(true, channel);
+  }
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
@@ -181,7 +192,7 @@ export class EndpointDeliveryPlane {
   private readonly notLiveMsg: EndpointDeliveryPlaneDeps["notLiveMsg"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "consumers" | "controlPlane" | "credentials" | "deliveryLease" | "durableBackstop" | "history">) {
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointDeliveryPlaneDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "consumers" | "controlPlane" | "credentials" | "deliveryLease" | "durableBackstop" | "history" | "presence">) {
     this.notLiveMsg = deps.notLiveMsg;
     this.emit = deps.emit;
   }
@@ -231,14 +242,25 @@ export class EndpointDeliveryPlane {
       .then((jsm) => readPluginChannelSpaceAuthority(jsm, this.identity.space))
       .then((snapshot) => ({ snapshot }), (error: unknown) => ({ error }));
     if (this.daemonRouteWire !== wire || wire.validating !== validation || !this.onDaemonRouteWire(nc, binding)) return false;
-    if ("error" in result) throw result.error;
-    const { enabled, epoch } = result.snapshot.state;
-    if (wire.admitted !== undefined && (this.conn.pluginChannelEpoch !== epoch || this.conn.pluginChannelsEnabled !== enabled))
+    // Older spaces need not have a records stream. Only a broker-confirmed absence means off.
+    const cause = "error" in result ? result.error : undefined;
+    const state = "snapshot" in result ? result.snapshot.state : (isStreamNotFound(cause)
+      ? { version: 1, enabled: false, epoch: 0 } as const : undefined);
+    const bound = wire.boundRoute;
+    if (state && wire.admitted !== undefined && (bound
+      ? bound.epoch !== state.epoch || bound.enabled !== state.enabled
+      : state.enabled))
       throw new Error("delivery plugin channel authority changed; a full endpoint bind is required");
-    this.conn.pluginChannelsEnabled = enabled;
-    this.conn.pluginChannelEpoch = epoch;
+    const report = !state && !this.daemonRouteUnknown;
+    this.daemonRouteUnknown = !state;
+    if (state) wire.boundRoute = state;
+    this.conn.pluginChannelsEnabled = state?.enabled ?? false;
+    this.conn.pluginChannelEpoch = state?.epoch;
     wire.admitted = binding;
     wire.validating = undefined;
+    if (report) {
+      this.emit("warning", new Error(`plugin channel authority unavailable; continuing CHAT delivery: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }));
+    }
     return true;
   }
 
@@ -307,7 +329,7 @@ export class EndpointDeliveryPlane {
       // read, resuming after a successor has taken the shard and reached READY. Re-ask at the point
       // of effect, so the answer is never served by a daemon that has stood down.
       if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon stopped serving this shard while the request was in flight; retry" };
-      return { ok: true, data: { memberships } };
+      return { ok: true, data: { memberships: memberships.filter((row) => !this.withheldChannel(row.channel)) } };
     }
     return { ok: false, error: `op "${req.op}" not supported on the delivery control service` };
   }
@@ -345,7 +367,7 @@ export class EndpointDeliveryPlane {
     catch (e) { return { ok: false, error: (e as Error).message }; }
     if (acl === undefined)
       return { ok: false, error: `durableJoin: no read ACL on record for ${caller} (not provisioned for durable delivery)` };
-    if (!membershipInAllow(acl.allowSubscribe, channel, this.conn.pluginChannelsEnabled) ||
+    if (this.withheldChannel(channel) || !membershipInAllow(acl.allowSubscribe, channel, this.conn.pluginChannelsEnabled) ||
         (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !membershipInAllow(acl.issuedAllowSubscribe, channel, true)))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
     if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) return { ok: true, data: { durable: false } };
@@ -440,7 +462,8 @@ export class EndpointDeliveryPlane {
    *  different principal, so `caller` cannot be self-asserted. */
   private async deliveryReadHistory(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
     const channel = this.checkDurableChannelArg(args, "readHistory");
-    if (typeof channel !== "string") return channel; // a ControlReply error
+    if (typeof channel !== "string") return channel;
+    if (this.withheldChannel(channel)) return { ok: false, error: "readHistory: plugin channel authority is unavailable" };
 
     // The caller PROPOSES a limit; the mediator decides. Reject a nonsense limit loudly rather than
     // silently substituting a default — a caller asking for -1 has a bug and should hear about it.
@@ -480,6 +503,8 @@ export class EndpointDeliveryPlane {
     // One message MORE than the page is the completeness probe: if the backlog hands back limit+1,
     // something older exists behind the page and `complete` is false. Cheaper and more honest than a
     // separate count, which could race the page it describes.
+    if (this.withheldChannel(channel)) return { ok: false, error: "readHistory: plugin channel authority is unavailable" };
+    const mayAct = this.plane3DispatchFence(this.conn.nc);
     let page: CotalMessage[];
     try { page = await this.parts.history.channelHistory(channel, { limit: limit + 1 }); }
     catch (e) {
@@ -488,6 +513,8 @@ export class EndpointDeliveryPlane {
       // otherwise reach the caller as an empty page and render as "no history".
       return { ok: false, error: `readHistory: ${(e as Error).message}` };
     }
+    if (isRoutedPluginChannel(true, channel) && !mayAct())
+      return { ok: false, error: "readHistory: delivery binding could not be verified" };
     const reachedStart = page.length <= limit;
     const wanted = reachedStart ? page : page.slice(-limit);
 
@@ -885,14 +912,18 @@ export class EndpointDeliveryPlane {
     }
   }
 
-  /** Create one of the daemon's Plane-3 durables. A named create is idempotent for the same config,
-   *  and a denial is never taken for existence. The one conflict accepted is this durable as a full
-   *  restore recreated it, starting after its recorded ACK floor ({@link isRestoredConsumer}); every
-   *  other failure propagates. */
+  /** A config match is idempotent. On an explicit conflict, adopt only a validated restored cursor
+   *  or the canonical EXT durable if it was already initialized at the live frontier. */
   private async addPlane3Durable(stream: string, config: Partial<ConsumerConfig>): Promise<void> {
     try { await this.conn.jsm!.consumers.add(stream, config); }
     catch (e) {
-      if (!isConsumerAlreadyExists(e) || !isRestoredConsumer(this.identity.space, stream, await this.conn.jsm!.consumers.info(stream, config.durable_name!), config)) throw e;
+      if (!isConsumerAlreadyExists(e)) throw e;
+      const space = this.identity.space;
+      const info = await this.conn.jsm!.consumers.info(stream, config.durable_name!);
+      if (isRestoredConsumer(space, stream, info, config)) return;
+      if (stream !== pluginChannelStream(space) || info.name !== PLUGIN_FANOUT_DURABLE ||
+          info.config.deliver_policy !== DeliverPolicy.New) throw e;
+      validatePersistentConsumer(space, stream, info);
     }
   }
 
@@ -902,7 +933,11 @@ export class EndpointDeliveryPlane {
     const space = this.identity.space;
     await this.bindChannelFanout(chatStream(space), FANOUT_DURABLE, "chat", fanoutDurableConfig(space, { ackWaitMs: this.identity.ackWaitMs }));
     if (this.conn.pluginChannelsEnabled) {
-      await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, pluginFanoutDurableConfig(space));
+      // The first writer may bind after the first accepted post. Use the same start-sequence
+      // shape as a restored consumer so it starts at the first retained post, not at bind time.
+      await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, {
+        ...pluginFanoutDurableConfig(space), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: 1,
+      });
     }
   }
 
@@ -944,10 +979,22 @@ export class EndpointDeliveryPlane {
     const parsed = parseSubject(m.subject);
     if (!parsed || parsed.kind !== kind || !channelSubjectInSpace(this.identity.space, m.subject) || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const channel = parsed.rest;
+    if (this.withheldChannel(channel)) {
+      // Do not let reserved CHAT backlog occupy the shared consumer's ACK window. EXT has
+      // its own cursor, so delay isolated fan-out until authority is known again.
+      if (kind === "chat") m.ack();
+      else m.nak(30_000);
+      return;
+    }
     if ((kind !== "chat") !== isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) { m.ack(); return; }
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
     if (!isFromSubjectSender(msg, parsed)) { m.ack(); return; } // authenticity (SPEC §5)
+    if (kind !== "chat" && msg.mentions?.length && this.parts.presence.presenceView().state === "unpopulated") {
+      // A first bind can begin pulling before its roster's initial snapshot has arrived.
+      m.nak(500);
+      return;
+    }
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
     // SECOND FENCE, AT THE COMMIT POINT. The entry check above cannot cover this unit's own awaits:
@@ -1103,7 +1150,8 @@ export class EndpointDeliveryPlane {
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
     if (!isRecord(entry)) { m.ack(); return; } // non-object envelope — permanently invalid
-    if (typeof entry.channel === "string" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel)) {
+    if (typeof entry.channel === "string" && (this.withheldChannel(entry.channel) ||
+        isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel))) {
       m.ack();
       return;
     }

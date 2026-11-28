@@ -18,9 +18,13 @@ import { PLUGIN_CHANNEL_ROOT, pluginChannelStream } from "../../src/plugin-chann
 import { pluginChannelSpaceStateSubject } from "../../src/plugin-channel-space-state.js";
 import { pickFreePort } from "../_free-port.js";
 
+type EndpointOptions = ConstructorParameters<typeof CotalEndpoint>[0];
+
 export interface EnabledPluginAgentOptions {
   readonly read?: readonly string[];
   readonly post?: readonly string[];
+  /** Deliberately model a credential issued before activation. */
+  readonly legacy?: boolean;
 }
 
 /** A switched-on, disposable local broker. Only tests can seed both enabled records. */
@@ -48,8 +52,8 @@ export async function startEnabledPluginSpace() {
       release();
     }
   };
-  const endpoint = (options: Omit<ConstructorParameters<typeof CotalEndpoint>[0], "space" | "servers">) => {
-    const ep = new CotalEndpoint({ ...options, space, servers });
+  const endpoint = (options: Omit<EndpointOptions, "space" | "servers"> & { servers?: EndpointOptions["servers"] }) => {
+    const ep = new CotalEndpoint({ servers, ...options, space });
     ep.on("error", (error) => console.error("fixture endpoint:", error));
     endpoints.add(ep);
     return ep;
@@ -61,9 +65,13 @@ export async function startEnabledPluginSpace() {
     const wire = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds, tls: false }) });
     provisionerWire = wire;
     const jsm = await jetstreamManager(wire);
-    await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 1 })));
+    const writeAuthority = async (state: unknown) => {
+      await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), JSON.stringify(state));
+    };
+    await writeAuthority({ version: 1, enabled: true, epoch: 1 });
     const registry = await openChannelRegistry(wire, space);
     await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 1 }));
+    await writeChannelConfig(registry, hiddenChannel, { deliveryClass: "durable", replay: false });
     await writeChannelConfig(registry, chatChannel, { deliveryClass: "live", replay: true, replayWindow: "1h" });
     const provisioner = endpoint({ creds: provisionerCreds, channels: [], consume: false, registerPresence: false, watchPresence: false,
       card: { name: "prov", kind: "endpoint" } });
@@ -75,7 +83,7 @@ export async function startEnabledPluginSpace() {
       const allowSubscribe = [...(options.read ?? [])];
       const actor = id.id;
       const principal = principalKey(DEV_OWNER, actor).key;
-      const creds = await mintCreds(auth, id, "agent", { lifecycleUid, pluginChannelsEnabled: true,
+      const creds = await mintCreds(auth, id, "agent", { lifecycleUid, pluginChannelsEnabled: !options.legacy,
         allowSubscribe, allowPublish: [...(options.post ?? [])] });
       await provisioner.provisionDmInbox(DEV_OWNER, actor, lifecycleUid);
       if (allowSubscribe.length) await provisioner.provisionDlvInbox(DEV_OWNER, actor, lifecycleUid);
@@ -97,11 +105,12 @@ export async function startEnabledPluginSpace() {
         await connection.close();
       }
     };
-    const startDelivery = async () => {
+    const startDelivery = async (beforePlane3?: (ep: CotalEndpoint) => Promise<void>) => {
       const creds = await mintCreds(auth, newIdentity(), "delivery", { pluginChannelsEnabled: true });
       const ep = endpoint({ creds, channels: [], consume: false, registerPresence: false, watchPresence: true,
         card: { name: "delivery", kind: "endpoint", role: "delivery" } });
       await ep.start();
+      await beforePlane3?.(ep);
       await ep.startPlane3((target, uid) => ep.aclForOwner(target, uid), { readPluginChannelAuthority: true });
       return ep;
     };
@@ -121,7 +130,7 @@ export async function startEnabledPluginSpace() {
       await jsm.jetstream().publish(pluginChannelSpaceStateSubject(space), new TextEncoder().encode(JSON.stringify({ version: 1, enabled: true, epoch: 2 })));
       await registry.put(PLUGIN_CHANNEL_PROJECTION_KEY, JSON.stringify({ enabled: true, epoch: 2 }));
     };
-    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory,
+    return { servers, space, channel, hiddenChannel, chatChannel, endpoint, mintAgent, mintObserver, seedMembership, startDelivery, removePluginHistory, writeAuthority,
       recreatePluginHistoryAtNextEpoch, provisioner, jsm, close };
   } catch (error) {
     await close();

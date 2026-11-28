@@ -48,7 +48,6 @@ import {
   subjectMatches,
 } from "./subjects.js";
 import { openMembersRegistry } from "./members.js";
-import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { KvReadView } from "./kv-read-view.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
@@ -66,8 +65,6 @@ export function durableCovers(durable: readonly string[], channel: string, famil
 export interface MembershipFeedOpts {
   servers: string;
   space: string;
-  /** Trusted routing snapshot from the delivery host for this activation epoch. */
-  pluginChannelsEnabled?: boolean;
   /** DATA account public key — the CONNZ request + CONNECT/DISCONNECT event subjects pin this account. */
   accountId: string;
   /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader): a literal string, or a SOURCE
@@ -625,8 +622,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // keep the last good state untouched and don't stamp the heartbeat. Self-heals on the next full poll.
     if (!complete) return;
     const durable = durableFromMembers(await membersView.refresh());
-    const sharedRows = (rows: Set<string> | undefined) => [...(rows ?? [])]
-      .filter((channel) => !isRoutedPluginChannel(opts.pluginChannelsEnabled, channel)).sort();
+    const sharedRows = (rows: Set<string> | undefined) => [...(rows ?? [])].sort();
     const observedAt = Date.now();
 
     // Merge per agent: CONNZ live patterns ∪ durable concrete channels. An agent with neither is omitted.
