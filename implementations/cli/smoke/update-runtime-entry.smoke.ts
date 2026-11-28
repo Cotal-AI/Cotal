@@ -85,7 +85,7 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
     assert.ok(original.length > 0);
     const offlineCli = (...args: string[]) => run([cliEntry, ...args], home, { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", CI: "false" });
     await assertOfflineRuntimeRepair(assert, offlineCli, env, entry, original, registryRequests);
-    const brokenImport = 'import { notAnExportOfCore } from "@cotal-ai/core";\nvoid notAnExportOfCore;\n';
+    const brokenImport = 'import { missingFixtureExport } from "node:path";\nvoid missingFixtureExport;\n';
     for (const damage of ["missing", "empty", "import"]) {
       if (damage === "missing") renameSync(entry, join(home, "tmux-index.saved"));
       else if (damage === "empty") truncateSync(entry, 0);
@@ -93,7 +93,7 @@ export async function repairRuntimeEntry(assert: typeof strictAssert): Promise<v
       const broken = await cli("runtimes", "--plain");
       assert.equal(broken.status, 4, broken.output);
       assert.match(broken.output, /tmux\s+installed - load failed/);
-      if (damage === "import") assert.match(broken.output, /notAnExportOfCore/);
+      if (damage === "import") assert.match(broken.output, /missingFixtureExport/);
       refuseArchive = true;
       env.npm_config_cache = join(home, `empty-cache-${damage}`);
       const refused = await selfUpdate();
