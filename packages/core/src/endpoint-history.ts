@@ -1150,6 +1150,7 @@ export class EndpointHistory {
   ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
     if (!this.conn.jsm) throw new Error(this.deps.notLiveMsg());
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
+    this.parts.connection.requireKnownViewerRoute(channel);
     const policy = await this.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
     const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
