@@ -63,9 +63,18 @@ including `TERM_PROGRAM` at `regular`. Failure text is sent at `regular` after p
 masking (see `errorMessage`); masking is not a guarantee that arbitrary error text contains no
 identifying information. When `spawn` reports a failure with a native cause, its message and
 stack stay local because the diagnostic can include the agent's terminal output. The event still
-records the typed error code. When a JSON watch stream reports a typed setup failure, its command
+records the typed error code. When a local session lookup refuses a resume, or the session needs a
+manager pin, `spawn` also keeps the message and stack local. Session IDs, candidate transcripts and
+host names in those diagnostics are not sent. When a JSON watch stream reports a typed setup failure, its command
 event records the code without collecting the stream message or stack. If `up` refuses to convert a
 legacy membership store, the local error target names the space; the reported message omits its name.
+When a subscription falls outside `allowSubscribe`, the local diagnostic names the channels. The event
+reports the mismatch without the subscription or the allowed channels.
+When a service preset has never started, its refusal names the space locally. Telemetry records the
+code without the message or stack, including when `manager logs` names a missing log file.
+The space and PID also stay local when a service command cannot control a process started by `up` or `supervise`.
+When a separately started service blocks `up`, its name, PID and instance ID stay in the local refusal.
+If the preferences file is a symbolic link, the event reports the reason without the link path or target.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at

@@ -16,7 +16,8 @@
  *
  * Run: pnpm smoke:no-manager-preset:live
  */
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,7 +47,7 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}no-ma
 const space = `nomgr-${randomUUID().slice(0, 8)}`;
 const server = `nats://127.0.0.1:${await freePort()}`;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, DO_NOT_TRACK: "1", HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 let anchor: SmokeSandboxAnchor | undefined;
 const from = (cwd: string, ...words: string[]) => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
@@ -124,18 +125,27 @@ try {
   check("bare up refuses LIFECYCLE_BLOCKED, exit 2, naming the service, its instance and its exact stop",
     refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED"
       && refused.env.error.message.startsWith(`the mgr service of this space runs this root's manager (pid ${mgr?.pid}, instance ${id})`)
-      && launcher !== undefined && refused.env.error.remedy === `${stop}, then run \`${launcher} up\` again`
+      && launcher !== undefined && refused.env.error.remedy === `${stop}, then run \`${launcher} up --json\` again`
       && JSON.stringify(refused.env.target?.services) === JSON.stringify([{ definition: "mgr", instanceId: id }]), shown(refused));
   const rooted = from(home, "up", "--root", root, "--space", space, "--json");
   check("an ordinary retry from another folder names the requested stack",
     rooted.status === 2 && rooted.env?.error?.code === "LIFECYCLE_BLOCKED" && launcher !== undefined
-      && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)}`)} again`, shown(rooted));
-  const foreground = cotal("up", "--foreground", "--server", server);
-  check("a blocked foreground start keeps its service stop and retries the original invocation",
-    foreground.status === 2 && foreground.stderr.replace(/\s+/g, " ").includes(`${stop}, then repeat your original foreground startup command from the same folder with the same options`), shown(foreground));
+      && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)} --json`)} again`, shown(rooted));
+  const intake = await openTelemetryIntake();
+  try {
+    const foreground = await new Promise<{ status: unknown; stderr: string }>(resolve => {
+      execFile(process.execPath, [BIN, "up", "--foreground", "--server", server], {
+        cwd: root, env: { ...env, DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url }, timeout: 120_000,
+      }, (error, _stdout, stderr) => resolve({ status: error?.code ?? 0, stderr }));
+    });
+    check("a blocked foreground start keeps its service stop and retries the original invocation",
+      foreground.status === 2 && foreground.stderr.replace(/\s+/g, " ").includes(`${stop}, then repeat your original foreground startup command from the same folder with the same options`));
+    const events = intake.received.filter(body => body.event === "command");
+    check("the startup refusal reports its code without its service diagnostic", events.length === 1 && events[0]?.errorCode === "LIFECYCLE_BLOCKED" && events[0].errorMessage === null && events[0].errorStack === null && !JSON.stringify(events).includes(id));
+  } finally { intake.server.close(); }
   const brokerOnly = cotal("up", "--no-manager", "--json");
   const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
-  const expectedRetry = `${launcher} up --space ${space} --no-manager`;
+  const expectedRetry = `${launcher} up --space ${space} --no-manager --json`;
   check("the broker-only refusal retains the selected space and --no-manager",
     brokerOnly.status === 2 && brokerOnly.env?.error?.code === "LIFECYCLE_BLOCKED"
       && launcher !== undefined && brokerOnly.env.error.remedy === `${stop}, then run \`${expectedRetry}\` again`, shown(brokerOnly));
@@ -143,8 +153,8 @@ try {
   const stopped = cotal("svc", "stop", "mgr", "--instance", id, "--space", space, "--yes");
   check("the named stop stops the service", stopped.status === 0 && running("mgr") === undefined, shown(stopped));
   if (launcher !== undefined && retry === expectedRetry) {
-    const retried = cotal(...retry.slice(launcher.length + 1).split(" "), "--json");
-    check("the printed retry succeeds without starting the stack's manager", retried.status === 0 && running("stack-manager") === undefined, shown(retried));
+    const retried = cotal(...retry.slice(launcher.length + 1).split(" "));
+    check("the printed retry returns JSON without starting the stack's manager", retried.status === 0 && retried.env?.result?.kind === "controller-stack-up" && running("stack-manager") === undefined, shown(retried));
   }
   const again = cotal("up", "--json");
   const stackManager = running("stack-manager")?.instanceId;

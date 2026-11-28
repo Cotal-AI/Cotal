@@ -1873,6 +1873,9 @@ export class Manager {
   /** {@link BrokerTransport.withOpenServeConnection}. */
   protected withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withOpenServeConnection(fn); }
 
+  /** {@link ManagerBoot.serveBound}. */
+  serveBound(): boolean { return this.bootComponent.serveBound(); }
+
   /** {@link StatusAndModels.hostedSeatCount}. */
   hostedSeatCount(...args: Parameters<StatusAndModels["hostedSeatCount"]>): ReturnType<StatusAndModels["hostedSeatCount"]> { return this.statusAndModelsComponent.hostedSeatCount(...args); }
 
