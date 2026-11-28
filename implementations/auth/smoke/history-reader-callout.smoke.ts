@@ -45,6 +45,7 @@ import { handleExchange, LOOPBACK_POLICY } from "../dist/service-exchange-routes
 import { remoteManagerCurrentRegistrationProof } from "../dist/retained-manager-validation.js";
 import type { HandlerCtx } from "../dist/service.js";
 import { pickFreePort } from "./_free-port.js";
+import { runSpawnDnsFixture } from "./_stalled-spawn-dns.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { matchesMainPermissions } from "../../../packages/core/smoke/_off-channel-main.js";
 
@@ -313,15 +314,18 @@ async function localSpawnFixture() {
   const grant = async (actor: string) => {
     const input = args(actor);
     const { actorToken } = await cotalAuthProvider.grantAgent(input);
-    const row = findManagedActor(dir, OWNER, actor);
+    assertRow(input);
+    return { actor, actorToken };
+  };
+  const assertRow = (input: ReturnType<typeof args>) => {
+    const row = findManagedActor(dir, OWNER, input.actor);
     assert.ok(row);
     assert.equal(row.parent, input.parent);
     assert.equal(row.lifecycleUid, input.lifecycleUid);
     assert.deepEqual(row.allowSubscribe, input.allowSubscribe);
     assert.deepEqual(row.allowPublish, input.allowPublish);
-    return { actor, actorToken };
   };
-  return { args, grant, reads: () => serviceKeyReads };
+  return { args, assertRow, grant, keys: () => Object.fromEntries(values), reads: () => serviceKeyReads };
 }
 
 async function withLocalRegistry<T>(fn: () => Promise<T>): Promise<T> {
@@ -337,7 +341,7 @@ async function withLocalRegistry<T>(fn: () => Promise<T>): Promise<T> {
 async function checkOfflineLocalSpawns(): Promise<void> {
   grantActor(dir, { owner: OWNER, actor: SPAWNER, scope: ["spawn"], allowSubscribe: [">"], allowPublish: [">"] });
   await withLocalRegistry(async () => {
-    const { args, grant, reads } = await localSpawnFixture();
+    const { args, assertRow, grant, keys, reads } = await localSpawnFixture();
     offlineGrants.push({ condition: "no-record", ...await grant("local_child") });
     check("local spawn: no broker registration preserves the legacy grant", reads() === 0);
     recordMesh({ ...localRecord, stoppedByDown: true });
@@ -367,6 +371,18 @@ async function checkOfflineLocalSpawns(): Promise<void> {
     const beforeDns = reads();
     offlineGrants.push({ condition: "unresolved-broker", ...await grant("unresolved_child") });
     check("local spawn: a registered .invalid hostname preserves the grant without a transport error", reads() === beforeDns + 1);
+    const stalled = args("stalled_dns_child");
+    const { actorToken, ...timing } = await runSpawnDnsFixture(server => {
+      recordMesh({ ...localRecord, server });
+      const { store: _store, ...wireArgs } = stalled;
+      return { args: wireArgs, keys: keys() };
+    });
+    assertRow(stalled);
+    offlineGrants.push({ condition: "stalled-dns", actor: stalled.actor, actorToken });
+    check("local spawn: unanswered DNS writes the grant within 5 seconds", timing.requests > 0 && timing.reads > 0
+      && timing.elapsed >= 2_500 && timing.elapsed < 5_000, timing);
+    check("local spawn: the built provider process exits within 5 seconds of its last line", timing.exitMs < 5_000, timing);
+    console.log(`  stalled DNS grant: ${timing.elapsed} ms, exit after output: ${timing.exitMs} ms`);
     await checkSilentRegisteredBroker(grant);
     recordMesh(localRecord);
   });
@@ -378,7 +394,7 @@ async function setRoutingRecord(control: NatsConnection, state: object): Promise
 
 async function checkRegisteredLocalSpawns(control: NatsConnection): Promise<void> {
   await withLocalRegistry(async () => {
-    const { args, grant } = await localSpawnFixture();
+    const { args, assertRow, grant, keys } = await localSpawnFixture();
     const stateSubject = pluginChannelSpaceStateSubject(space);
     let observed = 0;
     const requests = control.subscribe(`$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`, { callback: (error, msg) => {
@@ -390,6 +406,16 @@ async function checkRegisteredLocalSpawns(control: NatsConnection): Promise<void
       await grant("registered_child");
       await control.flush();
       check("local spawn: registered off space reads the exact protected key and writes without a broker argument", observed === 1);
+      const named = args("registered_named_child");
+      const result = await runSpawnDnsFixture(server => {
+        recordMesh({ ...localRecord, server });
+        const { store: _store, ...wireArgs } = named;
+        return { args: wireArgs, keys: keys() };
+      }, PORT);
+      assertRow(named);
+      await control.flush();
+      check("local spawn: a DNS-resolved registered hostname reads the exact protected key", result.requests > 0 && observed === 2);
+      recordMesh(localRecord);
     } finally { requests.unsubscribe(); }
 
     await setRoutingRecord(control, { version: 1, epoch: 1, enabled: true });

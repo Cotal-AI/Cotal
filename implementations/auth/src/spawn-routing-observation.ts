@@ -5,6 +5,7 @@ import { ClosedConnectionError, ConnectionError, NoRespondersError, RequestError
 import { openAuthorityClient } from "./authority-client.js";
 import { pluginChannelStateResolver } from "./callout-authority.js";
 import type { ServiceKeys } from "./store.js";
+import { resolveSpawnBroker, pinSpawnBrokerLookup, type ResolvedSpawnBroker } from "./spawn-routing-dns.js";
 
 const REGISTERED_SPAWN_ROUTING_DEADLINE_MS = 3_000;
 const SPAWN_BROKER_UNAVAILABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "ENOTFOUND", "EAI_AGAIN"]);
@@ -38,12 +39,14 @@ export async function readLocalSpawnRouting({ space, ...authority }: RoutingObse
   }
 }
 
-/** One budget for startup, dial and leader read. Worker exit also closes a transport that is
+/** One budget for DNS, startup, dial and leader read. Worker exit also closes a transport that is
  * stalled before the client can return a connection to close. */
 export async function readRegisteredSpawnRouting(observation: RoutingObservation): Promise<boolean> {
   const expiresAt = performance.now() + REGISTERED_SPAWN_ROUTING_DEADLINE_MS;
+  const resolved = await resolveSpawnBroker(observation.server, expiresAt);
+  if (!resolved || performance.now() >= expiresAt) return false;
   const worker = new Worker(new URL("./spawn-routing-observation.js", import.meta.url), {
-    workerData: { name: workerName, observation }, execArgv: [],
+    workerData: { name: workerName, observation: { ...observation, server: resolved.server }, resolved }, execArgv: [],
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -55,12 +58,14 @@ export async function readRegisteredSpawnRouting(observation: RoutingObservation
     });
   } finally {
     clearTimeout(timer);
-    await worker.terminate();
+    worker.unref();
+    void worker.terminate().catch(() => {});
   }
 }
 
 if (!isMainThread && parentPort && workerData?.name === workerName) {
   const port = parentPort;
+  pinSpawnBrokerLookup(workerData.resolved as ResolvedSpawnBroker);
   let enabled = false;
   try { enabled = await readLocalSpawnRouting(workerData.observation as RoutingObservation); }
   catch (error) { if (!spawnBrokerDidNotAnswer(error)) throw error; }
