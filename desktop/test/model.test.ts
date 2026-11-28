@@ -134,7 +134,7 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
     title: "We cannot reach your connection",
-    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
     action: "refresh",
     label: "Try again",
   });
@@ -156,6 +156,17 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "refresh",
     label: "Check approval",
   });
+});
+
+test("another installation's service offers no action and keeps a command out of the window", () => {
+  assert.deepEqual(refusalView("CONFLICT"), {
+    title: "Another Cotal installation runs the background service",
+    description: "This copy cannot take it over. Nothing was changed.",
+    action: "none",
+    label: "",
+  });
+  const refused = () => { requireResult({ v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js" } }); };
+  assert.throws(refused, (error: { remedy?: string; message: string }) => error.remedy === undefined && !/\/usr\/local|`/.test(error.message));
 });
 
 test("kept credential notice names each well-formed file and is empty otherwise", () => {
