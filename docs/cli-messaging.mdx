@@ -746,6 +746,11 @@ A row shows the first 500 code units of a longer message and marks the cut with 
 shown. `--json` carries the text as it was sent, in `result.items[].text`. The count is code units,
 the same measure a cut `watch` line uses.
 
+JSON history does not report the message ID a channel post replies to. This applies to a finite
+read, the initial `--follow` snapshot, and live events. To capture the relationship when sending,
+save `messageId` and `replyTo` from the [`cotal send --json` receipt](#storage-receipt). A live
+[`cotal chat --stdio` message record](#unsolicited-records) also carries both IDs as `id` and `replyTo`.
+
 Retained history is not every message sent. The chat stream keeps a post until its sender has posted
 the space's per-sender count of newer ones on that channel, or until it is older than the space's age
 limit when one is set. A new space keeps each sender's newest 1000 posts on each channel with no age
