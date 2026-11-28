@@ -299,7 +299,7 @@ An explicit empty or whitespace-only `--root` on `space create` or `space add` r
 
 When a broker registered by hand does not answer, commands such as `send` and the delivery daemon
 name `cotal space forget <name>` as the way to unregister it. The refusal keeps the registration
-and does not start a local replacement. Start the broker where it runs to keep using that space.
+and does not start a local replacement. The broker may still be running on its host. Check the registered address and your connection to that host before restarting it.
 When `status` reports a manually registered open or static-auth broker as unreachable, its Next
 section gives the same recovery steps instead of offering the live roster.
 For a discovered space, the next step names removal from the provider's catalog followed by
