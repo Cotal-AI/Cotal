@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
-import { oneLine, processStartToken, recordUpdateDeferral, type OutputWarning } from "@cotal-ai/workspace";
+import { isReleaseExtension, oneLine, processStartToken, recordUpdateDeferral, type OutputWarning } from "@cotal-ai/workspace";
 import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
 import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
@@ -145,7 +145,7 @@ async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promis
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
 function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
-  const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
+  const names = [...new Set(rt.extensions().filter(isReleaseExtension).map(entry => entry.pkg))];
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {

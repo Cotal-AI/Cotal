@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, isReleaseExtension, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
 
@@ -82,9 +82,18 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   return undefined;
 }
 
+function matchingOperatorPath(entry: InstalledExtension, generation: string): string | undefined {
+  if (entry.version === generation && typeof entry.spec === "string" && isExtensionPathSpec(entry.spec)) return entry.spec;
+}
+
+/** Registry packages reconcile to the running generation. A scoped path can only repair its own generation. */
+export function reconcilesOperatorExtension(entry: InstalledExtension, generation: string): boolean {
+  return isReleaseExtension(entry) || (entry.pkg.startsWith("@cotal-ai/") && matchingOperatorPath(entry, generation) !== undefined);
+}
+
 /** The source for a matching-generation repair is the operator's path, if one was recorded. */
 export function operatorUpdateSpec(entry: InstalledExtension, generation: string): string {
-  return entry.version === generation && typeof entry.spec === "string" && isExtensionPathSpec(entry.spec) ? entry.spec : `${entry.pkg}@${generation}`;
+  return matchingOperatorPath(entry, generation) ?? `${entry.pkg}@${generation}`;
 }
 
 /**

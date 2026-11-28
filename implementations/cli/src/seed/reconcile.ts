@@ -63,7 +63,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, seededPeerLinksCurrent } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers, operatorUpdateSpec, reconcilesOperatorExtension, seededPeerLinksCurrent } from "./verify.js";
 import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
@@ -428,12 +428,12 @@ function operatorPackageDiffers(entry: InstalledExtension, generation: string): 
   return undefined;
 }
 
-/** Whether every operator-installed official `@cotal-ai/*` extension is recorded and on disk at `generation`. */
+/** Whether every operator extension eligible for reconciliation is on disk at `generation`. */
 function officialExtensionsCurrent(generation: string): boolean {
   try {
     const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
     return loadExtensionsManifest().extensions.every(
-      (entry) => !entry.pkg.startsWith("@cotal-ai/") || builtIns.has(entry.pkg) || operatorPackageDiffers(entry, generation) === undefined,
+      (entry) => !reconcilesOperatorExtension(entry, generation) || builtIns.has(entry.pkg) || operatorPackageDiffers(entry, generation) === undefined,
     );
   } catch {
     return false;
@@ -631,7 +631,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const inventoryWasMissing = manifestRebuilt && (mode === "verify" || mode === "repair" ? inventoryMissingAtStart : extensionsInventoryMissing());
   const unregistered = inventoryWasMissing ? unregisteredOperatorPackages(builtIns) : [];
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
-    entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
+    reconcilesOperatorExtension(entry, generation) && !builtIns.has(entry.pkg) && (
       mode === "verify"
         ? operatorInstallDiffers(entry, generation) !== undefined
         : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined

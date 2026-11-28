@@ -25,10 +25,7 @@ import {
   recordUpdateReleaseHold,
   recordUpdateRefusal,
   recordUpdateReplacement,
-  setUpdateSetting,
-  bindExtensionPeers,
-  claimGlobalNpmUpdateLock,
-  launcherInstallRoot,
+  setUpdateSetting, bindExtensionPeers, claimGlobalNpmUpdateLock, launcherInstallRoot,
   logicalExecutionEntry,
   loadExtensionsManifest,
   provenance,
@@ -54,7 +51,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
-import { operatorInstallDiffers, operatorUpdateSpec } from "../seed/verify.js";
+import { operatorInstallDiffers, operatorUpdateSpec, reconcilesOperatorExtension } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
 import { reportCurrentConnectorState } from "./setup-current-connectors.js";
@@ -220,7 +217,7 @@ export const updateRuntime: UpdateRuntime = {
     if (!seedInstallationCurrent()) return false;
     try {
       const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
-      return updateRuntime.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg))
+      return updateRuntime.extensions().filter(entry => reconcilesOperatorExtension(entry, cliVersion()) && !builtIns.has(entry.pkg))
         .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
     } catch { return false; }
   },
@@ -761,7 +758,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
   if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
   for (const entry of entries) {
     const recordedSpec = typeof entry.spec === "string" ? ` (recorded spec: ${entry.spec})` : "";
-    if (!entry.pkg.startsWith("@cotal-ai/")) {
+    if (!reconcilesOperatorExtension(entry, current)) {
       rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`));
       continue;
     }
