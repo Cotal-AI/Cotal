@@ -452,7 +452,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "connect-check") {
-        replyTask(connectCheck(req.space, machineHome).catch((error: unknown): ConnectCheckResult => {
+        replyTask(connectCheck(req.space, machineHome, undefined, observeDiskFull).catch((error: unknown): ConnectCheckResult => {
             observeRequest(error, req.space);
             return { outcome: "refused", space: req.space, message: isDiskFull(error) ? diskFullRefusal(req.op).message : "the daemon could not complete the check" };
           })

@@ -980,6 +980,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     async resume() {
       const recordRefusal = (space: string, error: unknown) => {
+        if (isDiskFull(error)) {
+          onWriteError?.(error, writeFailureFolder(error, dirname(daemonManagerIntentFile(space, home))));
+          return;
+        }
         const reason = safeDiagnostic(`could not resume hosted Manager: ${error instanceof Error ? error.message : String(error)}`).slice(0, 1500);
         // Keep the original records intact for diagnosis, and trust only the directory's identity.
         live.set(space, { view: { space, state: "refused", restarts: 0, reason, lastRefusal: reason, next: `inspect the hosted Manager records in ${join(home, "daemon", spaceSegment(space))}, then run \`cotal daemon setup --space ${space}\`` }, stopping: false, failures: 0 });
@@ -1015,7 +1019,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (l.healthTimer) clearTimeout(l.healthTimer);
         await stopChild(l);
         await l.healthTask;
-        await l.starting;
+        await l.starting?.catch(() => {});
         await l.refreshing;
       }));
     },
