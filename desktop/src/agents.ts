@@ -72,7 +72,7 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement,
     row.children[0]!.setAttribute("aria-label", shown);
     row.title = `${shown} · ${agent.application}${agent.model ? ` · Model: ${agent.model}` : ""}`;
     row.setAttribute("aria-label", `${row.title} · ${agent.cwd} · ${agent.space}`);
-    (row.children[1] as HTMLElement).title = row.title;
+    (row.children[1] as HTMLElement).title = values[1]!;
     const folder = row.children[2] as HTMLElement; folder.title = agent.cwd; folder.setAttribute("aria-label", agent.cwd);
     (row.children[3] as HTMLElement).title = `Started ${agent.startedAt}`;
   }

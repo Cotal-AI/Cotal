@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { computerSpaces, computerSpaceState, computerSummary, spaceStateKnown, surfaceState, type SurfaceState } from "../src/model.ts";
+import { computerSpaces, computerSpaceState, computerSummary, SERVICE_START, spaceStateKnown, surfaceInputs, surfaceState, type SurfaceWord } from "../src/model.ts";
 
 test("computer list follows desired intent while retaining connected local spaces", () => {
   const desired = { space: "mine", desired: true, observed: "starting" };
@@ -68,32 +68,50 @@ test("every space state the daemon can report has a decided label", () => {
   assert.equal(spaceStateKnown("a state added later"), false);
 });
 
-test("Connection title and sidebar word/dot use the canonical tray state table", () => {
+test("one state feeds the window, the pill, the dot and the tray", () => {
   const row = { space: "mine", desired: true, observed: "connected" };
-  const idle = { rows: [], anyConnected: false };
-  const desired = (observed: string) => ({ ...idle, rows: [{ ...row, observed }] });
-  const cases: readonly (readonly [Parameters<typeof surfaceState>[0], SurfaceState["word"], SurfaceState["dot"], string])[] = [
-    [{ rows: [row], anyConnected: true }, "Connected", "ok", "This computer is connected"],
-    [desired("starting"), "Starting", "waiting", "This computer is starting"],
-    [desired("offline"), "Offline", "problem", "No internet connection"],
-    [desired("unreachable"), "Can't connect", "problem", "Can't reach your space"],
-    [{ ...idle, signedOut: true }, "Not set up", "waiting", "You signed out"],
-    [{ ...idle, signInRequired: true }, "Sign in required", "problem", "Sign in to keep this computer connected"],
-    [{ ...idle, service: "stopped" }, "Service stopped", "problem", "The background service is stopped"],
-    [{ ...idle, anyConnected: true, updating: true }, "Updating", "waiting", "Cotal is updating"],
-    [{ ...idle, service: "not-set-up" }, "Not set up", "waiting", "This computer is not set up"],
-    [{ ...idle, anyConnected: true, diskFull: true }, "Disk full", "problem", "Your disk is full"],
-    [{ ...idle, repairNeeded: true }, "Repair needed", "problem", "This computer needs a repair"],
-    [{ ...idle, rows: [{ ...row, lastRefusal: "Ask the owner" }, { ...row, space: "other", observed: "refused" }] }, "Can't connect", "problem", "Can't connect to your spaces"],
-    [{ ...idle, starting: true }, "Starting", "waiting", "This computer is starting"],
-    [{ ...idle, rows: [{ ...row, desired: false, observed: "removed on this computer" }] }, "Connected", "ok", "No space is using this computer"],
-    [idle, "Connected", "ok", "This computer is connected to your account"],
+  const words: SurfaceWord[] = ["Connected", "Starting", "Offline", "Can't connect", "Sign in required", "Service stopped", "Updating", "Not set up", "Disk full", "Repair needed"];
+  const cases: { name: string; input: Parameters<typeof surfaceState>[0]; word: SurfaceWord; dot: "ok" | "waiting" | "problem" }[] = [
+    { name: "a space answers", input: { rows: [row], anyConnected: true }, word: "Connected", dot: "ok" },
+    { name: "one refused row cannot make the computer connected", input: { rows: [row, { space: "other", desired: true, observed: "connected", lastRefusal: "The connector could not start." }], anyConnected: true }, word: "Connected", dot: "ok" },
+    { name: "every desired row is refused", input: { rows: [{ space: "one", desired: true, observed: "connected", lastRefusal: "Held by another sign-in." }, { space: "two", desired: true, observed: "connected", lastRefusal: "Held by another sign-in." }], anyConnected: true }, word: "Can't connect", dot: "problem" },
+    { name: "a space is starting", input: { rows: [{ ...row, observed: "starting" }], anyConnected: false }, word: "Starting", dot: "waiting" },
+    { name: "the network is off", input: { rows: [{ ...row, observed: "offline" }], anyConnected: false }, word: "Offline", dot: "problem" },
+    { name: "a space is not answering", input: { rows: [{ ...row, observed: "unreachable" }], anyConnected: false }, word: "Can't connect", dot: "problem" },
+    { name: "sign-in is required", input: { rows: [], anyConnected: false, signInRequired: true }, word: "Sign in required", dot: "problem" },
+    { name: "the service is stopped", input: { rows: [], anyConnected: false, service: "stopped" }, word: "Service stopped", dot: "problem" },
+    { name: "an update is running", input: { rows: [row], anyConnected: true, updating: true }, word: "Updating", dot: "waiting" },
+    { name: "nothing is set up", input: { rows: [], anyConnected: false, service: "not-set-up" }, word: "Not set up", dot: "waiting" },
+    { name: "the disk is full", input: { rows: [row], anyConnected: true, diskFull: true }, word: "Disk full", dot: "problem" },
+    { name: "a repair is reported", input: { rows: [row], anyConnected: true, repairNeeded: true }, word: "Repair needed", dot: "problem" },
+    { name: "no space can run", input: { rows: [{ ...row, desired: false, observed: "removed on this computer" }], anyConnected: false }, word: "Connected", dot: "ok" },
   ];
-  assert.equal(new Set(cases.map(([, word]) => word)).size, 10);
-  for (const [input, word, dot, title] of cases) {
-    const actual = surfaceState(input);
-    assert.deepEqual([actual.word, actual.dot, actual.title], [word, dot, title]);
+  for (const item of cases) {
+    const state = surfaceState(item.input);
+    assert.equal(state.word, item.word, item.name);
+    assert.equal(state.dot, item.dot, `${item.name} dot follows the word`);
+    assert.equal(words.includes(state.word), true, `${item.name} uses one of the ten words`);
+    assert.equal(/daemon|generation|Needs attention/.test(`${state.word} ${state.title}`), false, `${item.name} uses no internal word`);
   }
-  assert.equal(surfaceState({ ...idle, diskFull: true }).description, "Free up space on this computer. Cotal continues by itself once there is room.");
-  assert.equal(surfaceState({ ...idle, service: "stopped" }).description, "You stopped the background service. Start it to run agents on this computer again.");
+  assert.equal(cases.length, words.length + 3, "every word has a row, plus one refused beside a working space, every row refused, and the case where nothing can run");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account", "signed in with no spaces keeps its title");
+  assert.equal(surfaceState({ rows: [{ space: "mine", desired: false, observed: "removed on this computer" }], anyConnected: false }).title, "No space is using this computer", "the last space removed keeps the idle title");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, diskFull: true }).description, "Free up space on this computer. Cotal continues by itself once there is room.");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, service: "stopped" }).description, "You stopped the background service. Start it to run agents on this computer again.");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, signInRequired: true, computerRemoved: true }).description, "This computer was removed from your account. Sign in to add it back.");
+  assert.deepEqual(surfaceState({ rows: [], anyConnected: false, signedOut: true }), { word: "Not set up", dot: "waiting", title: "You signed out", description: "Sign in to use this computer from your spaces again." }, "deliberate sign-out uses Not set up and You signed out");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, signedOut: true, service: "stopped" }).word, "Service stopped", "a stopped service still names itself after sign-out");
+  const signedOutInputs = surfaceInputs({ account: { mode: "signed-out", idpUrl: "https://cotal.cloud/api/auth", spaces: [] } }, [], false);
+  assert.equal(signedOutInputs.signedOut && !signedOutInputs.signInRequired, true, "deliberate sign-out is distinct from sign-in-required");
+  assert.equal(surfaceInputs({ account: { mode: "signed-out", spaces: [] } }, [], false).signedOut, false, "never-signed-in account status is not a deliberate sign-out");
+  const frame = { diskFull: true, generation: { installed: "2", running: "1", waiting: "preparing" }, recovery: { code: "DAEMON_LOST" }, account: { mode: "sign-in-required", reason: "computer-removed" } };
+  const read = surfaceInputs(frame, [row], true);
+  assert.equal(read.diskFull && read.updating && read.repairNeeded && read.signInRequired && read.computerRemoved, true, "the frame's fields reach the shared state");
+  const dropped = surfaceInputs({}, [row], true);
+  assert.equal(dropped.diskFull || dropped.updating || dropped.repairNeeded || dropped.signInRequired, false, "a frame without the fields does not invent them");
+  const bothRefused = [{ space: "one", desired: true, observed: "connected", lastRefusal: "Held." }, { space: "two", desired: true, observed: "connected", lastRefusal: "Held." }];
+  const refused = surfaceInputs({ account: { spaces: bothRefused } }, bothRefused, true);
+  assert.equal(refused.anyConnected, false, "answering Managers do not connect refused rows");
+  assert.equal(surfaceState(refused).title, "Can't connect to your spaces");
+  assert.deepEqual(SERVICE_START, { op: "start" }, "the stopped card and the tray send one Start request");
 });

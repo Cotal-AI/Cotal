@@ -140,7 +140,7 @@ import {
 import { freezeSmokeRestoreListener, spawnMarkedListener, unreadableUnboundRestoreRefusal } from "../lib/restore-listener-spawn.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { freshStackServer, legacyUpRetry, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
+import { freshStackServer, legacyUpRetry, retryRecordedStackAddress, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
 import {
   parseMaxFileStore,
@@ -246,13 +246,17 @@ export interface RestoreStartupResult {
   controlPlane: boolean;
   manager: boolean;
 }
-const restoreSinks = new Map<string, (result: RestoreStartupResult) => void>();
+interface RestoreOutput {
+  presentation: ReturnType<typeof presentationOf>;
+  complete: (result: RestoreStartupResult) => void;
+}
+const restoreSinks = new Map<string, RestoreOutput["complete"]>();
 
 /** Run the guarded `up --restore` startup and return its result instead of printing it. The
  *  restore inputs and fences are exactly `up --restore`'s; this adds no route, flag or authority. */
-export async function startRestore(values: { restore: string; "restore-only"?: string; "accept-missing-source"?: boolean; "store-dir"?: string }): Promise<RestoreStartupResult> {
+export async function startRestore(values: { restore: string; "restore-only"?: string; "accept-missing-source"?: boolean; "store-dir"?: string }, presentation: RestoreOutput["presentation"]): Promise<RestoreStartupResult> {
   let returned: RestoreStartupResult | undefined;
-  await up({ values: { ...values }, positionals: [], raw: [] }, undefined, false, (result) => { returned = result; });
+  await up({ values: { ...values }, positionals: [], raw: [] }, undefined, false, { presentation, complete: (result) => { returned = result; } });
   if (!returned) {
     const root = cotalRoot(), held = heldRestoreAttempt(root);
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { target: { root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) }, remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with `cotal status`" });
@@ -428,7 +432,7 @@ function seedMovedFailure(error: unknown): unknown {
 
 /** `inheritedLock` is the root maintenance lock a recovery re-entry hands down (see the re-entry
  *  below). Ownership transfers with it: this call releases it at its own release point. */
-export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
+export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, freshTeamBoot = false, restoreSink?: RestoreOutput): Promise<void> {
   if (!channelsReads.getStore()) return withUpProjectTrust(() => channelsReads.run(new Map(), () => up(args, inheritedLock, freshTeamBoot, restoreSink)));
   // A --server is recorded and compared in one spelling, the scheme in lower case with no bare
   // trailing slash. A manifest boot checks its own override against broker.servers.
@@ -505,7 +509,7 @@ function retainedStartupPresentationRefusal(root: string): CommandFailure {
   return new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
 }
 
-async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
+async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: RestoreOutput): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; "max-file-store"?: string; "log-file"?: string; "logfile-size-limit"?: string; "logfile-max-num"?: string; "auth-timeout"?: string; "max-payload"?: string; "account-resolver"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
@@ -589,7 +593,10 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // `up` keeps the startup interrupt notice (`keepsStartupNotice`); a restore reports its own.
     await releaseStartupNotice();
     // A `backup restore` owns stdout for its receipt, so its seat admission lines go to stderr.
-    const prepared = await prepareRestore(root, flags, validateLaunch, restoreSink ? (line) => console.error(line) : undefined);
+    const prepared = await prepareRestore(root, flags, validateLaunch, {
+      presentation: restoreSink?.presentation ?? presentationOf(values),
+      progress: restoreSink ? (line) => console.error(line) : undefined,
+    });
     pendingRestores.set(prepared.attemptId, prepared);
     try {
       const committed = readMaintenanceJournal(prepared.root);
@@ -599,12 +606,12 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         // not marked degraded, because a degraded attempt starts nothing.
         const lock = acquireMaintenanceLock(prepared.root);
         let foreground: boolean;
-        try { foreground = await resumeControllerStack(lock, prepared.root, values, restoreSink); }
+        try { foreground = await resumeControllerStack(lock, prepared.root, values, restoreSink?.complete); }
         finally { releaseMaintenanceLock(lock); }
         if (foreground) await holdForegroundStack(prepared.root, prepared.space, undefined, prepared.releaseInterruptNotice);
         return;
       }
-      if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink);
+      if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink.complete);
       try {
         await up(nextArgs(prepared, prepared.attemptId));
       } catch (error) {
@@ -1123,7 +1130,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
-            managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
+            simpleTargetedStartup: Object.entries(args.values).every(([key, value]) => value === undefined ||
+              ["space", "root", "detach", "foreground", "no-manager", "plain", "json", "__invokedRoot", "__folderNamed"].includes(key)),
+            managerName, retryAtRecordedAddress: () => retryRecordedStackAddress(args.raw, invokedFrom), retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
@@ -1643,7 +1652,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
               `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${held.space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
             ),
           );
-        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space, "stop this stack with `cotal down --yes`, then retry the original start with `--recreate-membership-store`");
+        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space, `${stopAdvice()}; then retry the original start from its original folder with \`--recreate-membership-store\``);
         for (const r of await reconcileSpaceMemoryBuckets({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`

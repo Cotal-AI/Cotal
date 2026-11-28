@@ -300,7 +300,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   // up in the selected one, whose service of that name it does not concern.
   const file = args.values.file;
   const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`cotal service remove ${name} --space ${oneLine(space)} --yes\`, then add it again` });
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`${serviceConfirmCommand("remove", name, space, {}, presentation)}\`, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   /** The broker's address is checked before a definition is saved, as its paths are, so a start does
    *  not record a failed instance for an address the broker cannot serve. */

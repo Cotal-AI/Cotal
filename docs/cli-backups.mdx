@@ -146,7 +146,7 @@ such as one with `../` or an absolute path, has the fault `invalid-name` and is 
 A `manifest.json` that is not a regular file, is larger than 1 MiB or is not a valid manifest
 has the fault `manifest-not-regular`, `manifest-too-large` or
 `manifest-invalid`. `backup restore` and `up --restore` refuse these schema and integrity faults
-with `SCHEMA_INVALID` and the same file and fault as `backup verify`.
+with `SCHEMA_INVALID` and the same file and fault as `backup verify`. The suggested verification command keeps the requested JSON or plain output. File diagnostics stay local; command telemetry keeps the refusal code without the diagnostic message or stack.
 For a ready cut, these permission, schema and integrity refusals do not claim or move the
 preserved store. Restore removes any partial stage it made. If restore finds a stale earlier
 attempt, it can roll that attempt back before checking the artifact contents. This can move the
