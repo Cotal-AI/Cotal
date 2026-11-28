@@ -48,10 +48,10 @@ servers.push(blackHole);
 const blackHolePort = await onFreePort((p) => listenOn(blackHole, p));
 
 /** A fresh sandboxed home with its own project dir; `run` executes the built binary in it. */
-function sandbox() {
+function sandbox(projectName = "project") {
   const home = mkdtempSync(join(tmpdir(), "cotal-telemetry-"));
   homes.push(home);
-  const project = join(home, "project");
+  const project = join(home, projectName);
   mkdirSync(project);
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COTAL_TELEMETRY_URL: url, SHELL: "/bin/zsh", TERM_PROGRAM: "smoke-term" };
   const settingsPath = join(home, ".cotal", "telemetry.json");
@@ -191,6 +191,19 @@ for (const level of ["regular", "minimal"]) {
   check("an explicit extension add still reports its own failure", r.status === 1 && commands.length === 1 && commands[0]?.subcommand === "add" && commands[0]?.outcome === "error");
 }
 
+{
+  const marker = "fixture-cwd-marker", s = sandbox(`working ${marker}`);
+  const r = await s.run(["backup", "create", "artifact", "--store-dir=~/stores", "--json"]), event = r.sent.find(row => row.event === "command");
+  const config = join(s.home, `config ${marker}`);
+  mkdirSync(config); writeFileSync(join(config, "cotal"), "unchanged");
+  const blocked = await s.run(["backup", "verify", "artifact", "--json"], { XDG_CONFIG_HOME: config });
+  const configEvent = blocked.sent.find(row => row.event === "command");
+  check("a blocked config folder stays in the local diagnostic", blocked.status === 1 && blocked.stdout.includes(marker) && readFileSync(join(config, "cotal"), "utf8") === "unchanged" &&
+    configEvent?.errorCode === "SCHEMA_INVALID" && configEvent.errorMessage === null && configEvent.errorStack === null && !JSON.stringify(blocked.sent).includes(marker), shown(blocked));
+  check("an unexpanded store path names the working folder only locally", r.status === 1 && r.stdout.includes(marker) && !existsSync(join(s.project, "artifact")) &&
+    event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
@@ -274,6 +287,15 @@ for (const level of ["regular", "minimal"]) {
     const denied = await s.run(["endpoint", "check", link, "--json"]), event = denied.sent.find(body => body.event === "command");
     check("a refused contract link is named only locally", denied.status === 2 && denied.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
       && event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
+  }
+  const incomplete = join(s.project, `unfinished ${marker}`);
+  mkdirSync(incomplete); writeFileSync(join(incomplete, "checkpoints.json"), "[]");
+  for (const mode of ["inspect", "verify"]) {
+    for (const path of [file, join(s.project, `missing ${marker}`), incomplete]) {
+      const r = await s.run(["backup", mode, path, "--json"]), event = r.sent.find(body => body.event === "command");
+      check(`backup ${mode} keeps its rejected artifact path local`, r.status === (path === incomplete ? 1 : 2) && r.stdout.includes(marker) &&
+        event?.errorCode === (path === incomplete ? "SCHEMA_INVALID" : "TARGET_NOT_FOUND") && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+    }
   }
   const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
   const commands = invalid.sent.filter(body => body.event === "command");
