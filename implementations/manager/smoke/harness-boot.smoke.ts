@@ -434,6 +434,69 @@ try {
       await launchFirst.stop({ withAgents: true });
     }
   }
+
+  // Library `new Manager({ installedExtensions: true })` loads compatible local `@cotal-ai/*`
+  // connectors at non-matching versions directly without CLI setup, and refuses core-skewed ones.
+  {
+    process.env.PATH = binDir;
+    writeFileSync(present, script, { mode: 0o700 });
+    const extRoot = extensionsDir();
+    const compatPkg = "@cotal-ai/lib-manager-compat";
+    const skewedPkg = "@cotal-ai/lib-manager-skewed";
+    const compatMarker = join(root, "lib-manager-compat-imported");
+    const skewedMarker = join(root, "lib-manager-skewed-imported");
+    const coreLinkTarget = new URL("../../../packages/core", import.meta.url).pathname;
+    for (const [pkg, peerRange, connectorName, body] of [
+      [compatPkg, "*", "lib-compat-connector", `import { writeFileSync } from "node:fs";\nimport { registry } from "@cotal-ai/core";\nwriteFileSync(${JSON.stringify(compatMarker)}, "loaded");\nregistry.register({ kind: "connector", name: "lib-compat-connector", requires: ["present-harness"], waitsForOperator: () => "fixture input screen", buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["present-harness"] ?? "present-harness", args: [] }) });\n`],
+      [skewedPkg, ">=99.0.0", "lib-skewed-connector", `import { writeFileSync } from "node:fs";\nimport { registry } from "@cotal-ai/core";\nwriteFileSync(${JSON.stringify(skewedMarker)}, "loaded");\nregistry.register({ kind: "connector", name: "lib-skewed-connector", requires: ["present-harness"], buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["present-harness"] ?? "present-harness", args: [] }) });\n`],
+    ] as const) {
+      const pkgDir = join(extRoot, "node_modules", ...pkg.split("/"));
+      const peerCoreDir = join(pkgDir, "node_modules/@cotal-ai");
+      mkdirSync(peerCoreDir, { recursive: true });
+      spawnSync("ln", ["-snf", coreLinkTarget, join(peerCoreDir, "core")]);
+      writeFileSync(join(pkgDir, "package.json"), JSON.stringify({
+        name: pkg,
+        version: "0.179.0",
+        type: "module",
+        main: "index.mjs",
+        peerDependencies: { "@cotal-ai/core": peerRange },
+      }));
+      writeFileSync(join(pkgDir, "index.mjs"), body);
+      writeFileSync(join(workspaceRoot, ".cotal", "agents", `${connectorName}.md`), `---\nname: ${connectorName}\nagent: ${connectorName}\n---\n`);
+    }
+    saveExtensionsManifest({
+      extensions: [
+        { pkg: compatPkg, version: "0.179.0", spec: "./lib-compat", provides: [{ kind: "connector", name: "lib-compat-connector" }], commands: [], connectors: [{ name: "lib-compat-connector", requires: ["present-harness"], eventPlane: false }] },
+        { pkg: skewedPkg, version: "0.179.0", spec: "./lib-skewed", provides: [{ kind: "connector", name: "lib-skewed-connector" }], commands: [], connectors: [{ name: "lib-skewed-connector", requires: ["present-harness"], eventPlane: false }] },
+      ],
+    });
+    const libManager = new Manager({ space: "lib-core-peer", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+    (libManager as unknown as { runtime: unknown }).runtime = {
+      kind: "fake", streamsTerminal: false,
+      spawn: (name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) => {
+        spawnSync(spec.command, spec.args, { cwd, env: spec.env, encoding: "utf8" });
+        let state = "running";
+        return { name, kind: "fake", status: () => state, stop: () => { state = "exited"; }, waitForExit: async () => state === "exited", interrupt: () => {}, attach: () => ({ cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} }) };
+      },
+    };
+    try {
+      await libManager.start();
+      const compatSpawn = await libManager.startAgent({ name: "lib-compat-connector", agent: "lib-compat-connector", events: false });
+      check(
+        "library Manager materializes a compatible local @cotal-ai/* connector at another version",
+        compatSpawn.ok === true && existsSync(compatMarker),
+        compatSpawn,
+      );
+      const skewedSpawn = await libManager.startAgent({ name: "lib-skewed-connector", agent: "lib-skewed-connector", events: false });
+      check(
+        "library Manager refuses a core-skewed local @cotal-ai/* connector before importing it",
+        skewedSpawn.ok === false && skewedSpawn.error?.includes(`${skewedPkg} declares @cotal-ai/core ">=99.0.0"`) === true && !existsSync(skewedMarker),
+        skewedSpawn,
+      );
+    } finally {
+      await libManager.stop({ withAgents: true }).catch(() => {});
+    }
+  }
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
@@ -445,5 +508,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-if (pass !== 41) throw new Error(`expected 41 checks, ran ${pass}`);
+if (pass !== 43) throw new Error(`expected 43 checks, ran ${pass}`);
 console.log(`\n${pass} checks passed`);

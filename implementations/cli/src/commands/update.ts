@@ -25,10 +25,7 @@ import {
   recordUpdateReleaseHold,
   recordUpdateRefusal,
   recordUpdateReplacement,
-  setUpdateSetting,
-  bindExtensionPeers,
-  claimGlobalNpmUpdateLock,
-  launcherInstallRoot,
+  setUpdateSetting, bindExtensionPeers, claimGlobalNpmUpdateLock, isReleaseExtension, launcherInstallRoot,
   logicalExecutionEntry,
   loadExtensionsManifest,
   provenance,
@@ -220,7 +217,7 @@ export const updateRuntime: UpdateRuntime = {
     if (!seedInstallationCurrent()) return false;
     try {
       const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
-      return updateRuntime.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg))
+      return updateRuntime.extensions().filter(entry => isReleaseExtension(entry) && !builtIns.has(entry.pkg))
         .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
     } catch { return false; }
   },
@@ -761,7 +758,7 @@ async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Pro
   if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
   for (const entry of entries) {
     const recordedSpec = typeof entry.spec === "string" ? ` (recorded spec: ${entry.spec})` : "";
-    if (!entry.pkg.startsWith("@cotal-ai/")) {
+    if (!isReleaseExtension(entry)) {
       rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1${recordedSpec}`));
       continue;
     }

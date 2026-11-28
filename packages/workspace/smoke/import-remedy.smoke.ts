@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
-import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, extensionsManifestPath, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, materializeFromManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { bindExtensionPeers, CorruptExtensionPackageError, extensionCorePeerProblem, extensionPackageDir, extensionsDir, extensionsManifestPath, extensionReinstallAdvice, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, isReleaseExtension, materializeFromManifest, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -313,6 +313,56 @@ try {
     try { await importExtensionEntry(pkg, meta.version, "fixture remedy"); } catch (e) { freshError = e; }
     check("metadata: standalone entry reads its own current snapshot", freshError instanceof Error && freshError.message.includes("reread-entry"));
     check("all metadata policy assertions ran", passed + failed - start === 19 + (permissions ? 2 : 0) + (links ? 1 : 0), { checked: passed + failed - start });
+  }
+
+  // Release-extension source classification and direct workspace core-peer validation.
+  {
+    const releaseSpecs = [
+      undefined,
+      "@cotal-ai/tmux",
+      "@cotal-ai/tmux@",
+      "@cotal-ai/tmux@0.183.1",
+      "@cotal-ai/tmux@^0.183.0",
+      " @cotal-ai/tmux@latest ",
+      "@cotal-ai/tmux@npm:@cotal-ai/tmux@0.183.1",
+      "npm:@cotal-ai/tmux@0.183.1",
+      "@cotal-ai/unlisted-pkg@1.2.3",
+    ];
+    for (const spec of releaseSpecs) {
+      const pkg = typeof spec === "string" && spec.includes("unlisted") ? "@cotal-ai/unlisted-pkg" : "@cotal-ai/tmux";
+      check(`isReleaseExtension accepts registry spec ${JSON.stringify(spec)}`, isReleaseExtension({ pkg, ...(spec === undefined ? {} : { spec }) }));
+    }
+    check("isReleaseExtension accepts seeded entry even with local store path", isReleaseExtension({ pkg: "@cotal-ai/web", source: "seeded", spec: "/tmp/store/0.183.1/web" }));
+    const nonReleaseSpecs: Array<{ pkg: string; spec?: string }> = [
+      { pkg: "third-party", spec: "third-party@1.0.0" },
+      { pkg: "@other/pkg", spec: "@other/pkg@1.0.0" },
+      { pkg: "@cotal-ai/local-ext", spec: "./local-ext" },
+      { pkg: "@cotal-ai/local-ext", spec: "/abs/path/local-ext" },
+      { pkg: "@cotal-ai/local-ext", spec: "file:../local-ext" },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@." },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@.." },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@./pkg.tgz" },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@release.tgz" },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@https://example.com/pkg.tgz" },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@github:org/repo" },
+      { pkg: "@cotal-ai/local-ext", spec: "@cotal-ai/local-ext@npm:@other/pkg@1.0.0" },
+      { pkg: "@cotal-ai/local-ext", spec: "npm:@cotal-ai/local-ext-other@1.0.0" },
+    ];
+    for (const entry of nonReleaseSpecs) {
+      check(`isReleaseExtension rejects non-release spec ${JSON.stringify(entry)}`, !isReleaseExtension(entry));
+    }
+    for (const oddSpec of [null, 3, false, {}, []] as unknown[]) {
+      check(`isReleaseExtension treats non-string spec ${JSON.stringify(oddSpec)} on @cotal-ai/* as release without throwing`, isReleaseExtension({ pkg: "@cotal-ai/tmux", spec: oddSpec }));
+      check(`isReleaseExtension treats non-string spec ${JSON.stringify(oddSpec)} on third-party as non-release without throwing`, !isReleaseExtension({ pkg: "@other/pkg", spec: oddSpec }));
+    }
+    check("spec-less non-first-party advice still prescribes remove", extensionReinstallAdvice({ pkg: "@other/pkg", version: "1.0.0", commands: [] }).includes("cotal ext remove"));
+    check("spec-less first-party release advice prescribes bare add", extensionReinstallAdvice({ pkg: "@cotal-ai/tmux", version: "1.0.0", commands: [] }).includes("cotal ext add"));
+    check("non-string spec first-party advice prescribes bare add without throwing", extensionReinstallAdvice({ pkg: "@cotal-ai/tmux", version: "1.0.0", spec: null as unknown as string, commands: [] }).includes("cotal ext add"));
+    check("extensionCorePeerProblem accepts wildcard and current core", extensionCorePeerProblem("@cotal-ai/local-ext", "*") === undefined && extensionCorePeerProblem("@cotal-ai/local-ext", CORE_VERSION) === undefined);
+    check("extensionCorePeerProblem refuses missing, invalid, and incompatible core ranges",
+      Boolean(extensionCorePeerProblem("@cotal-ai/local-ext", undefined)?.includes("does not declare @cotal-ai/core")) &&
+      Boolean(extensionCorePeerProblem("@cotal-ai/local-ext", "nightly")?.includes("not a valid version range")) &&
+      Boolean(extensionCorePeerProblem("@cotal-ai/local-ext", ">=99.0.0", { checkout: false })?.includes('declares @cotal-ai/core ">=99.0.0"')));
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });

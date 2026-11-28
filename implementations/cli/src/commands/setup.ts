@@ -49,7 +49,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension, nonReleaseCoreSkew } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, validateAgentSkillsManifest, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -1281,7 +1281,13 @@ async function reconcileOtherConnectorSkills(
 export async function refreshConnectorInstalls(report?: (line: string) => void, selfUpdate = false): Promise<string[]> {
   const lines: string[] = [];
   const failures: string[] = [];
-  for (const connector of await setupConnectorSurface()) {
+  const names = [...new Set([...registry.all<Connector>("connector").map((c) => c.name), ...manifestExtensionNames("connector")])].sort();
+  for (const name of names) {
+    const connectorSkew = nonReleaseCoreSkew({ kind: "connector", name });
+    if (connectorSkew) { console.error(`! ${connectorSkew}`); continue; }
+    const connector = await materializeExtension<Connector>({ kind: "connector", name });
+    const setupSkew = connector.setup ? nonReleaseCoreSkew(connector.setup) : undefined;
+    if (setupSkew) { console.error(`! ${setupSkew}`); continue; }
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
@@ -1361,6 +1367,8 @@ async function setUpClients(space: string, narrate: boolean, interactive: boolea
 export async function refreshClientInstalls(): Promise<string[]> {
   const lines: string[] = [];
   for (const name of extensionNames("client-setup")) {
+    const skew = nonReleaseCoreSkew({ kind: "client-setup", name });
+    if (skew) { console.error(`! ${skew}`); continue; }
     const refresh = (await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name })).refresh;
     if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
   }
