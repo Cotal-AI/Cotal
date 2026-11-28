@@ -354,6 +354,13 @@ try {
       isUnknown && stillPending,
       { isUnknown, stillPending, submitStarted, silentReceived, submitFinished, raceResult2 }
     );
+    check(
+      "aborted in-flight submission gives neutral outcome guidance without CLI verbs",
+      isUnknown
+        && raceResult2.err.message.includes("do NOT retry without first checking the goal's result or whether the requested change took effect (SPEC 13.6)")
+        && !raceResult2.err.message.includes("'ps'/'inspect'"),
+      { message: isUnknown ? raceResult2.err.message : undefined }
+    );
     // Connection closed in finally AFTER this assertion
   }
 
@@ -433,4 +440,4 @@ try {
 const totalCells = pass + fail;
 console.log(`goal-follow-cancellation smoke: ${pass} passed, ${fail} failed (cells: ${totalCells})`);
 emitSentinel({ passed: pass, failed: fail, cells: totalCells });
-process.exit(fail === 0 && totalCells === 5 ? 0 : 1);
+process.exit(fail === 0 && totalCells === 6 ? 0 : 1);

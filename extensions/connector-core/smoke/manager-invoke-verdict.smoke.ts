@@ -27,7 +27,7 @@
  * No broker: the MeshAgent constructor builds an endpoint but never connects, so `ep` is swapped for
  * one that throws. Run: pnpm smoke:manager-invoke-verdict
  */
-import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_UNDECLARED_ARG, managerCallerBinding } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_UNDECLARED_ARG, managerCallerBinding, submitAndFollowGoal } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import { DOCS_VERSION } from "../src/docs.js";
 import type { AgentConfig } from "../src/config.js";
@@ -264,6 +264,14 @@ for (const [label, config, expected] of [
   check("the unknown result neither resubmits nor claims confirmed acceptance", calls === 1 && result.text.includes("Acceptance has not been confirmed"), { result, calls });
   const pinned = await unknown(submitted, "requested-model");
   check("a requested model does not discard the unknown goal or inspect an unallocated alias", pinned.calls === 1 && pinned.result.structured?.goalId === goalId, pinned);
+  const silentConn = { flush: async () => {}, subscribe: () => ({ unsubscribe: () => {} }) };
+  const fromCore = await submitAndFollowGoal(silentConn as never, "s", "manager", { owner: "local", actor: "caller", uid: "0".repeat(26) }, 200, async () => {
+    throw new EpEnvelopeError("deadline-exceeded", "no reply to manager.spawn within the 50ms budget (SPEC 13.5)", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: goalId }], "unknown");
+  }).then(() => undefined, (e: unknown) => e as EpEnvelopeError);
+  const composed = await unknown(fromCore!);
+  check("core unknown-submission guidance in cotal_spawn stays neutral beside goal-result",
+    composed.result.text.includes("do NOT retry without first checking the goal's result or whether the requested change took effect (SPEC 13.6) Next: cotal_invoke")
+      && !composed.result.text.includes("without inspecting 'ps'/'inspect' first"), composed);
   for (const [label, error] of [
     ["describe deadline", new EpEnvelopeError("deadline-exceeded", "no describe reply", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", requestId: goalId }])],
     ["broker no responder", new EpEnvelopeError("unavailable", "no responder", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: goalId }], "not-executed")],
@@ -382,7 +390,7 @@ for (const [label, config, expected] of [
   check("verified exact-incarnation join releases the pending claim", launches === 3, launches);
 }
 
-const EXPECTED_CELLS = 94;
+const EXPECTED_CELLS = 95;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

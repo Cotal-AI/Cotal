@@ -102,7 +102,7 @@ export async function submitAndFollowGoalWith(
   };
   const phaseError = (code: "unavailable" | "deadline-exceeded") => new EpEnvelopeError(code,
     submitted
-      ? "the goal submission was interrupted while in flight; its outcome is unknown. It may have been accepted or executed; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)"
+      ? "the goal submission was interrupted while in flight; its outcome is unknown. It may have been accepted or executed; do NOT retry without first checking the goal's result or whether the requested change took effect (SPEC 13.6)"
       : "goal observation stopped or exceeded its deadline before submission; the manager request WAS NOT RUN",
     undefined, submitted ? "unknown" : "not-executed");
   let deadline = Date.now() + deadlineMs;
@@ -218,7 +218,7 @@ export async function submitAndFollowGoalWith(
       const message = failure instanceof Error ? failure.message : String(failure);
       throw new EpEnvelopeError(failure instanceof EpEnvelopeError ? failure.code : "unavailable",
         failure instanceof EpEnvelopeError && failure.outcome === "unknown" && message.includes("do NOT retry") ? message
-          : `${message}; the submission outcome is unknown. It may have been accepted or executed; do NOT retry without inspecting 'ps'/'inspect' first (SPEC 13.6)`, cause instanceof EpEnvelopeError ? cause.details : undefined, "unknown");
+          : `${message}; the submission outcome is unknown. It may have been accepted or executed; do NOT retry without first checking the goal's result or whether the requested change took effect (SPEC 13.6)`, cause instanceof EpEnvelopeError ? cause.details : undefined, "unknown");
     }
     if (attributed.reply.ok !== true) return attributed;
     const acceptance = attributed.reply.data as { goalId?: unknown; fingerprint?: unknown; readinessDeadlineMs?: unknown } | undefined;
@@ -295,7 +295,7 @@ export async function submitAndFollowGoalWith(
       ...attributed,
       reply: { ...attributed.reply, ok: false as const, error: {
         code, outcome: "unknown" as const,
-        message: `the goal "${goalId}" was accepted, but ${reason}. THE GOAL IS UNAFFECTED - it may already have succeeded; this is not evidence the goal failed. Do NOT retry: another submission could duplicate the effect. Inspect 'ps'/'inspect' first (SPEC 13.6)`,
+        message: `the goal "${goalId}" was accepted, but ${reason}. THE GOAL IS UNAFFECTED - it may already have succeeded; this is not evidence the goal failed. Do NOT retry: another submission could duplicate the effect. Check the goal's result (SPEC 13.6)`,
       } },
     });
     if (stopped) return observationFailure("unavailable", "the endpoint was stopped while awaiting its outcome");

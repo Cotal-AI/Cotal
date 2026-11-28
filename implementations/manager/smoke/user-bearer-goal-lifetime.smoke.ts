@@ -574,7 +574,7 @@ async function main() {
 
     check("STOP: follow settled promptly with unavailable", stopResult.reply.ok === false && stopResult.reply.error?.code === "unavailable", stopResult.reply);
     check("STOP: settled in <200ms without waiting out deadline", stopElapsed < 200, { stopElapsed });
-    check("STOP: message warns goal was accepted and forbids blind retry", stopResult.reply.error?.message.includes("THE GOAL IS UNAFFECTED") === true);
+    check("STOP: message warns goal was accepted and forbids blind retry", stopResult.reply.error?.message.includes("THE GOAL IS UNAFFECTED") === true && stopResult.reply.error?.message.includes("Check the goal's result (SPEC 13.6)") === true && !stopResult.reply.error?.message.includes("'ps'/'inspect'"));
 
     // ==================================================================
     // 4. LOOKUP REFUSAL PROVENANCE: Post-accept lookup refusal preserves acceptance
@@ -950,7 +950,7 @@ async function main() {
     check("ABORT-MID: abort during submit settles promptly", midAbortElapsed < 200, { midAbortElapsed });
     check("ABORT-MID: returns unavailable error", midAbortError?.code === "unavailable");
     check("ABORT-MID: carries unknown outcome, never not-executed", midAbortError?.outcome === "unknown");
-    check("ABORT-MID: forbids blind retry", /do not retry/i.test(midAbortError?.message ?? ""));
+    check("ABORT-MID: forbids blind retry", /do not retry/i.test(midAbortError?.message ?? "") && (midAbortError?.message ?? "").includes("(SPEC 13.6)") && !(midAbortError?.message ?? "").includes("'ps'/'inspect'"));
 
     const refusalAbort = new AbortController();
     let wireRefusal: EpAttributedReply | undefined;
