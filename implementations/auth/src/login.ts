@@ -36,7 +36,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createLocalJWKSet, decodeJwt } from "jose";
-import { isCredentialTransportUrl, mkSecretDir, retryAfterSeconds, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
+import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
@@ -491,12 +491,11 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
     if (remaining <= 0) throw new IdpUnreachableError(`idp request to ${base}/token timed out before the retry`);
     const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel, remaining);
     if (res.status === 429) {
-      const delays = ["retry-after", "x-retry-after"].flatMap((name) => {
-        const header = res.headers.get(name);
-        const value = name === "x-retry-after" && !/^[0-9]{1,8}$/.test(header?.trim() ?? "") ? null : header;
-        const seconds = retryAfterSeconds(value);
-        return seconds === undefined ? [] : [seconds * 1000];
-      });
+      const delays = ["retry-after", "x-retry-after"].map((name) => {
+        const value = res.headers.get(name)?.trim();
+        return value && /^\d+$/.test(value) ? Number(value) * 1000
+          : value && name === "retry-after" ? Date.parse(value) - Date.now() : NaN;
+      }).filter(Number.isFinite);
       const wait = Math.max(1000, ...delays);
       if (attempt === 0 && delays.length && wait < deadline - Date.now()) {
         await res.body?.cancel();
@@ -514,7 +513,7 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
       );
     if (!res.ok) {
       const message = `idp session: ${base}/token failed (HTTP ${res.status})`;
-      throw res.status >= 500 && res.status !== 501 ? new IdpTokenServerError(message) : new Error(message);
+      throw res.status >= 500 ? new IdpTokenServerError(message) : new Error(message);
     }
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
     if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
