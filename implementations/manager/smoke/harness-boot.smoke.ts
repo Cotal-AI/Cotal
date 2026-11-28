@@ -255,6 +255,7 @@ try {
     managerStatusData(): ManagerStatus;
     connectorInventory: { connectorStatuses: ManagerStatus["connectors"] };
     goalWriterComponent: { goalAcceptances: Map<string, unknown> };
+    servePlane: { serviceServe?: { grant: { epoch: number } } };
     namesCapacity: {
       reserve: (name: string, owner: string) => void;
       uniqueName: (base: string, unavailable?: ReadonlySet<string>) => string;
@@ -303,9 +304,9 @@ try {
     const uninstalledId = U.view.managerStatusData().instanceId;
     const siblingId = S.view.managerStatusData().instanceId;
     const callInst = (instanceId: string, command: "status" | "models" | "spawn", args?: Record<string, unknown>) =>
-      epCall(nc, space, { mode: "inst", instanceId },
+      epCall(nc, space, { mode: "inst", instanceId, epoch: (instanceId === siblingId ? S : U).view.servePlane.serviceServe?.grant.epoch ?? 0 },
         { endpoint: "manager", command, contract: MANAGER_CONTRACTS[command], caller, ...(args ? { args } : {}) },
-        { deadlineMs: 5000, currentEpoch: async () => 0 });
+        { deadlineMs: 5000 });
     const callClassSpawn = () =>
       epCall(nc, space, { mode: "one" },
         { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
