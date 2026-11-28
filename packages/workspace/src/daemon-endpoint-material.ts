@@ -13,7 +13,7 @@
  * restart a takeover of the same registration, and the same serve nkey keeps the issuance gate's
  * principal, so a restarted daemon is the instance it was.
  */
-import { endpointToken, mintLifecycleUid, newIdentity, assertLifecycleToken, type Identity, type SecretStore } from "@cotal-ai/core";
+import { ARTIFACTS_ENDPOINT, endpointToken, mintLifecycleUid, newIdentity, assertLifecycleToken, type Identity, type SecretStore } from "@cotal-ai/core";
 import { segmentedKey } from "./space-segmentation.js";
 
 /** The persisted instance id of the endpoint instance this daemon serves. */
@@ -26,6 +26,9 @@ export const DAEMON_ENDPOINT_SERVE_CREDS_KIND = "serve.creds";
 export const ARTIFACT_DATA_CREDS_KIND = "artifact-data.creds";
 /** The artifacts service's sweep credential (profile `artifact-sweeper`). */
 export const ARTIFACT_SWEEPER_CREDS_KIND = "artifact-sweeper.creds";
+/** The name of the artifact store a space's bytes live in (draft). Not a secret and not a grant: it
+ *  names where bytes sit, never who may read them. Absent means the daemon's default store. */
+export const ARTIFACT_STORE_BINDING_KIND = "store-binding";
 
 /** The store key of one kind of an endpoint's material in a space. */
 export function daemonEndpointKey(space: string, endpoint: string, kind: string): string {
@@ -80,4 +83,18 @@ export async function readDaemonEndpointServeId(store: SecretStore, space: strin
   const key = daemonEndpointKey(space, endpoint, DAEMON_ENDPOINT_SERVE_IDENTITY_KIND);
   const raw = await store.get(key);
   return raw === undefined ? undefined : parseIdentity(raw, key).id;
+}
+
+/** A store name a binding may hold: lowercase, digits and dashes, at most 64 characters. */
+const ARTIFACT_STORE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/** The artifact store `space` is bound to, or `undefined` when it has no binding. The value is taken
+ *  exactly as stored, never trimmed, and anything that is not a store name throws before any caller
+ *  can look it up. The refusal does not echo the value. */
+export async function readArtifactStoreBinding(store: SecretStore, space: string): Promise<string | undefined> {
+  const raw = await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, ARTIFACT_STORE_BINDING_KIND));
+  if (raw === undefined) return undefined;
+  if (!ARTIFACT_STORE_NAME.test(raw))
+    throw new Error(`delivery: the artifact store binding for space "${space}" is not a store name; nothing was started`);
+  return raw;
 }
