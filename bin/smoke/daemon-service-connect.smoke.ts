@@ -591,8 +591,8 @@ try {
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
   /** A real unit and receipt in the fixture manager's reported directory. Operational native
    *  calls reach only an owned recorder; the default fixture admits directory reads only. */
-  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false, node = process.execPath): string => {
-    const native = join(root, "native"), config = join(root, "config");
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false, node = process.execPath, config = join(root, "config")): string => {
+    const native = join(root, "native");
     mkdirSync(native, { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
     writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") !== "--user show-environment") process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
@@ -1970,7 +1970,7 @@ try {
     });
 
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
-      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true);
+      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true, process.execPath, join(root, process.argv.includes("--hosted-refusal-repro") ? "native-config" : "config"));
       await d.close();
       // D0 already activated this interactive actor. Extend its grant without replacing its lifecycle.
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: fixture.cliUid, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
@@ -3065,11 +3065,43 @@ process.stdin.once('data', () => {
           }
           return;
         }
+        let firstSetup: Awaited<ReturnType<typeof cli>> | undefined;
         if (process.argv.includes("--hosted-refusal-repro")) {
           const refused = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000));
           assert.equal(refused.state, "refused");
           assert.match(refused.lastRefusal, /no longer registered/);
           console.log("HOSTED_REFUSAL before setup", JSON.stringify(refused));
+          const config = join(root, "config");
+          const remedy = `chmod go-w ${config}`;
+          const descendantMode = statSync(prefix).mode;
+          chmodSync(config, 0o777);
+          try {
+            const unsafe = await cli("setup", "--space", ON, "--idp", idpUrl);
+            firstSetup = unsafe;
+            console.log("  H1 unprotected config setup", JSON.stringify(unsafe));
+            assert.equal(unsafe.code, 2, unsafe.err);
+            assert.match(unsafe.doc.error.message, /writable by every local account/);
+            assert.equal(unsafe.doc.error.cause?.code, "CONNECTOR_CONFIG_UNPROTECTED");
+            assert.deepEqual(unsafe.doc.error.cause?.detail, { path: config, mode: 0o777, owned: true });
+            assert.equal(unsafe.doc.error.remedy, remedy);
+            const observed = await cli("status", "--space", ON);
+            const row = observed.doc.result.managers.find((m: { space: string }) => m.space === ON);
+            assert.equal(row.reasonCode, "CONNECTOR_CONFIG_UNPROTECTED");
+            assert.deepEqual(row.reasonDetail, { path: config, mode: 0o777, owned: true });
+            assert.equal(row.next, remedy);
+            const bad = await ask(paths.socket, { op: "connector-config-repair", path: home });
+            assert.equal(bad.ok, false);
+            assert.equal(statSync(config).mode & 0o777, 0o777);
+            const applied = resultOf(await ask(paths.socket, { op: "connector-config-repair" }));
+            assert.deepEqual(applied, { path: config, mode: 0o755 });
+            assert.equal(statSync(config).mode & 0o777, 0o755);
+            assert.equal(statSync(prefix).mode, descendantMode);
+            assert.deepEqual(resultOf(await ask(paths.socket, { op: "connector-config-repair" })), { path: null, mode: null });
+            chmodSync(config, 0o777);
+            const paste = spawnSync("/bin/sh", ["-c", remedy], { env });
+            assert.equal(paste.status, 0);
+            assert.equal(statSync(config).mode & 0o777, 0o755);
+          } catch (error) { chmodSync(config, 0o700); throw error; }
         }
         const stopStatusPoll = retiredAppRuntime && !explicitHome ? pollStartupStatus(paths.socket) : undefined;
         const setup = explicitHome
@@ -3142,8 +3174,9 @@ process.stdin.once('data', () => {
         }
         if (!claudeWakeOnly) check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
         if (!explicitHome && !claudeWakeOnly && !retiredAppRuntime) {
-          check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
-          check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+          const initial = firstSetup ?? setup;
+          check("H0 fresh setup prints device URL and code on stderr", initial.err.includes(`${idpOrigin}/approve?code=DAEMON`) && initial.err.includes("Approval code") && initial.err.includes("DAEMON"));
+          check("H0 fresh discovery preserves the signed-in step", (!firstSetup || firstSetup.err.includes("sign-in: signed in as")) && setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === (firstSetup ? "already-signed-in" : "signed-in")));
         }
         if (claudeWakeOnly) {
           const run = async (...args: string[]) => {

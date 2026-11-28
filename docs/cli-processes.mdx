@@ -929,7 +929,9 @@ service, discovers the space through the daemon-held sign-in, signs in by device
 and asks the daemon to start the space's Manager. Before starting it, the daemon reconciles stock
 connectors in its own environment, allowing up to ten minutes for a cold home before starting the
 separate Manager readiness wait. If preparation fails, the refusal names the exit code or signal
-on one line. A timeout also names the reconciliation bound. The hosted Manager gets
+on one line. A timeout also names the reconciliation bound. If other accounts can write to a
+folder above the connector configuration, setup and daemon status name the folder and show the
+`chmod` command to remove the unsafe write bits. Run that command and retry setup. The hosted Manager gets
 the stock default persona in its own catalog, without replacing an existing file, so
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
 instance answers `status` with an available connector. With no available connector it refuses with

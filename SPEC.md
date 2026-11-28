@@ -67,6 +67,24 @@ polls. A successful poll clears the failure count. The daemon rechecks the curre
 candidate sign-in and fresh available catalog registration before moving local custody.
 An answering holder refuses replacement. Matching issuer and subject alone never transfer custody.
 
+## Local connector configuration protection
+
+When a hosted Manager cannot start because its connector configuration folder has a single
+repairable POSIX write-mode gap, the daemon reports `reasonCode: "CONNECTOR_CONFIG_UNPROTECTED"`
+on that Manager in `manager-start`, `manager-status`, `status` and `status-watch` replies.
+The same row has the diagnosis in `reason`, the shell command in `next`, and `reasonDetail`
+with `path`, integer `mode` (POSIX permission and special bits, without file type bits), and boolean
+`owned` (whether the folder belongs to the daemon's account).
+In CLI setup JSON, these are `error.cause.code` and `error.cause.detail`, with
+`LIFECYCLE_BLOCKED` as the error code. The desktop bridge carries them in `error.native`.
+
+The local daemon accepts `connector-config-repair` with only the standard `v`, `id` and `op`
+fields. It accepts no path or mode. On Linux and macOS, it checks the current configured folder
+chain, verifies that the one folder needing a mode change is owned by the daemon's account, and
+removes only the write bits named by the check. It never follows a final symlink or changes
+descendants. A successful request returns `result.path` and `result.mode` read after the change.
+Both are null if no fix is needed. Repair does not start a new Manager itself.
+
 > **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.

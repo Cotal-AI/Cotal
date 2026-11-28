@@ -21,7 +21,7 @@ import type { UnconfirmedConversation } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 import type { AgentAppRequest, AgentAppResult } from "./desktop-agent-apps.js";
 
-const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status", "connector-config-repair"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -31,6 +31,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "agent-app-sign-in": { required: ["appVersion", "name"], optional: [] },
   "update-settings": { required: [], optional: ["auto", "notify"] },
   "update-check": { required: [], optional: [] },
+  "connector-config-repair": { required: [], optional: [] },
   "daemon-stop": { required: [], optional: ["commit"] },
   "space-recover": { required: ["space", "candidate", "holder"], optional: [] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
@@ -74,6 +75,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connector-config-repair" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
@@ -166,6 +168,8 @@ export interface HostedManager {
   readonly pid?: number;
   readonly restarts: number;
   readonly reason?: string;
+  readonly reasonCode?: "CONNECTOR_CONFIG_UNPROTECTED";
+  readonly reasonDetail?: { readonly path: string; readonly mode: number; readonly owned: boolean };
   readonly lastRefusal?: string;
   readonly next?: string;
   readonly lastStop?: "graceful" | "terminated" | "killed";
@@ -247,8 +251,9 @@ export interface DaemonSpaces {
 }
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
+export type ConnectorConfigRepairResult = { readonly path: string; readonly mode: number } | { readonly path: null; readonly mode: null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: AgentAppResult | HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | { readonly argv: readonly string[] } })
+  | (Envelope & { readonly ok: true; readonly result: AgentAppResult | HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | ConnectorConfigRepairResult | { readonly argv: readonly string[] } })
   | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode | import("@cotal-ai/workspace").CommandFailure["code"]; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult })
@@ -307,7 +312,7 @@ export function parseRequest(line: string): ParsedRequest {
     if ([obj.auto, obj.notify].some(value => value !== undefined && typeof value !== "boolean")) return bad(id, "auto and notify must be booleans");
     return { ok: true, request: { v, id, op, ...(obj.auto !== undefined ? { auto: obj.auto as boolean } : {}), ...(obj.notify !== undefined ? { notify: obj.notify as boolean } : {}) } };
   }
-  if (op === "update-check") return { ok: true, request: { v, id, op } };
+  if (op === "update-check" || op === "connector-config-repair") return { ok: true, request: { v, id, op } };
   if (op === "name") {
     try { return { ok: true, request: { v, id, op, ...(obj.name !== undefined ? { name: computerName(obj.name) } : {}) } }; }
     catch (error) { return bad(id, error instanceof Error ? error.message : "invalid computer name"); }

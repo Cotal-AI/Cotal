@@ -41,6 +41,7 @@ import {
   observeUnownedRecovery,
   UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
+import { isCliOnlyUpdate, maybeUpdateWithoutConnectorConfig, recoverUpdateWithoutConnectorConfig } from "../lib/update-without-config.js";
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
@@ -143,9 +144,10 @@ export interface UpdateRuntime {
   /** Preserve the selected execution binding while hardening installer-owned modes. */
   repairInstallModes?(root: string): number;
   /** Prepare a complete retained target under the held global root lock, without publication. */
-  prepareExecution?(version: string, root: string): Promise<ExecutionReplacement>;
+  prepareExecution?(version: string, root: string, deferConnectors?: string): Promise<ExecutionReplacement>;
+  connectorConfigDeferred?: boolean;
   /** Reopen only a journal already validated against this logical installation. */
-  recoverExecution?(journal: string): ExecutionReplacement;
+  recoverExecution?(journal: string, withoutConnectors?: boolean): ExecutionReplacement;
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
@@ -346,6 +348,8 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
+  const deferred = childBinding(rt).kind === "none" && await maybeUpdateWithoutConnectorConfig(args, rt, () => recoverInterruptedUpdate(rt, false, targetArgv(args.values)));
+  if (deferred) return deferred.entry;
   let connectorSelection: UnreadableConnectorSelection | undefined;
   let preflightChanged = false;
   let permissionsRestored = false;
@@ -384,8 +388,6 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   const restored = await recoverInterruptedUpdate(rt, false, targetArgv(args.values));
   if (restored && (args.values.self !== true || restored.resumed)) return;
   if (restored && restored.version !== rt.version()) return restored.entry;
-  // A folder above the config folder is not one this command repairs. Refuse it before the mode
-  // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
     assertConfigAncestorProtected();
   } catch (e) {
@@ -394,9 +396,6 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     process.exitCode = 1;
     return;
   }
-  // Removing group and other write from Cotal's install and config folder changes nothing a running
-  // manager reads, so their modes are repaired before the continuity check rather than only when the
-  // reconcile is allowed to run.
   const install = launcherInstallRoot();
   for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
     const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
@@ -419,11 +418,8 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
   if (childBinding(rt).kind === "bound") return;
   const observed = readUpdateRecovery();
   if (!observed) return;
-  if (startup) {
-    // A restarted daemon must answer the updater that still owns the closure. It may only
-    // observe that live transaction here, never compete with it for restoration authority.
-    if (liveUpdateClosureOwner(observed, rt.recoveryOwnerStart ?? recoveryProcessStartToken)) return;
-  }
+  if (startup && liveUpdateClosureOwner(observed, rt.recoveryOwnerStart ?? recoveryProcessStartToken)) return;
+  if (isCliOnlyUpdate(observed)) return recoverUpdateWithoutConnectorConfig(rt, observed);
   const release = claimUpdateClosureAccess(true);
   try {
     const record = readUpdateRecovery();
@@ -919,9 +915,6 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
   }
 
-  // Seeding writes under the config folder after this install. An ancestor outside that folder,
-  // such as a group-writable XDG config parent, is not repaired and still refuses. Check it now,
-  // before npm replaces the binary, so a refusal leaves the installed generation unchanged.
   try {
     assertConfigAncestorProtected();
   } catch (e) {

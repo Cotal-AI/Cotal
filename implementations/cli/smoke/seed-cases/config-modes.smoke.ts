@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, 
 // An earlier seed run under a umask of 0002 left Cotal's config folder and its extension tree
 // group-writable, and the web seed's protected-path check refused them, failing `cotal update`.
 // The update removes that write from the folders Cotal owns, as it does for its install, and the
-// check still refuses a folder above them. PATH holds only node and npm, so `getent` is missing and
+// update defers reconciliation if a folder above them is unsafe. PATH holds only node and npm, so `getent` is missing and
 // the private-group proof is unavailable on every host, as it is under SSSD.
 try {
   const npmOnPath = (HOST_ENV.PATH ?? "").split(delimiter).map((dir) => join(dir, "npm")).find((path) => existsSync(path));
@@ -42,13 +42,13 @@ try {
     // XDG_CONFIG_HOME itself is a folder the operator chose, not one Cotal manages.
     chmodSync(cfg, 0o775);
     const run = cotal(cfg, ["update"], env);
-    check("config modes: update refuses a group-writable folder above the config folder before replacing the binary", run.status === 1 && run.stderr.includes("✗ config folder protection:") && run.stderr.includes(`Next\n  chmod g-w ${realpathSync(cfg)}`), run.stderr);
-    check("config modes: the refusal does not seed or repair after the binary would have moved", !run.stderr.includes("failed to seed") && !run.stdout.includes(repairLine(cfg)), run.stdout + run.stderr);
+    check("config modes: update defers reconciliation when the config parent is group-writable", run.status === 0 && run.stderr.includes("Connector reconciliation and daemon activation are waiting:") && run.stderr.includes(`chmod g-w ${realpathSync(cfg)}`), run.stderr);
+    check("config modes: update does not seed or repair below the unsafe folder", !run.stderr.includes("failed to seed") && !run.stdout.includes(repairLine(cfg)), run.stdout + run.stderr);
     check("config modes: the folder Cotal does not manage stays group-writable", mode(cfg) === 0o775, mode(cfg));
     // The check reads the physical path. The ancestor is outside the folders update repairs.
     const physical = realpathSync(cfg);
-    check("config modes: the refusal names that folder, with chmod g-w as its next step",
-      run.stderr.includes(`the Cotal config folder is not protected against other local writers: ${physical} is group-writable`) && run.stderr.includes(`Next\n  chmod g-w ${physical}`),
+    check("config modes: the deferral names that folder, with chmod g-w as its next step",
+      run.stderr.includes(`the connector config folder is not protected against other local writers: ${physical} is group-writable`) && run.stderr.includes(`chmod g-w ${physical}`),
       run.stderr);
   }
 

@@ -2,9 +2,10 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
+import { connectorConfigDir, connectorConfigModeProblem, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
+import type { HostedManager } from "./protocol.js";
 
 export function installedGenerationVersion(): string {
   const selected = selectExecutionProgram(dirname(packageFile()));
@@ -22,6 +23,8 @@ export class ReplacedDaemonGeneration extends Error {
 
 export async function reconcileHostedConnectors(version: string): Promise<void> {
   if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
+  const configMode = connectorConfigModeProblem();
+  if (configMode) throw new UnprotectedConnectorConfig(configMode.failure.message, configMode.remedy, { path: configMode.path, mode: configMode.mode, owned: configMode.owned });
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
@@ -32,6 +35,10 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await reconcileInstalledGeneration();
+}
+
+export class UnprotectedConnectorConfig extends Error {
+  constructor(message: string, readonly remedy: string, readonly detail: NonNullable<HostedManager["reasonDetail"]>) { super(message); }
 }
 
 function packageFile(): string {

@@ -22,7 +22,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type DaemonPeerLifetime, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type ConnectorConfigRepairResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
@@ -35,14 +35,15 @@ import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
 import { withAppMutation } from "./agent-app-admission.js";
+import { repairConnectorConfigMode } from "./connector-config-repair.js";
 
-type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
+type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | ConnectorConfigRepairResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
   log(`daemon: ${op} refused: ${cause}`);
   if (error instanceof HostedManagerRefusal) return { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) };
-  if (op !== "agent-stop" && op !== "agent-terminal") return managerUnavailable(op, cause);
+  if (op !== "agent-stop" && op !== "agent-terminal" && op !== "connector-config-repair") return managerUnavailable(op, cause);
   const failure = isConnectRefusal(error) ? error.failure() : error;
   if (!isCommandFailure(failure)) return managerUnavailable(op, cause);
   return { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) };
@@ -381,6 +382,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
         managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
+        return;
+      }
+      if (req.op === "connector-config-repair") {
+        managerResult(repairConnectorConfigMode);
         return;
       }
       if (req.op === "managers-stop") {

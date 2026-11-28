@@ -35,8 +35,19 @@ if (!["linux", "darwin"].includes(process.platform)) {
   Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
     value: Object.freeze({ logicalEntry: entry, launchEntry: entry, loadedEntry: entry }),
   });
-  const { installedGenerationVersion, watchDaemonGeneration, reconcileHostedConnectors } = await import(pathToFileURL(join(root, "dist/daemon/generation.js")).href) as typeof import("../daemon/generation.js");
+  const { installedGenerationVersion, watchDaemonGeneration, reconcileHostedConnectors, UnprotectedConnectorConfig, ReplacedDaemonGeneration } = await import(pathToFileURL(join(root, "dist/daemon/generation.js")).href) as typeof import("../daemon/generation.js");
   assert.equal(installedGenerationVersion(), "0.2.0");
+  const config = process.env.XDG_CONFIG_HOME;
+  fs.mkdirSync(config, { mode: 0o700 });
+  fs.chmodSync(config, 0o777);
+  try {
+    await assert.rejects(reconcileHostedConnectors("0.1.0"), error => {
+      assert.ok(error instanceof UnprotectedConnectorConfig);
+      assert.deepEqual(error.detail, { path: fs.realpathSync(config), mode: 0o777, owned: true });
+      return true;
+    });
+  } finally { fs.chmodSync(config, 0o700); }
+  await assert.rejects(reconcileHostedConnectors("0.1.0"), ReplacedDaemonGeneration);
   const read = fs.readFileSync, readdir = fs.readdirSync, open = fs.openSync;
   const reads: string[] = [], walks: string[] = [], opens: string[] = [];
   fs.readFileSync = ((path: Parameters<typeof read>[0], ...args: unknown[]) => {

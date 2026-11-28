@@ -18,6 +18,7 @@ import {
   exitCode,
   failureEnvelope,
   GLOBAL_FLAGS,
+  connectorConfigModeProblem,
   globalConfigDirProblem,
   globalFlagDeclarationProblems,
   hasMeshTargetFlags,
@@ -1056,13 +1057,18 @@ function checkCommandLocalState(cmd: Command, parsed: ParsedArgs, rest: readonly
   const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
   if (dirProblem) refuse(new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }));
   // Commands that act on preferences refuse an invalid file. Status reports it as a warning.
-  if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
+  if (!["version", "docs", "status", "daemon"].includes(cmd.name) && !updateConfigIsDeferred(cmd, parsed)) {
     try { cachedPreferences(); }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       refuse(error);
     }
   }
+}
+
+function updateConfigIsDeferred(cmd: Command, parsed: ParsedArgs): boolean {
+  const { auto, notify, check } = parsed.values;
+  return cmd.name === "update" && !auto && !notify && !check && connectorConfigModeProblem() !== undefined;
 }
 
 // Explicit help for the bundled reference needs only the built-in command metadata.
@@ -1236,7 +1242,10 @@ function prepareDispatchSurface(
     ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
   const configRead = builtin?.name === "config" && !wantsHelp && (readMode === undefined || readMode === "get");
   const completionStatus = builtin?.name === "completion" && !wantsHelp && readMode === undefined;
-  let useExtensionOverlay = opts.extensions && !docsHelp && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
+  const updateConfigMode = !wantsHelp && builtin?.name === "update" && !updateCheck && !preference?.auto && !preference?.notify ? connectorConfigModeProblem() : undefined;
+  const updateWithoutOverlay = updateConfigMode !== undefined;
+  if (updateWithoutOverlay) setInstalledExtensionsEnabled(false);
+  let useExtensionOverlay = opts.extensions && !docsHelp && !updateCheck && !selfUpdate && !updateWithoutOverlay && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -1325,7 +1334,7 @@ async function executeDispatchedCommand(
     await runOperation(scope, async () => {
       // Preferences that another local account could change still apply, so each command that uses
       // them says so, with the change that protects their folder.
-      if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
+      if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name) && !updateConfigIsDeferred(cmd, parsed)) {
         const folder = preferencesFolderWarning();
         // Under --json the warning lives in the envelope only: an immediate echo would put it on
         // stderr as well, so a JSON refusal would break the "envelope on stdout, nothing on
