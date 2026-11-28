@@ -15,6 +15,7 @@ const windows = process.platform === "win32";
 type AsdfCacheEntry = { kind: "resolved"; file: string } | { kind: "timeout" } | { kind: "none" };
 let updatePath: { value: string; directories: string[] } | undefined;
 const asdfNpmCache = new Map<string, AsdfCacheEntry>();
+let bundledNoticePrinted = false;
 
 export function preserveUpdatePath(): void {
   const path = process.env.PATH;
@@ -235,6 +236,17 @@ function selectAsdfNpm(
   } catch { return undefined; }
 }
 
+/** The npm package shipped beside the Node that launched this process, not a file named npm in its bin folder. */
+function bundledNpm(): { entry: string; range: string } | undefined {
+  if (windows) return;
+  let root: string;
+  try { root = dirname(dirname(isAbsolute(process.execPath) ? process.execPath : realpathSync(process.execPath))); } catch { return; }
+  if (root.includes(delimiter)) return;
+  const candidate = join(root, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const engine = npmEngine(candidate);
+  return engine && !engine.corepack && satisfies(process.version, engine.range) ? { entry: candidate, range: engine.range } : undefined;
+}
+
 export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (!npmProjectDirectory.getStore() && env[UPDATE_NPM_NODE] === undefined && env[UPDATE_NPM] === undefined) return env;
   const { node, npm } = npmInvocation(env, []);
@@ -297,12 +309,11 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     }
   };
   let file = findOnPath("npm");
-  if (!file) return { file: "npm", args, env, cwd, missingOnPath: true };
-  let engine = npmEngine(file);
+  let engine = file ? npmEngine(file) : undefined;
   let selectedNpm: string | undefined;
   const project = npmProjectDirectory.getStore();
-  const asdfCommand = !engine && !windows ? asdfShimExecutable(file, env) : undefined;
-  if (asdfCommand) {
+  const asdfCommand = file && !engine && !windows ? asdfShimExecutable(file, env) : undefined;
+  if (file && asdfCommand) {
     const selected = selectAsdfNpm(file, asdfCommand, inheritedNpm, directories, findOnPath, cwd, lookup, lookup[pathKey] ?? "", env);
     if (selected) {
       selectedNpm = file = selected.file;
@@ -314,7 +325,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
   const currentSupportsEngine = !!engine && satisfies(process.version, engine.range);
   let npmRange = engine?.corepack && currentSupportsEngine
     ? corepackNpmRange(process.execPath, engine.entry, cwd, withNode(process.execPath, true)) : undefined;
-  if (engine && (!currentSupportsEngine || (npmRange && !satisfies(process.version, npmRange)))) {
+  if (file && engine && (!currentSupportsEngine || (npmRange && !satisfies(process.version, npmRange)))) {
     const engineEntry = engine.entry;
     const engineRange = engine.range;
     const engineCorepack = engine.corepack;
@@ -341,7 +352,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     }
     const seen = new Set<string>();
     const candidates: string[] = [];
-    for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => inDirectory(dir, "node"))]) {
+    for (const candidate of [recordedNode(), ...[dirname(file!), ...directories].map(dir => inDirectory(dir, "node"))]) {
       if (!candidate || seen.has(candidate)) continue;
       seen.add(candidate);
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
@@ -362,6 +373,23 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     }
     if (fallback) return fallback;
   }
+  const pathNpmMissing = !file;
+  const pathNpmReportsUnsupported = !!npmRange && !satisfies(process.version, npmRange);
+  // A file named npm whose engine cannot be read is still the npm on PATH. Only a missing
+  // file, or npm's own unsupported-Node report, selects the package shipped with this Node.
+  if (!windows && (pathNpmMissing || pathNpmReportsUnsupported)) {
+    const bundled = bundledNpm();
+    if (bundled && !bundledNoticePrinted) {
+      bundledNoticePrinted = true;
+      const why = pathNpmReportsUnsupported ? `the npm on PATH does not support Node ${process.version}` : "npm is not on PATH";
+      process.stderr.write(`Using the npm shipped with ${process.version} because ${why}.\n`);
+    }
+    if (bundled) {
+      return { file: process.execPath, args: [bundled.entry, ...args], env, cwd,
+        lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
+    }
+  }
+  if (!file) return { file: "npm", args, env, cwd, missingOnPath: true };
   if (windows) return { file: "npm", args, env, cwd };
   const node = resolveOnPath("node", lookup);
   if (node && realpathSync(node) === realpathSync(process.execPath))
