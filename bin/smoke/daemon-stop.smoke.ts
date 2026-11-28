@@ -14,7 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,13 +45,15 @@ if (process.platform === "linux") {
   const cotal = join(root, "cotal");
   const home = join(cotal, "daemon");
   const config = join(root, "config");
-  const unitName = `cotal-daemon-${createHash("sha256").update(home).digest("hex").slice(0, 16)}.service`;
   const unitDir = join(config, "systemd", "user");
-  const unitPath = join(unitDir, unitName);
   const calls = join(root, "calls.jsonl");
   const contextFile = join(root, "context.json");
   for (const leaf of [join(root, "home"), cotal, config, join(root, "rt"), join(root, "native"), join(root, "state"), home, unitDir]) mkdirSync(leaf, { recursive: true, mode: 0o700 });
-  const unitBytes = `[Unit]\nDescription=Cotal daemon smoke\n[Service]\nEnvironment=PATH="/usr/bin"\nExecStart=${[process.execPath, daemon, "daemon", "serve", "--daemon-home", home].map((part) => JSON.stringify(part)).join(" ")}\n[Install]\nWantedBy=default.target\n`;
+  const resolvedHome = realpathSync(home);
+  const resolvedConfig = realpathSync(config);
+  const unitName = `cotal-daemon-${createHash("sha256").update(resolvedHome).digest("hex").slice(0, 16)}.service`;
+  const unitPath = join(resolvedConfig, "systemd", "user", unitName);
+  const unitBytes = `[Unit]\nDescription=Cotal daemon smoke\n[Service]\nEnvironment=PATH="/usr/bin"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart=${[process.execPath, daemon, "daemon", "serve", "--daemon-home", resolvedHome].map((part) => JSON.stringify(part)).join(" ")}\n[Install]\nWantedBy=default.target\n`;
   writeFileSync(unitPath, unitBytes, { mode: 0o600 });
   const receipt = {
     v: 1,
@@ -60,12 +62,12 @@ if (process.platform === "linux") {
     unitPath,
     unitSha256: createHash("sha256").update(unitBytes).digest("hex"),
     installedAt: "2026-01-01T00:00:00.000Z",
-    daemonHome: home,
+    daemonHome: resolvedHome,
   };
-  const receiptPath = join(home, "service-unit.json");
+  const receiptPath = join(resolvedHome, "service-unit.json");
   const receiptBytes = `${JSON.stringify(receipt)}\n`;
   writeFileSync(receiptPath, receiptBytes, { mode: 0o600 });
-  const context = { home: join(root, "home"), config, calls, units: [unitName], unitFileState: "enabled" };
+  const context = { home: realpathSync(join(root, "home")), config: resolvedConfig, calls, units: [unitName], unitFileState: "enabled", environmentOutput: `HOME=${realpathSync(join(root, "home"))}\nXDG_CONFIG_HOME=${resolvedConfig}` };
   writeFileSync(contextFile, `${JSON.stringify(context)}\n`, { mode: 0o600 });
   for (const tool of ["systemctl", "loginctl"]) writeFileSync(join(root, "native", tool), `#!${process.execPath}\n${fixture}`, { mode: 0o700 });
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
@@ -121,6 +123,8 @@ if (process.platform === "linux") {
     && plainOps.indexOf("disable") >= 0 && plainOps.indexOf("disable") < plainOps.lastIndexOf("stop") && existsSync(unitPath), plainStop.frame);
   const afterStop = desktop({ op: "status" });
   check("status after an intentional stop says stopped by you", afterStop.frame?.ok === false && afterStop.frame?.error?.code === "NOT_RUNNING" && afterStop.frame.error.detail?.installed === true && afterStop.frame.error.detail.stopped === "by-you", afterStop.frame);
+  const watched = desktop({ op: "status-watch" });
+  check("status-watch after an intentional stop says stopped by you", watched.frame?.ok === false && watched.frame?.error?.code === "NOT_RUNNING" && watched.frame.error.detail?.installed === true && watched.frame.error.detail.stopped === "by-you", watched.frame);
   const beforeStart = operations().length;
   const appStart = desktop({ op: "start" });
   const appStartOps = operations().slice(beforeStart);
@@ -128,7 +132,7 @@ if (process.platform === "linux") {
     && appStartOps.indexOf("enable") >= 0 && appStartOps.indexOf("enable") < appStartOps.lastIndexOf("start"), appStart.frame);
   const extra = desktop({ op: "stop", confirm: true, extra: true });
   check("the app stop request rejects a field it does not take", extra.frame?.ok === false && extra.frame?.error?.code === "BAD_REQUEST", extra.frame);
-  check("the app stop and start keep the same unit and receipt bytes", readFileSync(unitPath, "utf8") === unitBytes && readFileSync(join(home, "service-unit.json")).equals(recordedBefore));
+  check("the app stop and start keep the same unit and receipt bytes", readFileSync(unitPath, "utf8") === unitBytes && readFileSync(receiptPath).equals(recordedBefore));
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
   const unexpected = desktop({ op: "status" });
   check("status of an unexpected stop has no by-you marker", unexpected.frame?.ok === false && unexpected.frame?.error?.code === "NOT_RUNNING" && unexpected.frame.error.detail?.installed === true && unexpected.frame.error.detail.stopped === undefined, unexpected.frame);
