@@ -7,7 +7,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
 import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
+import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, serviceListStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
@@ -48,6 +48,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (mode === "list" && name !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "service list takes no definition name", {
     remedy: `cotal service list${targetWords({ space: args.values.space })}${presentation === "rich" ? "" : ` --${presentation}`}`, remedyIsCommand: true,
   });
+  if ((mode === "status" || mode === "logs") && name === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `service ${mode} needs a definition name`, { remedy: serviceListStep(args.values) });
   if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode !== "list" && mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
   if (name !== undefined) localRecordName(name);
   if (args.values.preset !== undefined) {
@@ -299,7 +300,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   // up in the selected one, whose service of that name it does not concern.
   const file = args.values.file;
   const imported = typeof file === "string" ? forName(() => importServiceDefinition(resolve(file), space)) : undefined;
-  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`cotal service remove ${name} --space ${oneLine(space)} --yes\`, then add it again` });
+  if (store.read(name)) throw new CommandFailure("refused", "CONFLICT", "this service definition already exists; it was not overwritten", { target: named, remedy: `to change it, stop its instances, forget it with \`${serviceConfirmCommand("remove", name, space, {}, presentation)}\`, then add it again` });
   let definition: ServiceDefinitionInput, chosenPreset: string | undefined;
   /** The broker's address is checked before a definition is saved, as its paths are, so a start does
    *  not record a failed instance for an address the broker cannot serve. */

@@ -182,6 +182,10 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** True when a targeted restart accounts for all supplied CLI options. */
+  simpleTargetedStartup?: boolean;
+  /** A complete, locally printable retry for an occupied recorded address, when available. */
+  retryAtRecordedAddress?(): string | undefined;
   /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
   retryAtAnotherAddress?(bindHost: string): Promise<string | undefined>;
   /** The root of the folder `up --root` was run from, when it is not this stack's root. */
@@ -421,7 +425,8 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
     const format = request.presentation === "rich" ? "" : ` --${request.presentation}`;
-    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry + format)} again`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options"
+      : request.simpleTargetedStartup ? `run ${codeSpan(retry + format)} again` : "repeat your original startup command from the same folder with the same options";
     throw localDiagnostic(new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
@@ -752,6 +757,11 @@ export function bindReaches(host: string, server: string): boolean {
   }
 }
 
+function recordedAddressRemedy(request: StackUpRequest, freeAddress: string): string {
+  const retry = request.retryAtRecordedAddress?.() ?? "repeat your original startup command from the same folder with the same options";
+  return `${freeAddress}, then ${retry}; this stack keeps its recorded address`;
+}
+
 /** Refuse a busy broker address before launch. Only a recorded address held by TIME-WAIT gets a bounded retry. */
 async function assertStackBrokerAddress(request: StackUpRequest, root: string, space: string, server: string, bindHost: string | undefined, recorded: boolean): Promise<void> {
   const { host: dialHost, port } = brokerListenAddress(server);
@@ -780,7 +790,7 @@ async function assertStackBrokerAddress(request: StackUpRequest, root: string, s
     throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
       target: { root, space, server, bindError: bindError.code },
       remedy: recorded
-        ? `${frees}, then run ${codeSpan(`${displayCmd()} up${request.foreground ? " --foreground" : ""}${request.noManager ? " --no-manager" : ""}`)} from ${root}; this stack keeps its recorded address`
+        ? recordedAddressRemedy(request, frees)
         : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
     });
   }
@@ -1122,7 +1132,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
           ? `${retry !== undefined ? `${retry}, or ` : ""}${stopHolder} and retry this start`
-          : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
+          : recordedAddressRemedy(request, stopHolder),
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);

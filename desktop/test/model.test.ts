@@ -13,8 +13,8 @@ test("a blank space label is the space id and a label with a character stays", (
   assert.equal(shownSpaceKind(""), "Space");
   assert.equal(shownSpaceKind("\n"), "Space");
   assert.equal(shownSpaceKind(undefined), "Space");
-  assert.equal(shownSpaceKind(" ada"), " ada");
-  assert.equal(shownSpaceKind("team"), "team");
+  assert.equal(shownSpaceKind(" ada"), "Ada");
+  assert.equal(shownSpaceKind("team"), "Team");
 });
 
 test("a blank account label is the subject and a label with a character stays", () => {

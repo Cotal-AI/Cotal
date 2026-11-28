@@ -282,7 +282,7 @@ finishes or settles it. `cotal up --space <name>` in a folder
 that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
 prepared name and gives the startup command for its recorded project folder. If the project moved,
 restore it to that path before starting it. To register the other broker instead, forget the prepared
-space and repeat the add with the same options. A registration for another broker in the same folder
+space and repeat the add with the same options. Both suggested commands keep `--json` or `--plain` if you used it. A registration for another broker in the same folder
 does not prevent a prepared local space from starting there. A prepared space records its folder by path, and moving the folder
 leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
