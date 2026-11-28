@@ -880,12 +880,15 @@ process.exit(code ?? 1);
 
   // ---- Cell 8: Bounded, announced lock re-acquisition and failure handling ----
   {
-    // (a) Closure re-acquire passes recover=false and bounded waitMs from remaining budget, and converts failure into clean CommandFailure refusal
-    const closureCallArgs: Array<{ recover: boolean | undefined; waitMs: number | undefined }> = [];
+    // (a) Closure re-acquire enforces remaining budget via bounded inspection before claim(true), and converts failure into clean CommandFailure refusal
+    const closureCallArgs: Array<boolean | undefined> = [];
     const closureScopeA = claimSuspendableDaemonClosure({
       env: {},
-      claim: (recover, waitMs) => {
-        closureCallArgs.push({ recover, waitMs });
+      lockFile: "/nonexistent/closure.lock",
+      inspect: () => ({ state: "absent" }),
+      readRecovery: () => undefined,
+      claim: (recover) => {
+        closureCallArgs.push(recover);
         if (closureCallArgs.length > 1) throw new Error("closure writer pid 77777 did not finish within 1 seconds");
         return () => {};
       },
@@ -899,10 +902,8 @@ process.exit(code ?? 1);
       closureScopeA.release();
     }
     check(
-      "closure re-acquire uses recover=false and remaining recovery budget waitMs",
-      closureCallArgs.length === 2 &&
-        closureCallArgs[1]!.recover === false &&
-        closureCallArgs[1]!.waitMs === 1_250,
+      "closure re-acquire inspects bounded budget and re-claims with recover=true",
+      closureCallArgs.length === 2 && closureCallArgs[0] === undefined && closureCallArgs[1] === true,
       closureCallArgs,
     );
     check(
@@ -921,6 +922,9 @@ process.exit(code ?? 1);
     const primaryFailure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "primary start failure");
     const closureScopeB = claimSuspendableDaemonClosure({
       env: {},
+      lockFile: "/nonexistent/closure.lock",
+      inspect: () => ({ state: "absent" }),
+      readRecovery: () => undefined,
       claim: () => {
         closureClaimsB++;
         if (closureClaimsB > 1) throw new Error("closure lock wedged");
@@ -1686,7 +1690,7 @@ console.log(JSON.stringify({ result, lines }));
     for (const d of [prefix, cache, native]) mkdirSync(d, { recursive: true, mode: 0o700 });
 
     const baselineVersion = "0.183.1";
-    const headVersion = "0.183.9999";
+    const headVersion = "0.999.0";
     const fixtureDir = join(dir, "upgrade-fixture");
     const built = spawnSync(
       process.execPath,

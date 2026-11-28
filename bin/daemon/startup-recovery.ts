@@ -34,6 +34,7 @@ import {
   claimUpdateClosureAccess,
   CommandFailure,
   homeCotalDir,
+  inspectLock,
   readLocalRecordSource,
   readUpdateRecovery,
   recoveryDisposition,
@@ -68,21 +69,78 @@ export interface DaemonClosureScope {
 }
 
 export interface DaemonClosureScopeDeps {
-  readonly claim?: typeof claimUpdateClosureAccess;
+  readonly claim?: (recover?: boolean) => () => void;
+  readonly inspect?: typeof inspectLock;
+  readonly readRecovery?: typeof readUpdateRecovery;
+  readonly lockFile?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly defaultReacquireWaitMs?: number;
+}
+
+function waitForBoundedClosureReacquire(
+  waitMs: number,
+  env: NodeJS.ProcessEnv,
+  inspect: typeof inspectLock,
+  readRecovery: typeof readUpdateRecovery,
+  lockFile: string,
+): void {
+  const started = Date.now();
+  const boundedWaitMs = Math.max(0, waitMs);
+  const deadline = started + boundedWaitMs;
+  let updateDeadline: number | undefined;
+  let announced = false;
+  let announcedWriter = false;
+  for (;;) {
+    const current = inspect(lockFile);
+    const record = readRecovery();
+    if (current.state !== "active") {
+      if (record && record.phase !== "verified-ready") {
+        throw new Error("an interrupted update needs restoration; run `cotal update --self`");
+      }
+      return;
+    }
+    if (
+      String(current.owner.pid) === env.COTAL_UPDATE_CLOSURE_OWNER &&
+      current.owner.nonce === env.COTAL_UPDATE_CLOSURE_NONCE
+    ) {
+      return;
+    }
+    const updating = record?.owner?.pid === current.owner.pid && record.owner.nonce === current.owner.nonce;
+    if (updating) {
+      updateDeadline ??= Date.now() + Math.min(120_000, Math.max(0, deadline - Date.now()));
+      if (!announced) {
+        console.error("waiting for a Cotal update to finish");
+        announced = true;
+      }
+    } else if (!announcedWriter && Date.now() - started >= 1_000) {
+      console.error(`waiting for another cotal command (pid ${current.owner.pid}) to finish changing this installation`);
+      announcedWriter = true;
+    }
+    const effectiveWaitMs = updating ? Math.min(120_000, boundedWaitMs) : boundedWaitMs;
+    const stopAt = updating ? updateDeadline! : deadline;
+    if (Date.now() >= stopAt) {
+      throw new Error(
+        updating
+          ? `Cotal update did not finish within ${Math.round(effectiveWaitMs / 1000)} seconds; retry once it finishes`
+          : `closure writer pid ${current.owner.pid} did not finish within ${Math.round(boundedWaitMs / 1000)} seconds`,
+      );
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25, Math.max(1, stopAt - Date.now())));
+  }
 }
 
 /**
  * Claim `.update-closure.lock` for a `bin/daemon/` caller (`setup.ts`) so `startSystemdDaemonUnit`
  * can suspend that single claim during proven startup recovery without exposing a public workspace
- * symbol or risking a double-release if re-acquisition fails. Re-acquisition uses `claim(false, budget)`
- * so contended waits announce on stderr like `main` and stay bounded by the remaining recovery budget.
+ * symbol or risking a double-release if re-acquisition fails. Re-acquisition announces contended
+ * waits on stderr like `main` and stays bounded by the remaining recovery budget.
  */
 let activeDaemonClosureScope: DaemonClosureScope | undefined;
 
 export function claimSuspendableDaemonClosure(deps: DaemonClosureScopeDeps = {}): DaemonClosureScope {
   const claim = deps.claim ?? claimUpdateClosureAccess;
+  const inspect = deps.inspect ?? inspectLock;
+  const readRecovery = deps.readRecovery ?? readUpdateRecovery;
   const env = deps.env ?? process.env;
   const fallbackWaitMs = deps.defaultReacquireWaitMs ?? DAEMON_SYSTEMD_RECOVERY_WAIT_MS;
   let releaseUnderlying: (() => void) | undefined = claim();
@@ -102,7 +160,14 @@ export function claimSuspendableDaemonClosure(deps: DaemonClosureScopeDeps = {})
       } finally {
         const waitMs = Math.max(0, remainingBudgetMs ? remainingBudgetMs() : fallbackWaitMs);
         try {
-          releaseUnderlying = claim(false, waitMs);
+          waitForBoundedClosureReacquire(
+            waitMs,
+            env,
+            inspect,
+            readRecovery,
+            deps.lockFile ?? join(homeCotalDir(), ".update-closure.lock"),
+          );
+          releaseUnderlying = claim(true);
         } catch (reacquireError) {
           if (!failed) {
             const detail = reacquireError instanceof Error ? reacquireError.message : String(reacquireError);
