@@ -1318,6 +1318,16 @@ if (process.platform === "linux") {
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+    if (process.platform !== "win32") {
+      const child = join(readOnly, "project");
+      mkdirSync(child);
+      chmodSync(readOnly, 0o600);
+      try {
+        const inaccessible = await json(["space", "create", "other", "--root", child]);
+        check("create distinguishes an inaccessible root from a non-directory", refused(inaccessible, 2, "PERMISSION_DENIED") && inaccessible.env?.target?.root === child && inaccessible.env.error.remedy.includes("parent directories"), shown(inaccessible));
+      } finally { chmodSync(readOnly, 0o700); }
+      check("create wrote nothing below the inaccessible parent", !existsSync(join(child, ".cotal")) && findPreparedSpace("other") === undefined);
+    }
     // A Cotal home this account cannot write is refused too, and the empty .cotal the attempt made is removed.
     const lockedHome = join(home, "locked-home");
     const homeless = join(home, "homeless");
