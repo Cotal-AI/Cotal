@@ -123,7 +123,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
-async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
+async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string; scrub?: (text: string) => string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
@@ -135,10 +135,16 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
-  if (npm.missingOnPath && args[0] === "install" && !seeding)
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "npm is not on PATH; the extension install did not start", {
-      remedy: "make npm available on PATH, check that `npm --version` works, then retry the original extension install",
-    });
+  try {
+    if (npm.missingOnPath && args[0] === "install" && !seeding)
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "npm is not on PATH; the extension install did not start", {
+        remedy: "make npm available on PATH, check that `npm --version` works, then retry the original extension install",
+      });
+    return await runExtensionNpm(npm, prefix, seeding);
+  } finally { npm.config?.dispose(); }
+}
+
+async function runExtensionNpm(npm: ReturnType<typeof npmInvocation>, prefix: string, seeding: boolean): Promise<ExtensionNpmResult> {
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
@@ -161,8 +167,8 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
     let spawnError = "";
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", (e) => { spawnError = `spawn error: ${e.message}\n`; });
     if (child.pid !== undefined) {
       try {
@@ -191,15 +197,18 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
     const output = `${spawnError}${stdout}${stderr}`.trim();
-    return { status: spawnError ? null : closed.status, output: output || (closed.signal ? `npm terminated by ${closed.signal}` : "") };
+    return { status: spawnError ? null : closed.status, output: output || (closed.signal ? `npm terminated by ${closed.signal}` : ""), scrub: npm.config?.scrub };
   } catch (e) {
-    return { status: null, output: `spawn error: ${(e as Error).message}` };
+    const message = (e as Error).message;
+    return { status: null, output: `spawn error: ${message}`, scrub: npm.config?.scrub };
   } finally {
     stopForwarding();
     if (!published && !preservePending) mutation.clear();
     lifecycle?.dispose();
   }
 }
+
+interface ExtensionNpmResult { status: number | null; output: string; scrub?: (text: string) => string }
 
 /** Rebuild each installed package's private links after npm mutates the shared prefix: every
  * `recorded` package's and, with `candidate`, the operation's own. Keeping the links inside the
@@ -345,7 +354,7 @@ export async function installExtensionSet(
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
       const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
-      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`);
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output, result.scrub)}`);
     }
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
@@ -545,7 +554,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
   const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
   if (r.status !== 0) {
-    fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
+    fail(pkg, `npm install failed: ${npmInstallFailure(r.output, r.scrub)}`);
   }
 
   return verifyCandidate(pkg, resolved, dir, recorded, seeding, staged, note);
@@ -675,11 +684,11 @@ function localTarballFailure(output: string, prefix: string, request: ExtensionI
 
 /** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
  *  output keeps its last lines, joined, so a stored seed reason never carries a newline. */
-function npmInstallFailure(output: string): string {
+function npmInstallFailure(output: string, scrub?: (text: string) => string): string {
   const lines = output.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
   if (lines.some((line) => /^spawn error: spawn npm ENOENT\b/.test(line))) return "npm is not on PATH";
   const tail = lines.slice(-8).join(" ");
-  return tail || "npm install produced no output";
+  return tail ? scrub?.(tail) ?? tail : "npm install produced no output";
 }
 
 function fail(p: string, why: string): never {
@@ -763,7 +772,10 @@ async function removeUnlocked(pkg: string): Promise<void> {
     }
     assertExtensionServiceInstancesStopped(pkg);
     const r = await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], extensionsDir());
-    if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
+    if (r.status !== 0) {
+      const output = r.output.split("\n").slice(-6).join("\n");
+      throw new Error(`npm remove failed:\n${r.scrub?.(output) ?? output}`);
+    }
     const remaining = manifest.extensions.filter((e) => e.pkg !== pkg);
     linkExtensionPeers(remaining, pkg, console.error);
     saveExtensionsManifest({ extensions: remaining });

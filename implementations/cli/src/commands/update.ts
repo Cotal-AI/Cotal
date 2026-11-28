@@ -1051,7 +1051,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.out(reason);
     return interrupted;
   }
-  if (installed.stderr) rt.stderr(installed.stderr);
+  if (installed.stderr) rt.stderr(installed.scrub?.(installed.stderr) ?? installed.stderr);
   if (installed.status !== 0) {
     rt.err(c.red(`✗ global cotal-ai@${targetVersion} install failed: ${failure(installed)}`));
     return await repairReplacement(`global install failed: ${failure(installed)}`);
