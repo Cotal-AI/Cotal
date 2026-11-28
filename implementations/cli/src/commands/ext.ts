@@ -118,7 +118,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   }
   if (sub === "seed") {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
-    return runSeed({ repair, reset, force });
+    return runSeed({ repair, reset, force }, false, process.connected === true && process.env.COTAL_SKIP_CONNECTOR_SEED === "1");
   }
   throw usage(EXT_USAGE);
 }

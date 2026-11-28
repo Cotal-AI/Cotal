@@ -1179,7 +1179,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) deferStartupSeed(parsed);
-      else await reconcileSeededConnectors(cmd?.name === "setup");
+      else await reconcileSeededConnectors(cmd?.name === "setup", ["manager", "supervise", "__daemon-manager"].includes(cmd?.name ?? ""));
     } catch (e) {
       dispatchSeedRefusal(e, cmd, parsed, rest);
     }

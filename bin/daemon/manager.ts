@@ -482,7 +482,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
         return refuse(l, reason, next);
       }
-      refuse(l, reason, "correct the connector cause, run \`cotal ext seed --repair\` with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
+      refuse(l, reason, "correct the connector failure and retry setup; the daemon will also retry automatically");
       if (!closed && !l.stopping && !generationPending) {
         const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
         l.timer = setTimeout(() => {

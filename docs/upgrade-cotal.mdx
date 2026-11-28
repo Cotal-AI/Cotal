@@ -378,6 +378,9 @@ If it refuses, follow the reported remedy instead of removing credentials or rei
 `cotal update --check` reports registry availability, recorded extension versions and whether an
 interrupted connector seed needs manual repair.
 It installs and restarts nothing, so it does not replace this reconciliation step.
+A newer release retries a connector seed that an older release recorded as failed.
+The machine daemon and Manager also retry a failure from the current release once per start.
+If that attempt fails, they report the new failure.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
 A machine service restarted during an update answers local status while the updater still owns
 its installation transaction. It matches the updater's process ID, start token and lock nonce
