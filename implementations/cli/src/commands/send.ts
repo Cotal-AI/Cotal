@@ -383,11 +383,13 @@ async function channelDenied(channel: string, target: { space: string }, connect
   let post: string[] | undefined;
   let profile: "agent" | "observer" | "admin" | undefined;
   const mode = ep.channelRoutingMode();
+  const isolated = mode === "isolated" && hasPluginChannelRoot(channel);
   if (credsFile !== undefined) {
     const claims = credsClaims(credsFile);
     if (claims.name === "agent" || claims.name === "observer" || claims.name === "admin") {
       profile = claims.name;
-      post = agentGrants(claims.nats ?? {}, target.space, mode ? { mode, principal: ep.principal } : undefined).post;
+      post = agentGrants(claims.nats ?? {}, target.space, mode ? { mode, principal: ep.principal } : undefined).post
+        .filter((grant) => mode !== undefined || !hasPluginChannelRoot(grant));
     }
   } else if (connection.mode === "user" && connection.root) {
     try {
@@ -401,8 +403,8 @@ async function channelDenied(channel: string, target: { space: string }, connect
     : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
   if (credsFile !== undefined) {
     if (profile !== undefined) remedy += `. Credential profile: ${profile}`;
-    remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
-    if (post !== undefined && !channelInAllow(post, channel, mode === "isolated")) {
+    if (!isolated) remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
+    if (!isolated && post !== undefined && !channelInAllow(post, channel, mode === "isolated")) {
       const publish = `--allow-publish${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
       const mint = codeSpan(`cotal auth mint <label> --space ${shellWord(target.space)} ${publish} --no-persona --out <file>`);
       remedy += `: on the machine that signs this space's credentials, run ${mint} and pass the new file with --creds`;
@@ -437,6 +439,7 @@ export async function earlierMessages(values: ConnectFlags, channel: string): Pr
     });
     reader.on("error", () => {});
     await reader.start();
+    if (hasPluginChannelRoot(channel) && reader.channelRoutingMode() !== "legacy") return null;
     return (await reader.listChannels()).some((row) => row.channel === channel && row.messages > 0);
   } catch {
     return null;

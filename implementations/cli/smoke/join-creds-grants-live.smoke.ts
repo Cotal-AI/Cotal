@@ -75,7 +75,8 @@ async function checkEnabledJoin(): Promise<void> {
     }
     const denied = cli(...args, "--channel", hiddenChannel);
     check("the same credential cannot join the other isolated channel", await denied.exited === 2 &&
-      denied.output().includes("PERMISSION_DENIED") && denied.output().includes(`does not grant read access to #${hiddenChannel}`), denied.output());
+      denied.output().includes("PERMISSION_DENIED") && denied.output().includes(`does not grant read access to #${hiddenChannel}`) &&
+      !denied.output().includes("cotal auth mint"), denied.output());
 
     const old = await fixture.mintAgent({ legacy: true, read: [fixture.chatChannel, hiddenChannel], post: [fixture.chatChannel, hiddenChannel] });
     const oldFile = join(dir, "enabled-legacy-join.creds");

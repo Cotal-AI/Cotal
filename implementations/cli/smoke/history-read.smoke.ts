@@ -238,11 +238,13 @@ async function checkEnabledPluginHistory(): Promise<void> {
       numericPlugin.envelope?.error?.code === "USAGE_INVALID" && numericPlugin.envelope.error.message.includes("give --since a time"), shown(numericPlugin));
     const denied = await history(hiddenChannel);
     check("a different plugin destination is refused without returning its post",
-      denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && !denied.stdout.includes("outside plugin grant"), shown(denied));
+      denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && denied.envelope.error.remedy === undefined &&
+      !denied.stdout.includes("outside plugin grant"), shown(denied));
     const deniedSend = await run(["send", "-c", hiddenChannel, "must not be stored", "--creds", viewer, ...scope]);
     const postGrant = (deniedSend.envelope?.target as { post?: string[] } | undefined)?.post;
     check("a refused plugin send names only the caller's admitted post grant",
-      deniedSend.status === 2 && deniedSend.envelope?.error?.code === "PERMISSION_DENIED" && postGrant?.join() === channel, shown(deniedSend));
+      deniedSend.status === 2 && deniedSend.envelope?.error?.code === "PERMISSION_DENIED" && postGrant?.join() === channel &&
+      !deniedSend.envelope.error.remedy?.includes("cotal auth mint"), shown(deniedSend));
 
     const inventory = await run(["history", "--creds", viewer, ...scope]);
     check("history discovery includes the permitted isolated channel and no hidden plugin name",

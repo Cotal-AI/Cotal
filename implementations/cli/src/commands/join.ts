@@ -121,7 +121,7 @@ async function checkCredentialJoin(creds: string, space: string, uid: string, ch
     : issuedPermitsPattern(permissions.publish, history);
   if (!canRead)
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
-      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
+      ...(route.rail.kind === "chat" ? { remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post` } : {}),
     });
 }
 
@@ -446,10 +446,10 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       channelRoute(space, ep.principal.owner, ep.principal.actor, channel, mode ?? "legacy").subject);
   };
   const patternBroadcastNotice = "Broadcasts need a concrete channel, not a subscription pattern.";
-  const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
-    (userConnection
-      ? `ask the space's owner to grant this identity permission to post to #${channel}`
-      : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} ${grantOption("--allow-publish", channel)} --out <file>\`, then join with the lifecycle UID that mint reports`);
+  const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent.` +
+    (hasPluginChannelRoot(channel) && ep.channelRoutingMode() !== "legacy" ? "" : userConnection
+      ? ` ask the space's owner to grant this identity permission to post to #${channel}`
+      : ` ask the space's owner to mint a credential with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} ${grantOption("--allow-publish", channel)} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
   // A headless join holds presence and logs mesh events without reading stdin.
   const terminal = process.stdout.isTTY ? process.stdout : process.stderr.isTTY ? process.stderr : undefined;

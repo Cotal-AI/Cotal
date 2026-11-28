@@ -1,4 +1,4 @@
-import { CotalEndpoint, credsClaims, importNativeSubjectPermissions, mintLifecycleUid, projectChannelGrants } from "@cotal-ai/core";
+import { CotalEndpoint, PLUGIN_CHANNEL_ROOT, credsClaims, importNativeSubjectPermissions, mintLifecycleUid, projectChannelGrants } from "@cotal-ai/core";
 import { CommandFailure } from "../output.js";
 import type { UserViewAuth } from "../connect.js";
 
@@ -32,7 +32,10 @@ const observerPermissions = new WeakMap<CotalEndpoint, ReturnType<typeof importN
 export function observerChannelTapSubjects(ep: CotalEndpoint): readonly string[] | undefined {
   const permissions = observerPermissions.get(ep);
   if (!permissions || ep.channelRoutingMode() !== "isolated") return undefined;
-  return projectChannelGrants(permissions, { space: ep.space, mode: "isolated" }).read.map(({ subject }) => subject);
+  const chat = projectChannelGrants(permissions, { space: ep.space, mode: "legacy" }).read
+    .filter(({ channel }) => channel !== PLUGIN_CHANNEL_ROOT && !channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`));
+  const plugin = projectChannelGrants(permissions, { space: ep.space, mode: "isolated" }).read.filter(({ kind }) => kind === PLUGIN_CHANNEL_ROOT);
+  return [...chat, ...plugin].map(({ subject }) => subject);
 }
 
 /** A read-only endpoint over one space, invisible to peers: it registers no presence, binds no
