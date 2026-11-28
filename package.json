@@ -1246,6 +1246,7 @@
     "smoke:segmented-runtime-namespace": "tsx packages/workspace/smoke/segmented-runtime-namespace.smoke.ts",
     "smoke:segmented-runtime-records": "tsx implementations/cli/smoke/segmented-runtime-records.smoke.ts",
     "smoke:record-manager-pid-per-space": "tsx implementations/manager/smoke/record-manager-pid-per-space.smoke.ts",
+    "smoke:agent-identity": "tsx packages/core/smoke/agent-identity.smoke.ts",
     "smoke:agent-secret-segmentation": "tsx packages/workspace/smoke/agent-secret-segmentation.smoke.ts",
     "smoke:delivery-store-boundary": "tsx implementations/delivery/smoke/delivery-store-boundary.smoke.ts",
     "smoke:deliver-pending-sender": "tsx implementations/delivery/smoke/deliver-pending-sender.smoke.ts",
