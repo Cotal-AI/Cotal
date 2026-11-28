@@ -178,7 +178,7 @@ export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
     const line = opts.rawLine !== undefined ? `${opts.rawLine}\n` : encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "status" });
     (opts.counters ?? { bytesWritten: 0 }).bytesWritten += Buffer.byteLength(line, "utf8");
     sock.write(line);
-    // Status includes parallel hosted-Manager observations, each bounded to fifteen seconds.
+    // Keep the read budget compatible with daemons that probe the space before replying.
     const reply = await readLine(sock, opts.timeoutMs ?? 20_000);
     const parsed = JSON.parse(reply) as QueryReply;
     if (parsed.ok && parsed.result.account !== undefined && !validAccountComputerStatus(parsed.result.account))

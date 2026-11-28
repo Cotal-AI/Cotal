@@ -17,7 +17,7 @@ import { createConnection, createServer as createTcpServer, type Socket } from "
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -39,7 +39,7 @@ import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { unitReceiptFile } from "../daemon/install.js";
-import { queryDaemon } from "../daemon/client.js";
+import { managerViaDaemon, queryDaemon } from "../daemon/client.js";
 import { emitSentinel } from "./sentinel.mjs";
 import { lostConnection } from "../daemon/lost-connection.js";
 import type { HostedManager } from "../daemon/protocol.js";
@@ -71,6 +71,17 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
+
+function readCliStatus(entry: string, cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) {
+  const argv = [entry, "--no-color", "daemon", "status", ...args];
+  const start = performance.now();
+  return new Promise<{ code: number | string | null; ms: number; stdout: string; stderr: string }>((resolve) => {
+    execFile(process.execPath, argv, { cwd, env, timeout: 55_000 }, (error, stdout, stderr) => {
+      const result = { code: error ? error.code ?? error.signal ?? null : 0, ms: Math.round(performance.now() - start), stdout, stderr };
+      resolve(result);
+    });
+  });
+}
 
 // The shipped lookup, with the system resolver replaced so each answer is chosen.
 {
@@ -471,6 +482,14 @@ if (control) {
   const until = async (ms: number, done: () => boolean) => { for (const end = Date.now() + ms; Date.now() < end && !done(); ) await sleep(250); return done(); };
   const answering = () => { const last = frames.at(-1); return last?.state === "answering" && last.connection === undefined; };
   check("C0 the hosted Manager answers before the network is cut", await until(30_000, answering), frames.at(-1));
+  const managerPid = frames.at(-1)?.pid;
+  const restarts = frames.at(-1)?.restarts;
+  const readStatusCli = (...args: string[]) => readCliStatus(cliEntry, participant, childEnv, ...args);
+  const reportsAnswering = (stdout: string) =>
+    /Last observed state:\s+answering\b/.test(stdout) &&
+    [...stdout.matchAll(/\bPID:\s+(\d+)/g)].map(([, pid]) => Number(pid)).join(",") === `${daemonChild?.pid},${managerPid}` &&
+    Number(stdout.match(/\bRestarts:\s+(\d+)/)?.[1]) === restarts &&
+    !/Last refusal:|ep\.v1|deadline-exceeded/.test(stdout);
 
   // Short drops the Manager re-dials within seconds are not a lost connection; the app must not flicker.
   const flickerFrom = Date.now();
@@ -492,12 +511,10 @@ if (control) {
   check(`C1 within 15 s of a reset link, as desktop/README.md says, the live feed reports the lost connection without any status request (after ${lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : "-"} s)`, lost && lostFrame?.connection?.state === "unreachable" && lostFrame.connection.reason === "127.0.0.1 is not answering", { frames: frames.length, seconds: lostFrame ? Math.round((lostFrame.at - cutAt) / 1000) : undefined, lostFrame });
   check("C2 the lost connection is reported beside the Manager's own state, which stays answering", lostFrame?.state === "answering", lostFrame);
 
-  // A full status read during the outage fails its own probe. What it changes reaches the feed too.
+  // Status reads the same Manager observation without sending a mesh probe.
   const asked = await queryDaemon({ paths });
   const askedRow = asked.ok ? asked.result.managers?.find((row) => row.space === SPACE) : undefined;
-  const readAt = Date.now();
-  check("C3 a full status read reports the lost connection and its failed probe", askedRow?.connection?.state === "unreachable" && askedRow.state === "starting", askedRow);
-  check("C4 the state that read changed reaches the live feed (a guard: the status request pushed this before the change too; R2 is the cell whose frame only the probe's own push can send)", await until(5_000, () => frames.some((f) => f.at >= readAt - 1000 && f.state === "starting")), frames.slice(-3));
+  check("C3 a full status read reports the lost connection and the same Manager still answering", askedRow?.connection?.state === "unreachable" && askedRow.state === "answering" && askedRow.pid === managerPid && askedRow.restarts === restarts, askedRow);
   const statusCli = spawn(process.execPath, [cliEntry, "daemon", "service-status", "--space", SPACE, "--json"], { cwd: participant, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   let statusOut = "";
   statusCli.stdout.on("data", (b) => { statusOut += String(b); });
@@ -516,34 +533,54 @@ if (control) {
   const heard = await until(45_000, () => frames.some((f) => f.at >= silentAt && f.connection !== undefined));
   const silentFrame = frames.find((f) => f.at >= silentAt && f.connection !== undefined);
   check(`S1 within 45 s of a silent drop, as desktop/README.md says, the live feed reports the lost connection (after ${silentFrame ? Math.round((silentFrame.at - silentAt) / 1000) : "-"} s)`, heard && silentFrame?.connection?.state === "unreachable" && silentFrame.state === "answering", { seconds: Math.round(((silentFrame?.at ?? Date.now()) - silentAt) / 1000), silentFrame, last: frames.at(-1) });
+  const [allDuring, oneDuring] = await Promise.all([readStatusCli(), readStatusCli("--space", SPACE)]);
+  for (const [label, result] of [["all spaces", allDuring], ["one space", oneDuring]] as const) {
+    check(`S3 CLI status for ${label} answers in ${result.ms}ms during the cut with the same Manager and a connection loss`,
+      result.code === 0 && result.ms < 6000 && reportsAnswering(result.stdout) && /Connection:\s+unreachable: 127\.0\.0\.1 is not answering/.test(result.stdout),
+      { ...result, stdout: result.stdout.split(`Manager: ${SPACE}`).at(-1) });
+  }
   reconnectNetwork();
   const quietBackAt = Date.now();
+  const justBack = await readStatusCli();
+  check(`S4 CLI status answers in ${justBack.ms}ms just after the link returns without calling the same Manager starting`,
+    justBack.code === 0 && justBack.ms < 6000 && reportsAnswering(justBack.stdout), { ...justBack, stdout: justBack.stdout.split(`Manager: ${SPACE}`).at(-1) });
   const quietBack = await until(60_000, () => answering() && frames.at(-1)!.at >= quietBackAt);
   check(`S2 once a silent drop ends, the live feed reports the Manager answering with no lost connection (after ${quietBack ? Math.round((frames.at(-1)!.at - quietBackAt) / 1000) : "-"} s)`, quietBack, { last: frames.at(-1), seconds: Math.round((Date.now() - quietBackAt) / 1000) });
 
-  // The broker link comes back before the faces do, so the Manager re-dials at once while the
-  // daemon's first status read after the loss still fails. Then the faces answer, and nobody asks
-  // for a status: the app only watches. The feed must still come back to answering by itself.
+  // The broker link comes back before the HTTP faces do. A service-status read can confirm the
+  // same Manager has reconnected even though the daemon cannot open a fresh caller session.
   offline = true;
   for (const link of tcpLinks) link.destroy();
   const facesCutAt = Date.now();
   check("R1 a second cut is reported", await until(20_000, () => frames.some((f) => f.at >= facesCutAt && f.connection !== undefined)), frames.at(-1));
-  const failedRead = await queryDaemon({ paths });
-  const failedRow = failedRead.ok ? failedRead.result.managers?.find((row) => row.space === SPACE) : undefined;
   offline = false; facesDown = true;
   const linkBackAt = Date.now();
-  const cleared = await until(30_000, () => frames.some((f) => f.at >= linkBackAt && f.connection === undefined));
-  await sleep(4000);
-  const whileFacesDown = frames.at(-1);
+  const cleared = await until(30_000, () => answering() && frames.at(-1)!.at >= linkBackAt);
+  const recoveredService = await new Promise<{ code: number | string | null; stdout: string; stderr: string }>((resolve) => {
+    execFile(process.execPath, [cliEntry, "daemon", "service-status", "--space", SPACE, "--json"], { cwd: participant, env: childEnv, timeout: 6000 }, (error, stdout, stderr) => {
+      resolve({ code: error ? error.code ?? error.signal ?? null : 0, stdout, stderr });
+    });
+  });
+  const recoveredManager = recoveredService.stdout ? (JSON.parse(recoveredService.stdout) as { result?: { manager?: HostedManager } }).result?.manager : undefined;
+  check("R2 service-status reports the same answering Manager when its broker link comes back before its HTTP paths",
+    cleared && recoveredService.code === 0 && recoveredManager?.pid === managerPid && recoveredManager?.restarts === restarts && recoveredManager?.state === "answering" && recoveredManager?.connection === undefined, recoveredService);
+
+  // An explicit pinned Manager probe still exercises endpoint readiness. If it fails, watch-only
+  // recovery retries in the background without flooding the exchange.
+  offline = true;
+  for (const link of tcpLinks) link.destroy();
+  const failedRow = await managerViaDaemon({ paths }, { op: "manager-status", space: SPACE }) as HostedManager;
+  offline = false;
+  const retryFrom = Date.now();
   // Each re-read dials the space's faces. While they stay down the re-reads must space out.
-  await sleep(Math.max(0, linkBackAt + 60_000 - Date.now()));
-  const dials = faceRefusals.filter((at) => at >= linkBackAt).filter((at, i, all) => i === 0 || at - all[i - 1]! > 2000);
+  await sleep(60_000);
+  const dials = faceRefusals.filter((at) => at >= retryFrom).filter((at, i, all) => i === 0 || at - all[i - 1]! > 2000);
   const gaps = dials.slice(1).map((at, i) => Math.round((at - dials[i]!) / 1000));
-  check(`R3 while the faces stay down for 60 s, the re-reads space out (${dials.length} dials, ${gaps.join(" s, ")} s apart)`, dials.length >= 2 && dials.length <= 5 && gaps.at(-1)! >= 15, { dials: dials.map((at) => Math.round((at - linkBackAt) / 1000)), gaps });
+  check(`R3 while the faces stay down for 60 s, the re-reads space out (${dials.length} dials, ${gaps.join(" s, ")} s apart)`, dials.length >= 2 && dials.length <= 5 && gaps.at(-1)! >= 15, { dials: dials.map((at) => Math.round((at - retryFrom) / 1000)), gaps });
   reconnectNetwork();
   const facesBackAt = Date.now();
   const recovered = await until(45_000, () => answering() && frames.at(-1)!.at >= facesBackAt);
-  check(`R2 a status read that failed during the loss does not hold the feed on starting after it: answering ${recovered ? Math.round((frames.at(-1)!.at - facesBackAt) / 1000) : "-"} s after the faces answer, with no status request`, failedRow?.state === "starting" && cleared && whileFacesDown?.connection === undefined && recovered, { failedState: failedRow?.state, cleared, whileFacesDown, last: frames.at(-1) });
+  check(`R4 a failed pinned Manager probe does not hold the feed on starting: answering ${recovered ? Math.round((frames.at(-1)!.at - facesBackAt) / 1000) : "-"} s after the faces answer, with no status request`, failedRow.state === "starting" && recovered, { failedState: failedRow.state, last: frames.at(-1) });
 
   // A long outage with a space named by its host, whose lookups fail by turns at once and after the
   // budget. The feed follows the latest reason. The daemon's log is bounded (64 KiB), so it records
@@ -624,5 +661,5 @@ if (control) {
 if (fail > 0) console.log(`\n--- last daemon output ---\n${daemonLog.slice(-60).join("\n")}`);
 console.log(`\n=== daemon-lost-connection smoke: ${pass} passed, ${fail} failed ===`);
 emitSentinel({ passed: pass, failed: fail });
-if (fail > 0 || pass !== 22) process.exit(1);
+if (fail > 0 || pass !== 25) process.exit(1);
 process.exit(0);
