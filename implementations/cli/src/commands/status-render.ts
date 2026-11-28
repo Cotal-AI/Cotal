@@ -228,7 +228,8 @@ function setUpApplications(m: StatusResult["machine"]): string[] {
   return (m.connectors ?? []).filter((connector) => !connector.missing.length).map((connector) => connector.name);
 }
 
-/** The applications line: the names that are set up, and how many more `cotal setup` would add. */
+/** The applications line: the names that are set up, and how many more `cotal setup` would add.
+ *  `beyondService` names those the background service's own cached report says it cannot see. */
 function applicationsCell(m: StatusResult["machine"], interactive: boolean, beyondService: readonly string[] = []): Cell {
   if (m.connectors === null) return stateCell("could not be read", "failed");
   const setUp = setUpApplications(m), others = m.connectors.length - setUp.length;

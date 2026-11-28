@@ -88,6 +88,10 @@ await runCli(registry, argv, {
     if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
     else await importing(...(Object.keys(surfaces) as Surface[]))();
     if (word === "update") await import("./daemon/update-entry.js");
+    // `cotal status` and `cotal setup` name an application the background service cannot see only
+    // when the service's own cached report says so. The first status-watch frame is that cache.
+    // Anything else, including a daemon that is not running, leaves the note empty.
+    if ((word === "status" || word === "setup") && !help) await noteHiddenApplications();
 
     // Handle a closed pipe or a failed file write before any command emits output.
     process.stdout.on("error", stdoutError);
@@ -95,3 +99,16 @@ await runCli(registry, argv, {
   },
   startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt },
 });
+
+/** Names from a hosted Manager's cached connector rows that this shell can run and the service
+ *  reports missing. The reason text is the one the service already records. A signed-out account,
+ *  a report with no such row, or no report at all records nothing. */
+async function noteHiddenApplications(): Promise<void> {
+  const { noteServiceHiddenApplications, applicationsHiddenByReport } = await import("@cotal-ai/cli/self-exec");
+  try {
+    const { cachedDaemonStatus } = await import("./daemon/client.js");
+    const { daemonPaths } = await import("./daemon/endpoint.js");
+    const hidden = applicationsHiddenByReport(await cachedDaemonStatus({ paths: daemonPaths() }));
+    if (hidden.length) noteServiceHiddenApplications(hidden);
+  } catch { /* no report: the application line stays as it is */ }
+}

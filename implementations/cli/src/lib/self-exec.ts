@@ -286,3 +286,38 @@ export function selfCotal(): string {
     .map((a) => `"${a}"`)
     .join(" ");
 }
+
+/**
+ * Applications the background service reports missing that this shell can run. Empty unless the
+ * composition root read that from the service's own cached status. A command never fills this
+ * itself, and a missing or foreign service leaves it empty.
+ */
+let serviceHiddenApplications: readonly string[] = [];
+
+/** Record the applications the service's cached report says this shell can see and the service cannot. */
+export function noteServiceHiddenApplications(names: readonly string[]): void {
+  serviceHiddenApplications = Object.freeze([...new Set(names)].sort());
+}
+
+/** The applications recorded by {@link noteServiceHiddenApplications}. */
+export function applicationsHiddenFromService(): readonly string[] {
+  return serviceHiddenApplications;
+}
+
+/**
+ * Applications a service report says this shell can run and the service cannot see.
+ * Empty when there is no report or the account is signed out. The reason text is the one a hosted
+ * Manager records, the same text `hasNewApplications` matches. This does not read the service.
+ */
+export function applicationsHiddenByReport(report: { readonly account?: { readonly mode?: string }; readonly managers?: readonly { readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[] }[] } | undefined): readonly string[] {
+  if (!report || report.account?.mode === "signed-out") return [];
+  const hidden = new Set<string>();
+  for (const manager of report.managers ?? []) {
+    for (const connector of manager.connectors ?? []) {
+      if (connector.state === "available") continue;
+      const missing = / harness needs (.+) on PATH/.exec(connector.reason ?? "")?.[1]?.split(", ") ?? [];
+      if (missing.length > 0 && missing.every((binary) => resolveOnPath(binary) !== undefined)) hidden.add(connector.agent);
+    }
+  }
+  return [...hidden].sort();
+}

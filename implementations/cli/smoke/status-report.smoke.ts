@@ -15,7 +15,6 @@
  * Add --bin=<installed-cli-path> to exercise an installed CLI.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { connect } from "node:net";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -979,56 +978,21 @@ registry.register({ kind: "connector", name: "aa", requires: ["aa-bin"], buildLa
     provides: [{ kind: "connector", name: "aa" }], commands: [],
     connectors: [{ name: "aa", requires: ["aa-bin"], eventPlane: false, setup: null }],
   }] }));
-  const unit = `[Service]\nEnvironment=PATH="/usr/bin:/bin"\nExecStart="/bin/true"\n`;
-  const unitPath = join(home, ".config", "systemd", "user", "cotal-daemon.service");
-  mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true, mode: 0o700 });
-  writeFileSync(unitPath, unit, { mode: 0o600 });
-  const daemonHome = join(home, ".cotal-home");
-  mkdirSync(join(daemonHome, "daemon"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
-    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
-    unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString(),
-  }), { mode: 0o600 });
   const project = join(home, "project");
   mkdirSync(project);
   const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
-  const repair = `the background service cannot see aa; run \`${displayCmd()} daemon setup\` in this terminal`;
   const status = run(["status", "--space", "nosuch", "--plain"], onPath);
-  check("status names an application the recorded service cannot see and the repair command",
-    status.status === 0 && (status.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)) ?? "").includes(repair), shown(status));
-  const pinned = `[Service]\nEnvironment=PATH="${bin}:/usr/bin:/bin"\nExecStart="/bin/true"\n`;
-  writeFileSync(unitPath, pinned, { mode: 0o600 });
-  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
-    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
-    unitSha256: createHash("sha256").update(pinned).digest("hex"), installedAt: new Date().toISOString(),
-  }), { mode: 0o600 });
-  const aligned = run(["status", "--space", "nosuch", "--plain"], onPath);
-  check("status stays quiet when the recorded service can see the application",
-    aligned.status === 0 && !aligned.stdout.includes("background service cannot see"), shown(aligned));
-  writeFileSync(unitPath, unit, { mode: 0o600 });
-  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
-    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
-    unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString(),
-  }), { mode: 0o600 });
+  const statusLine = status.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)) ?? "";
+  check("status lists the application and does not name a repair without a service report",
+    status.status === 0 && statusLine.includes("aa") && !status.stdout.includes("background service cannot see") && !status.stdout.includes("daemon setup"), shown(status));
   const setup = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
     cwd: project,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath, NO_COLOR: "1" },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...onPath, NO_COLOR: "1" },
     encoding: "utf8", timeout: 120_000,
   });
-  check("setup names the same application and the same repair command",
-    setup.status === 0 && (setup.stdout ?? "").includes(ascii(`application: aa · ${repair}`)), { status: setup.status, stdout: (setup.stdout ?? "").slice(0, 900), stderr: (setup.stderr ?? "").slice(0, 600) });
-  writeFileSync(unitPath, pinned, { mode: 0o600 });
-  writeFileSync(join(daemonHome, "daemon", "service-unit.json"), JSON.stringify({
-    v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath,
-    unitSha256: createHash("sha256").update(pinned).digest("hex"), installedAt: new Date().toISOString(),
-  }), { mode: 0o600 });
-  const hidden = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "aa", "--project", project, "--space", "seen", "--no-input", "--plain"], {
-    cwd: project,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: daemonHome, COTAL_SKIP_CONNECTOR_SEED: "1", PATH: `${bin}${delimiter}/usr/bin:/bin`, NO_COLOR: "1" },
-    encoding: "utf8", timeout: 120_000,
-  });
-  check("setup stays quiet when the recorded service can see the application",
-    hidden.status === 0 && !(hidden.stdout ?? "").includes("background service cannot see"), { status: hidden.status, stdout: (hidden.stdout ?? "").slice(0, 900), stderr: (hidden.stderr ?? "").slice(0, 600) });
+  const setupLine = (setup.stdout ?? "").split("\n").find(line => line.includes("application:")) ?? "";
+  check("setup lists the application and does not name a repair without a service report",
+    setup.status === 0 && setupLine.includes("aa") && !(setup.stdout ?? "").includes("background service cannot see") && !(setup.stdout ?? "").includes("daemon setup"), { status: setup.status, stdout: (setup.stdout ?? "").slice(0, 900), stderr: (setup.stderr ?? "").slice(0, 600) });
 }
 
 finish();

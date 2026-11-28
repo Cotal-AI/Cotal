@@ -63,7 +63,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { cotalOnPath, displayCmd, displayRemedy, isNpx, isPnpmDlx, selfArgv } from "../lib/self-exec.js";
+import { cotalOnPath, displayCmd, displayRemedy, isNpx, isPnpmDlx, selfArgv, applicationsHiddenFromService } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
@@ -74,8 +74,6 @@ import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
-import { applicationsBeyondRecordedService } from "../lib/service-application.js";
-
 const ONBOARD_VERSION = "2";
 
 /** Setup saves its preparation before a separate start decision. Scripts name every input;
@@ -993,8 +991,8 @@ function setupView(r: SetupResult, connectionRefused = false): Report {
     : r.harness.failed
       ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }
       : r.harness.name;
-  const hidden = applicationsBeyondRecordedService().includes(r.harness.name)
-    && r.harness.missing.length === 0 && !r.harness.unavailable && !r.harness.failed
+  const hidden = r.destination !== "local" && r.harness.missing.length === 0 && !r.harness.unavailable && !r.harness.failed
+    && applicationsHiddenFromService().includes(r.harness.name)
     ? ` · the background service cannot see ${r.harness.name}; run \`${displayCmd()} daemon setup\` in this terminal`
     : "";
   const fields: [string, Cell][] = [
