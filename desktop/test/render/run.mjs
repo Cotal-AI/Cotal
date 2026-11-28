@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import axe from "axe-core";
 import { nativeStub, scenarios } from "./fixtures.mjs";
 
-const root = resolve(fileURLToPath(new URL("../../dist/", import.meta.url)));
+const root = resolve(process.env.RENDER_DIST ?? fileURLToPath(new URL("../../dist/", import.meta.url)));
 const output = resolve(process.env.SHOTS ?? "test/render/artifacts");
 const config = JSON.parse(await readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 await mkdir(output, { recursive: true });
@@ -84,7 +84,9 @@ try {
       reports: window.__renderState.paintReports,
     })), { hidden: true, daemonPending: true, fontsResolved: false, events: ["decoded", "layout", "report"], reports: 1 });
   } finally { await hidden.close(); }
-  for (const theme of ["light"]) for (const width of [880, 560]) for (const scenario of cases) {
+  const widths = process.env.RENDER_WIDTH ? [Number(process.env.RENDER_WIDTH)] : [880, 560];
+  assert.ok(widths.every(width => width === 880 || width === 560), "unsupported render width");
+  for (const theme of ["light"]) for (const width of widths) for (const scenario of cases) {
       const motionModes = process.env.MOTION ? ["no-preference", "reduce"] : ["no-preference"];
       for (const reducedMotion of motionModes) {
       const name = `${scenario.name}-${theme}-${width}${reducedMotion === "reduce" ? "-reduced" : ""}`;
@@ -355,7 +357,7 @@ try {
       await page.addScriptTag({ url: `${address}/axe.js` });
       const violations = await page.evaluate(async () => (await axe.run(document)).violations.map(v => ({ id: v.id, targets: v.nodes.map(n => n.target) })));
       assert.deepEqual(violations, [], `${name}: accessibility`);
-      const expected = await page.locator("button:visible:enabled,input:visible:enabled,select:visible:enabled,summary:visible,[tabindex]:visible:not([tabindex='-1'])").evaluateAll(elements => elements.map(el => el.id || el.tagName));
+      const expected = await page.locator("button:visible:enabled,input:visible:enabled,select:visible:enabled,summary:visible,[tabindex]:visible").evaluateAll(elements => elements.filter(el => el.tabIndex >= 0).map(el => el.id || el.tagName));
       await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
       // A click on the non-focusable shell resets the sequential navigation starting point.
       await page.locator(".brand").click();

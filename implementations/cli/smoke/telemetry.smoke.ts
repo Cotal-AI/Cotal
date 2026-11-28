@@ -11,7 +11,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -249,6 +249,13 @@ for (const level of ["regular", "minimal"]) {
   const s = sandbox(), space = "private-preset-fixture";
   const marker = "private-root-fixture", file = join(s.project, `regular file ${marker}`);
   writeFileSync(file, "original");
+  if (process.platform !== "win32") {
+    const link = join(s.project, `contract ${marker}.json`);
+    symlinkSync(file, link);
+    const denied = await s.run(["endpoint", "check", link, "--json"]), event = denied.sent.find(body => body.event === "command");
+    check("a refused contract link is named only locally", denied.status === 2 && denied.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
+      && event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
+  }
   const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
@@ -295,6 +302,19 @@ for (const level of ["regular", "minimal"]) {
     check(`preparation conflict for ${name} keeps the existing path local`, made.status === 0 && r.status === 2 && r.stdout.includes(marker) && r.stdout.includes("space show existing --json")
       && event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
   }
+  const nested = await s.run(["space", "create", "nested", "--root", join(root, ".cotal"), "--json"]), blocked = nested.sent.find(body => body.event === "command");
+  check("a control folder is named locally without sending its path", nested.status === 2 && nested.stdout.includes(marker) && blocked?.errorCode === "CONFLICT"
+    && blocked.errorMessage === null && blocked.errorStack === null && !JSON.stringify(nested.sent).includes(marker), shown(nested));
+  const seed = await s.run(["space", "create", "checkout", "--root", root, "--json"], { XDG_CONFIG_HOME: join(s.home, `config ${marker}`), COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: undefined });
+  const denied = seed.sent.find(body => body.event === "command");
+  check("a refused checkout writer keeps the seed store and executable local", seed.status === 2 && seed.stdout.includes(marker) && denied?.errorCode === "DEPENDENCY_UNAVAILABLE"
+    && denied.errorMessage === null && denied.errorStack === null && !JSON.stringify(seed.sent).includes(marker), shown(seed));
+  const missing = await s.run(["spawn", "absent", "--dry-run", "--space", "existing", "--json"]), miss = missing.sent.find(body => body.event === "command");
+  check("a missing launch persona shows the catalog only locally", missing.status === 2 && missing.stdout.includes(marker) && missing.stdout.includes("persona --space existing --json")
+    && miss?.errorCode === "TARGET_NOT_FOUND" && miss.errorMessage === null && miss.errorStack === null && !JSON.stringify(missing.sent).includes(marker), shown(missing));
+  const stopped = await s.run(["channel", "show", "general", "--space", "existing", "--json"]), target = stopped.sent.find(body => body.event === "command");
+  check("a connection refusal for an unstarted project keeps the restart folder local", stopped.status === 2 && stopped.stdout.includes(marker)
+    && target?.errorCode === "TARGET_UNAVAILABLE" && target.errorMessage === null && target.errorStack === null && !JSON.stringify(stopped.sent).includes(marker), shown(stopped));
   const selected = await s.run(["use", "existing"], { DO_NOT_TRACK: "1" });
   renameSync(root, `${root}-parked`);
   const moved = await s.run(["up", "--open", "--server", "nats://127.0.0.1:1", "--json"]), event = moved.sent.find(body => body.event === "command");
