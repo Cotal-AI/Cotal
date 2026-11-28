@@ -154,7 +154,7 @@ try {
   check("the named stop stops the service", stopped.status === 0 && running("mgr") === undefined, shown(stopped));
   if (launcher !== undefined && retry === expectedRetry) {
     const retried = cotal(...retry.slice(launcher.length + 1).split(" "));
-    check("the printed retry returns JSON without starting the stack's manager", retried.status === 0 && retried.env?.outcome === "ok" && running("stack-manager") === undefined, shown(retried));
+    check("the printed retry returns JSON without starting the stack's manager", retried.status === 0 && retried.env?.result?.kind === "controller-stack-up" && running("stack-manager") === undefined, shown(retried));
   }
   const again = cotal("up", "--json");
   const stackManager = running("stack-manager")?.instanceId;

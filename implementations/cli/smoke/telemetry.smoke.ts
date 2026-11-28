@@ -16,7 +16,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
-import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
 import { recordedProcessRefusal } from "../src/commands/service-registry.js";
@@ -59,7 +59,10 @@ function sandbox() {
   const run = async (args: string[], extra: Record<string, string | undefined> = {}) => {
     const before = received.length;
     const started = Date.now();
-    const child = spawn(process.execPath, [BIN, ...args], { cwd: project, env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
+    const options = { cwd: project, env: { ...env, ...extra } };
+    // This suite owns no stack. It inspects shutdown diagnostics but must never run a shutdown.
+    assertSmokeSandboxDown(undefined, args, options);
+    const child = spawn(process.execPath, [BIN, ...args], { ...options, stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
     let stdout = "", stderr = "";
     child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
     child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
