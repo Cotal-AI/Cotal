@@ -34,6 +34,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { SMOKE_BROKER_TOKEN, createSuite, freePort, listenOn, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { clean, nodePty, wait, type Pty } from "./_console-pty.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -529,6 +530,14 @@ if (process.platform !== "win32") {
   check("a space prepared here is not self-hosted: CONFLICT", refused(local, 2, "CONFLICT") && /--destination local/.test(local.env?.error?.remedy ?? ""), shown(local));
   check("those refusals wrote nothing", JSON.stringify(files()) === JSON.stringify(before));
 
+  const intake = await openTelemetryIntake();
+  try {
+    const marker = "fixture-folder-marker", wrongRoot = project(`other ${marker}`);
+    const wrong = await json(hosted("team", wrongRoot), notTeam, { DO_NOT_TRACK: "0", COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url });
+    const event = intake.received.find(row => row.event === "command");
+    check("a hosted project mismatch names the requested folder only locally", refused(wrong, 2, "CONFLICT") && wrong.stdout.includes(marker) &&
+      event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(intake.received).includes(marker), shown(wrong));
+  } finally { intake.server.close(); }
   const ok = await json(hosted("team", teamRoot));
   const target = resolveMeshTarget(home, { space: "team" });
   check("a registered space is set up where spawn reads its personas",
@@ -611,7 +620,10 @@ ${block.slice("bash\n".length).replaceAll("research", "scripted-hosted-research"
   check("the same connection file refreshes the plugin without registering again", again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && again.env.result.spaceState === "registered", shown(again));
   writeFileSync(join(home, "moved.json"), JSON.stringify({ ...bundle, server: "nats://127.0.0.1:4998" }));
   const moved = await json(hosted("hosted", userRoot, ["--connection-file", join(home, "moved.json")]));
-  check("a connection file naming another broker for a registered space is CONFLICT", refused(moved, 2, "CONFLICT") && /cotal space forget hosted/.test(moved.env?.error?.remedy ?? ""), shown(moved));
+  const advice = moved.env?.error?.remedy ?? "";
+  const inspect = /`cotal (space show hosted --json)`/.exec(advice);
+  const inspected = inspect && await run(inspect[1]!.split(" "), notTeam);
+  check("a conflicting bundle points to the unchanged registration before suggesting a retry", refused(moved, 2, "CONFLICT") && inspected?.status === 0 && inspected.stdout.includes(AUTH_LIVE) && advice.includes("without --connection-file") && !advice.includes("space forget") && findMesh("hosted")?.server === AUTH_LIVE, shown(moved));
 }
 
 // ── Runtimes ──────────────────────────────────────────────────────────────────────────────────────

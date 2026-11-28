@@ -408,7 +408,7 @@ export type SelfHostedSpace =
  * connection file that `space add --file` would accept. A connection file for a space already
  * registered must name the same space and broker, so a rerun with the same answers changes nothing.
  */
-export function checkSelfHostedSpace(space: string, project: string, connectionFile: string | undefined): SelfHostedSpace {
+export function checkSelfHostedSpace(space: string, project: string, connectionFile: string | undefined, presentation: Presentation): SelfHostedSpace {
   const target = { space };
   if (findPreparedSpace(space)) throw refuse("CONFLICT", `"${space}" is a space prepared on this machine`, target, "set it up with --destination local");
   const entry = findMesh(space);
@@ -423,7 +423,7 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
     if (bundle.space !== space) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${space}": a bundle adds the space it was exported for`, target);
     const server = take(checkServer(bundle.server, "the bundle's server"), target);
     if (server !== entry.server)
-      throw refuse("CONFLICT", `"${space}" is registered at ${entry.server}, and the bundle names ${server}`, target, `forget it first with \`cotal space forget ${space}\``);
+      throw refuse("CONFLICT", `"${space}" is registered at ${entry.server}, and the bundle names ${server}`, target, `inspect the registration with ${showSpaceCommand(space, presentation)}; if its broker is the one you intend, repeat setup without --connection-file and its value; otherwise confirm the intended broker with the space operator before changing the registration`);
   }
   if (canonicalRoot(entry.root) !== canonicalRoot(project)) {
     const custodyRoot = entry.origin === "catalog" ? entry.catalogRoot ?? entry.root : undefined;
@@ -438,7 +438,7 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
       protectedLocalDirectory(project, "the project folder");
       return { kind: "bind", entry, project: canonicalRoot(project) };
     }
-    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass ${codeSpan(`--project ${shellWord(entry.root)}`)}`);
+    throw localDiagnostic(refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass ${codeSpan(`--project ${shellWord(entry.root)}`)}`));
   }
   return { kind: "registered", entry };
 }
@@ -625,7 +625,7 @@ export function recordLocalSpace(name: string, root: string, flag: "--root" | "-
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
     if (!unwritable(error)) throw localWriteFailure(error, dir, { requested: name, root });
-    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`);
+    throw localDiagnostic(refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`));
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();

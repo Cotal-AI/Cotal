@@ -132,7 +132,7 @@ try {
     down.status === 2 && down.out.includes("LIFECYCLE_BLOCKED") && down.out.includes("a shared broker is not stopped in this cut"), down.out.slice(-1200));
   ok("the human refusal names the blocking registration",
     down.out.includes("shared-neighbor"), down.out.slice(-1200));
-  ok("the Next step names the down to run again", down.out.includes("Next") && /then run bare `(?:pnpm )?cotal down`/.test(down.out), down.out.slice(-1200));
+  ok("the Next step names the down to run again", down.out.includes("Next") && /then run `(?:pnpm )?cotal down --yes --space shared-down-owner`/.test(down.out), down.out.slice(-1200));
   ok("the refusal does not forget anything and never implies the shared space is safe to stop",
     !/forgot shared-neighbor/.test(down.out) && !/safe to stop/.test(down.out), down.out.slice(-1200));
   ok("the broker listener is still serving after the refusal", await serving(port));
@@ -159,7 +159,7 @@ try {
   ok("the printed forget removes only the retained registration", forgottenOld.status === 0 && forgottenOld.out.includes("forgot -old"), forgottenOld.out);
   ok("the broker listener is still serving after the explicit forget", await serving(port));
 
-  const retry = await run(["down", "--yes"]);
+  const retry = await run(nextCommand(env?.error?.remedy ?? "", "down --yes --space shared-down-owner --json"));
   ok("retrying down then exits 0 and stops the stack", retry.status === 0, retry.out.slice(-800));
   ok("the loopback listener closes after the retry down", await waitServing(port, false));
 

@@ -48,10 +48,10 @@ servers.push(blackHole);
 const blackHolePort = await onFreePort((p) => listenOn(blackHole, p));
 
 /** A fresh sandboxed home with its own project dir; `run` executes the built binary in it. */
-function sandbox() {
+function sandbox(projectName = "project") {
   const home = mkdtempSync(join(tmpdir(), "cotal-telemetry-"));
   homes.push(home);
-  const project = join(home, "project");
+  const project = join(home, projectName);
   mkdirSync(project);
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COTAL_TELEMETRY_URL: url, SHELL: "/bin/zsh", TERM_PROGRAM: "smoke-term" };
   const settingsPath = join(home, ".cotal", "telemetry.json");
@@ -191,6 +191,19 @@ for (const level of ["regular", "minimal"]) {
   check("an explicit extension add still reports its own failure", r.status === 1 && commands.length === 1 && commands[0]?.subcommand === "add" && commands[0]?.outcome === "error");
 }
 
+{
+  const marker = "fixture-cwd-marker", s = sandbox(`working ${marker}`);
+  const r = await s.run(["backup", "create", "artifact", "--store-dir=~/stores", "--json"]), event = r.sent.find(row => row.event === "command");
+  const config = join(s.home, `config ${marker}`);
+  mkdirSync(config); writeFileSync(join(config, "cotal"), "unchanged");
+  const blocked = await s.run(["backup", "verify", "artifact", "--json"], { XDG_CONFIG_HOME: config });
+  const configEvent = blocked.sent.find(row => row.event === "command");
+  check("a blocked config folder stays in the local diagnostic", blocked.status === 1 && blocked.stdout.includes(marker) && readFileSync(join(config, "cotal"), "utf8") === "unchanged" &&
+    configEvent?.errorCode === "SCHEMA_INVALID" && configEvent.errorMessage === null && configEvent.errorStack === null && !JSON.stringify(blocked.sent).includes(marker), shown(blocked));
+  check("an unexpanded store path names the working folder only locally", r.status === 1 && r.stdout.includes(marker) && !existsSync(join(s.project, "artifact")) &&
+    event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
@@ -208,6 +221,15 @@ for (const level of ["regular", "minimal"]) {
   check("a refused command's event carries the outcome and the typed error code", ps.sent.length === 1 && ps.sent[0]?.outcome === "refused" && ps.sent[0]?.errorCode === error?.code && ps.sent[0]?.exitCode === 2, ps.sent[0]);
   check("…and the refusal's message, with no path in it", typeof ps.sent[0]?.errorMessage === "string" && (ps.sent[0]!.errorMessage as string).length > 0 && !(ps.sent[0]!.errorMessage as string).includes(s.home) && !/\/[\w.-]+\/[\w.-]+/.test(ps.sent[0]!.errorMessage as string), ps.sent[0]?.errorMessage);
   check("…and a stack whose frames name no directory outside node_modules", typeof ps.sent[0]?.errorStack === "string" && /^at /.test(ps.sent[0]!.errorStack as string) && !(ps.sent[0]!.errorStack as string).includes(s.home) && !/\(\/|\(file:/.test(ps.sent[0]!.errorStack as string), ps.sent[0]?.errorStack);
+  const marker = "fixture-setup-value", file = join(s.project, `ordinary ${marker}`);
+  writeFileSync(file, "unchanged");
+  for (const flag of ["destination", "runtime", "project"] as const) {
+    const options = { destination: "local", runtime: "pty", project: s.project, harness: "codex", space: "setup-check", [flag]: flag === "project" ? file : marker };
+    const r = await s.run(["setup", "--json", ...Object.entries(options).flatMap(([key, value]) => [`--${key}`, value])]);
+    const event = r.sent.find(body => body.event === "command");
+    check(`setup keeps the rejected --${flag} value local`, r.status === 1 && r.stdout.includes(marker) && event?.errorCode === "USAGE_INVALID" &&
+      event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker) && readFileSync(file, "utf8") === "unchanged", shown(r));
+  }
   const watch = await s.run(["watch", "--json", "--space", "absent-watch-fixture"]);
   const records = watch.stdout.trim().split("\n").map((line) => JSON.parse(line));
   const event = watch.sent[0];
@@ -240,6 +262,16 @@ for (const level of ["regular", "minimal"]) {
   check("a spawn pin refusal shows its retry locally but sends neither its message nor its stack",
     spawn.status === 1 && spawn.stderr.includes(prompt) && spawn.sent.length === 1 && spawn.sent[0]?.errorCode === "USAGE_INVALID"
     && spawn.sent[0]?.errorMessage === null && spawn.sent[0]?.errorStack === null, { ...shown(spawn), sent: spawn.sent });
+  const terminalText = "fixture-terminal-text";
+  const inputArgs = ["input", "--name", "fixture-agent", "--no-enter", "--json"];
+  const empty = await s.run(inputArgs);
+  const emptyEvent = empty.sent.find(body => body.event === "command");
+  check("unpinned missing text reports the equals form for a dash-leading value", empty.status === 1 && empty.stdout.includes("--text=<value>") &&
+    emptyEvent?.errorCode === "USAGE_INVALID" && String(emptyEvent.errorMessage).includes("--text=<value>"));
+  const input = await s.run([...inputArgs, `--text=--${terminalText}`, "--on="]);
+  const inputEvent = input.sent.find(body => body.event === "command");
+  check("an input pin retry keeps the terminal text local", input.status === 1 && input.stdout.includes(`--text=--${terminalText}`) &&
+    inputEvent?.errorCode === "USAGE_INVALID" && inputEvent.errorMessage === null && inputEvent.errorStack === null && !JSON.stringify(input.sent).includes(terminalText), shown(input));
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
@@ -256,10 +288,26 @@ for (const level of ["regular", "minimal"]) {
     check("a refused contract link is named only locally", denied.status === 2 && denied.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
       && event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
   }
+  const incomplete = join(s.project, `unfinished ${marker}`);
+  mkdirSync(incomplete); writeFileSync(join(incomplete, "checkpoints.json"), "[]");
+  for (const mode of ["inspect", "verify"]) {
+    for (const path of [file, join(s.project, `missing ${marker}`), incomplete]) {
+      const r = await s.run(["backup", mode, path, "--json"]), event = r.sent.find(body => body.event === "command");
+      check(`backup ${mode} keeps its rejected artifact path local`, r.status === (path === incomplete ? 1 : 2) && r.stdout.includes(marker) &&
+        event?.errorCode === (path === incomplete ? "SCHEMA_INVALID" : "TARGET_NOT_FOUND") && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+    }
+  }
   const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
     && commands.length === 1 && commands[0]?.errorCode === "USAGE_INVALID" && commands[0]?.errorMessage === "the project root is not a directory" && !JSON.stringify(invalid.sent).includes(marker), shown(invalid));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const root = join(s.project, `read-only ${marker}`);
+    mkdirSync(root, { mode: 0o500 });
+    const denied = await s.run(["space", "create", space, "--root", root, "--json"]), event = denied.sent.find(body => body.event === "command");
+    check("an unwritable project is named only in the local preparation refusal", denied.status === 2 && denied.stdout.includes(root) && !existsSync(join(root, ".cotal")) &&
+      event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
+  }
   const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
   const addEvent = add.sent.find(body => body.event === "command");
   check("a refused registration root stays local", add.status === 1 && add.stdout.includes(marker) && addEvent?.errorCode === "USAGE_INVALID" && addEvent.errorMessage === "--root must name an existing directory" && !JSON.stringify(add.sent).includes(marker), shown(add));
@@ -281,6 +329,12 @@ for (const level of ["regular", "minimal"]) {
   check("a project path with a control character is named only locally", refused.status === 1 && refused.stdout.includes(marker) && refused.stdout.includes("a tab") && !existsSync(odd)
     && reported.length === 1 && reported[0]?.errorCode === "USAGE_INVALID" && reported[0].errorMessage === null && reported[0].errorStack === null && !JSON.stringify(refused.sent).includes(marker), shown(refused));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  const other = "fixture-tenant-marker", store = join(s.project, `store ${marker}`), stream = `CHAT_${other}`;
+  mkdirSync(join(store, "jetstream", "$G", "streams", stream), { recursive: true, mode: 0o700 });
+  const occupied = await s.run(["up", "--space", space, "--store-dir", store, "--server", "nats://127.0.0.1:1", "--open", "--no-manager", "--json"]);
+  const conflict = occupied.sent.find(body => body.event === "command");
+  check("startup keeps the shared store and its other tenant local", occupied.status === 2 && occupied.stdout.includes(store) && occupied.stdout.includes(stream) &&
+    conflict?.errorCode === "CONFLICT" && conflict.errorMessage === null && conflict.errorStack === null && ![marker, other].some(text => JSON.stringify(occupied.sent).includes(text)), shown(occupied));
   const absent = "private-absent-fixture", unknown = await s.run(["use", absent, "--plain"]);
   const event = unknown.sent.find(body => body.event === "command");
   check("a refused selection lists known spaces only on this machine", unknown.status === 2 && unknown.stderr.includes(space) && unknown.stderr.includes(absent)
@@ -334,6 +388,14 @@ for (const level of ["regular", "minimal"]) {
 
 {
   const space = "private-project";
+  for (const code of ["TARGET_NOT_FOUND", "TARGET_UNAVAILABLE"] as const) {
+    const message = `no manager matches the pin in ${space}`;
+    const failure = new CommandFailure("refused", code, message, { target: { space, requestedManagerInstance: "fixture-id" } });
+    const text = telemetryErrorText("ps", failure);
+    check(`a missing Manager pin keeps its ${code} diagnostic local`, text.message === null && text.stack === null && failure.message === message);
+    const other = new CommandFailure("refused", code, "no available target", { target: { space } });
+    check(`an unpinned ${code} diagnostic still reports its reason`, telemetryErrorText("ps", other).message === other.message);
+  }
   const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
@@ -351,6 +413,15 @@ for (const level of ["regular", "minimal"]) {
   check("native spawn messages and stacks stay local", text.message === null && text.stack === null && failure.message === message);
   const usage = telemetryErrorText("spawn", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
   check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
+}
+
+{
+  const message = 'no managed agent "fixture-agent" on manager fixture-instance';
+  const failure = new CommandFailure("refused", "TARGET_NOT_FOUND", message, { native: { code: "not-found" } });
+  const text = telemetryErrorText("attach", failure);
+  check("an attach miss reported by a manager keeps the agent and instance local", text.message === null && text.stack === null && failure.message === message);
+  const usage = telemetryErrorText("attach", new CommandFailure("refused", "USAGE_INVALID", "name the agent"));
+  check("an attach usage refusal still reports its diagnostic", usage.message === "name the agent" && typeof usage.stack === "string");
 }
 
 // ---- minimal ----
