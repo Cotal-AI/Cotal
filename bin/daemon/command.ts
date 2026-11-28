@@ -388,7 +388,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
     const requirement = daemonServiceRequirement(values["daemon-home"]);
     if (requirement) throw requirement;
     if (values["daemon-home"] === undefined) {
-      const mismatch = serviceHomeMismatch();
+      const mismatch = serviceHomeMismatch(process.env);
       if (mismatch) throw mismatch;
     }
   }
@@ -447,7 +447,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
     const requirement = daemonServiceRequirement(values["daemon-home"]);
     if (requirement) throw requirement;
     if (values["daemon-home"] === undefined) {
-      const mismatch = serviceHomeMismatch();
+      const mismatch = serviceHomeMismatch(process.env);
       if (mismatch) throw mismatch;
     }
   }
