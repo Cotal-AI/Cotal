@@ -1,12 +1,37 @@
 # cotal-ai
 
+## 0.185.0
+
+### Minor Changes
+
+- Throwaway candidate version.
+
+### Patch Changes
+
+- c3db9e3: Keep Linux daemon-hosted terminals alive when the daemon or Manager process crashes by placing their PTYs in a separate shared host, without changing when updates activate.
+- f95f68d: Keep Windows background Manager terminals in an independent Windows task while preserving the existing stop and update rules.
+- Updated dependencies [c3db9e3]
+- Updated dependencies [29227cd]
+- Updated dependencies [f95f68d]
+  - @cotal-ai/seat@0.185.0
+  - @cotal-ai/manager@0.185.0
+  - @cotal-ai/workspace@0.185.0
+  - @cotal-ai/cli@0.185.0
+  - @cotal-ai/auth@0.185.0
+  - @cotal-ai/delivery@0.185.0
+  - @cotal-ai/runtime@0.185.0
+  - @cotal-ai/connector-core@0.185.0
+  - @cotal-ai/core@0.185.0
+  - @cotal-ai/registry@0.185.0
+
 ## 0.184.0
 
 ### Patch Changes
 
 - 08bb8ae: Open Agent apps before connecting a computer. The desktop can list, install, and sign in to supported apps without first setting up the background service. When this copy of Cotal owns the service, it refreshes the service after an install and when you choose Check again, so spaces can find the apps. If the app cannot verify ownership, Agent apps is read-only.
-  
+
   Desktop setup can now return `LIFECYCLE_BLOCKED` while an agent app change is in progress. Wait for that change to finish, then try setup again.
+
 - 1e6ab66: On Windows, an application installed from the desktop app's Agent apps screen is now picked up even when another Cotal installation set up the background service, such as a command line installed with npm. The app restarts that service unchanged so it reads the new user PATH, and the service keeps its version. When the service cannot pick an application up, the app shows it as installed and says why, instead of "Couldn't install", and the reason no longer includes the service's command line. When a Windows installer stops, the row now gives the reason the installer printed, such as Codex's "Cannot replace older standalone install without confirmation", instead of only "exit code 1".
 - 6ce8ca7: `cotal daemon setup` now reports `service: <unit> is already installed` instead of claiming the unit was left as it is, prints `service: updating <unit> pinned PATH` immediately before rewriting an installed POSIX service's `PATH`, and prints `service: restarted <unit> with the updated PATH` only after the service restart completes.
 - 6d18757: Fix the Linux desktop RPM so it installs the bundled CLI files correctly and the CLI starts on Fedora.
@@ -133,9 +158,9 @@
 ### Minor Changes
 
 - 335d8e9: Launches that use a project's MCP servers, `spawn.env` or persona launch options now require a trusted project folder, so review the folder and run `cotal trust <path>` before retrying.
-  
+
   SDK callers of `loadCotalConfig` must pass a project trust check as the second argument, such as `isTrustedProject` from `@cotal-ai/workspace`.
-  
+
   The workspace exports `projectTrustForPreview` and `previewPersonaReader` for read-only plans that predict the legacy upgrade without recording or granting trust. Do not use them to authorize a launch.
 
 ### Patch Changes
@@ -2118,8 +2143,9 @@
 - 9b7aef2: Keep desktop connection refusals visible with their exact reason and provide recent background service output in Settings.
 - 58c16f7: Preserve pnpm dlx command hints and connector state across dlx cache refreshes, quote shell installer lock and PATH remedies, document npm generation store removal, and eliminate the Node 22.10 JSON module experimental warning.
 - 9ecacd7: Repair a recorded macOS background service when its application executable has been removed.
-  
+
   The CLI verifies the original LaunchAgent and receipt before moving the service to the current installation. Interrupted source and receipt publication retain a bounded repair record, disabled services stay disabled, and updater output no longer claims that an untouched foreign service was stopped.
+
 - ae78e21: Restore owner write permission on user-owned self-update directories and check npm's global node_modules directory before downloading release archives.
 - 08ae3e1: Restore interrupted update snapshots from the original config folder after a newer release selects retained connectors.
 - df69317: Concurrent MCP-only hosts using the same local account now receive distinct agent names.
@@ -2263,8 +2289,9 @@
 - ba558e0: Fail the shell installation with the startup error when the installed Cotal cannot run.
 - f287b21: Document the tar prerequisite for minimal Linux images before the install command and show the Rocky Linux package command when tar is missing.
 - 6f3c77d: Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
-  
+
   The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
+
 - c1cf22c: Recover damaged update preferences with a private backup and documented defaults when reading or changing them through the CLI.
 - dfa8b78: Shared CLI installations now distinguish home-local connector reconciliation from updating the CLI itself.
   Keep ordinary per-home reconciliation and name `cotal update` for stale local inventories. Automatic generation migration leaves a shared canonical connector graph used by an older recorded local Manager unchanged, reports that its connectors stay at their version until restart, and lets the ordinary command continue. Explicit reconciliation stays strict. A validated separate release selection can reconcile without changing that Manager's graph.
@@ -2319,8 +2346,9 @@
 - ef2247a: Correct desktop install smoke expectations for the service identity checks performed before a fresh installation.
 - 5217b90: Recover invalid desktop preferences with a preserved copy and a visible notice without changing Open at login.
 - 1a623d6: Explain how to stop hosted workflows on a default local stack.
-  
+
   The workflow guide and issue-orchestrator example now name `cotal down --yes` for a manager started without a saved service and state its whole-stack impact. A retained manager addressed as `stack-manager` refuses stop and restart with the supported stop path instead of suggesting a service definition. Prepared controller stacks keep their manager stop followed by `cotal up` path.
+
 - 784144e: Allow slow entry version verification during self-update and report timeouts distinctly from version mismatches.
 - Updated dependencies [5b96741]
 - Updated dependencies [c1734e0]
@@ -2348,11 +2376,13 @@
 ### Patch Changes
 
 - 2361917: Let pre-install checks briefly observe a seatless preserving Manager while its daemon releases a dead updater's hold.
-  
+
   The read-only check stays bound to the same daemon and Manager and refuses live, unknown, occupied or changed custody without releasing holds or restarting services.
+
 - fb7041c: Release a Manager's update preservation when the requesting updater has exited.
-  
+
   The daemon checks the authenticated updater's process lifetime and releases its exact preservation attempt. Live or unknown owners keep their fences, and update admission and service ownership behavior remain unchanged.
+
 - e7f9ee0: Remove unused retained connector release sets after publication while keeping releases used by local Managers, the daemon and surviving seats, and preserving older sets with unknown seat provenance.
 - e73eb92: Keep a local conversation's requested name when reconnecting after its previous host was killed.
 - 56b8180: Show the daemon generation wait line when a quiet update reconciliation refuses, while keeping successful updates to one wait line.
@@ -2377,21 +2407,24 @@
 ### Patch Changes
 
 - 5d4ffaf: Daemon uninstall waits through a macOS peer disconnect during shutdown.
-  
+
   The bounded shutdown check reobserves a connection closed before its kernel identity could be read. It still requires the daemon process and endpoint to be gone before removing the recorded installation.
+
 - 6cacf74: Recover an unchanged Linux daemon service after its local Cotal home was deleted. Install and uninstall verify the surviving protected service source and native unit before restoring its receipt or removing it, and refuse modified or overridden units.
 - 41f261a: Repeating daemon installation on Linux succeeds when the recorded service is unchanged and belongs to this installation. It verifies the existing unit without rewriting it or restarting the daemon.
 - ae73950: Self-update reports a stopped service owned by another installation once.
-  
+
   The reconcile child honors the updater's existing reporting marker for this fact. A child started by an older updater without that marker still reports it. Service ownership checks and stopped-service behavior are unchanged.
+
 - b0ae04c: Keep the installer launcher on the updated CLI when reconciliation repairs installation permissions, and verify the selected version before reporting success.
 - 85608df: Applications without a native Cotal connector can serve the gateway tools with `cotal mcp`. The stdio host keeps one local mesh identity until disconnect, uses the existing terminal-seat lifetime on static spaces, and retires that identity on shutdown. Signed-in spaces still require a native or hosted connector.
 - 646122b: Remove unused internal CLI exports and an uncalled manager cleanup helper without changing command behavior.
 - 8b0c336: Bound Linux daemon service startup to 60 seconds so systemd restarts a hung daemon even after its updater stops observing readiness.
 - 927e317: Reconcile retained shell-installed daemon services when reinstalling after removal of their Node runtime.
 - 3fb9ae2: Reconcile a POSIX installation after a manual upgrade without stopping its standalone Manager or seats.
-  
+
   Authenticate the Manager and seat inventory, then reconcile connectors in a separate installation-and-release prefix while retaining the previous prefix at its original paths. Initial installed reconciliation also preserves the shared prefix so a Manager started from another copy can keep launching its loaded connector generation until restart. Windows, source checkouts and version-changing admission are unchanged.
+
 - 45fcbb8: Retry transient package download failures during self-update with a short bounded backoff.
 - b434656: Let Linux daemon commands reach the existing private runtime directory and user manager from non-login sessions without runtime environment variables.
 - Updated dependencies [8acd8b7]
@@ -2441,8 +2474,9 @@
   Keep the no-daemon return even when the version-changing updater has already waited for its installed generation.
 - b4ae407: `cotal update --self` from a release before 0.166.0 prints the daemon wait line again. The reconcile step of the new version stayed quiet whenever an updater had started it, on the assumption that the updater prints `machine daemon: waiting up to 120s for Cotal <version> and its hosted Managers before the continuity check` afterwards. An updater from 0.164.10 does not wait there, so the update waited up to two minutes without saying why. The updater now tells its reconcile step that it waits, and the step stays quiet only then.
 - 417ad60: Windows setup now waits for the matching service reply when recovering from a timed-out preparation request.
-  
+
   The installer keeps partial replies across reads and discards only replies to requests that timed out. Malformed or unknown replies refuse the connection, and a missing abort reply remains unconfirmed. This also works when setup talks to an older installed runtime.
+
 - Updated dependencies [3bebc51]
 - Updated dependencies [126e7e5]
 - Updated dependencies [af1cfe4]
@@ -2606,8 +2640,9 @@
   Cleanup runs under the installation's update lock when an update starts, after it succeeds, and when the daemon starts. It skips another account's store and reports removal failures without failing the update.
 - 7d0e4f8: Daemon login and setup now report invalid provider URLs as usage refusals without echoing or recording the rejected URL. Validation runs before account selection or native setup effects, and help consistently describes auth URLs and discovery hostnames.
 - 85e8596: Keep a manually reinstalled CLI usable when another account's old generation store is unreadable.
-  
+
   A plain start leaves inaccessible retired descriptors untouched and runs the installed version.
+
 - Updated dependencies [1b5a7ed]
 - Updated dependencies [6c77c15]
 - Updated dependencies [8325513]
@@ -2677,8 +2712,9 @@
 - 9c68b92: The desktop app now checks background service status every 60 seconds while its window is hidden instead of every second, and refreshes immediately when the window is shown. Tray icon click events also request an immediate refresh where the platform delivers them, while on Linux the system panel renders the tray menu from `dbusmenu` without emitting tray icon click events, so the hidden tray menu can reflect state up to 60 seconds old until the window is opened.
 - e433bee: Reconcile installed extensions automatically after a manual `npm install -g` upgrade. When automatic updates are on, the background service's scheduled check finishes any pending extension reconciliation even when the CLI is already at the latest release, and the CLI launch gate brings operator-installed official extensions current alongside the built-in connectors or refuses with `cotal update --self` if it cannot.
 - f305af8: Stage complete execution generations before switching the installed CLI during updates.
-  
+
   The updater checks the retained target before publication, keeps the original execution graph intact for running commands, refuses staged generation retention inside bundled desktop runtimes, normalizes execution identity paths with native realpaths across platforms, retires superseded active descriptors when an in-place global install takes over, and reports retained-generation provenance under `cotal status --verbose` and `--json`. Retained execution journals restore the previous selection without reinstalling the live package, while interrupted records from earlier releases keep their existing recovery path.
+
 - ae15dac: Start a stopped owned daemon service during manual `cotal update --self` across Linux, macOS, and Windows and require the daemon to answer at the target version before completing the update. When no daemon is running before a manual update, the updater checks that the recorded service belongs to this installation and is enabled before starting the systemd user service, LaunchAgent, or Windows scheduled task, leaving disabled or foreign-owned services stopped and waiting for readiness on enabled owned services instead of accepting a reconciliation child exit code alone.
 - Updated dependencies [e433bee]
 - Updated dependencies [f305af8]
@@ -2718,8 +2754,9 @@
 - 6cc4068: When the desktop app asks the background service on this computer to start and it does not answer within 15 seconds, the app now reports that the background service has not started, shows any startup refusal from that launch in Details, and offers Check status in the app instead of blaming the network or directing you to a terminal command. While that screen is shown, a stopped-service status check keeps it on screen and a ready answer clears it.
 - 0d7b571: Configured macOS desktop builds can install verified app updates while hidden or after Restart to update is pressed. App operations hold replacement back, the shared automatic-update preference is checked again before replacement, and the app relaunches without adding a daemon restart path. The app reports success only after the target background service and ready inventories are observed. Builds without an updater key keep their existing installer and notification controls. Windows and Linux remain installer-only.
 - 517000a: Keep Windows CLI installations current through a separate Task Scheduler update helper.
-  
+
   The helper holds a no-breakaway native job until its accounting and full process list confirm it is empty. It then restarts the verified daemon service under one activation deadline and records activation separately from the installed release. Interrupted helpers pause automatic installation in the same boot and show a restart or manual-update remedy. A successful manual update or a later verified boot clears that pause. Desktop runtimes still use their signed installer.
+
 - Updated dependencies [517000a]
   - @cotal-ai/workspace@0.164.14
   - @cotal-ai/cli@0.164.14
@@ -2737,11 +2774,13 @@
 ### Patch Changes
 
 - 75cdde2: Keep daemon-hosted Manager status checks within the CLI connect rate limit during updates.
-  
+
   The daemon now retains one instance-pinned control session per live hosted Manager, coalesces concurrent status refreshes for the same space, and backs off for five seconds after a failed control exchange. If a status probe is still rate-limited, the daemon preserves any earlier observation of that child instead of resetting an answering Manager to starting.
+
 - a4c9747: Windows desktop setup preserves the background service across newer-version upgrades and refuses to interrupt hosted agents.
-  
+
   Setup holds hosted launch admission before gracefully stopping the verified service, disables its scheduled task while replacing files, and restores its previous running or stopped state. Interrupted setup blocks service startup until the installer completes recovery. Silent refusals and unconfirmed startup write a persistent result for callers.
+
 - Updated dependencies [e2c838e]
   - @cotal-ai/workspace@0.164.13
   - @cotal-ai/manager@0.164.13
@@ -2797,11 +2836,13 @@
 
 - 4359750: The desktop app's Details no longer tells you to install the background service when it is already installed and stopped. It now says the service is stopped and that Start service starts it. A computer with no installed service keeps the install sentence.
 - 44ce7f5: Add verified execution generations to the CLI entry without changing the update transaction.
-  
+
   The built-ins-only bootstrap accepts an artifact-bound descriptor, validates the retained package inventory and runs the selected generation. Fresh installations run their installed tree without copying it or writing startup state. Invalid matching descriptors refuse with reinstall guidance.
+
 - 1ad9989: Keep the installed Windows background service running after a manual update.
-  
+
   The replacement updater starts only its verified enabled scheduled task after the old daemon exits, and checks target readiness under the existing deadline. Windows updater ownership uses retained process creation identity, including guarded compatibility with published records that lack a start token.
+
 - Updated dependencies [44ce7f5]
 - Updated dependencies [2a4d8fa]
 - Updated dependencies [1ad9989]
@@ -2822,11 +2863,13 @@
 
 - 322ce33: The desktop app shares the command line's automatic-update preference and can verify signed update downloads when its build has an updater key. Builds without a key keep their release summary, notification preference and platform installer path. Configured builds check the manifest again when Check now is pressed, while automatic checks stay daily. Release preparation stays in Settings without a main-view error. This change does not install downloaded updates or add automatic rollback.
 - 35db3ae: Keep the machine service responsive during manual updates.
-  
+
   Daemon startup checks the updater's full closure identity before taking restoration ownership, so it can answer readiness without waiting on the updater's installation lock. If that updater ends without finishing, the running daemon performs the existing guarded recovery or reports why recovery remains paused. A paused installation whose rollback completed can reconcile through the newly installed CLI after acquiring fresh hosted-Manager admission, without reinstalling the older defective updater.
+
 - 483e348: Windows daemon uninstall and restart wait for the daemon they stopped to finish shutting down.
-  
+
   A probe that reaches the same kernel process lifetime after its record becomes empty remains pending without sending a request. Other ownership refusals stay unchanged, and completion still requires endpoint absence and process exit.
+
 - Updated dependencies [cf93466]
 - Updated dependencies [3664f96]
 - Updated dependencies [35db3ae]
@@ -2849,8 +2892,9 @@
 ### Patch Changes
 
 - c2db3ac: Updates can continue after an interrupted update leaves an unusable snapshot record.
-  
+
   Keep abandoned records in a timestamped folder without touching their snapshots. Fence live or unreadable owners, wait one hour for records without a valid owner, and report the same recovery guidance in status, notices and unattended updates.
+
 - Updated dependencies [8d27412]
 - Updated dependencies [57aaed2]
 - Updated dependencies [c2db3ac]
@@ -2870,8 +2914,9 @@
 ### Patch Changes
 
 - 38947c4: Windows daemon ownership checks load fewer modules before reading the scheduled task.
-  
+
   The observer uses the installer's shared receipt, source, action and principal checks through a small read-only entry. Native command and observation budgets stay unchanged, and each observation reads fresh ownership facts.
+
 - Updated dependencies [38947c4]
 - Updated dependencies [1c18181]
 - Updated dependencies [84f1298]
@@ -2893,11 +2938,13 @@
 ### Patch Changes
 
 - 9905ad2: Sign in through an issuer-authorized product discovery name.
-  
+
   `cotal login <name>` and daemon sign-in or setup with `--idp <name>` resolve the provider's HTTPS root document and require the issuer's own root to endorse the name with `discoveryNames`. The roots must agree on issuer and audience. The typed root may use its own HTTPS auth origin or the issuer root's complete IdP URL, and other third-origin URLs are refused before approval. Login proofs retain the typed root's pins. Saved accounts and catalog origin checks keep using the resolved IdP URL. Cloud defaults and explicit account migration keep their current behavior.
+
 - 50d24a9: Updates wait for a newly announced release that npm does not serve yet instead of reporting a failed installation.
-  
+
   When npm returns ETARGET for the selected latest cotal-ai version, the updater leaves installed packages unchanged and reports that the release is still arriving. Manual updates exit successfully with a deferred message. Automatic updates retry on the next scheduled attempt without consuming the version's failure budget. Other npm resolution errors retain their existing failure handling.
+
 - b4f3020: Installer reruns now reconcile installed extensions after updating the CLI. If reconciliation fails, the installer exits with an error and prints the command to finish the update.
 - e09456f: The macOS background service now installs updates automatically when automatic updates are on. It hands the existing guarded updater to a separate one-shot launchd job so restarting the service does not stop installation or extension reconciliation. Failed handoffs report their reason and the manual update command. A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
 - Updated dependencies [9905ad2]
@@ -2939,8 +2986,9 @@
 ### Patch Changes
 
 - d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
-  
+
   The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+
 - Updated dependencies [e61e70d]
 - Updated dependencies [e61e70d]
 - Updated dependencies [e61e70d]
@@ -3001,8 +3049,9 @@
 ### Patch Changes
 
 - e13f910: Finish manual updates after stopping agents with explicit consent, and show when installation reconciliation is pending.
-  
+
   Terminal updates list affected agents and ask once before stopping them. Scripts can use `cotal update --self --stop-agents`. Automatic updates continue to defer without stopping agents.
+
 - Updated dependencies [30c1f57]
 - Updated dependencies [45a4655]
 - Updated dependencies [85da7da]
@@ -3152,8 +3201,9 @@
 - ed58f6f: The daemon update smoke suite covers fresh Cloud setup before exercising updates.
   Separate supported bare setup from invalid usage and verify service refusal writes no connector or daemon state.
 - 7d4973c: Linux self-updates check every local Manager sharing the installation before replacing packages.
-  
+
   Continuity reads use each local instance identity and no longer follow only the selected space or ask the authority to choose a Manager on another computer. When no newer version exists and the installed package closure is current, Linux self-updates report custody without repairing connector integrations or restarting the daemon. Plain `cotal update` still repairs integrations. macOS and Windows keep their existing behavior.
+
 - Updated dependencies [18905f9]
 - Updated dependencies [3b0377e]
 - Updated dependencies [7d4973c]
@@ -3175,12 +3225,14 @@
 - ef6651a: Signing in as a different account at the same provider now deletes the previous account's discovered-space credential files along with their registrations.
   This applies to `cotal login` and to the default daemon's `cotal daemon login` and `setup`. Only the sentinel file each discovered registration kept in its catalog folder is deleted, and never one reached through a symbolic link below the account's catalog folder; manual registrations and their files stay. A file that cannot be deleted is named and the run exits 4 (`OPERATION_PARTIAL`) after signing in; `daemon login` JSON lists such files in `credentialsKept`, and the desktop app keeps the new sign-in while showing the same files and cleanup. A separate `--daemon-home` still never changes the shared registry or its credentials.
 - fcdcfdd: Reject invalid daemon sign-in provider URLs with a typed usage refusal before selecting a provider.
-  
+
   Keep fresh daemon setup and login checks aligned with the Cotal Cloud default, while preserving explicit providers and refusing before service changes when the user service manager is unavailable.
+
 - 56ab4ea: Keep daemon command discovery from loading the Manager implementation before an operation needs it. Load the vitals sampler and registration cleanup helper at their existing asynchronous operation boundaries.
 - f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
-  
+
   Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+
 - Updated dependencies [ef6651a]
 - Updated dependencies [2040519]
 - Updated dependencies [85a09e4]
@@ -3251,9 +3303,9 @@
 ### Minor Changes
 
 - b003fb5: Disconnecting or uninstalling the daemon now removes its local service credentials and identity records.
-  
+
   Disconnect removes the selected connection's resume intent, private service store, registration request and identity after closing the responder and renewal source. Uninstall removes those records for every space under lifetime exclusion. Removal failures exit non-zero and keep the installation receipt for retry. These commands do not revoke remote authority, and their output names dashboard removal for that action.
-  
+
   Sign-out output now explains that an already connected daemon continues on its own service proof and names local disconnect and dashboard removal as the ways to end it. Reconnecting after explicit disconnect requires a new registration and approval.
 
 ### Patch Changes
@@ -3279,19 +3331,23 @@
 ### Patch Changes
 
 - 771a25d: Manage update preferences and see available desktop releases in Cotal Settings.
-  
+
   The daemon exposes closed preference and cached-check requests shared with the update CLI. The desktop announces newer versions and opens a matching published installer without replacing itself.
+
 - 4cda366: Daemon sign-in now names the replaced account in human and plain output when you switch accounts at the same provider. First sign-ins, same-account repeats and JSON output are unchanged.
 - 68a9ac5: Add confirmed sign-out and disconnect controls to desktop Settings.
-  
+
   Sign-out shares the CLI's provider-session revocation and local sign-in cleanup while leaving existing computer connections running. Disconnect uses the existing per-space operations and reports incomplete outcomes without claiming credential erasure or remote revocation.
+
 - ea02ceb: Shrink the Cotal desktop app bundle by over 80 MB across macOS, Linux and Windows. Desktop runtime staging now prunes build-only source maps, TypeScript declarations, Windows PDB symbols, package test trees, duplicate non-runtime package outputs and the local `nats-server` binary before sealing `desktop-runtime.json`, strips debug and local symbols from the bundled Node and Tauri binaries, verifies every `@cotal-ai/*` package import, CLI command `--help`, `daemon status` and native `.node` addon in `check-runtime.mjs`, and enforces installed and installer size budgets in the desktop build workflow.
 - a0b9202: Keep desktop navigation reachable when many spaces use this computer.
-  
+
   Long space lists scroll inside a keyboard-accessible region while the header and connection controls stay visible.
+
 - bb849c8: Keep desktop Settings name editing and installer feedback beside their controls.
-  
+
   Settings shows catalog space names when available, and approval guidance consistently calls the device a computer.
+
 - c4c4d34: Show the agents running on this computer in daemon status and the desktop app. Read bounded public seat facts from each hosted Manager over its parent channel and report spaces whose inventory could not be read.
 - c7c509c: Browse directories on your computer when choosing where to launch an agent.
   The Manager serves a bounded directory-only listing through the same authorized control path as working-directory validation, without opening another host service.
@@ -3318,10 +3374,11 @@
 - 7551eb9: The daemon's account computer registration now lists the Managers the computer hosts, so the account host can show a Manager under the name you gave the computer.
 - 8e68a95: `cotal daemon status` no longer keeps saying "account computer request failed" after the account host answers again with nothing changed.
 - c0f7b08: Keep authenticated automatic updater processes outside the Linux daemon service during replacement.
-  
+
   The reconcile child moves itself and its waiting parent into a systemd user scope before reconciliation. This requires cgroup v2, systemctl, busctl, and user-manager permission to adopt existing PIDs. Migration denial fails visibly after package replacement, leaving existing parent retry and restoration behavior unchanged. Restart and startup verification behavior are unchanged.
-  
+
   The custody inspector accepts group-writable owned paths when bounded local account records prove the caller's primary group has no other member or account. Unknown account sources fail closed. This inspector does not examine extended ACLs.
+
 - Updated dependencies [7551eb9]
 - Updated dependencies [c0f7b08]
   - @cotal-ai/auth@0.160.7
@@ -3372,10 +3429,11 @@
 ### Patch Changes
 
 - 3e77cc9: Fix the unattended update on Linux, which could leave the daemon restarting in a loop.
-  
+
   The daemon restarted into the new version while its own update was still running. The service restart stopped the update midway, and the daemon then refused to start. The update now finishes and exits before the daemon restarts, the daemon never restarts for a new version while its own update runs, and a daemon that finds a paused update starts and names `cotal update --self` in its status.
-  
+
   If a computer is already affected: stop the daemon service, check that no `cotal update` is running, remove `.cotal-update-child` from npm's global `node_modules` directory, and run `cotal update --self`.
+
 - Updated dependencies [3e77cc9]
   - @cotal-ai/cli@0.160.4
   - @cotal-ai/connector-core@0.160.4
@@ -3393,8 +3451,9 @@
 ### Patch Changes
 
 - 94313d0: Keep recovery commands copyable in narrow terminals and command help examples concise.
-  
+
   Mark embedded commands as code spans in daemon diagnostics, update notices, and operator guidance so the terminal renderer keeps each command together.
+
 - 89f3296: The unreadable computer name warning now writes its repair command as a command, so the terminal keeps it on one line.
 - 30bca7e: Refuse daemon setup with --no-manager on account-managed computers before changing any space.
   The refusal directs operators to the account dashboard without registering a machine service or starting an agent host. Per-space hosts retain service-only registration and approval waiting, without agent-host startup progress.
@@ -3417,8 +3476,9 @@
 
 - a526258: You can name this computer before connecting and change its saved name later from Settings or the command line.
 - 98469c6: Disconnect per-space services promptly while their registration or connection is waiting on a network response.
-  
+
   Cancel network work before joining the reconciliation queue and avoid another account-host poll when that host has already reported per-space operation.
+
 - b748f06: Keep the daemon available when its saved computer name is unreadable. Status reports the repair command, and setting a name replaces the damaged record.
 - 65cc576: Preserve a hosted Manager's last observation timestamp when it stops. Entering retirement no longer replaces that timestamp, while bounded seat retirement waits remain unchanged.
 - Updated dependencies [4c9c2a1]
@@ -3508,11 +3568,13 @@
   The restart handshake validates the response version, request ID and response shape before retaining the refusal in the command's native cause.
 - 61f6f77: Retry native daemon ownership checks before restart and uninstall when startup could not verify ownership. Distinguish missing provenance from an unknown observation, keep checks bounded and cache only verified ownership.
 - 61f6f77: Confirm Windows daemon restarts replace the running process before setup or update reports success.
-  
+
   Pause the recorded scheduled task around a pinned two-phase daemon shutdown, then verify a fresh daemon lifetime and the expected version. Application refresh and version updates share this restart path. Preserve restart fences and installation evidence when a native operation has an uncertain outcome.
+
 - 61f6f77: Recover owned disabled Windows daemon tasks during setup and show progress while restarting.
-  
+
   Failed restarts restore autostart only after verifying the pinned old listener or unchanged installation with no running daemon. Unresolved native End operations retain the disabled task and restart fence for inspection.
+
 - Updated dependencies [b6abf6c]
   - @cotal-ai/core@0.159.0
   - @cotal-ai/connector-core@0.159.0
@@ -3582,8 +3644,9 @@
 
 - 3515b97: Update the native CI smoke to recognize verified artifact reuse and require source verification before downloading the selected native artifacts.
 - 7092c62: Confirm the daemon has stopped before reporting a successful uninstall.
-  
+
   Uninstall keeps a kernel-authenticated connection to the recorded daemon across native service removal, asks a verified native launch to close its own resources, and waits for both its process and endpoint to disappear. Uncertain shutdown retains the source and receipt for inspection instead of leaving an answering orphan behind a successful removal result.
+
 - a21d285: Run daemon setup without arguments to refresh applications for its signed-in account and see the spaces using this computer.
 - @cotal-ai/connector-core@0.157.8
   - @cotal-ai/auth@0.157.8
@@ -3624,8 +3687,9 @@
 - cff5c31: Exercise account reconciliation with service endpoints disabled and wait for Manager shutdown before grading local removal in the account smoke suite.
 - 4b072d8: Hosted Managers retire running agents without crashing when the machine daemon stops them, with a bounded shutdown window that grows with the seat count and account removal guidance that points back to the dashboard.
 - a580039: Keep the Windows daemon responsive while its native service ownership is verified.
-  
+
   Run the exact recorded-service checks off the serving event loop once and reuse their result for generation activation. Pending or failed verification does not grant activation authority.
+
 - Updated dependencies [041941a]
 - Updated dependencies [4ad09f7]
 - Updated dependencies [ca6f40b]
@@ -3738,7 +3802,7 @@
 ### Minor Changes
 
 - c854ece: Guide new desktop users through connecting their computer and open the dashboard from a clear connected screen.
-  
+
   The private `@cotal-ai/desktop` app defaults to Cotal Cloud, keeps custom hosts available, and shows only the current welcome, browser approval, space or connection step. Carry structured setup progress beside unchanged terminal diagnostics, preserve refusals under Details, and keep later opens focused on the verified connection and its secondary controls.
 
 ### Patch Changes
@@ -3764,7 +3828,7 @@
 ### Minor Changes
 
 - 0ff6bca: Connect a computer for Cloud agent launches from the desktop app.
-  
+
   The app runs stock daemon setup with streamed progress, reports hosted Manager launch-readiness,
   and lets users check again after installing an agent application. Application discovery reads the
   account PATH outside the renderer and preserves the daemon's guarded service refresh.
@@ -3775,8 +3839,9 @@
   The refusal tells you to check the machine's and space authority's clocks instead of reporting an
   unreachable space. Bearer verification still fails closed and retries preserve the saved request IDs.
 - 80b1c38: Daemon disconnect and graceful shutdown cancel pending service HTTP requests instead of waiting for network timeouts.
-  
+
   Cancellation reaches startup metadata, registration, credential and ready requests, including sign-in proof acquisition. Explicit disconnect still forgets resume intent, while shutdown preserves it.
+
 - ccc9d7e: Daemon service connections now report locally expired credentials instead of an unreachable space or broker.
   The renewal source preserves a fixed expiry classification, and the daemon reports `LIFECYCLE_BLOCKED`
   with native code `CREDENTIAL_EXPIRED` and a clock-check remedy. A newly returned sign-in proof
@@ -3784,8 +3849,9 @@
   and request replay stay unchanged.
 - c68579c: Include the Windows daemon startup entry in CLI builds so an installed scheduled task can start the daemon.
 - ca34053: Daemon setup rejects invalid space names before installing a service and stops on failed connection prerequisites.
-  
+
   Service-only setup reports the original refusal without a misleading sign-in message or a duplicate registration check. Manager setup still reports unsupported machine services independently of agent launch readiness.
+
 - d2c020e: Windows daemon services now start with the native entry included in the CLI build. Native launches retain bounded private output, unavailable status names the log and Task Scheduler diagnostics, and the real-service smoke reports the task state and last result on failure.
 - Updated dependencies [24bf62a]
 - Updated dependencies [80b1c38]
@@ -3813,20 +3879,24 @@
   The service-only setup reports its final connection state after waiting, on the first successful
   attempt, and when the approval wait expires. JSON output remains one document on stdout.
 - 6bfa747: The desktop app reports a startup timeout when its installed background service does not answer, instead of asking you to install it again.
-  
+
   The readiness timeout is distinct from a missing daemon, whether the app just installed the service or started its recorded installation.
+
 - ded3180: Self-updates wait for the daemon and its hosted Managers to return on the new version before reconciling connectors.
-  
+
   The verified replacement allows up to 120 seconds for automatic activation and retains the continuity check before connector writes. A timeout names the last observed state and the recovery command.
+
 - 4bf8b26: Daemon setup rejects a different sign-in provider before asking for device approval.
   For a locally registered space that needs sign-in, both setup modes check the supplied provider
   against the space's pinned provider and name the corrected setup command on refusal.
 - a1b0ee1: Show recovery commands when running agents block an update, without suggesting another update that would also be refused.
-  
+
   The daemon-hosted Manager refusal explains the restart impact and names how to list and stop the agents on that Manager and space. Update keeps classified recovery guidance and offers a CLI upgrade only after successful reconciliation.
+
 - 5c5831c: Daemon setup rechecks a temporarily unobserved Manager before refusing an application PATH refresh.
-  
+
   Readiness reobservation has a 15-second bound. Refusals retain their actual cause, give a retry step and record the cause in the daemon journal without bypassing the idle-seat fence.
+
 - Updated dependencies [12fb034]
 - Updated dependencies [ded3180]
 - Updated dependencies [f06e8cc]
@@ -3894,8 +3964,9 @@
 ### Patch Changes
 
 - be80749: Daemon service connections now report when a space's account differs from the pinned identity.
-  
+
   `service-connect` and `service-status` preserve the `ACCOUNT_MISMATCH` diagnosis and recovery guidance instead of reporting a generic registration conflict. The daemon leaves its identity and registration request unchanged.
+
 - a9260af: The machine daemon now reports a malformed IdP timeout setting before it starts.
   It uses the same timeout validation as direct sign-in, so an invalid
   `COTAL_IDP_TIMEOUT_MS` no longer appears as a provider refusal during daemon sign-in.
@@ -3986,12 +4057,14 @@
 - 71dbfad: Expose an optional non-secret store-failure classification in service renewal state. Report damaged daemon ready and renewal records as local-state conflicts rather than remote outages, preserving records and request IDs for deliberate recovery.
 - 72b307b: Daemon setup recovers when no agent application was available.
   After one is installed, running setup again restarts an idle hosted Manager under its seat-preservation fence and reads application availability again. A Manager with active seats stays running and reports the seat cause. Missing-application remedies name the applications to install.
-  
+
   Updating Cotal succeeds when a running machine daemon has no recorded user service. The update reports its PID and version and leaves it running.
+
 - ac1afc9: Keep machine-daemon commands available when preferences are malformed or the invoking project folder is missing or has a conflicting .cotal file. Preserve machine-home validation and safety checks for ordinary project commands.
 - ed8962e: Hosted Managers refuse new launches when first-party connector generations differ from their running generation.
-  
+
   The daemon checks for a replaced installation before trusting the seed stamp. Refusals name the cause and the restart step for the recorded service or foreground daemon. Existing seats and stock Manager connector loading remain unchanged.
+
 - Updated dependencies [221cab0]
 - Updated dependencies [488646a]
 - Updated dependencies [71dbfad]
@@ -4102,13 +4175,15 @@
 ### Patch Changes
 
 - 35ddf95: A connected chat session ends and says its inbox is gone when a manager restart removes that inbox.
-  
+
   The endpoint warns as soon as the broker reports that DM consumer deleted, and the session closes with that reason instead of staying connected with no record. The process exits 5 when the connection close is confirmed, including when the old manager does not answer the retirement. A later send to the old name is refused rather than stored (#6017).
+
 - 97e0466: Keep the daemon mode and accepted target in JSON failure reports. The shared operation scope carries this context to the existing error renderer without changing outcomes, exit codes or credential handling.
 - 635d9d2: Refuse daemon flags that do not belong to the selected mode before performing any action. The missing-mode error now lists the declared modes, including desktop, and points to help that works without a running daemon.
 - d948e5e: A membership follow stays running through a broker outage that lasts longer than the connection's own reconnect.
-  
+
   When the watch closes, the follow reports the lost connection once and reads the feed again once the endpoint re-establishes it. The gap and the current census follow, and the follow ends on an interrupt or a credential that can no longer connect (#6041).
+
 - Updated dependencies [6b64880]
 - Updated dependencies [35ddf95]
 - Updated dependencies [15b04d7]
@@ -4133,15 +4208,18 @@
 ### Patch Changes
 
 - 3b551a1: Fix start and uninstall for newly installed macOS daemons.
-  
+
   New LaunchAgents bind their working directory through the verified argument vector and set it before the CLI loads. Existing plists with a WorkingDirectory property keep their original native verification requirement; this does not migrate or force-remove them.
+
 - f2f0a2b: Guided service and endpoint forms validate answers at each question so invalid input can be corrected without losing earlier answers.
-  
+
   Preset answers use the option schema and path checks, including the broker server's existing address restrictions. Imports and endpoint references are checked before the form advances, and whole-definition validation remains in place before saving.
+
 - 014d1d3: Let a file-form teardown dry-run inspect the recorded stack when no additive ledger exists, with consistent text and structured output. Keep explicit run selection and legacy ledger previews on their existing teardown path without requiring launch-time persona files. When file-form apply finds a recorded stack without an additive ledger, name the bare stack stop instead of suggesting an unknown run ID.
 - 9d727ad: `cotal pending <agent>` now exits 0 when its bounded candidate read finishes and the temporary reader is deleted.
-  
+
   The read uses one of the admin credential's own history readers and deletes only the reader it created. A reader already under one of those names is left in place, and a read that cannot find a free name stays partial. A fetch that returns fewer messages than it requested, including one that expires, also stays partial.
+
 - Updated dependencies [1d47635]
 - Updated dependencies [0adb23c]
 - Updated dependencies [f2f0a2b]
@@ -4166,8 +4244,9 @@
 - ee5e222: Make `cotal config` read the space a launch in the current folder uses when another space is selected. Write receipts and missing-persona warnings use the same space, while explicit `--space` and `--user` reads keep their scopes.
 - e4d9ba9: Finish the `--daemon-home` help sentence on every daemon page. Omitting the flag runs or reaches the default daemon, whose state lives in the Cotal home.
 - faf7c80: `cotal service` now points a stopped controller stack member at bare `cotal up`, and refuses to start or restart one by itself.
-  
+
   Starting `stack-broker`, `stack-delivery` or `stack-manager` on its own, or the preset name that reaches it, launches the process and leaves the space unregistered, so later commands fail until `cotal down`. The start now stops before anything launches and tells you to run `cotal up`. The guard checks the saved adapter and controller journal, so a direct-process service with the same name still starts and restarts normally.
+
 - Updated dependencies [ee5e222]
 - Updated dependencies [1f0e175]
 - Updated dependencies [35d1c85]
@@ -4191,8 +4270,9 @@
 ### Patch Changes
 
 - c986cc1: Host permission-scoped endpoint discovery inside the auth service with explicit registry opt-in.
-  
+
   The builtin auth-service preset accepts `--registry`; multi-space auth manifests enable it per entry. Embedders supply `registryService` through the same auth lifecycle. Signing authority stays in auth, reader and serving credentials stay separate, serving renewal uses the native issuance fence, and restart recovery retains the original instance and native gate operation. The registry is disabled by default and stops with its auth plane.
+
 - Updated dependencies [c986cc1]
 - Updated dependencies [dacb515]
 - Updated dependencies [143a69e]
@@ -6858,11 +6938,11 @@
 ### Minor Changes
 
 - b51b4e1: Add `cotal daemon setup`, one command that connects a headless machine to a space.
-  
+
   It installs the daemon as a systemd user service, waits for it to answer, signs it in by device code when it is not signed in already, asks the space to register it, and connects it once the space owner approves. No local browser is needed anywhere on that path: the sign-in prints an approval link and code to open on another device. It prints one plain line per stage to stderr, so `--json` still writes one document on stdout.
-  
+
   Every stage is skipped when it is already done, so running it again after an interruption continues rather than starting over. `--wait <seconds>` bounds the wait for the owner's approval, 900 by default, and `--wait 0` reports what it reached. A wait that runs out is a partial that says the service is installed and the registration is sent, so a rerun continues. An answer that cannot improve is a refusal carrying the space's own reason, and the connection stage is never reached. Only a connected machine exits 0.
-  
+
   A daemon already answering while no installed unit is recorded for it refuses `CONFLICT` (`RUNNING_WITHOUT_UNIT`), because installing then would start a second daemon that the lifetime lock refuses and the running one is not a persistent service. Pausing, renaming and disconnecting stay their own commands.
 
 ### Patch Changes
@@ -6929,13 +7009,13 @@
 ### Minor Changes
 
 - 6b262cf: Install the Linux machine daemon as a systemd user service, and let a restarted daemon come back by itself.
-  
+
   `cotal daemon install` writes one systemd user unit, enables linger for the invoking user and starts it. The unit starts at login and restarts the daemon when it dies. `cotal daemon uninstall` stops it, disables autostart and removes the unit it recorded. Both take `--dry-run`, and a linger that cannot be enabled fails the install rather than leaving a service that stops at logout.
-  
+
   Both daemon forms now hold one kernel `flock` lifetime lock, the default daemon's at `<COTAL_HOME>/daemon/daemon.lock`. The kernel releases it when the holder dies, so a start knows its predecessor is gone without judging a recorded pid. The lock record names the socket its holder published by device and inode, and a start removes that socket and no other: a socket the record does not name, or one that appears after a clean shutdown, is refused and left in place. A crashed daemon no longer needs an operator to remove its socket before it can start again.
-  
+
   A service connection the space accepted is recorded per space, and a starting daemon connects every space it holds a record for, so the connections a daemon held before a crash come back with nothing to run. `service-disconnect` removes that record, so an explicit disconnect outlives a restart.
-  
+
   `@cotal-ai/seat` exports `flockExclusiveNb`, an exclusive non-blocking `flock(2)` added to the Linux native helper it already ships. `@cotal-ai/cli` exports the owned systemd user-unit primitives the daemon's install reuses, so there is one mechanism for writing and registering this CLI's units.
 
 ### Patch Changes
@@ -7076,7 +7156,7 @@
 ### Minor Changes
 
 - 50ee624: Cut what an idle seat costs its host, with stock build and runtime mechanisms.
-  
+
   Every connector bundle that loads into a long-running process now ships as one-byte text. V8 holds a
   string at one byte per character only while every character is Latin-1, and a single character above
   U+00FF made each 5 MB bundle two-byte for the life of the process. The characters were em dashes and
@@ -7085,7 +7165,7 @@
   matching text in a built bundle sees the second part: `(e) => f(e)` now reads `e=>f(e)`. `pnpm smoke:connector-bundle-text` reads the 19 built bundles
   and fails on any character above U+00FF. Stack-trace frames keep their function names and their line
   and column numbers move, because the bundle is now fewer, longer lines.
-  
+
   The Claude Code connector's seat is launched through a new entry, `dist/seat.cjs`, which enables
   Node's module compile cache in `~/.cotal/compile-cache` and then loads `dist/mcp.cjs`. Node's cache
   covers modules compiled after it is enabled, so the entry has to sit in front of the bundle. The
@@ -7094,7 +7174,7 @@
   `NODE_DISABLE_COMPILE_CACHE=1` turns it off, and `NODE_COMPILE_CACHE` takes precedence and is left
   alone. `dist/mcp.cjs` remains the library entry (`@cotal-ai/connector-claude-code/mcp`) and still
   serves when run directly.
-  
+
   The declared Node floor rises from 22 to 22.10, which is where `module.flushCompileCache()` lands,
   and every package's `engines.node` now says so. The `cotal` binary checks it at its front door and
   refuses an older runtime with the floor, the running version and the repair for how it was
@@ -7103,7 +7183,7 @@
   22.9 gets the pinned Node downloaded and verified instead. `node dist/mcp.cjs` still serves on an
   older runtime. Operators moving a host read
   [the upgrade note](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
-  
+
   Measured on one idle seat per arm, Node v22.23.2, paired and read at 160 s and 600 s: 41.9 MiB USS
   on the stock bundle, 35.2 with one-byte text, 26.3 with the seat entry's compile cache as well.
 
@@ -7467,10 +7547,11 @@
 ### Patch Changes
 
 - ffeaa32: `cotal manager start` on a user-auth space with no sign-in no longer launches a manager it cannot confirm. On a space the folder hosts, `manager start` and `manager restart` without a signed-in, granted login refuse `AUTH_REQUIRED` (exit 2) under a `Mesh: <space>` heading before anything is saved or launched, and Next names `cotal login`, then the command again. A manager left running without a sign-in stops: in the folder that hosts the space, `cotal manager stop` and `cotal down` read the manager's stop impact from its own local receipt, so the folder's owner needs no sign-in.
-  
+
   `cotal supervise` refuses before it connects with exit 2, a `Mesh:` heading and a code, and writes nothing in the folder. A space whose own stack in this folder is stopped names `cotal up` there and, with `--server`, the folder whose `cotal up` started that broker. A user-auth space that another folder hosts names the folder that hosts it.
-  
+
   The deprecation notice of `supervise` and the other deprecated daemon entries wraps at the terminal width with each command kept whole. The manager prints its boot inventory once it is up, so a refused start prints no boot line, and the line for no available connector is in plain words.
+
 - Updated dependencies [ffeaa32]
   - @cotal-ai/auth@0.109.20
   - @cotal-ai/cli@0.109.20
@@ -8240,7 +8321,7 @@
   agent joins or exits, within about 30 seconds, and wraps to the terminal.
 - b432707: A step that a race cancelled in a losing branch now says so. `run show` labels its row
   `cancelled, <branch> won <race>`, and `run answer` at that step is refused with `that step was
-  cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
+cancelled because branch <branch> won the race <race>` instead of `that step has already settled`.
 - cf606e8: The workflows guide now says what `random()`, `randomInt(n)` and `pick(xs)` return, and that a
   builtin ignores arguments past the ones it takes, so `randomInt(1, 1000)` is `randomInt(1)` and
   always 0. `1 + randomInt(1000)` draws from 1 to 1000.

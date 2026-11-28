@@ -1,5 +1,7 @@
 # @cotal-ai/web
 
+## 0.185.0
+
 ## 0.184.0
 
 No changes in this release.
@@ -48,7 +50,7 @@ No changes in this release.
 ### Minor Changes
 
 - 3b5bde1: T3 Code and other ACP clients now get from every Cotal agent what that harness's own provider shows: replies streamed as they are written, tool calls with their arguments, results and diffs, plans, approvals, questions, the agent's own commands, cancel, later prompts with images, context usage, reasoning, and the model and effort pickers.
-  
+
   - Core: the `agent` endpoint is at revision 5, with `turn` (the owner's next prompt, with images) and `usage` (context and cost). Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, which says what a process serves now, so a caller picks one path per agent before it sends anything. `ModelCatalogOpts.envAllow` gives a model catalog read the `spawn.env` names a launch receives.
   - Manager: cluster revision 56. `spawn` takes the opt-in `askPermissions` (ask before tool use) and `reasoningEvents` (publish the model's reasoning), and every `status.connectors` row says whether its connector takes them. Update Managers and their callers together. `@cotal-ai/workspace` carries the two fields in a managed launch and in the cached connector rows.
   - connector-core: a delta journal beside each thread's journal streams harness text and reasoning before the harness saves it, merged into the durable source, and a connector may journal records of its own there. `JsonlFileSource.holdsSync` tells whether a cursor is on the file at the path now. A tool result marker may leave out `isError`, and `web` reads one without it.
@@ -204,8 +206,9 @@ No changes in this release.
 ### Patch Changes
 
 - bd5b41b: The dashboard and manager console restrict browser scripts to their own assets and omit referrers.
-  
+
   Both surfaces send Content-Security-Policy and X-Content-Type-Options headers. Dashboard launch links retain their single-use exchange. The manager console removes its launch token from the address bar after its page scripts load.
+
 - 9d5a50b: `cotal service add web --preset web` now refuses `--posting-creds` without `--no-read-only`, or `--no-read-only` without `--posting-creds`, and saves nothing. Before, it saved the definition and every start was refused. A start of a saved dashboard definition with either problem, or with a wildcard `--host`, now names the one condition that failed and the `cotal service remove` and `cotal service add` that change it. A wildcard host no longer prints the usage of `service start`. A preset refusal while `service add` builds a definition no longer prints the command's usage after a remedy that already says the whole fix.
 
 ## 0.167.0
@@ -339,9 +342,9 @@ No changes in this release.
 ### Minor Changes
 
 - 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
-  
+
   Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
-  
+
   Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
 
 ### Patch Changes
@@ -415,7 +418,7 @@ No changes in this release.
 ### Patch Changes
 
 - 94313d0: Keep recovery commands copyable in narrow terminals and command help examples concise.
-  
+
   Mark embedded commands as code spans in daemon diagnostics, update notices, and operator guidance so the terminal renderer keeps each command together.
 
 ## 0.160.2
@@ -717,11 +720,11 @@ No changes in this release.
 - 6454ee0: The Claude Code connector publishes a `CUSTOM` event named `cotal.toolResult` on the event plane at each tool result, with the value `{ toolCallId, isError }` and the result's timestamp. It carries no tool input or output: tool arguments and results stay off the channel, and the marker only says which call finished and whether it returned an error. The closed schema admits only that shape, and the vocabulary gate checks it before the frame is written: a marker whose value is malformed, or that carries `rawEvent`, is refused as a vocabulary error rather than frozen in the write-ahead log, where it would halt recovery on every restart. The write path strips `rawEvent` from a marker, and a frozen frame from an older version that still carries one halts. The gate also refuses a marker for a call that is still open. `cotal console` draws the marker as `done` or `failed` under its call, and the dashboard uses it to show whether each call is running, done or failed and how long it took. A connector downgraded across a write-ahead log that holds a marker refuses the event name and halts.
 - c3d4af4: The `cotal web` dashboard tells agents apart and shows what each one is doing. Every avatar carries a badge with the first letter of the agent's name, plus its number (`reviewer_2` reads R2), on a colour chosen from the name, so two agents on one harness differ even in greyscale. Each agent has a page at `#/agent/<id>`, reached from the Agent tab's peek and its Open <name>'s page button, or the View work action on any live message from that agent. The page's Work tab shows the agent's text, its tool names and times, where each turn starts and ends, and its own posts. It shows no tool inputs, results or reasoning, because the event plane does not carry them. The server reads one agent's events only while a browser has its page or its peek open: the newest 200 first, then 200 more per Load earlier up to 2,000, and it forwards live frames only to the browsers watching that agent. Live and history frames are both checked by their subject's sender: history is read from the agent's own subject, and a live frame whose subject names another sender is dropped. The check is only as strong as the mesh's publish permissions. On a mesh with auth only the agent holds the grant to publish on its own subject; on an open mesh any raw NATS client can publish there, so Work can show frames the agent did not publish. A feed that falls more than 1 MiB behind on live events is closed so the browser reconnects. The state a feed opens with is sent whatever its size, and while it is still unsent on a slow link it does not count toward that limit. In `@cotal-ai/core`, `channelHistory` takes a `publisher` option that reads a channel's history from one principal's subject only. The agent card gains `meta["ai.cotal.events"]`, `on` when the agent arms its event plane and `off` when it does not, so the page can tell an agent that publishes no events from one that has not started a turn. The dashboard also keeps the newest 500 direct messages, lists the ten most recent conversations in the sidebar, refuses a history `limit` above 2,000, and shows a working agent as `Working` with no "progress unknown" suffix.
 - dd3f276: New `cotal web` dashboard parts are built on shadcn/ui and Tailwind, scoped so the existing styles are untouched, with no new download for installers.
-  
+
   An agent's work shows as turns with grouped tool calls that say running, done or failed and how long they took, from the connector's result marker. Code in an agent's prose gets a code block, highlighted the first time it is on screen.
-  
+
   Each agent is now a page at `#/agent/<id>` with Work, Messages and Profile tabs, and the address keeps the tab. Work holds the agent's turns, tool calls, text, posts and direct messages; Messages lists what it sent on this page by place; Profile is its card, including whether it publishes work events. The panel's Agent tab becomes a peek with the current turn's last three steps and a link to the page. On a phone, picking an agent opens its page. Old `#/agent/<id>/<message id>` links still open Work at that message. "Session" is no longer a word in the dashboard: a message's action reads View work.
-  
+
   Working agents move everywhere they appear while presence says they work: the status dot breathes, the working icon turns, a channel names who is working under its messages with View work, the channel header and the sidebar count working members, and a working agent's topology node gets a circling arc. The Agents view shows each working agent's running step, for up to 12 agents at once. Reduced motion stops all of it. When two live agents share a first letter, their badges take two letters each.
 
 ## 0.138.2
@@ -867,11 +870,11 @@ No changes in this release.
 ### Minor Changes
 
 - a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
-  
+
   `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
-  
+
   An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
-  
+
   `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
 
 ## 0.134.0
@@ -1449,7 +1452,7 @@ No changes in this release.
 ### Minor Changes
 
 - 7657395: The manager and the built-in services start without being added first. `cotal manager start` starts the manager for this folder's or the selected space with the pty runtime and its registered broker, and `cotal manager stop`, `status`, `logs` and `restart` act on it; after `cotal up` it reports the manager `up` started and starts no second one. `cotal service` lists every built-in service, started or not, with the command that starts it, and `cotal service start <preset>` starts one from its defaults, refusing with the exact flags when it needs a file that has no default, such as the feedback form's tester keys and broker credential. A service preset can declare those defaults: a literal, the space's registered root or broker, or a private file the space already keeps. `cotal service add <name> --exec "<command>"` adds a program of your own without a definition file, splitting the command into words without a shell and refusing pipes, redirection, variables and globs.
-  
+
   `cotal supervise` is deprecated again and is removed in 1.0.0 with the other daemon entries. It keeps its flags and behavior and prints one line on stderr naming `cotal manager start`, or, when it is given `--execution`, `--spawn`, `--seat-cap` or a resume flag that `manager start` does not take yet, saying to keep `supervise` for that run. `cotal manager start` and `restart` install first-party connectors on first run, as `supervise` does. `cotal manager install` refuses before any effect and names a unit of your own running `cotal manager start --foreground`. The `deliver`, `auth-service` and `feedback-intake` warnings now name `cotal service start <preset>`.
 
 ## 0.107.0
