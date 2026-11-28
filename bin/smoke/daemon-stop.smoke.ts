@@ -207,8 +207,8 @@ if (process.platform === "linux") {
   writeFileSync(marker, "\n", { mode: 0o600 });
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "disabled", failStart: true })}\n`);
   const startFailed = run("start");
-  check("a start that fails after turning automatic start back on says so and clears the marker",
-    startFailed.status !== 0 && (startFailed.doc?.error?.message ?? "").includes("Automatic start is on again") && !existsSync(marker), startFailed.doc?.error);
+  check("a start that fails after turning automatic start back on disables it again and keeps the marker",
+    startFailed.status !== 0 && (startFailed.doc?.error?.message ?? "").includes("Automatic start is off") && (startFailed.doc?.error?.message ?? "").includes("cotal daemon start") && existsSync(marker), startFailed.doc?.error);
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), failStart: false })}\n`);
 
   const runtime = mkdtempSync(join("/tmp", "cotal-rt-"));
@@ -329,7 +329,7 @@ if (process.platform === "linux") {
       "  mechanism: 'launchd-agent',",
       "  prepareStop() { calls.push('prepare'); enabled = false; },",
       "  finishStop() { calls.push('finish'); },",
-      "  enable() { calls.push('enable'); enabled = true; },",
+      "  enable() { calls.push('enable'); if (mode === 'restore-fails') throw new Error('enable refused'); enabled = true; },",
       "  plan() { throw new Error('unused'); }, publish() {}, register() {}, check() {},",
       "  stopped() { return !enabled; },",
       "  start(_receipt, resume) { started = true; if (resume) enabled = true; },",
@@ -361,6 +361,8 @@ if (process.platform === "linux") {
   handshake = (request) => request.op === "daemon-stop" && !request.commit ? { ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "provenance is unknown" } } : undefined;
   const refused = await probeStop("refuse", 100_000);
   check("a refused prepare turns automatic start back on and does not end the task", refused.doc?.failed?.native === "STOP_NOT_SENT" && refused.doc.failed.code === "OPERATION_UNKNOWN" && refused.doc.failed.message === "the background service was not stopped. Automatic start is still on. Run `cotal daemon stop` again." && refused.doc.enabled && !refused.doc.calls.includes("finish") && refused.doc.marker === false, refused);
+  const unrestored = await probeStop("restore-fails", 100_000);
+  check("a stop that was not sent and cannot turn automatic start back on keeps STOP_NOT_SENT and names another stop", unrestored.doc?.failed?.native === "STOP_NOT_SENT" && unrestored.doc.failed.code === "OPERATION_UNKNOWN" && unrestored.doc.failed.message.includes("could not be turned back on") && unrestored.doc.failed.message.includes("cotal daemon stop") && unrestored.doc.enabled === false && unrestored.doc.marker === false, unrestored);
   handshake = () => undefined;
   const silent = await probeStop("silent", 100_000);
   check("a prepare that is not answered turns automatic start back on", silent.doc?.failed?.message === "the background service was not stopped. Automatic start is still on. Run `cotal daemon stop` again." && silent.doc.failed.code === "OPERATION_UNKNOWN" && silent.doc.enabled && !silent.doc.calls.includes("finish") && silent.doc.marker === false, silent);
@@ -398,6 +400,14 @@ if (process.platform === "linux") {
     });
   } catch (error) { unreadableRead = error instanceof Error ? error.message : String(error); unreadableCode = error instanceof CommandFailure ? error.code : ""; }
   check("an unreadable Windows start of a stopped task ends disabled, keeps the marker, and exits 3", unreadableCode === "OPERATION_UNKNOWN" && unreadableRead.includes("Nothing was started") && unreadableRead.includes("Automatic start is off") && existsSync(marker) && enabledState === false, { unreadableCode, unreadableRead, enabledState });
+  const { disableFailedPersonStart } = await import("../daemon/install.js");
+  writeFileSync(marker, "stopped\n", { mode: 0o600 });
+  let prepared = false;
+  const disabled = disableFailedPersonStart(livePaths, { prepareStop() { prepared = true; } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
+  check("the real failed-start disable turns the task off and keeps the marker", disabled === true && prepared && existsSync(marker), { disabled, prepared });
+  let blocked = true;
+  const kept = disableFailedPersonStart(livePaths, { prepareStop() { blocked = false; throw new Error("disable refused"); } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
+  check("a failed start whose disable fails keeps the marker", kept === false && blocked === false && existsSync(marker), { kept, blocked });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const readFailure = await probeStop("unread");
   check("a macOS start whose automatic start cannot be read says the service started and leaves no stop marker", readFailure.doc?.started === true && readFailure.doc.enabled === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === false, readFailure);

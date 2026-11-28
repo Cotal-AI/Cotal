@@ -638,10 +638,19 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
     if (service && resume && !automaticOn) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service started, but automatic start was not confirmed on");
   } catch (error) {
     if (error instanceof CommandFailure && error.message === "the service started, but automatic start could not be read") throw error;
-    if (service && resume && service.isEnabled) {
+    if (resume && personStopped(paths)) {
+      try {
+        if (service) await service.stop(receipt);
+        else submitSystemdUnitRegistration("disable", plan.unit);
+        automaticOn = false;
+      } catch { automaticOn = true; }
+    } else if (service && resume && service.isEnabled) {
       try { automaticOn = service.isEnabled(receipt) === true; } catch { automaticOn = false; }
     }
     if (automaticOn) clearPersonStop(paths);
+    if (!automaticOn && resume && personStopped(paths) && error instanceof CommandFailure) {
+      throw new CommandFailure(error.outcome, error.code, `${error.message} Automatic start is off. Run \`cotal daemon start\` again.`, { remedy: "run `cotal daemon start` again", native: error.native, cause: error });
+    }
     throw resumeStartFailed(error, automaticOn);
   }
   if (resume) clearPersonStop(paths);
@@ -731,7 +740,7 @@ export async function stopInstalled(paths: DaemonPaths, daemonHome: string | und
         if (!notSent) throw error;
         if (!service.enable) throw error;
         try { service.enable(receipt); }
-        catch (restore) { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start was turned off, and it could not be turned back on. The background service is still running. Run `cotal daemon stop` again.", { cause: restore }); }
+        catch (restore) { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start was turned off, and it could not be turned back on. The background service is still running. Run `cotal daemon stop` again.", { native: error.native, cause: restore, remedy: "run `cotal daemon stop` again" }); }
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the background service was not stopped. Automatic start is still on. Run `cotal daemon stop` again.", { native: error.native, cause: error, remedy: "run `cotal daemon stop` again" });
       }
     }
@@ -1180,7 +1189,14 @@ interface WindowsAutomaticRestart {
   readonly exited: () => boolean;
 }
 
-/** Restart the recorded Windows task only after the pinned daemon lifetime exits. */
+/** Restart the recorded Windows task only after the pinned daemon lifetime exits. A person's start
+ *  that was not proven ends disabled, and the marker stays because nothing started. */
+export function disableFailedPersonStart(paths: Pick<DaemonPaths, "state">, task: { prepareStop(receipt: UnitReceipt): unknown }, receipt: UnitReceipt, startOnly: boolean): boolean {
+  if (!startOnly || !personStopped(paths)) return false;
+  try { task.prepareStop(receipt); return true; }
+  catch { return false; }
+}
+
 async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart, resume = false): Promise<UninstallPlan> {
   const remaining = (limit: number): number => {
     if (!automatic) return limit;
@@ -1323,7 +1339,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       }
     }
   } catch (error) {
-    if (startOnly && personStopped(paths)) { try { task.prepareStop(receipt); } catch { /* the failure below reports the start; the marker stays */ } }
+    const stoppedAgain = disableFailedPersonStart(paths, task, receipt, startOnly);
     let recovery = startOnly ? "the start was not proven" : "ownership is ambiguous; the task was not enabled";
     try {
       if (!pauseAttempted) throw new Error(startOnly ? "a start does not pause the task" : "no task pause was attempted");
@@ -1349,7 +1365,8 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         enable() { task.enable(receipt); },
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? "run \`cotal daemon start\` again" : "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
+    const ended = startOnly ? (stoppedAgain ? "Automatic start is off." : "Automatic start is on, and it could not be turned off.") : "";
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained${ended ? ` ${ended}` : ""}`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? "run \`cotal daemon start\` again" : "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }
 
