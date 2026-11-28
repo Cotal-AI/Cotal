@@ -8,14 +8,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { once } from "node:events";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { generationOf, holdLifetime } from "../daemon/lifetime.js";
 import { withAppMutation } from "../daemon/agent-app-admission.js";
 import { daemonAppApproval } from "../daemon/desktop-agent-apps.js";
+import { queryDaemon } from "../daemon/client.js";
 
 if (process.platform === "win32") skipSuite("daemon-desktop-agent-apps: the recording curl and login-shell PATH are POSIX; Windows runs the real installers in the setup proof");
 const shell = basename(userInfo().shell ?? "");
@@ -23,7 +26,7 @@ if (!["zsh", "bash"].includes(shell)) skipSuite(`daemon-desktop-agent-apps: the 
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
 const root = mkdtempSync(join(realpathSync(tmpdir()), "desktop-agent-apps-"));
 // Keep kernel socket paths short even when the runner's fixture root is long or no user session exists.
-const runtime = process.platform === "linux" ? mkdtempSync("/tmp/cotal-app-rt-") : undefined;
+const runtimes: string[] = [];
 let checks = 0;
 const check = (ok: unknown, what: string) => { assert.ok(ok, what); checks++; };
 
@@ -45,6 +48,8 @@ interface App { name: string; title: string; maker?: string; state: string; vers
 
 function isolated(name: string) {
   const dir = join(root, name);
+  const runtime = process.platform === "linux" ? mkdtempSync("/tmp/cotal-app-rt-") : undefined;
+  if (runtime) runtimes.push(runtime);
   for (const leaf of ["home", "cotal", "config", "rt", "native", "cache", "data", "state"]) mkdirSync(join(dir, leaf), { recursive: true, mode: 0o700 });
   const env: NodeJS.ProcessEnv = {
     HOME: join(dir, "home"), COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: join(dir, "config"), XDG_RUNTIME_DIR: runtime ?? join(dir, "rt"),
@@ -65,14 +70,15 @@ function isolated(name: string) {
 type Isolated = ReturnType<typeof isolated>;
 
 /** A fixture installer that puts a stub harness in ~/.local/bin, the way the makers' scripts do. */
-function installer(target: Isolated, host: string, binary: string, body: string, exit = 0): void {
-  writeFileSync(join(target.env.FAKE_INSTALLERS!, host), `set -e\necho "Installing ${binary} for $USER"\nprintf 'progress 50%%\\r'\nmkdir -p "$HOME/.local/bin"\ncat > "$HOME/.local/bin/${binary}" <<'STUB'\n#!/bin/sh\n${body}\nSTUB\nchmod +x "$HOME/.local/bin/${binary}"\ncase ":$PATH:" in *":$HOME/.local/bin:"*) echo "PATH already holds ~/.local/bin";; *) echo "PATH lacks ~/.local/bin";; esac\necho "Installed ${binary}"\nexit ${exit}\n`, { mode: 0o600 });
+function installer(target: Isolated, host: string, binary: string, body: string, exit = 0, before = ""): void {
+  writeFileSync(join(target.env.FAKE_INSTALLERS!, host), `set -e\necho "Installing ${binary} for $USER"\nprintf 'progress 50%%\\r'\n${before}\nmkdir -p "$HOME/.local/bin"\ncat > "$HOME/.local/bin/${binary}" <<'STUB'\n#!/bin/sh\n${body}\nSTUB\nchmod +x "$HOME/.local/bin/${binary}"\ncase ":$PATH:" in *":$HOME/.local/bin:"*) echo "PATH already holds ~/.local/bin";; *) echo "PATH lacks ~/.local/bin";; esac\necho "Installed ${binary}"\nexit ${exit}\n`, { mode: 0o600 });
 }
 const claudeStub = `case "$1 $2" in\n  "--version ") echo "9.8.7 (Claude Code)";;\n  "auth status") [ -f "$HOME/.signed-in" ];;\n  "auth login") echo "Opening browser to sign in…"; echo "If the browser didn't open, visit:"; echo "https://claude.ai/oauth/authorize?x=eyJsecret"; touch "$HOME/.signed-in";;\n  *) exit 2;;\nesac`;
 
-function request(target: Isolated, body: Record<string, unknown>, timeoutMs = 120_000): Promise<Frame[]> {
+function request(target: Isolated, body: Record<string, unknown>, timeoutMs = 120_000, spawned?: (child: ReturnType<typeof spawn>) => void): Promise<Frame[]> {
   return new Promise((resolve, reject) => {
     const child = spawn(node, [cli, "daemon", "desktop"], { env: target.env, cwd: target.dir, stdio: ["pipe", "pipe", "pipe"] });
+    spawned?.(child);
     let out = "", err = "";
     const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`timed out: ${JSON.stringify(body)}\n${out}\n${err}`)); }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => { out += chunk; });
@@ -85,7 +91,269 @@ const resultOf = (frames: Frame[]) => frames.at(-1)!;
 const appsOf = (frames: Frame[]) => (resultOf(frames).result!.apps as App[]);
 const progressOf = (frames: Frame[], name: string) => frames.filter(frame => frame.event === "agent-app-progress" && frame.name === name).map(frame => frame.line!);
 
+async function waitFor<T>(read: () => T | Promise<T>, what: string, signal?: AbortSignal): Promise<NonNullable<T>> {
+  const deadline = Date.now() + 15_000;
+  do {
+    const value = await read();
+    if (value) return value;
+    await delay(100, undefined, { signal });
+  } while (Date.now() < deadline);
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+function launchService(target: Isolated, servicePath = target.env.PATH) {
+  const child = spawn(node, [cli, "daemon", "serve"], {
+    env: { ...target.env, PATH: servicePath, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+    cwd: target.dir, stdio: ["ignore", "ignore", "ignore"],
+  });
+  const exited = once(child, "exit");
+  const status = () => queryDaemon({ paths: daemonPaths(target.env, target.env.COTAL_HOME), timeoutMs: 500 });
+  return { child, exited, status, stop: async () => { child.kill("SIGTERM"); await exited; } };
+}
+
+function fakeSystemd(target: Isolated) {
+  const nativeState = join(target.dir, "native-state");
+  const calls = join(target.dir, "native-actions");
+  writeFileSync(nativeState, "inactive\n");
+  writeFileSync(calls, "");
+  writeFileSync(join(target.dir, "native", "systemctl"), `#!/bin/sh
+case "$*" in
+ "--user show-environment") printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME";;
+ "--user show --no-pager --property=ActiveState --value cotal-daemon.service") cat "${nativeState}";;
+ "--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value") printf 'enabled\\n';;
+ "--user --no-ask-password --no-pager daemon-reload"|"--user --no-ask-password --no-pager start cotal-daemon.service") printf '%s\\n' "$4" >> "${calls}";;
+ "--user --no-ask-password --no-pager stop cotal-daemon.service")
+   printf 'stop\\n' >> "${calls}"
+   while [ "$(cat "${nativeState}")" != inactive ]; do sleep 0.1; done;;
+ *) exit 99;;
+esac
+`, { mode: 0o700 });
+  const state = () => readFileSync(nativeState, "utf8").trim();
+  const setState = (value: string) => writeFileSync(nativeState, `${value}\n`);
+  const actions = () => readFileSync(calls, "utf8").trim().split("\n").filter(Boolean);
+  return { state, setState, actions };
+}
+
+function recordService(target: Isolated) {
+  const paths = daemonPaths(target.env, target.env.COTAL_HOME);
+  const unitPath = join(target.env.XDG_CONFIG_HOME!, "systemd", "user", "cotal-daemon.service");
+  const unit = `[Service]\nEnvironment=PATH="${target.env.PATH}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${node}" "${cli}" daemon serve\nRestart=always\n`;
+  mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+  const receiptFile = join(paths.state, "service-unit.json");
+  const receipt = `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString() })}\n`;
+  writeFileSync(unitPath, unit, { mode: 0o600 });
+  writeFileSync(receiptFile, receipt, { mode: 0o600 });
+  return { paths, unitPath, unit, receiptFile, receipt };
+}
+
+async function ownedInstall() {
+  const target = isolated("owned-install");
+  const service = recordService(target);
+  installer(target, "claude.ai", "claude", claudeStub);
+  const native = fakeSystemd(target);
+  let running = launchService(target);
+  try {
+    native.setState("active");
+    const initial = await waitFor(() => running.status().catch(() => undefined), "owned daemon endpoint");
+    assert.ok(initial.ok);
+    const installing = request(target, { op: "agent-app-install", name: "claude" });
+    const frames = await replaceForPickup(installing, target, service, native, () => running.stop(), next => { running = next; });
+    check(resultOf(frames).ok, `owned daemon installed Claude: ${JSON.stringify(frames)}`);
+    check(progressOf(frames, "claude")[0] === "Downloading the Claude Code installer from claude.ai", `service-authorized installer emitted download progress: ${JSON.stringify(frames)}`);
+    check(!progressOf(frames, "claude").includes("progress 50%"), "service-authorized bridge does not relay arbitrary installer output");
+    check(readFileSync(target.env.CURL_CALLS!, "utf8").trim().split("\n").length === 1, "one installer download through the owned daemon");
+    assert.deepEqual(resultOf(frames).result?.serviceRefresh, { state: "refreshed" }, JSON.stringify({ frames, actions: native.actions() })); checks++;
+    assert.deepEqual(native.actions(), ["daemon-reload", "stop", "start"]); checks++;
+    const current = await running.status();
+    check(current.ok && current.result.pid !== initial.result.pid, "the replacement daemon owns the service endpoint");
+    const checked = await request(target, { op: "agent-apps", refresh: true });
+    check(appsOf(checked).some(app => app.name === "claude" && app.version === "9.8.7"), "Check again sees the installed Claude from the fresh daemon");
+    check(native.actions().length === 3 && native.state() === "active", "Check again does not restart a service that already picked up Claude");
+  } finally { await running.stop(); }
+}
+
+async function replaceForPickup(
+  pending: Promise<Frame[]>, target: Isolated, service: ReturnType<typeof recordService>, native: ReturnType<typeof fakeSystemd>,
+  stop: () => Promise<void>, replace: (next: ReturnType<typeof launchService>) => void,
+) {
+  const polling = new AbortController();
+  const started = await Promise.race([
+    pending.then(frames => ({ frames })),
+    waitFor(() => native.actions().includes("stop") || undefined, "native pickup stop", polling.signal).then(() => ({})),
+  ]).finally(() => polling.abort());
+  if ("frames" in started) return started.frames;
+  await stop();
+  native.setState("inactive");
+  await waitFor(() => native.actions().includes("start") || undefined, "native pickup start");
+  native.setState("activating");
+  const unit = readFileSync(service.unitPath, "utf8");
+  const receipt = JSON.parse(readFileSync(service.receiptFile, "utf8"));
+  assert.equal(receipt.unitSha256, createHash("sha256").update(unit).digest("hex"));
+  const servicePath = /^Environment=PATH="([^"]+)"$/m.exec(unit)?.[1];
+  assert.ok(servicePath?.split(":").includes(join(target.home, ".local", "bin")), "the rewritten unit gives the replacement daemon Claude's directory");
+  replace(launchService(target, servicePath));
+  const frames = await pending;
+  native.setState("active");
+  return frames;
+}
+
+async function checkAgainAfterSeat() {
+  const target = isolated("deferred-pickup");
+  const service = recordService(target);
+  const native = fakeSystemd(target);
+  const { paths } = service;
+  installer(target, "claude.ai", "claude", claudeStub);
+  const bin = join(target.home, ".local", "bin");
+  mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
+  const lifetime = holdLifetime(paths.lock);
+  const seat = spawn(join(sys, "sleep"), ["60"], { env: target.env, stdio: "ignore" });
+  const seatExited = once(seat, "exit");
+  let seatRunning = true;
+  void seatExited.then(() => { seatRunning = false; });
+  const requests: string[] = [];
+  const daemon = createServer(peer => {
+    peer.setEncoding("utf8");
+    let buffer = "";
+    peer.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      const { id, v, op, refresh } = JSON.parse(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      requests.push(op);
+      const result = op === "agent-apps" ? { apps: [], management: "service", serviceAppPickup: true,
+        ...(refresh && existsSync(join(bin, "claude")) ? { serviceRefreshNeeded: true, serviceAppDirs: [bin] } : {}) }
+        : { state: "ready", protocol: 1, version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, pid: process.pid, startedAt: new Date().toISOString(), uptimeMs: 0 };
+      const reply = op === "managers-prepare-restart" && seatRunning ? { ok: false, error: { code: "SEATS_ACTIVE", message: "hosted Manager holds 1 active seat" } } : { ok: true, result };
+      peer.write(`${JSON.stringify({ id, v, ...reply })}\n`);
+    });
+  });
+  await new Promise<void>(resolve => daemon.listen(paths.socket, resolve));
+  chmodSync(paths.socket, 0o600);
+  lifetime.publishing(generationOf(paths.socket));
+  const stop = async () => { if (daemon.listening) { await new Promise<void>(resolve => daemon.close(() => resolve())); lifetime.release(); } };
+  let running: ReturnType<typeof launchService> | undefined;
+  try {
+    native.setState("active");
+    const installing = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    assert.deepEqual(installing.result?.serviceRefresh, { state: "pending", reason: "agents-running" }, JSON.stringify(installing)); checks++;
+    check(seatRunning && native.actions().length === 0 && readFileSync(service.unitPath, "utf8") === service.unit && readFileSync(service.receiptFile, "utf8") === service.receipt,
+      "the active seat keeps the unit and service untouched");
+    seat.kill("SIGTERM");
+    await seatExited;
+    // The renderer's status-driven retry emits the same refresh request as Check again.
+    const frames = await replaceForPickup(request(target, { op: "agent-apps", refresh: true }), target, service, native, stop, next => { running = next; });
+    assert.deepEqual(resultOf(frames).result?.serviceRefresh, { state: "refreshed" }, JSON.stringify(frames)); checks++;
+    check(requests.filter(op => op === "managers-prepare-restart").length === 2, "both pickup attempts prove seat safety");
+    const current = await running?.status();
+    check(current?.ok && current.result.pid === running?.child.pid && native.state() === "active", "the fresh daemon, not the fixture, owns the active endpoint");
+    check(readFileSync(target.env.CURL_CALLS!, "utf8").trim().split("\n").length === 1, "pickup runs without reinstalling Claude");
+  } finally {
+    seat.kill("SIGTERM");
+    await seatExited;
+    await stop();
+    await running?.stop();
+  }
+}
+
+async function startupDuringInstall() {
+  const target = isolated("startup-during-install");
+  target.env.PATH += `:${join(target.home, ".local", "bin")}`;
+  const service = recordService(target);
+  const native = fakeSystemd(target);
+  const release = join(target.home, ".installer-release");
+  installer(target, "claude.ai", "claude", claudeStub, 0, `touch "$HOME/.installer-entered"\nwhile [ ! -e "$HOME/.installer-release" ]; do sleep 0.1; done`);
+  const installing = request(target, { op: "agent-app-install", name: "claude" });
+  let running: ReturnType<typeof launchService> | undefined;
+  try {
+    await waitFor(() => existsSync(join(target.home, ".installer-entered")), "held local installer");
+    const start = spawnSync(node, [cli, "daemon", "start"], { env: target.env, cwd: target.dir, encoding: "utf8", timeout: 10_000 });
+    check(start.status === 0 && native.actions().join() === "start", `CLI start submitted through fixture systemd during install: ${start.stderr}`);
+    native.setState("activating");
+    running = launchService(target);
+    const started = await Promise.race([running.exited.then(exit => ({ exit })), waitFor(() => running!.status().catch(() => undefined), "native daemon during held installer")]);
+    check(!("exit" in started) && started.ok, `native daemon must reach readiness during held installer: ${JSON.stringify(started)}`);
+    native.setState("active");
+    check(!existsSync(release) && native.state() === "active", "native activation completed before the installer was released");
+    assert.ok(!("exit" in started) && started.ok);
+    await running.stop();
+    native.setState("activating");
+    running = launchService(target);
+    const recovered = await waitFor(() => running!.status().catch(() => undefined), "supervisor auto-recovery during held installer");
+    native.setState("active");
+    check(recovered.ok && recovered.result.pid !== started.result.pid && !existsSync(release), "automatic recovery reaches readiness while the original installer remains held");
+    const duplicate = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    check(!duplicate.ok && duplicate.error?.code === "LIFECYCLE_BLOCKED", "the recovered daemon does not admit a second installer");
+    assert.deepEqual(native.actions(), ["start"], "automatic recovery does not add a CLI start or mutate registration"); checks++;
+    check(readFileSync(service.unitPath, "utf8") === service.unit && readFileSync(service.receiptFile, "utf8") === service.receipt, "startup does not rewrite the unit or its receipt");
+  } finally {
+    writeFileSync(release, "");
+    await installing;
+    await running?.stop();
+  }
+  check(resultOf(await installing).ok, "the held installer completed once admitted");
+}
+
+function fixtureProcessAlive(pid: number, target: Isolated): boolean {
+  try { return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`HOME=${target.home}`); }
+  catch { return false; }
+}
+
+async function bridgeDeathDuringInstall() {
+  const target = isolated("bridge-crash");
+  const entered = join(target.home, ".installer-pid");
+  const release = join(target.home, ".installer-release");
+  installer(target, "claude.ai", "claude", claudeStub, 0, `printf '%s\\n' "$$" > "$HOME/.installer-pid"\nwhile [ ! -e "$HOME/.installer-release" ]; do sleep 0.1; done`);
+  let bridge: ReturnType<typeof spawn> | undefined;
+  let pid: number | undefined;
+  const install = request(target, { op: "agent-app-install", name: "claude" }, 120_000, child => { bridge = child; });
+  try {
+    pid = await waitFor(() => existsSync(entered) ? Number(readFileSync(entered, "utf8")) : undefined, "the installer PID");
+    check(fixtureProcessAlive(pid, target), "the held installer is live before the bridge is killed");
+    const refused = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    check(!refused.ok && refused.error?.code === "LIFECYCLE_BLOCKED", "a second install cannot pass the held bridge gate");
+    const exited = once(bridge!, "exit");
+    bridge!.kill("SIGKILL");
+    assert.deepEqual(await exited, [null, "SIGKILL"]);
+    await withAppMutation(daemonPaths(target.env, target.env.COTAL_HOME), async () => {
+      check(!fixtureProcessAlive(bridge!.pid!, target), "the next gate holder acquired admission after the original bridge died");
+    });
+    // The fixture owns this PID. SIGKILL of a bridge cannot itself prove arbitrary makers exited.
+    if (fixtureProcessAlive(pid, target)) process.kill(pid, "SIGTERM");
+    await waitFor(() => !fixtureProcessAlive(pid!, target) || undefined, "the fixture installer to exit");
+    check(!existsSync(join(target.home, ".local", "bin", "claude")), "the interrupted installer did not reach its writes");
+    installer(target, "claude.ai", "claude", claudeStub);
+    const retry = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+    check(retry.ok && (retry.result?.app as App).version === "9.8.7", "a new bridge can install after the gate is released");
+  } finally {
+    writeFileSync(release, "");
+    await install;
+    if (pid && fixtureProcessAlive(pid, target)) await waitFor(() => !fixtureProcessAlive(pid!, target) || undefined, "fixture installer cleanup");
+  }
+}
+
+async function refusedApps(target: Isolated, management: string, reason: string) {
+  const listed = resultOf(await request(target, { op: "agent-apps", refresh: true }));
+  check(listed.ok && listed.result?.management === management, `${management} read-only discovery: ${JSON.stringify(listed)}`);
+  const mutation = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+  check(!mutation.ok && mutation.error?.code === "LIFECYCLE_BLOCKED" && mutation.error.native?.code === reason, `${reason} safe installation refusal: ${JSON.stringify(mutation)}`);
+}
+
+const focused = new Map([
+  ["--owned-install", ownedInstall], ["--deferred-pickup", checkAgainAfterSeat],
+  ["--startup-during-install", startupDuringInstall], ["--bridge-crash", bridgeDeathDuringInstall],
+]).get(process.argv[2] ?? "");
+
 try {
+  if (focused) await focused();
+  else await standardCells();
+  console.log(`daemon-desktop-agent-apps: ${checks} checks passed (${process.platform}, login shell ${shell})`);
+} finally {
+  rmSync(root, { recursive: true, force: true });
+  for (const runtime of runtimes) rmSync(runtime, { recursive: true, force: true });
+}
+
+async function standardCells() {
   const approval = new URL("https://auth.openai.com/oauth/authorize");
   approval.search = new URLSearchParams({ client_id: "fixture", response_type: "code", redirect_uri: "http://localhost:1455/auth/callback", code_challenge_method: "S256", code_challenge: "a".repeat(43), state: "b".repeat(64) }).toString();
   check(approval.href.length > 200 && daemonAppApproval("codex", `Visit ${approval.href}`) === approval.href, "the full approved URL survives the service hop");
@@ -187,17 +455,19 @@ try {
       check(sleepers().length === 0, "the sign-in stopped once the app's process was gone");
     } else app.kill("SIGKILL");
   }
-  // Cell 8: a verified owner receives the request once. Neither path restarts the service.
   if (process.platform === "linux") {
-    const paths = daemonPaths(target.env, target.env.COTAL_HOME);
-    const unitPath = join(target.env.XDG_CONFIG_HOME!, "systemd", "user", "cotal-daemon.service");
-    const unit = `[Service]\nEnvironment=PATH="${nodeDir}:${sys}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${node}" "${cli}" daemon serve\nRestart=always\n`;
-    mkdirSync(join(target.env.XDG_CONFIG_HOME!, "systemd", "user"), { recursive: true, mode: 0o700 });
-    writeFileSync(unitPath, unit, { mode: 0o600 });
-    mkdirSync(paths.state, { recursive: true, mode: 0o700 });
-    const receiptFile = join(paths.state, "service-unit.json");
-    const receipt = `${JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString() })}\n`;
-    writeFileSync(receiptFile, receipt, { mode: 0o600 });
+    await routingCells(target);
+    await ownedInstall();
+    await checkAgainAfterSeat();
+    await startupDuringInstall();
+    await bridgeDeathDuringInstall();
+  }
+}
+
+async function routingCells(target: Isolated) {
+  // A verified owner receives sign-in once. Reading the listing does not restart the service.
+  {
+    const { paths, unit, unitPath, receiptFile, receipt } = recordService(target);
     // The user manager answers only where its unit directory is; any other systemctl call is recorded.
     const systemctlCalls = join(target.dir, "systemctl.calls");
     const nativeState = join(target.dir, "native-state");
@@ -219,6 +489,7 @@ try {
     // Keep the lifetime acquired before exposing the endpoint, as the real daemon does.
     const ops: string[] = [];
     let dropMutation = false;
+    let refusal: { code: string; message: string } | undefined;
     mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
     const lifetime = holdLifetime(paths.lock);
     const blocked = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
@@ -229,12 +500,19 @@ try {
       peer.on("data", chunk => {
         buffer += chunk;
         for (let newline; (newline = buffer.indexOf("\n")) !== -1; buffer = buffer.slice(newline + 1)) {
-          const { id, v, op } = JSON.parse(buffer.slice(0, newline)) as { id: string; v: number; op: string };
+          const wire = JSON.parse(buffer.slice(0, newline)) as { id: string; v: number; op: string; appVersion?: string };
+          const { id, v, op } = wire;
           ops.push(op);
-          if (dropMutation && op === "agent-app-install") { peer.destroy(); return; }
+          if (dropMutation && op === "agent-app-sign-in") { peer.destroy(); return; }
+          if (refusal) {
+            assert.equal(Object.keys(wire)[2], "appVersion");
+            assert.equal(typeof wire.appVersion, "string");
+            peer.write(`${JSON.stringify({ id, v, ok: false, error: refusal })}\n`);
+            return;
+          }
           const row = { name: "claude", title: "Claude Code", state: "signed-in", version: "9.8.7" };
-          const reply = op === "agent-app-install" ? { ok: true, result: { app: row } }
-            : op === "agent-apps" ? { ok: true, result: { apps: [row], management: "service" } }
+          const reply = op === "agent-app-sign-in" ? { ok: true, result: { app: row } }
+            : op === "agent-apps" ? { ok: true, result: { apps: [row], management: "service", serviceAppPickup: true } }
               : { ok: false, error: { code: "UNKNOWN_OP", message: `unexpected ${op}` } };
           peer.write(`${JSON.stringify({ id, v, ...reply })}\n`);
         }
@@ -246,19 +524,29 @@ try {
     try {
       const downloads = readFileSync(target.env.CURL_CALLS!, "utf8");
       rmSync(receiptFile);
-      const noReceipt = resultOf(await request(target, { op: "agent-apps" }));
-      check(noReceipt.ok === true && noReceipt.result?.management === "checking", "a live daemon without a receipt allows only read-only discovery");
+      await refusedApps(target, "foreground", "APP_FOREGROUND");
       writeFileSync(receiptFile, receipt, { mode: 0o600 });
-      const frames = await request(target, { op: "agent-app-install", name: "claude" });
+      const frames = await request(target, { op: "agent-app-sign-in", name: "claude" });
       const end = resultOf(frames);
-      check(end.ok === true && (end.result?.app as App).state === "signed-in", `the verified service answers install: ${JSON.stringify(end)}`);
+      check(end.ok === true && (end.result?.app as App).state === "signed-in", `the verified service answers sign-in: ${JSON.stringify(end)}`);
       const checked = resultOf(await request(target, { op: "agent-apps", refresh: true }));
       check(checked.ok === true && checked.result?.management === "service", `the verified service answers the fresh list: ${JSON.stringify(checked)}`);
-      assert.deepEqual(ops, ["agent-app-install", "agent-apps"], "no mutation replay, no service restart request"); checks++;
+      assert.deepEqual(ops, ["agent-apps", "agent-app-sign-in", "agent-apps"], "authorization precedes one mutation, with no restart request"); checks++;
       dropMutation = true;
-      const lost = resultOf(await request(target, { op: "agent-app-install", name: "claude" }));
+      const lost = resultOf(await request(target, { op: "agent-app-sign-in", name: "claude" }));
       check(!lost.ok && lost.error?.code === "OPERATION_UNKNOWN", "losing the mutation reply does not report a definite failure");
-      assert.deepEqual(ops, ["agent-app-install", "agent-apps", "agent-app-install"], "the lost mutation reply was not replayed"); checks++;
+      assert.deepEqual(ops, ["agent-apps", "agent-app-sign-in", "agent-apps", "agent-apps", "agent-app-sign-in"], "the lost mutation reply was not replayed"); checks++;
+      dropMutation = false;
+      // Exact output of dist/daemon/protocol.js in cotal-ai@0.183.1 (tarball SHA-256
+      // 6d06e8fe82edb3a4af325035d972aba9936a5d363e90223f7b1b18f7c24635f5).
+      refusal = { code: "UNKNOWN_FIELD", message: 'unknown request field "appVersion"' };
+      await refusedApps(target, "older-service", "APP_OLDER_SERVICE");
+      // BAD_FIELD is a distinct older-parser reply, not the v0.183.1 reply to the Apps request.
+      refusal = { code: "BAD_FIELD", message: "refresh must be a boolean" };
+      await refusedApps(target, "older-service", "APP_OLDER_SERVICE");
+      refusal = { code: "CONFLICT", message: "This app and the background service have different versions." };
+      await refusedApps(target, "version-conflict", "APP_VERSION_CONFLICT");
+      assert.deepEqual(ops.slice(5), Array(6).fill("agent-apps"), "parser refusals never get past read-only install authorization"); checks++;
       check(readFileSync(target.env.CURL_CALLS!, "utf8") === downloads, "the Desktop sidecar did not run a second installer");
       check(readFileSync(unitPath, "utf8") === unit && readFileSync(receiptFile, "utf8") === receipt, "the unit and its receipt are unchanged");
       check(!existsSync(systemctlCalls), `the service was never reloaded or restarted: ${existsSync(systemctlCalls) ? readFileSync(systemctlCalls, "utf8") : ""}`);
@@ -267,8 +555,13 @@ try {
       lifetime.release();
     }
   }
-  console.log(`daemon-desktop-agent-apps: ${checks} checks passed (${process.platform}, login shell ${shell})`);
-} finally {
-  rmSync(root, { recursive: true, force: true });
-  if (runtime) rmSync(runtime, { recursive: true, force: true });
+  {
+    const unrecorded = isolated("unrecorded");
+    const receipt = recordService(unrecorded);
+    rmSync(receipt.receiptFile);
+    await refusedApps(unrecorded, "unrecorded-service", "APP_UNRECORDED_SERVICE");
+    const unavailable = isolated("no-user-services");
+    writeFileSync(join(unavailable.dir, "native", "systemctl"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    await refusedApps(unavailable, "no-user-services", "APP_NO_USER_SERVICES");
+  }
 }
