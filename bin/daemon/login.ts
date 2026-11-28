@@ -18,7 +18,7 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { resolveSpaceCatalogConsumer } from "@cotal-ai/core";
-import { commitStagedIdpSession, deleteIdpSpaceCatalog, establishIdpSession, fetchStagedIdpSpaceCatalog, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError, normalizeIdpUrl, signedInMachineAccounts, stageIdpSession } from "@cotal-ai/auth";
+import { commitStagedIdpSession, deleteIdpSpaceCatalog, establishIdpSession, fetchStagedIdpSpaceCatalog, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, signedInMachineAccounts, stageIdpSession } from "@cotal-ai/auth";
 import { CommandFailure, homeCotalDir, isCommandFailure, loadMeshes, removeCatalogAccount, resolveNativeMigration, withProjectTrustMigration, type KeptCatalogCredential } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
@@ -100,8 +100,11 @@ async function runEndorsedMigration(sessionDir: string, id: string, abort: Abort
   const trusted = [...pins.values()][0]!;
   const accounts = signedInMachineAccounts(sessionDir).filter((account) => account.idpUrl === oldUrl);
   const oldAccount = accounts[0];
+  const oldSession = loadIdpSession(sessionDir, oldUrl);
+  if (!oldSession || oldSession.expiresAt <= Math.floor(Date.now() / 1000))
+    throw localMigrationRefusal("The previous provider account is not signed in on this computer.", "Open Space conflicts to sign in to the previous provider or keep the existing registrations.");
   if (accounts.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || entries.some((entry) => entry.catalogOwner !== oldAccount.ownerKey))
-    throw localMigrationRefusal("The previous provider account is not signed in on this computer.", "Refresh spaces and open Space conflicts to replace or keep the existing registrations.");
+    throw localMigrationRefusal("The saved sign-in does not own all of the registrations at the previous address.", "Open Space conflicts to review the existing registrations.");
   const consumer = resolveSpaceCatalogConsumer();
   if (!consumer.prepareMigration)
     throw localMigrationRefusal("Space catalog migration is unavailable in this daemon.", "Restart the background service and try again.");

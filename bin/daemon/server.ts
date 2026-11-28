@@ -29,7 +29,7 @@ import { createServiceConnections } from "./service.js";
 import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces, resolveSpaceConflict } from "./desktop-state.js";
-import { idpTimeoutMs, normalizeIdpUrl, signedInMachineAccounts, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
+import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
@@ -454,8 +454,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "spaces" || req.op === "space-conflict-resolve") {
-        const disconnectSpace = async () => { const disc = services.disconnect(req.space); void disc.catch(() => {}); try { await managers.disconnect(req.space); } finally { await disc.catch(() => {}); } };
-        const task = req.op === "spaces" ? desktopSpaces(machineHome, req.refresh === true) : reconciler.serial(() => resolveSpaceConflict(machineHome, req.space, req.idp, disconnectSpace));
+        const task = req.op === "spaces" ? desktopSpaces(machineHome, req.refresh === true) : reconciler.serial(() => resolveSpaceConflict(machineHome, req.space, req.idp, async () => {
+          const disc = services.disconnect(req.space); void disc.catch(() => {});
+          try { await managers.disconnect(req.space); } finally { await disc.catch(() => {}); }
+        }));
         replyTask(task.then((result) => {
           counters.spacesAnswered++;
           if (req.op === "space-conflict-resolve") { account.signedIn(); notifyStatusWatchers(); }
@@ -591,12 +593,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         onResult: async (attempt, result) => {
           owned.delete(attempt);
           if (result.outcome === "signed-in") {
-            if (req.migrateFrom !== undefined) {
-              const accounts = signedInMachineAccounts(machineHome);
-              const oldAcc = accounts.find((a) => a.idpUrl === normalizeIdpUrl(req.migrateFrom!));
-              const newAcc = accounts.find((a) => a.idpUrl === normalizeIdpUrl(result.idp));
-              if (oldAcc && newAcc && oldAcc.sub === newAcc.sub) reconciler.reconcileMigratedOwner(oldAcc.ownerKey, newAcc.ownerKey);
-            }
+            if (req.migrateFrom !== undefined) await reconciler.reconcileMigratedOwners().catch(() => log("daemon: migrated space custody could not be saved; reconciliation will retry"));
             account.signedIn();
           }
           await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-result", attempt, result });

@@ -26,6 +26,7 @@ export interface SpaceConflictsHost {
   openPanel(): void;
   confirm(message: string): boolean;
   moveAccount(migration: EndorsedMigration): Promise<void>;
+  signInProvider(idp: string): Promise<void>;
   replaceSpace(item: SpaceCollision): Promise<void>;
   signOutProvider(idp: string): Promise<void>;
   changed(): void;
@@ -93,7 +94,7 @@ export class SpaceConflicts {
     if (this.busy) return;
     const label = shownSpaceLabel(item.catalogLabel, item.space);
     const toHost = hostOf(item.catalogIdp);
-    if (!this.host.confirm(`Use ${toHost} for ${label}? This removes the existing registration for ${item.space} on this computer, along with its saved preferences, chat sessions, and local stack definitions.`)) return;
+    if (!this.host.confirm(`Use ${toHost} for ${label}? This removes the existing registration for ${item.space} on this computer, along with its saved preferences, chat sessions, and any local stack settings that can be removed.`)) return;
     const key = `${item.catalogIdp}:${item.space}`;
     this.busySpace = key;
     this.errors.delete(key);
@@ -250,15 +251,15 @@ export class SpaceConflicts {
 
       const actions = document.createElement("div");
       actions.className = "conflict-actions";
-      if (item.existingOrigin === "catalog" && item.existingSignedIn !== false) {
+      if (item.existingOrigin === "catalog") {
         if (item.existingIdp) {
+          const needsSignIn = item.existingSignedIn === false;
           const signOut = document.createElement("button");
           signOut.type = "button";
           signOut.className = "button secondary";
           signOut.disabled = disabled;
-          signOut.textContent = `Sign out ${hostOf(item.existingIdp)}`;
-          signOut.setAttribute("aria-label", `Sign out ${hostOf(item.existingIdp)} to use ${hostOf(item.catalogIdp)} for ${item.space}`);
-          signOut.addEventListener("click", () => void this.signOutOther(item.existingIdp!));
+          signOut.textContent = needsSignIn ? `Sign in to ${hostOf(item.existingIdp)}` : `Sign out ${hostOf(item.existingIdp)}`;
+          signOut.addEventListener("click", () => void (needsSignIn ? this.host.signInProvider(item.existingIdp!) : this.signOutOther(item.existingIdp!)));
           actions.append(signOut);
         }
       } else {

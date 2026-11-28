@@ -191,6 +191,11 @@ export function nativeStub(scenario) {
       }
       if (request.op === "login") {
         state.loginRequests = [...(state.loginRequests ?? []), { ...request }];
+        if (request.migrateFrom && state.moveRefusal) {
+          const refusal = state.moveRefusal;
+          delete state.moveRefusal;
+          return ok({ outcome: "failed", ...refusal });
+        }
         if (state.loginLost) return fail("DAEMON_LOST", "The background service stopped before this could finish, so it did not complete. Try again when the service is running.");
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: `${new URL(request.idp ?? "https://cloud.cotal.ai/api/auth").origin}/device?user_code=WDJB-MJHT`, userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
@@ -498,13 +503,12 @@ export const scenarios = [
     name: `custody-recovery-${confirm ? "confirm" : "cancel"}`,
     state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected", lastRefusal: "The local space connection is held by https://old.example/api/auth.", custodyRecovery: { holder: "https://old.example/api/auth", candidate: "b".repeat(64) } }] } },
     expect: async page => {
-      const button = page.getByRole("button", { name: /^Move to this account for / });
+      const button = page.getByRole("button", { name: /^Use signed-in account for / });
       await button.waitFor();
       const rowText = await page.locator('[data-testid="connected-space-row"]').textContent();
-      assert.match(rowText, /This space is set up under another sign-in on this computer\./);
-      assert.doesNotMatch(rowText, /old\.example/);
+      assert.match(rowText, /old\.example/);
       page.once("dialog", dialog => {
-        assert.equal(dialog.message(), "Move Acme team to the account you're signed in with?");
+        assert.equal(dialog.message(), "Use the signed-in account for Acme team instead of https://old.example/api/auth?");
         return confirm ? dialog.accept() : dialog.dismiss();
       });
       await button.click();
@@ -1377,6 +1381,7 @@ export const scenarios = [
     },
     prepare: async page => { await page.click("#login"); await page.click("#open-conflicts"); },
     act: async page => {
+      page.on("dialog", dialog => dialog.accept());
       await page.locator('[data-space="running-local"] button:has-text("Use cotal.cloud")').click();
       await page.locator('[data-space="saved-manual"] button:has-text("Use cotal.cloud")').click();
     },
@@ -1400,6 +1405,7 @@ export const scenarios = [
     },
     prepare: async page => { await page.click("#login"); await page.click("#open-conflicts"); },
     act: async page => {
+      page.on("dialog", dialog => dialog.accept());
       await page.locator('[data-space="running-local"] button:has-text("Use cotal.cloud")').click();
       await page.locator('[data-space="saved-manual"] button:has-text("Use cotal.cloud")').click();
       await page.locator('[data-space="running-local"] button:has-text("Keep existing")').click();
@@ -1410,6 +1416,37 @@ export const scenarios = [
     },
   },
 ];
+
+const moveScenario = scenarios.find(item => item.name === "space-conflict-endorsed-moved");
+scenarios.push({
+  ...moveScenario,
+  name: "space-conflict-expired-move-retry",
+  state: { ...moveScenario.state, moveRefusal: { reason: "expired", message: "The approval code expired." } },
+  act: async page => {
+    await page.click("#move-account");
+    await page.getByRole("button", { name: "Get a new code" }).click();
+  },
+  expect: async page => {
+    await page.getByText("Moved your spaces to cotal.cloud.", { exact: true }).waitFor();
+    const moves = await page.evaluate(() => window.__renderState.loginRequests.filter(row => row.migrateFrom));
+    assert.deepEqual(moves, Array.from({ length: 2 }, () => ({ op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cloud.cotal.ai/api/auth" })));
+  },
+}, {
+  ...moveScenario,
+  name: "space-conflict-move-refusal-recovery",
+  state: { ...moveScenario.state, moveRefusal: { reason: "local-state-error", message: "Your spaces do not match, so nothing was moved.", remedy: "Open Space conflicts to keep the existing registrations." } },
+  act: page => page.click("#move-account"),
+  expect: async page => {
+    assert.match(await page.locator("#connection-description").textContent(), /nothing was moved.*keep the existing registrations/);
+    await page.getByRole("button", { name: "Review space conflicts" }).click();
+    await page.getByRole("button", { name: "Sign out cloud.cotal.ai" }).waitFor();
+    let dialogText;
+    page.once("dialog", dialog => { dialogText = dialog.message(); return dialog.dismiss(); });
+    await page.getByRole("button", { name: "Sign out cloud.cotal.ai" }).click();
+    assert.match(dialogText, /revokes.*personal-home/);
+    assert.equal(await page.evaluate(() => window.__renderState.accountRequests.some(row => row.op === "logout")), false);
+  },
+});
 
 // Audit regressions use the same real UI entry points as the original fixtures.
 const auditCase = (source, name, expect) => {

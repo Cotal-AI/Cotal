@@ -77,6 +77,7 @@ const spaceConflicts = new SpaceConflicts({
   openPanel: () => openConflicts(),
   confirm: message => window.confirm(message),
   moveAccount: migration => runEndorsedMove(migration),
+  signInProvider: idp => action(() => runSignInFlow(canonicalProvider(idp))),
   replaceSpace: async item => {
     const result = await request({ op: "space-conflict-resolve", space: item.space, idp: item.catalogIdp });
     applySpacesPayload(result, signedInProvider ?? item.catalogIdp);
@@ -463,7 +464,7 @@ function refusal(error: unknown, fromStatus = false): void {
   agentActionProblem = false;
   showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
-  refusalSummary = error instanceof DaemonRefusal && (error.code === "MOVE_REFUSED" || error.code === "LOCAL_STATE_ERROR")
+  refusalSummary = error instanceof DaemonRefusal && error.code === "MOVE_REFUSED"
     ? [error.message.split("\n")[0] ?? "", error.remedy].filter(Boolean).join(" ")
     : undefined;
   statusProblem = fromStatus;
@@ -1133,6 +1134,7 @@ el("recover").addEventListener("click", () => {
   if (el("recover").dataset.action === "none") return;
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
   const recovery = el("recover").dataset.action;
+  const reviewMove = problem === "MOVE_REFUSED";
   const keepNotAnswering = problem === "NOT_ANSWERING" && recovery === "refresh";
   if (!keepNotAnswering) { problem = undefined; refusalSummary = undefined; }
   notice("");
@@ -1142,6 +1144,7 @@ el("recover").addEventListener("click", () => {
   }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") {
+    if (!reviewMove) { void action(async () => { await spaces(true); nextAfterSignIn(); }); return; }
     activeMove = undefined;
     void action(async () => {
       await spaces(true);

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { activeComputerAccount, catalogRefreshNotice, parseEndorsedMigration, parseSpaceCollisions } from "../src/model.ts";
-import { existingRegistrationCopy } from "../src/space-conflicts.ts";
+import { existingRegistrationCopy, SpaceConflicts } from "../src/space-conflicts.ts";
 
 const own = "https://cotal.cloud/api/auth", legacy = "https://cloud.cotal.ai/api/auth", other = "https://hack.cotal.ai/api/auth";
 test("refresh scopes provider failures and surfaces non-blocking space-name conflict details without CLI dead ends", () => {
@@ -29,7 +29,7 @@ test("refresh scopes provider failures and surfaces non-blocking space-name conf
     ],
     migration: { fromIdp: legacy, toIdp: own, spaces: ["personal-home", "cotal-team"] },
   }, own);
-  assert.match(endorsed, /personal-home, cotal-team.*cloud\.cotal\.ai.*Move account.*cotal\.cloud/);
+  assert.match(endorsed, /personal-home, cotal-team.*cloud\.cotal\.ai.*Move to cotal\.cloud/);
   assert.doesNotMatch(endorsed, /cotal sync|cotal space|cotal login/);
   assert.match(catalogRefreshNotice({ refresh: "partial", failedProviders: [other], collisions: 1 }, own), /names conflict.*hack\.cotal\.ai/);
   assert.throws(() => catalogRefreshNotice({ refresh: "partial", failedProviders: [own], collisions: 1 }, own), /cotal\.cloud/);
@@ -55,6 +55,26 @@ test("space collision parsers and plain-word origin descriptions handle catalog,
     spaces: ["personal-home"],
   });
   assert.equal(parseEndorsedMigration({ migration: { fromIdp: legacy, toIdp: own, spaces: [] } }), undefined);
+});
+test("conflict actions ask before replacement or provider-wide sign-out", async () => {
+  const messages: string[] = [], actions: string[] = [];
+  let confirmed = false;
+  const conflicts = new SpaceConflicts({
+    openPanel() {}, async moveAccount() {}, async signInProvider() {}, changed() {},
+    confirm(message) { messages.push(message); return confirmed; },
+    async replaceSpace(item) { actions.push(item.space); },
+    async signOutProvider(idp) { actions.push(idp); },
+  });
+  const manual = { space: "local", catalogLabel: "Local", catalogIdp: own, existingOrigin: "manual" } as const;
+  conflicts.applySpacesResult({ spaces: [{ space: "another", idp: legacy, catalogId: "sp_2" }],
+    collisionDetails: [{ space: "home", catalogLabel: "Home", catalogIdp: own, existingOrigin: "catalog", existingIdp: legacy }] });
+  await conflicts.replaceWithCatalog(manual); await conflicts.signOutOther(legacy);
+  assert.deepEqual(actions, []);
+  assert.match(messages[0]!, /preferences, chat sessions, and any local stack settings/);
+  assert.match(messages[1]!, /revokes that sign-in.*another, home/);
+  confirmed = true;
+  await conflicts.replaceWithCatalog(manual); await conflicts.signOutOther(legacy);
+  assert.deepEqual(actions, ["local", legacy]);
 });
 test("account follows active provider or the only supported account, not the last saved account", () => {
   const good = { idpUrl: legacy, mode: "account", hostSupport: "supported", spaces: [] };

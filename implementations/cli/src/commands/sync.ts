@@ -173,6 +173,7 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: M
     mode: "user",
     origin: "catalog",
     catalogOwner: account.ownerKey,
+    ...(prior?.catalogMigration?.toOwner === account.ownerKey && prior.catalogId === row.id ? { catalogMigration: prior.catalogMigration } : {}),
     catalogId: row.id,
     catalogSlug: row.slug,
     catalogName: row.name,
@@ -262,6 +263,7 @@ export function prepareCatalogMigration(oldAccount: AuthSpaceCatalogAccount, new
       throw new Error("catalog migration requires an old exchange endpoint");
     assertRegistrationAccountBinding({ ...row.registration, userAuth: { ...old.userAuth, endpoints: { ...old.userAuth.endpoints, url: old.userAuth.endpoints.url } } }, oldAccount, `old catalog entry "${old.space}"`);
     const next = entryFor(account, row, old);
+    next.catalogMigration = { fromOwner: oldAccount.ownerKey, toOwner: account.ownerKey };
     if (old.userAuth.sentinelCredsPath) next.userAuth!.sentinelCredsPath = old.userAuth.sentinelCredsPath;
     migratedCount++;
     return [{ next, row }];

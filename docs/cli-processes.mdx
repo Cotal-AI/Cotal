@@ -895,8 +895,9 @@ update, and the listing reports the unreadable count with a partial outcome (exi
 A damaged canonical registration and its usable legacy duplicate stay untouched, including during
 failure reporting and catalog removal. A selection naming that registration stays selected.
 The desktop app uses these same controls. A catalog name collision leaves the existing registration
-intact and does not block desktop sign-in. The app points to `cotal sync` for the conflicting names
-and `cotal space` for their registration sources. Its source and native build instructions are in the
+intact and does not block desktop sign-in. **Review space conflicts** shows the names and their
+registration sources. You can keep a registration or review what replacing it or signing out will
+remove before confirming. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 If desktop preferences cannot be parsed, the app keeps the original file beside `presence.json`
 with a fresh `.invalid.<number>` suffix, opens with defaults, and reports the saved file's location.

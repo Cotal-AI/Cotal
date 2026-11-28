@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount } from "@cotal-ai/core";
 import { importAccountComputerSpace, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
-import { findMesh, readMeshRegistry, recordMeshes, resolveNativeMigration, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, readMeshRegistry, recordMeshes, type MeshEntry } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
-import { knownMachineAccounts, normalizeIdpUrl, signedInMachineAccounts } from "@cotal-ai/auth";
+import { knownMachineAccounts } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
@@ -27,53 +27,25 @@ function readSavedSpaces(file: string): Saved {
   return raw;
 }
 
-function adoptMigratedOwner(saved: Saved, conflicts: Map<string, unknown>, refusals: Map<string, string>, retryAt: Map<string, number>, persist: () => void, oldOwner: string, newOwner: string): void {
-  let changed = false;
+function committedSuccessor(entry: MeshEntry | undefined, space: string, id: string, owner: string): string | undefined {
+  const move = entry?.catalogMigration;
+  if (move && entry?.origin === "catalog" && entry.catalogSlug === space && entry.catalogId === id
+      && typeof move.toOwner === "string" && /^[a-f0-9]{64}$/.test(move.toOwner)
+      && move.fromOwner === owner && move.toOwner !== owner && move.toOwner === entry.catalogOwner) return move.toOwner;
+  return undefined;
+}
+
+function adoptMigratedOwners(saved: Saved, entries: Map<string, MeshEntry>, clear: (space: string) => void, persist: (next: Saved) => void): void {
+  const adopted = new Map<string, ManagedSpace>();
   for (const [space, state] of Object.entries(saved.spaces)) {
-    const entry = state.owner === oldOwner ? findMesh(space) : undefined;
-    if (entry?.origin === "catalog" && entry.catalogOwner === newOwner && (!entry.catalogId || entry.catalogId === state.id)) {
-      state.owner = newOwner; conflicts.delete(space); refusals.delete(space); retryAt.delete(space); changed = true;
-    }
+    const owner = committedSuccessor(entries.get(space), space, state.id, state.owner);
+    if (owner) adopted.set(space, { ...state, owner });
   }
-  if (changed) persist();
-}
-
-async function verifyEndorsedSuccessor(home: string, endorsed: Map<string, string>, saved: Saved, conflicts: Map<string, unknown>, refusals: Map<string, string>, retryAt: Map<string, number>, persist: () => void, oldOwner: string, newOwner: string, entry: MeshEntry): Promise<boolean> {
-  if (oldOwner === newOwner) return false;
-  if (endorsed.get(oldOwner) === newOwner) return true;
-  const audience = entry.userAuth?.idp.audience;
-  if (!audience) return false;
-  const known = [...knownMachineAccounts(home), ...signedInMachineAccounts(home)];
-  const oldAcc = known.find((item) => item.ownerKey === oldOwner);
-  const newAcc = known.find((item) => item.ownerKey === newOwner);
-  if (!oldAcc?.issuer || !oldAcc.sub || !newAcc || oldAcc.issuer !== newAcc.issuer || oldAcc.sub !== newAcc.sub) return false;
-  const oldUrl = normalizeIdpUrl(oldAcc.idpUrl), newUrl = normalizeIdpUrl(newAcc.idpUrl);
-  if (oldUrl === newUrl || !oldUrl.startsWith("https://") || !newUrl.startsWith("https://")) return false;
-  try {
-    const res = await resolveNativeMigration({ url: oldUrl, issuer: oldAcc.issuer, audience });
-    if (normalizeIdpUrl(res.bundle.userAuth.idp.url) !== newUrl) return false;
-    endorsed.set(oldOwner, newOwner);
-    adoptMigratedOwner(saved, conflicts, refusals, retryAt, persist, oldOwner, newOwner);
-    return true;
-  } catch { return false; }
-}
-
-async function adoptPendingMigrations(home: string, endorsed: Map<string, string>, saved: Saved, conflicts: Map<string, unknown>, refusals: Map<string, string>, retryAt: Map<string, number>, persist: () => void): Promise<void> {
-  for (const [space, state] of Object.entries(saved.spaces)) {
-    const entry = findMesh(space);
-    if (entry?.origin === "catalog" && entry.catalogOwner && entry.catalogOwner !== state.owner && entry.catalogId === state.id)
-      await verifyEndorsedSuccessor(home, endorsed, saved, conflicts, refusals, retryAt, persist, state.owner, entry.catalogOwner, entry);
-  }
-}
-
-async function filterSupersededSnapshot(home: string, endorsed: Map<string, string>, saved: Saved, conflicts: Map<string, unknown>, refusals: Map<string, string>, retryAt: Map<string, number>, persist: () => void, ownerKey: string, rows: SpaceCatalogSnapshot["spaces"]) {
-  const kept: SpaceCatalogSnapshot["spaces"][number][] = [];
-  for (const row of rows) {
-    const entry = findMesh(row.slug);
-    if (entry?.origin === "catalog" && entry.catalogOwner && entry.catalogOwner !== ownerKey && await verifyEndorsedSuccessor(home, endorsed, saved, conflicts, refusals, retryAt, persist, ownerKey, entry.catalogOwner, entry)) continue;
-    kept.push(row);
-  }
-  return kept;
+  if (adopted.size === 0) return;
+  const next = { ...saved.spaces, ...Object.fromEntries(adopted) };
+  persist({ ...saved, spaces: next });
+  saved.spaces = next;
+  for (const space of adopted.keys()) clear(space);
 }
 
 function hostedManagersFor(managers: Managers, rows: readonly { id: string; slug: string }[]) {
@@ -86,12 +58,17 @@ function hostedManagersFor(managers: Managers, rows: readonly { id: string; slug
 /** Reconcile through the same checked service and Manager operations as local setup. */
 export function createAccountReconciler(home: string, services: ServiceConnections, managers: Managers) {
   const file = join(home, "daemon", "account-spaces.json"), saved = readSavedSpaces(file);
-  const persist = () => { mkSecretDir(join(file, "..")); writeSecretFileAtomic(file, JSON.stringify(saved)); };
+  const persist = (next = saved) => { mkSecretDir(join(file, "..")); writeSecretFileAtomic(file, JSON.stringify(next)); };
   const refusals = new Map<string, string>();
   const retryAt = new Map<string, number>();
   const managerOnly = new Set<string>();
   const conflicts = new Map<string, { owner: string; candidate: string; holder: string }>();
-  const endorsed = new Map<string, string>();
+  const reconcile = () => {
+    const entries = new Map<string, MeshEntry>();
+    if (resolve(home) === resolve(homeCotalDir())) for (const entry of readMeshRegistry().entries) entries.set(entry.space, entry);
+    adoptMigratedOwners(saved, entries, space => { conflicts.delete(space); refusals.delete(space); retryAt.delete(space); }, persist);
+    return entries;
+  };
   const health = new Map<string, number>();
   let signedIn = new Set<string>();
   const connectedHere = (space: string) => services.status(space).state === "connected" || managers.status(space).state === "answering";
@@ -131,7 +108,8 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, bindingRevisions: Record<string, number>, fresh = true, signal?: AbortSignal) => serial(async () => {
     signal?.throwIfAborted();
     if (snapshot.spaces.some(row => !Number.isSafeInteger(bindingRevisions[row.id]) || bindingRevisions[row.id]! <= 0 || bindingRevisions[row.id]! > revision)) throw new Error("invalid binding revisions");
-    const activeRows = await filterSupersededSnapshot(home, endorsed, saved, conflicts, refusals, retryAt, persist, account.ownerKey, snapshot.spaces);
+    const entries = reconcile();
+    const activeRows = snapshot.spaces.filter(row => !committedSuccessor(entries.get(row.slug), row.slug, row.id, account.ownerKey));
     const desired = new Set(activeRows.map(row => row.slug));
     desiredByOwner.set(account.ownerKey, desired);
     for (const [space, state] of Object.entries(saved.spaces)) {
@@ -207,9 +185,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       ? { holder: conflict.holder, candidate: conflict.candidate } : undefined;
   };
   return { apply, localRemoval, localAddition, serial,
-    adoptEndorsedMigrations: () => serial(() => adoptPendingMigrations(home, endorsed, saved, conflicts, refusals, retryAt, persist)),
-    reconcileMigratedOwner: (oldOwner: string, newOwner: string) => { endorsed.set(oldOwner, newOwner); adoptMigratedOwner(saved, conflicts, refusals, retryAt, persist, oldOwner, newOwner); },
-    isSupersededOwner: (owner: string) => endorsed.has(owner) && !readMeshRegistry().entries.some((entry) => entry.origin === "catalog" && entry.catalogOwner === owner),
+    reconcileMigratedOwners: () => serial(async () => { reconcile(); }),
     accountHealth(owner: string, answering: boolean) { health.set(owner, answering ? 0 : (health.get(owner) ?? 0) + 1); },
     transfer: (space: string, account: AuthSpaceCatalogAccount, expectedHolder: string, signal: AbortSignal) => serial(async () => {
         signal.throwIfAborted();

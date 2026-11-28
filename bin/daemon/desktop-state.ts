@@ -1,6 +1,6 @@
 /** Space discovery stays in the daemon, next to the sign-in that authorizes it. */
 import { resolve } from "node:path";
-import type { AuthSpaceCatalogResult } from "@cotal-ai/core";
+import type { AuthSpaceCatalogAccount, AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { forgetLocalSpaceRegistration, prepareCatalogTargets, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import { CommandFailure, homeCotalDir, isCommandFailure, readMeshRegistry, resolveNativeMigration, withProjectTrustMigration, type MeshEntry } from "@cotal-ai/workspace";
 import { listIdpAccounts, normalizeIdpUrl, signedInMachineAccounts } from "@cotal-ai/auth";
@@ -12,7 +12,7 @@ function originOf(entry: MeshEntry): "manual" | "catalog" | "up" {
 
 function collectCollisions(sessionDir: string, results: readonly AuthSpaceCatalogResult[], entries: readonly MeshEntry[]): SpaceCollision[] {
   const bySpace = new Map(entries.map((entry) => [entry.space, entry]));
-  const signedOwners = new Set(signedInMachineAccounts(sessionDir).map((account) => account.ownerKey));
+  const signedOwners = new Set(activeAccounts(sessionDir).map((account) => account.ownerKey));
   const details: SpaceCollision[] = [];
   for (const r of results) {
     const spaces = (r.snapshot as SpaceCatalogSnapshot | undefined)?.spaces ?? [];
@@ -41,7 +41,7 @@ async function verifiedMigrationFrom(sessionDir: string, fromIdp: string, entrie
   const pins = new Map(oldEntries.map((entry) => [JSON.stringify([entry.userAuth!.idp.issuer, entry.userAuth!.idp.audience]), entry.userAuth!.idp]));
   if (!oldEntries.length || pins.size !== 1) return undefined;
   const trusted = [...pins.values()][0]!;
-  const accounts = signedInMachineAccounts(sessionDir);
+  const accounts = activeAccounts(sessionDir);
   const oldMatches = accounts.filter((account) => account.idpUrl === fromUrl);
   const oldAccount = oldMatches[0];
   if (oldMatches.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || oldEntries.some((entry) => entry.catalogOwner !== oldAccount.ownerKey)) return undefined;
@@ -53,6 +53,12 @@ async function verifiedMigrationFrom(sessionDir: string, fromIdp: string, entrie
     if (newAccount && newAccount.sub !== oldAccount.sub) return undefined;
     return { fromIdp: fromUrl, toIdp: toUrl, spaces: oldEntries.map((entry) => entry.space).sort() };
   } catch { return undefined; }
+}
+
+function activeAccounts(sessionDir: string): AuthSpaceCatalogAccount[] {
+  const now = Math.floor(Date.now() / 1000);
+  const active = new Set(listIdpAccounts(sessionDir).filter(account => account.expiresAt > now).map(account => account.idp));
+  return signedInMachineAccounts(sessionDir).filter(account => active.has(account.idpUrl));
 }
 
 async function detectEndorsedMigration(sessionDir: string, collisionDetails: readonly SpaceCollision[], entries: readonly MeshEntry[]): Promise<EndorsedMigration | undefined> {
@@ -151,7 +157,7 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
   };
 }
 
-/** Replace one non-catalog (or orphaned signed-out catalog) registration when no local stack runs it, checking every refusal before `disconnect`. */
+/** Check registration ownership and the local stack before disconnecting anything. */
 export async function resolveSpaceConflict(sessionDir: string, space: string, idp: string, disconnect?: () => Promise<void>): Promise<DaemonSpaces> {
   if (resolve(sessionDir) !== resolve(homeCotalDir()))
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Space registrations can only be changed in the default Cotal home.");
@@ -162,14 +168,13 @@ export async function resolveSpaceConflict(sessionDir: string, space: string, id
   const { entries } = readMeshRegistry();
   const existing = entries.find((entry) => entry.space === space);
   if (!existing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `No space named "${space}" is registered on this computer.`);
-  const ownerSignedIn = existing.origin === "catalog" && Boolean(existing.catalogOwner && signedIn.some((account) => account.ownerKey === existing.catalogOwner));
-  if (ownerSignedIn) {
+  if (existing.origin === "catalog") {
     const source = existing.userAuth?.idp.url ?? "another signed-in account";
     throw new CommandFailure("refused", "CONFLICT", `"${space}" belongs to ${source}. Move or sign out of that account instead of replacing one space.`);
   }
   await withProjectTrustMigration(true, false, async () => {
     try {
-      await forgetLocalSpaceRegistration(space, { allowOrphanCatalog: existing.origin === "catalog", beforeRemove: disconnect });
+      await forgetLocalSpaceRegistration(space, { beforeRemove: disconnect });
     } catch (e) {
       if (isCommandFailure(e) && e.code === "LIFECYCLE_BLOCKED")
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${space}" is currently running on this computer. Stop that local space first, or keep the local registration.`);
