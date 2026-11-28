@@ -17,7 +17,7 @@ import { requestSafeReconnect } from "./request-safe-reconnect.js";
 
 // Keep recognizing the managed exchange refusal from authorities already deployed. The suffix
 // is operator guidance and can change independently of the missing-parent diagnosis.
-const missingSpawnerRefusal = /^agent-bearer: exchange refused: agent "[A-Za-z0-9_]+": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted(?:[. ]|$)/;
+const missingSpawnerRefusal = /^agent-bearer: exchange refused: (agent "[A-Za-z0-9_]+": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted)(?=[. ]|$)/;
 
 /** What the credentials component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on
@@ -115,9 +115,10 @@ export class EndpointCredentials {
     } catch (e) {
       if (initial) throw e;
       const reason = e instanceof Error ? e.message : String(e);
-      if (missingSpawnerRefusal.test(reason)) {
+      const missing = missingSpawnerRefusal.exec(reason);
+      if (missing) {
         this.missingSpawner = true;
-        this.parts.presence.setBearerCondition(reason.slice("agent-bearer: exchange refused: ".length));
+        this.parts.presence.setBearerCondition(`${missing[1]}. Renewal requires that spawner's grant in space ${JSON.stringify(this.identity.space)}.`);
       } else if (this.missingSpawner) {
         this.missingSpawner = false;
         this.cred.bearerRenewalFailures = 0;

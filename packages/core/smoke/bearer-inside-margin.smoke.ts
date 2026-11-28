@@ -247,10 +247,12 @@ const orphanReplies = [
   Object.assign(new Error("exchange down"), { retryAfterSeconds: 30 }),
 ];
 const orphan = armed("s-orphan", async () => { throw orphanReplies.shift(); });
+const missingMessage = 'agent "probe": spawner "local.parent" (an ancestor) is no longer granted. Renewal requires that spawner\'s grant in space "s-orphan".';
 for (const version of ["older", "current"]) {
   const [delay] = await refreshAt(orphan.internals, Date.now());
-  c(`the ${version} missing-spawner refusal sets auth presence and arms a 2-4 minute retry`,
-    delay! >= 120_000 && delay! <= 240_000 && orphan.internals.presence.bearerCondition?.code === "auth", delay);
+  const condition = orphan.internals.presence.bearerCondition;
+  c(`the ${version} missing-spawner refusal sets command-free auth presence and arms a 2-4 minute retry`,
+    delay! >= 120_000 && delay! <= 240_000 && condition?.code === "auth" && condition.message === missingMessage, delay);
 }
 const [narrowedDelay] = await refreshAt(orphan.internals, Date.now());
 c("a narrowed returning grant clears missing-spawner presence and restarts normal backoff",
