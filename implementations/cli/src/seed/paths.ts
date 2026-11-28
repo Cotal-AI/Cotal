@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectorConfigDir, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
+import { connectorConfigDir, extensionsDir, extensionsManifestPath, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 /**
  * Filesystem layout + version identity for the connector seeding engine. Everything the reconcile
@@ -18,6 +18,28 @@ import { connectorConfigDir, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 /** The first-party seeded extensions, in a stable seed order: the connectors plus the web dashboard.
  *  Keys of {@link SEEDED_EXTENSIONS}. */
 export const SEED_BUILTINS: readonly string[] = Object.keys(SEEDED_EXTENSIONS);
+
+/** A witnessed prefix whose inventory file is gone while npm still has packages installed. A prefix
+ *  that was never seeded, or an empty prefix, is not this state: there is no inventory to restore. */
+function entryExists(path: string): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+export function extensionsInventoryMissing(): boolean {
+  if (!existsSync(witnessPath())) return false;
+  if (entryExists(extensionsManifestPath())) return false;
+  const prefix = extensionsDir();
+  try {
+    return lstatSync(join(prefix, "package-lock.json"), { throwIfNoEntry: false })?.isFile() === true
+      || lstatSync(join(prefix, "node_modules"), { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false;
+  }
+}
 
 /** `<config>/cotal/seed` — the seed engine's own state root (NOT inside the npm prefix). */
 export function seedDir(): string {

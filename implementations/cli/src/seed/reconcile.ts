@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, renameSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ import {
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
+  saveExtensionsManifest,
   logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
@@ -27,11 +28,11 @@ import {
   type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
+import { displayCmd, selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, extensionsInventoryMissing, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -125,6 +126,7 @@ export function seedInstallationCurrent(): boolean {
     const generation = seedGeneration();
     if (readCursor() || readRecovery() || seedChildStatus().kind !== "none" || reconcileLockActive()) return false;
     if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
+    if (extensionsInventoryMissing()) return false;
     const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
     if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
     return entries.every(({ name, entry }) => entry === undefined ||
@@ -213,6 +215,10 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
     // interrupted. A LIVE lock holder ⇒ it is in flight: fall through and WAIT on the lock, then
     // re-check the fast path (it will have stamped). No live holder ⇒ it crashed → fail loud.
     if (cursor || recoveryPending()) {
+      if (automatic && extensionsInventoryMissing()) {
+        console.error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
+        return NOOP;
+      }
       if (!reconcileLockActive()) {
         const child = seedChildStatus();
         if (child.kind === "live")
@@ -236,7 +242,10 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         }
         if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
-    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (automatic && extensionsInventoryMissing()) {
+      console.error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
+      return NOOP;
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && !extensionsInventoryMissing() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -374,6 +383,23 @@ function builtinsAccounted(): boolean {
   }
 }
 
+/** Operator packages still installed after a missing inventory is rebuilt. Their registration was in that
+ *  inventory, so their files stay on disk and are named rather than registered from the package alone. */
+function unregisteredOperatorPackages(builtIns: ReadonlySet<string>): string[] {
+  const root = join(extensionsDir(), "node_modules", "@cotal-ai");
+  let names: string[] = [];
+  try { names = readdirSync(root); } catch { return []; }
+  return names.filter((name) => !builtIns.has(`@cotal-ai/${name}`) && lstatSync(join(root, name), { throwIfNoEntry: false })?.isDirectory() === true)
+    .map((name) => `@cotal-ai/${name}`).sort();
+}
+
+/** After a verify rebuild, an inventory that is still absent gets the recovered fact written before the
+ *  commit. Built-ins staged above already write their entries. Leftover operator packages stay on disk. */
+function writeRecoveredInventory(staged: readonly unknown[], unregistered: readonly string[]): void {
+  if (!staged.length && extensionsInventoryMissing()) saveExtensionsManifest({ extensions: [] });
+  console.log(`the extensions inventory was missing. Built-in packages still on disk are registered again.${unregistered.length ? ` ${unregistered.join(", ")} remain on disk but are not registered. Run \`${displayCmd()} ext add\` with the original spec to register one.` : ""}`);
+}
+
 /** A package can add a registry provider without changing the seed generation in a source checkout.
  * The fast path must not preserve an older manifest that advertises only a subset of what the packed
  * built-in now registers, or lazy materialization of the new provider can never find its owner. An
@@ -455,14 +481,20 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // quarantine still honors them on the next run.
   let manifestRebuilt = false;
   let repairAllSeeded = false;
+  const inventoryMissingAtStart = extensionsInventoryMissing();
   if (mode === "repair" || mode === "reset") {
     ({ manifestRebuilt, repairAllSeeded } = prepareMaintenanceState(mode));
+  } else if (mode === "verify" && inventoryMissingAtStart) {
+    writeRecovery({ rebuildFromDisk: true });
+    manifestRebuilt = true;
   }
 
   // Health preamble — BEFORE the stamp fast path. A cursor OR a recovery obligation means a prior
   // seed/repair was interrupted. In maintenance mode they are kept and cleared only at the final commit.
   const cursor = readCursor();
-  if (cursor) {
+  if (cursor && mode === "verify" && extensionsInventoryMissing()) {
+    clearCursor();
+  } else if (cursor) {
     if (mode === "auto" && cursor.failed) throw failedSeed(cursor);
     if (mode === "auto")
       throw new Error(
@@ -596,6 +628,8 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   }
 
   const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
+  const inventoryWasMissing = manifestRebuilt && (mode === "verify" || mode === "repair" ? inventoryMissingAtStart : extensionsInventoryMissing());
+  const unregistered = inventoryWasMissing ? unregisteredOperatorPackages(builtIns) : [];
   const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
     entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
       mode === "verify"
@@ -637,6 +671,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
   if (migrationFrom) await refreshInstalls();
   await checkInterrupted(true);
+  if (inventoryWasMissing) writeRecoveredInventory(staged, unregistered);
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
   // and GC old stores. A crash above (including a repair that quarantined then died mid-reinstall)
@@ -657,9 +692,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
 
 /** What refuses an `up` at the boot gate, where it defers its seed to its first launch, in the order
  *  {@link reconcile} would refuse: a writer that may not write a store that is not current, then an
- *  executable older than the store. Neither check writes anything. */
+ *  executable older than the store. A missing extensions inventory is named and the command continues.
+ *  Neither check writes anything. */
 export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
+  if (extensionsInventoryMissing()) {
+    console.error(`the extensions inventory is missing. Run \`${displayCmd()} ext seed --repair\` to preserve the damaged file and rebuild the built-in inventory.`);
+    return undefined;
+  }
   let current = false;
   try {
     current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
@@ -752,6 +792,7 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
       return true;
     }
   })();
+  const inventoryMissing = extensionsInventoryMissing();
   const cursorCorrupt = (() => {
     try {
       readCursor();
@@ -760,7 +801,7 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
       return true;
     }
   })();
-  manifestRebuilt = manifestRebuilt || manifestCorrupt;
+  manifestRebuilt = manifestRebuilt || manifestCorrupt || inventoryMissing;
   repairAllSeeded = repairAllSeeded || cursorCorrupt;
 
   // Persist the obligation BEFORE any destructive quarantine below, so a crash in between still leaves

@@ -1,4 +1,5 @@
 import { isCommandFailure, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
+import { extensionsInventoryMissing } from "../seed/paths.js";
 
 const receiptRepair = "Run `cotal update --self` to reconcile this installation.";
 export const manifestRepair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
@@ -23,6 +24,7 @@ export function readUpdatePending(current: string): UpdatePending {
     return { kind: "receipt", recovery, instruction: decision.action === "active" ? decision.instruction : `Reconciliation pending: ${decision.instruction}` };
   }
   try {
+    if (extensionsInventoryMissing()) return { kind: "unreadable", source: "manifest", error: "the extensions inventory is missing", instruction: manifestRepair };
     const extensions = loadExtensionsManifest().extensions
       .filter(entry => entry.pkg.startsWith("@cotal-ai/") && entry.version !== current)
       .map(entry => ({ package: entry.pkg, version: entry.version }));

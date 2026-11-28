@@ -557,7 +557,11 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
       reconciliation = { kind: "unreadable", source: "seed", error: refusal(error), instruction: "Run `cotal ext seed --repair` to reconcile the connectors." };
     }
   }
-  if (reconciliation.kind === "unreadable") warnings.push({ code: "RECONCILIATION_UNREADABLE", target: null, message: `Reconciliation state could not be read: ${reconciliation.error}` });
+  if (reconciliation.kind === "unreadable") {
+    const missing = reconciliation.source === "manifest" && reconciliation.error === "the extensions inventory is missing";
+    if (missing) extensions = null;
+    warnings.push({ code: missing ? "EXTENSION_INVENTORY_UNREADABLE" : "RECONCILIATION_UNREADABLE", target: null, message: missing ? `The extension inventory could not be read: ${reconciliation.error}. It was not repaired or treated as empty.` : `Reconciliation state could not be read: ${reconciliation.error}` });
+  }
   if (reconciliation.kind === "seed") warnings.push({ code: "OPERATION_PARTIAL", target: null, message: reconciliation.instruction });
   const manifestUnreadable = reconciliation.kind === "unreadable" && reconciliation.source === "manifest";
   const result = { kind: "update-check", reconciliation, current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
