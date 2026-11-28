@@ -28,6 +28,7 @@ import { LeaseKeeper, leaseKeeperDeps } from "./lease-keeper.js";
 export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
 import { SessionRecovery, sessionRecoveryDeps } from "./session-recovery.js";
 import { SeatCustody, seatCustodyDeps, watchConnectorHolder } from "./seat-custody.js";
+import { drainHostedPtyOnStop } from "./runtime/shared-pty.js";
 import { GoalWriter, goalWriterDeps } from "./goal-writer.js";
 import { SeatStop, seatStopDeps } from "./seat-stop.js";
 import { CommandDispatch, commandDispatchDeps, participantKey } from "./command-dispatch.js";
@@ -116,9 +117,9 @@ export interface ManagerOptions {
   name?: string;
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
+  machineHostedPty?: { install: string; home: string }; // Identity of the daemon for native Linux PTYs.
   workspaceRoot?: string;
-  /** Trusted embedding hook after native identity selection, before endpoint construction.
-   *  It receives no key, credential or readiness claim. A rejection aborts this start. */
+  /** Trusted embedding hook after native identity selection, before endpoint construction. It receives no credential or readiness claim. */
   onServiceIdentity?: (identity: ManagerServiceIdentity) => void | Promise<void>;
   /** The selected registration requires every launched connector session to publish events. */
   eventsRequired?: boolean;
@@ -783,7 +784,7 @@ export class Manager {
   private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts, this.startState);
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
-  private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts, this.startState);
+  protected readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts, this.startState);
 
   /** Manager boot: execution admission, connect, registration and lease. Every dependency reads through at its use. */
   private readonly bootComponent = new ManagerBoot(this.config, bootDeps(this), this.parts, this.startState);
@@ -846,7 +847,7 @@ export class Manager {
         }
       }
     }
-    if (this.config.execution === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.config.space}`);
+    if (this.config.execution === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.config.space}`, opts.machineHostedPty && !opts.pooled ? { space: this.config.space, ...opts.machineHostedPty } : undefined);
     if (opts.pooled && this.config.execution === "runtime" && isCustodialRuntime(this.requiredRuntime))
       throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
     config.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
@@ -1274,8 +1275,8 @@ export class Manager {
     } catch (e) {
       seatFailure = rejectionText(e);
     }
-    // Every step below runs even when an earlier one fails, so a failed stop still closes this
-    // process's connections and listener (#2290). Failures are collected and thrown at the end.
+    try { await drainHostedPtyOnStop(this.runtime, this.seatLaunch); }
+    catch (e) { seatFailure = [seatFailure, rejectionText(e)].filter(Boolean).join("; "); }
     const failures: string[] = [];
     const step = async (name: string, run: () => Promise<unknown> | undefined): Promise<void> => {
       try {
@@ -1877,6 +1878,12 @@ export class Manager {
 
   /** {@link StatusAndModels.hostedSeatCount}. */
   hostedSeatCount(...args: Parameters<StatusAndModels["hostedSeatCount"]>): ReturnType<StatusAndModels["hostedSeatCount"]> { return this.statusAndModelsComponent.hostedSeatCount(...args); }
+
+  /** Private parent inspection; the public status keeps its existing reservation count. */
+  hostedLaunches(): { reserved: number; held: number; names: string[] } {
+    const names = this.seatLaunch.sharedLaunchHoldNames();
+    return { reserved: this.namesCapacity.reservedCount, held: names.length, names: names.slice(0, 50) };
+  }
 
   /** {@link StatusAndModels.hostedAgents}. */
   hostedAgents(...args: Parameters<StatusAndModels["hostedAgents"]>): ReturnType<StatusAndModels["hostedAgents"]> { return this.statusAndModelsComponent.hostedAgents(...args); }

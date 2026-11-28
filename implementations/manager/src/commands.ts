@@ -37,6 +37,7 @@ import {
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster, migrateProjectTrust,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
+import { machineHostedPty } from "./runtime/shared-pty.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
@@ -718,6 +719,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       eventsRequired,
       eventPayloadsWithheld,
       runtime,
+      machineHostedPty: machineHostedPty(args.values.machineHostedPty, args.values.machineHostedPtyHome, args.values["machine-parent"] === true),
       execution,
       consolePort,
       wsPort,
@@ -760,7 +762,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       pending = pending.then(async () => {
         try {
           if (frame.op === "inspect") {
-            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount() });
+            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount(), launches: mgr.hostedLaunches() });
             return;
           } else if (frame.op === "abort") {
             if (heldAttempt === attemptId) { mgr.abortPreservation(attemptId); heldAttempt = undefined; }
@@ -768,7 +770,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           } else {
             heldAttempt = attemptId;
             const plan = await mgr.preparePreservation(attemptId);
-            if (!plan.ok || plan.inventory.agents.length !== 0) {
+            if (!plan.ok || plan.inventory.agents.length !== 0 || mgr.hostedSeatCount() !== 0) {
               mgr.abortPreservation(attemptId);
               heldAttempt = undefined;
               process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: false });

@@ -15,6 +15,7 @@ export interface SeatLaunchSpec {
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
   confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
+  confirmNotice?: string;
   /** The launch's private temporary directories, recorded on the seat record (see SeatRecord). */
   artifacts?: string[];
 }

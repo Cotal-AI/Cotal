@@ -76,6 +76,15 @@ function observedStream(handle: AgentHandle, replay = false) {
 }
 
 try {
+  {
+    const handle = await child("stream-status-unknown");
+    const observed = observedStream(handle);
+    observed.handle.status = () => { throw new Error("custody unavailable"); };
+    let calls = 0;
+    check("unknown status keeps the exit subscription", watchProvedExit(observed.handle, () => { calls++; }, () => true) && calls === 0 && observed.disposed() === 0);
+    await end(handle);
+    check("the later real exit is still delivered exactly once", calls === 1 && observed.disposed() === 1);
+  }
   for (const mode of ["live", "cancelled", "never-watched"] as const) {
     const handle = await child(`stream-${mode}`);
     let watching = mode !== "never-watched", calls = 0;
@@ -190,6 +199,6 @@ try {
   }
   rmSync(root, { recursive: true, force: true });
 }
-check("all 56 expected assertions ran", pass + fail === 56);
+check("all 60 expected assertions ran", pass + fail === 60);
 console.log(`\nEXIT WATCH ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 process.exitCode = fail === 0 ? 0 : 1;

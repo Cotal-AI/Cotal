@@ -80,6 +80,18 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
   assert.equal(readFileSync(join(root, 'config/cotal/extensions/node_modules/lifecycle-extension/node-path'), 'utf8'), node);
 }
 
+async function assertRefusedGenerationCleanup(run, prefix, entry) {
+  const store = join(prefix, 'lib/.cotal-generations');
+  const generations = () => readdirSync(store, { withFileTypes: true }).filter(item => item.isDirectory()).map(item => item.name).sort();
+  mkdirSync(join(store, 'unrelated'), { recursive: true, mode: 0o700 });
+  const before = generations();
+  const result = await run(process.execPath, [entry, 'update', '--self'], 60000);
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /target pre-install checks refused: fixture refused after retention; no installed packages were replaced/);
+  assert.deepEqual(generations(), before, 'a refused update leaves the same generation directories');
+  return result;
+}
+
 /** Runs real npm and the built public entry against a loopback registry. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
@@ -136,7 +148,14 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         ? `if (process.argv.includes('update')) { console.error('fixture reconciliation failed'); process.exit(7); }\n` : '';
       writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${fail}console.log('cotal-ai ${version}');\n`, { mode: 0o755 });
       writeFileSync(join(root, 'payload/package/dist/cotal-program.js'), `${fail}console.log('cotal-ai ${version}');\n`);
-      writeFileSync(join(root, 'payload/package/dist/preinstall.js'), `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
+      writeFileSync(join(root, 'payload/package/dist/preinstall.js'), stagingRefused && version === target
+        ? `const assert = require('node:assert/strict');
+const { existsSync } = require('node:fs');
+const { resolve } = require('node:path');
+assert.match(__filename, /\\/\\.cotal-generations\\/[a-f0-9]{32}\\/cotal-ai\\/dist\\/preinstall\\.js$/);
+assert.ok(existsSync(resolve(__dirname, '../../inventory.json')), 'retained generation inventory exists before refusal');
+console.error('fixture refused after retention'); process.exitCode = 1;\n`
+        : `const { nonce, installedEntry } = JSON.parse(process.argv[2]); console.log('COTAL_PREINSTALL_RESULT ' + JSON.stringify({ v: 1, nonce, installedEntry, hostedSpaces: [], occupied: 0, admission: { disposition: 'restart-empty', occupied: 0, hostedSpaces: [] } }));\n`);
     }
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package'], { env: childEnv });
     assert.equal(packed.status, 0);
@@ -172,6 +191,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const readInstallation = () => installedFiles.map(path => readFileSync(path, 'utf8'));
   let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker;
   let stagingDenied = false;
+  let allowStaging = false;
   let invalidStagingMetadata = true;
   const backlog = [];
   const server = createServer((request, response) => {
@@ -242,7 +262,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const version = request.url.slice(1, -4);
       if (armed && version === target) {
         missing++;
-        if (stagingRefused && readMarker()?.operation === 'global install') {
+        if (stagingRefused && !allowStaging && readMarker()?.operation === 'global install') {
           stagingDenied = true;
           return response.writeHead(403).end('target staging forbidden');
         }
@@ -380,7 +400,12 @@ exec npm "$@"
       assert.deepEqual(readFileSync(entry), before);
       assert.equal(existsSync(marker), false);
       assert.equal(existsSync(join(env.COTAL_HOME, 'update-recovery.json')), false);
-      return { scenario, code: result.code, elapsedMs: Date.now() - started, selected: previous, missing, requests, output: result.output };
+      allowStaging = true;
+      const afterRetention = await assertRefusedGenerationCleanup(run, prefix, entry);
+      assert.deepEqual(readFileSync(entry), before);
+      assert.deepEqual(readFileSync(manifestPath), manifest);
+      assert.equal(existsSync(join(env.COTAL_HOME, 'update-recovery.json')), false);
+      return { scenario, code: result.code, elapsedMs: Date.now() - started, selected: previous, missing, requests, output: result.output, afterRetention };
     }
     if (configAccess && process.getuid?.() !== 0) {
       const connectorConfig = join(env.XDG_CONFIG_HOME, 'cotal');

@@ -1,7 +1,10 @@
 /** The stock foreground Manager, scoped to its machine daemon's sign-in and parent lifetime. */
 import { registry, resolveAuthProvider, type Command } from "@cotal-ai/core";
 import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, executionIdentity } from "@cotal-ai/workspace";
+import { linuxSharedCustodyAvailable } from "@cotal-ai/seat";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { checkDir } from "./endpoint.js";
 import { bindManagerCleanup } from "./manager-cleanup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -13,6 +16,32 @@ function report(frame: object): void {
 }
 
 let parentGone = false;
+let desktopInstall: string | undefined;
+let completeInstall: (() => void) | undefined;
+const receiveInstall = (raw: unknown) => {
+  const frame = raw as { kind?: unknown; entry?: unknown } | undefined;
+  if (frame?.kind !== "machine-pty-install" || typeof frame.entry !== "string" || !isAbsolute(frame.entry)) return;
+  try {
+    const entry = realpathSync.native(frame.entry);
+    if (entry === join(dirname(dirname(entry)), "dist", "cotal.js") && existsSync(join(dirname(dirname(entry)), "desktop-runtime.json"))) desktopInstall = entry;
+  } catch { /* No proved installation means no shared desktop launch. */ }
+  completeInstall?.();
+};
+if (process.platform === "linux" && process.connected) process.on("message", receiveInstall);
+
+async function sharedInstallEntry(): Promise<string | undefined> {
+  try {
+    const entry = executionIdentity()?.logicalEntry;
+    if (!entry || !existsSync(join(dirname(dirname(entry)), "desktop-runtime.json"))) return entry;
+    if (!desktopInstall && process.connected) await new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, 1_000);
+      completeInstall = () => { clearTimeout(timer); resolve(); };
+      report({ kind: "machine-pty-install-request" });
+    });
+    return desktopInstall;
+  } catch { return undefined; }
+  finally { completeInstall = undefined; process.off("message", receiveInstall); }
+}
 process.once("disconnect", () => {
   parentGone = true;
   if (process.listenerCount("SIGTERM") === 0) process.exit(0);
@@ -45,8 +74,14 @@ const command: Command = {
       }
     };
     const { "session-directory": _, ...values } = args.values;
+    const linuxPty = process.platform === "linux" && (values.runtime === "pty" || values.runtime === "auto" || values.runtime === undefined);
+    const sharedPty = linuxPty && linuxSharedCustodyAvailable();
+    const install = sharedPty ? await sharedInstallEntry() : undefined;
+    if (!sharedPty) process.off("message", receiveInstall);
+    if (parentGone || !process.connected) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's session directory and parent channel");
+    if (linuxPty && !sharedPty) process.stderr.write("Shared PTY custody is unavailable because the Linux user service manager or cgroup v2 is unavailable. Seats run inside the Manager and cannot survive a restart.\n");
     const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup } }));
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup, machineHostedPty: install, machineHostedPtyHome: install ? home : undefined } }));
   },
 };
 registry.register(command);

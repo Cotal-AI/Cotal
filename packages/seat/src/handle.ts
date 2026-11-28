@@ -1,4 +1,5 @@
 import { SeatClient } from "./client.js";
+import type { Socket } from "node:net";
 import type { SeatRecord } from "./record.js";
 import { DEFAULT_COLS, DEFAULT_ROWS, type SeatExit } from "./protocol.js";
 
@@ -29,8 +30,13 @@ export interface SeatHandle {
   close(): void;
 }
 
-export function adoptSeatSync(record: SeatRecord): SeatHandle {
-  const client = new SeatClient(record);
+export function adoptSeatSync(record: SeatRecord, verifyPeer?: (socket: Socket) => void): SeatHandle {
+  return seatHandle(record, new SeatClient(record, verifyPeer));
+}
+
+export type SeatHandleClient = Pick<SeatClient, "connect" | "onExit" | "exitInfo" | "stop" | "waitExit" | "interrupt" | "write" | "snapshot" | "subscribeOutput" | "resize" | "close">;
+
+export function seatHandle(record: SeatRecord, client: SeatHandleClient, reconnectable = false): SeatHandle {
   const ready = client.connect();
   let status: "running" | "exited" = "running";
   let exit: SeatExit | undefined;
@@ -39,8 +45,8 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
   let helloGeometryApplied = false;
   const liveUnsubs = new Set<() => void>();
 
-  const whenReady = (): Promise<SeatClient> =>
-    ready.then((hello) => {
+  const whenReady = (): Promise<SeatHandleClient> =>
+    (reconnectable ? client.connect() : ready).then((hello) => {
       // Hello reports spawn size. Re-applying it on every later() overwrites a
       // resize that already updated these fields (mesh-attach-plane resize cell).
       if (!helloGeometryApplied) {
@@ -48,11 +54,11 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
         rows = hello.rows;
         helloGeometryApplied = true;
       }
-      status = hello.status;
-      exit = hello.exit;
+      if (status !== "exited") status = hello.status;
+      exit ??= hello.exit;
       return client;
     });
-  const later = (fn: (c: SeatClient) => Promise<unknown> | unknown): void => {
+  const later = (fn: (c: SeatHandleClient) => Promise<unknown> | unknown): void => {
     void whenReady()
       .then(fn)
       .catch(() => undefined);

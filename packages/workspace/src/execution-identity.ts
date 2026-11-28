@@ -5,6 +5,8 @@ export interface ExecutionIdentity {
   readonly logicalEntry: string;
   readonly loadedEntry: string;
   readonly launchEntry?: string;
+  readonly inventorySha256?: string;
+  readonly loaded?: Readonly<{ stamp: string; version: string }>;
 }
 
 /** Process-local identity supplied by the built-ins bootstrap, never inherited from the environment. */
@@ -21,6 +23,8 @@ export function executionIdentity(): ExecutionIdentity | undefined {
       throw new Error("execution identity does not name the declared cotal entry");
   }
   const logical = dirname(dirname(record.logicalEntry)), loaded = dirname(dirname(record.loadedEntry));
+  if (record.inventorySha256 !== undefined && (logical === loaded || !/^[a-f0-9]{64}$/.test(record.inventorySha256)))
+    throw new Error("invalid retained execution inventory identity");
   if (logical !== loaded) {
     const rel = relative(join(dirname(dirname(logical)), ".cotal-generations"), loaded);
     const parts = rel.split(sep);

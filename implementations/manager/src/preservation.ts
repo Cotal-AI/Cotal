@@ -10,6 +10,7 @@ import type { Manager, ManagerPreservationPlan, ManagerPreserveFailure, ManagerP
 import { parseResumeControlArgs, readReleasedSeatReference, readSeatRecord, writeReleasedSeatReference, writeSeatRecord } from "./resume.js";
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
+import { needsProvedPtyStop } from "./runtime/shared-pty.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerParts } from "./manager-parts.js";
@@ -18,6 +19,7 @@ import type { ManagerStartState } from "./manager-start-state.js";
 /** What {@link Preservation} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PreservationDeps {
+  sharedLaunchHeld?: () => boolean;
   agents: () => Manager["agents"];
   credRenewTimer: () => Manager["credRenewTimer"];
   setCredRenewTimer: (value: Manager["credRenewTimer"]) => void;
@@ -58,6 +60,7 @@ export interface PreservationDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function preservationDeps(m: Manager): PreservationDeps {
   return {
+    sharedLaunchHeld: () => m["seatLaunch"].sharedLaunchHoldCount !== 0,
     agents: () => m["agents"],
     credRenewTimer: () => m["credRenewTimer"],
     setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
@@ -209,6 +212,7 @@ export class Preservation {
   async runPreparation(attemptId: string, generation: number): Promise<ManagerPreservationPlan> {
     await this.awaitLifecycleDrain();
     this.assertPreservationGeneration(attemptId, generation);
+    if (this.deps.sharedLaunchHeld?.()) throw new Error("A PTY launch could not be confirmed. Its name remains held.");
     // Read the chat frontier BEFORE any child stops (issue #545): a message posted between this
     // read and the child's stop is delivered live now and again as `historical` on resume, a
     // duplicate bounded to the cut window that the seat's own id dedup on `durable` channels
@@ -448,7 +452,7 @@ export class Preservation {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   async teardownManagedAgents(managed = [...this.agents.values()]): Promise<void> {
     const failures: string[] = [];
-    const stopped: ManagedAgent[] = [];
+    const stopped: ManagedAgent[] = [], proved = new Set<ManagedAgent>();
     for (const a of managed) {
       // Free the slot and stop each the way an operator stop does. `stopHandle` is best-effort (never
       // throws — see it), so one bad stop can't strand the rest, and every snapshot entry is
@@ -456,7 +460,7 @@ export class Preservation {
       // has left the process group keeps running after `cotal down`. The runtime still escalates to
       // SIGKILL after its grace.
       this.recordContinuityAtStop(a, "shutdown");
-      if (process.platform !== "win32" || a.handle.kind !== "pty") {
+      if (!needsProvedPtyStop(a.handle)) {
         this.agents.delete(a.name);
         this.dropSeatRecord(a);
       }
@@ -474,7 +478,8 @@ export class Preservation {
     await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
-        if (process.platform === "win32" && a.handle.kind === "pty") {
+        proved.add(a);
+        if (needsProvedPtyStop(a.handle)) {
           this.agents.delete(a.name);
           this.dropSeatRecord(a);
         }
@@ -483,9 +488,10 @@ export class Preservation {
         failures.push(`${a.name}: ${rejectionText(e)}`);
       }
     }));
-    // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
+    // Shared PTYs keep their credentials until exit is proved. Report other cleanup failures
+    // independently so one seat cannot prevent deprovisioning the rest.
     await Promise.allSettled(
-      managed.filter((a) => !a.suppressCleanup).map((a) => {
+      managed.filter((a) => !a.suppressCleanup && (!needsProvedPtyStop(a.handle) || proved.has(a) || process.platform === "win32")).map((a) => {
         // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
         const settled = a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid);
         return this.deprovision({ ...this.parts.seatStop.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));

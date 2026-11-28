@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/seat",
-  "description": "Local PTY seat custody: one detached custodian process per seat, a one-shot launcher, and the authenticated local protocol a manager worker uses to adopt the handle. Depends on nothing else in the repo.",
+  "description": "Local PTY seat custody and authenticated terminal control for managers. Depends on nothing else in the repo.",
   "version": "0.184.1",
   "license": "Apache-2.0",
   "repository": {
@@ -19,8 +19,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.check.json",
-    "build": "node scripts/build-native.mjs && tsc -p tsconfig.json",
-    "build:ts": "tsc -p tsconfig.json",
+    "build": "node scripts/build-native.mjs && pnpm run build:ts",
+    "build:ts": "node scripts/clear-dist.mjs && tsc -p tsconfig.json",
     "build:native": "node scripts/build-native.mjs --host",
     "test": "pnpm run build && tsx smoke/platform.smoke.ts && tsx smoke/protocol.smoke.ts && tsx smoke/lifecycle.smoke.ts && tsx smoke/isolation.smoke.ts && tsx smoke/reap-group-identity.smoke.ts && tsx smoke/peer-credentials-public.smoke.ts",
     "prepack": "node scripts/assert-shipped-natives.mjs && pnpm run build:ts",

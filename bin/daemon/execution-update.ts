@@ -90,7 +90,11 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
       catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish publication journal"}\n`); return; }
       cleanupExecutionStore(installed);
     },
-    discard() { if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true }); },
+    discard() {
+      // The target check only observes the installed daemon. A Manager can select this generation
+      // only after publication, which requires a journal. Leave journaled targets to recovery.
+      if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true });
+    },
   };
 }
 

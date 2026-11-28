@@ -22,7 +22,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type DaemonPeerLifetime, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedLaunchInspection, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
@@ -36,7 +36,7 @@ import { createAccountComputer } from "./account.js";
 import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
 import { withAppMutation } from "./agent-app-admission.js";
 
-type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
+type ManagerResult = DaemonStatus | HostedManager | HostedLaunchInspection | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
@@ -372,15 +372,16 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => {
-          if (req.op !== "status") notifyStatusWatchers();
+          if (req.op !== "status" && req.op !== "manager-launch-inspect") notifyStatusWatchers();
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
           counters.requestsRefused++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));
       };
-      if (req.op === "manager-start" || req.op === "manager-status") {
-        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
+      if (req.op === "manager-start" || req.op === "manager-status" || req.op === "manager-launch-inspect") {
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space)
+          : req.op === "manager-status" ? managers.refresh(req.space) : managers.inspectLaunches(req.space));
         return;
       }
       if (req.op === "managers-stop") {
@@ -494,10 +495,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
               return services.connect(req.space);
             }
             reconciler.localRemoval(req.space);
-            let disconnected: ServiceConnectionResult;
-            try { await managers.disconnect(req.space); }
+            let disconnected: ServiceConnectionResult, stopNotice: string | undefined;
+            try { stopNotice = await managers.disconnect(req.space); }
             finally { disconnected = await disconnect!; }
-            return disconnected;
+            return stopNotice ? { ...disconnected, message: `${disconnected.message} ${stopNotice}` } : disconnected;
             }));
           })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {

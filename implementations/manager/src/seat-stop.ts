@@ -11,6 +11,7 @@ import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 import type { ManagerParts } from "./manager-parts.js";
+import { needsProvedPtyStop } from "./runtime/shared-pty.js";
 
 /** The stop family of {@link FreeSlotCause}: the causes a manager-initiated stop records. */
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
@@ -210,7 +211,7 @@ export class SeatStop {
       this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
       this.freeSlot(a, floor, cause, true);
     } catch (error) {
-      const detail = `Windows stop could not prove the captured process tree exited: ${rejectionText(error)}`;
+      const detail = `${process.platform === "win32" ? "Windows stop could not prove the captured process tree exited" : "PTY stop could not prove the seat's processes exited"}: ${rejectionText(error)}`;
       this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
       this.unverifiedStops.push({ name: a.name, id: a.id, handle: a.handle, authoritative: true, error: detail });
       throw new EpEnvelopeError("unavailable", detail, undefined, "unknown");
@@ -231,7 +232,7 @@ export class SeatStop {
    * wait proves exit: nobody asked for those children to be gone, so they stay managed until the
    * runtime says otherwise, and a runtime that cannot prove exit records an unverified stop. */
   trackStoppedHandle(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, requireAuthoritativeExit = false): void {
-    if (process.platform === "win32" && a.handle.kind === "pty") requireAuthoritativeExit = true;
+    if (needsProvedPtyStop(a.handle)) requireAuthoritativeExit = true;
     // What a once seat's task is cancelled with if this stop ends it before the task has a terminal.
     if (a.once && typeof cause !== "string") a.once.stopReason ??= onceStopReason(cause);
     if (!a.handle.waitForExit) {
@@ -488,7 +489,7 @@ export class SeatStop {
    *  wire principal the door already resolved — so an operator reading the log can tell one peer's
    * despawn from another's. */
   despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply | Promise<ControlReply> {
-    if (process.platform === "win32" && a.handle.kind === "pty") {
+    if (needsProvedPtyStop(a.handle)) {
       return this.stopWindowsSeat(a, graceful, trackNonAdmin, { kind: "stopped-requested", requester: caller }).then(() => {
         void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate");
         return { ok: true, data: { name: a.name, stopped: true, graceful } };

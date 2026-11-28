@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
@@ -16,6 +16,16 @@ import { probeLiveness } from "./liveness.js";
 import { protectedResolvedDirectory } from "./protected-records.js";
 import { CommandFailure } from "./output.js";
 import { restoreManifestAccess } from "./manifest-access.js";
+
+type ConnectorChildIdentity = Readonly<{ pid: number; start: string; boot: string }>;
+
+interface ConnectorSeatHolder {
+  active: boolean;
+  sharedEligible: boolean;
+  launched(pid?: number): void;
+  bindSharedChild(child: ConnectorChildIdentity | undefined): void;
+  ended(): void;
+}
 
 interface ConnectorHolder {
   v: 1;
@@ -56,23 +66,61 @@ function setHasHolders(path: string, unpublished = false): boolean {
 }
 
 /** Reserve before launch so even a Manager killed during spawn leaves a conservative holder. */
-export function retainConnectorSeat(manager: string, agent: string): { active: boolean; launched(pid?: number): void; ended(): void } {
-  const id = identity();
-  if (!id || currentConfig(id) === undefined) return { active: false, launched() {}, ended() {} };
-  const release = claimUpdateClosureAccess();
-  let file: string;
+export function retainConnectorSeat(manager: string, agent: string, shared = false): ConnectorSeatHolder {
+  const inactive = (sharedEligible: boolean): ConnectorSeatHolder => ({
+    active: false, sharedEligible, launched() {}, bindSharedChild() {}, ended() {},
+  });
+  let file: string, reservationStat: Stats | undefined;
   const holder: ConnectorHolder = { v: 1, manager, agent };
+  const reserved = JSON.stringify(holder);
   try {
-    ownedAncestors(id.path);
-    const directory = join(id.path, "holders");
-    mkdirSync(directory, { mode: 0o700, recursive: true });
-    ownedAncestors(directory);
-    file = join(directory, `${randomBytes(16).toString("hex")}.json`);
-    writeFileSync(file, JSON.stringify(holder), { flag: "wx", mode: 0o600 });
-  } finally { release(); }
+    const id = identity();
+    if (!id) return inactive(true); // No installed connector set is subject to this collector.
+    if (!shared && currentConfig(id) === undefined) return inactive(false);
+    const release = claimUpdateClosureAccess();
+    try {
+      if (shared && currentConfig(id) === undefined) return inactive(false);
+      ownedAncestors(id.path);
+      const directory = join(id.path, "holders");
+      mkdirSync(directory, { mode: 0o700, recursive: true });
+      ownedAncestors(directory);
+      file = join(directory, `${randomBytes(16).toString("hex")}.json`);
+      writeFileSync(file, reserved, { flag: "wx", mode: 0o600 });
+      if (shared) reservationStat = lstatSync(file);
+    } finally { release(); }
+  } catch (error) {
+    // An unverifiable retained installation cannot dispatch to a detached host. Keep the
+    // existing behavior for callers that were already launching through ordinary runtimes.
+    if (!shared) throw error;
+    return inactive(false);
+  }
+  let sharedReceipt = false;
+  let expected = reserved;
+  const ownsRecord = (): boolean => {
+    ownedAncestors(dirname(file));
+    const stat = lstatSync(file);
+    return reservationStat !== undefined && stat.dev === reservationStat.dev && stat.ino === reservationStat.ino &&
+      readLocalRecordSource(file, 8192, true)?.toString("utf8") === expected;
+  };
   return {
     active: true,
+    sharedEligible: true,
+    bindSharedChild(child) {
+      sharedReceipt = true;
+      if (!child || !Number.isSafeInteger(child.pid) || child.pid <= 0 || !child.start || !child.boot) return;
+      try {
+        // Creation holds the collector's lock. Replacing this exact reservation doesn't
+        // need it: a scan sees the reservation or the full identity at the same name.
+        // An unreadable or concurrently removed entry also makes the scan keep the set.
+        if (expected !== reserved || !ownsRecord()) return;
+        const next = { ...holder, custody: { pid: child.pid, start: child.start, boot: child.boot } };
+        writePrivateJson(file, next);
+        reservationStat = lstatSync(file);
+        expected = JSON.stringify(next);
+      } catch { /* Keep the identity-less reservation if binding cannot be proved. */ }
+    },
     launched(pid) {
+      if (sharedReceipt) return;
       const boot = bootIdentity(), start = pid === undefined ? undefined : processStartToken(pid);
       if (pid === undefined || !boot || !start) return;
       holder.custody = { pid, start, boot };
@@ -83,7 +131,13 @@ export function retainConnectorSeat(manager: string, agent: string): { active: b
       } catch { /* The reserved identity-less holder still protects the set. */ }
       finally { try { rmSync(pending, { force: true }); } catch { /* Stale holders retain the set. */ } }
     },
-    ended() { try { rmSync(file, { force: true }); } catch { /* Stale holders retain the set. */ } },
+    // Called only on proved exit, not when the Manager dies or releases a handle.
+    ended() {
+      try {
+        if (!sharedReceipt) { rmSync(file, { force: true }); return; }
+        if (ownsRecord()) rmSync(file, { force: true });
+      } catch { /* Stale holders retain the set. */ }
+    },
   };
 }
 
@@ -153,7 +207,7 @@ export function pruneRetainedConnectorConfig(holders: readonly (string | undefin
 interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string; readonly snapshot?: string }
 const selectionDiffers = "connector retention selection differs from this installation";
 
-function writeSelection(path: string, record: Selection): void {
+function writePrivateJson(path: string, record: Selection | ConnectorHolder): void {
   const pending = join(dirname(path), `.selection-${randomBytes(8).toString("hex")}`);
   try {
     writeFileSync(pending, JSON.stringify(record), { flag: "wx", mode: 0o600 });
@@ -591,7 +645,7 @@ export function repairConnectorSelection(checkSource?: () => void): readonly str
       // without copying or replacing that graph.
       const record: Selection = { v: 1, entry: id.entry, version: id.version, root };
       for (const [path] of backups) {
-        if (!lstatSync(path, { throwIfNoEntry: false })) writeSelection(path, record);
+        if (!lstatSync(path, { throwIfNoEntry: false })) writePrivateJson(path, record);
       }
       return backups.map(([, aside]) => aside);
     } catch (error) {
