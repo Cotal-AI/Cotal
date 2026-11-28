@@ -49,6 +49,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--follow` | logs: keep reading |
 
 `service list` takes no definition name. If you supply one, the suggested list command keeps your space and output format.
+`service status` and `service logs` need a name. If you omit it or the name is unknown, the CLI suggests a listing in the same space and output format.
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
@@ -82,6 +83,7 @@ adapter's foreground and multi-instance capabilities even before the definition 
 The manager preset does not support `--new-instance`, so `cotal service start manager --help`
 omits it. Generic `cotal service start --help` lists it for services that support it.
 Named start help lists `--idle-exit` only for `manager` or a saved manager definition.
+When a preset option has the wrong numeric type or falls outside its range, the error gives the required type or bound without printing the supplied value.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
 it before adding the missing flags. A default the space cannot fill yet, such as the `web`
@@ -293,9 +295,10 @@ refuses `CONFLICT` (exit 2) and launches nothing. Its Next names
 `cotal service remove <name> --instance <id> --space <space> --yes` and then `start` again, after a
 `cotal service stop` of that instance when it still runs. A controller stack's
 member definitions and records are not removed this way, since its `up` and `down` read them:
-`remove` refuses `UNSUPPORTED`, exit 2. Its Next names the owning project folder and the command
-`cotal down --space <space> --yes` to run there. Then run `cotal space forget <space>` to remove
-the stopped definitions and records with the space.
+`remove` refuses `UNSUPPORTED`, exit 2. Its Next gives a `service show` command that reads the
+definition in the selected space without changing it. If you intend to retire the whole stack,
+run `cotal down --space <space> --yes` from its owning folder, then `cotal space forget <space>`
+to remove the stopped definitions and records with the space.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
@@ -375,7 +378,7 @@ as in `cotal help -- service --space reviews-dev start broker --config ./nats.co
 Use `--no-open` with `cotal service start web` or when starting a dashboard saved under a custom name.
 Start help lists `--no-open` for either name. For a saved dashboard in another space, pass `--space <s>` to select it.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
-names `cotal ext add @cotal-ai/web`.
+names `cotal ext add @cotal-ai/web`. If a start preview cannot find the service definition, its next step lists saved definitions in the same space and output format. It does not ask you to install or start anything.
 Options that collide with service/global flags require the file form. No preset is installed or
 provider code imported by help, completion, a guided question or definition creation.
 
