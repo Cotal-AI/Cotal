@@ -214,13 +214,23 @@ if (args.includes("show") && args.includes("--property=UnitFileState") && args.i
   console.log(${JSON.stringify(opts.refreshWanted ? "enabled" : "disabled")});
   process.exit(0);
 }
-const op = args.includes("daemon-reload") ? "daemon-reload" : args.at(-2);
-if (!["daemon-reload", "stop", "start"].includes(op)) process.exit(99);
+const op = ["daemon-reload", "enable", "stop", "start"].find(op => args.includes(op));
+if (!op) process.exit(99);
 fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r => {
   if (!r.ok) { console.error(await r.text()); process.exit(1); }
 }).catch(() => process.exit(99));
 `, { mode: 0o700 });
-  writeFileSync(join(native, "loginctl"), `#!${process.execPath}\nconsole.log(${JSON.stringify(opts.refreshWanted ? "Linger=yes" : "Linger=no")});\n`, { mode: 0o700 });
+  writeFileSync(join(native, "loginctl"), `#!${process.execPath}
+const op = process.argv[2];
+if (op === "show-user") {
+  console.log(${JSON.stringify(opts.refreshWanted ? "Linger=yes" : "Linger=no")});
+  process.exit(0);
+}
+if (op !== "enable-linger") process.exit(99);
+fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/enable-linger`)}).then(r => {
+  if (!r.ok) process.exit(1);
+}).catch(() => process.exit(99));
+`, { mode: 0o700 });
 
   try {
     const { code, stdout, stderr } = await setupCli(dir, env, "--json");
