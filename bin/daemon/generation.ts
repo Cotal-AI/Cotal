@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
+import { ManagerStartupError } from "./manager-start-failure.js";
 
 export function installedGenerationVersion(): string {
   const selected = selectExecutionProgram(dirname(packageFile()));
@@ -21,7 +22,7 @@ export class ReplacedDaemonGeneration extends Error {
 }
 
 export async function reconcileHostedConnectors(version: string): Promise<void> {
-  if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
+  if (updateActivationBlocked()) throw new ManagerStartupError("update-pending", "an update is in progress, retry in a minute");
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {

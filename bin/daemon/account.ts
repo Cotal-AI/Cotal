@@ -7,7 +7,7 @@ import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
 
-type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> };
+type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentHosting?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> };
 
 async function recoverAccountSpace(home: string, reconciler: ReturnType<typeof createAccountReconciler>, contexts: Map<string, AccountContext>, tick: () => Promise<void>, space: string, candidate: string, holder: string) {
   await tick();
@@ -66,11 +66,14 @@ export function createAccountComputer(home: string, version: string, reconciler:
       async function poll() {
     const state = context.state;
     // The host can name a Manager after this computer only when the computer says which ones it hosts.
-    const hosted = reconciler.hostedManagers(context.snapshot?.spaces ?? []);
-    const hostedKey = JSON.stringify(hosted);
+    const spaces = context.snapshot?.spaces ?? [];
+    const managers = reconciler.hostedManagers(spaces);
+    const managerStartFailures = reconciler.managerStartFailures(account.ownerKey, spaces);
+    const hosting = { managers, managerStartFailures };
+    const hostedKey = JSON.stringify(hosting);
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
-      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted, ...(vitals && !vitalsError ? { vitals } : {}) } }) });
-    if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]")) {
+      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, ...hosting, ...(vitals && !vitalsError ? { vitals } : {}) } }) });
+    if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== context.sentHosting) {
       context.abort.signal.throwIfAborted();
       const sentName = name;
       const result = await call("PUT");
@@ -79,7 +82,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       if (result.status !== 200 && result.status !== 201) throw new Error("computer registration unavailable");
       const body = result.body as { v?: unknown; machine?: { id?: unknown; lastSeenAt?: unknown } } | undefined;
       if (body?.v !== 1 || body.machine?.id !== machineId || typeof body.machine.lastSeenAt !== "string" || !Number.isFinite(Date.parse(body.machine.lastSeenAt))) throw new Error("invalid computer registration response");
-      context.lastHeartbeat = sentName === name ? Date.now() : 0; context.sentManagers = hostedKey; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
+      context.lastHeartbeat = sentName === name ? Date.now() : 0; context.sentHosting = hostedKey; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
     }
     context.abort.signal.throwIfAborted();
     const result = await call("GET");

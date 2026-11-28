@@ -84,6 +84,7 @@ try {
   await until(() => gets > 0 && daemon.status().account?.desiredRevision === 1, "registered and applied complete desired set");
   assert.ok(persistedBeforePut);
   assert.equal(registration?.vitals, undefined, "initial registration does not wait for sampling");
+  assert.deepEqual(registration?.managerStartFailures, [], "no failure is an explicit empty list");
   await until(() => !!daemon.status().vitals, "background sample becomes available");
   await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "name", "sample-ready", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
   await until(() => !!registration?.vitals, "next registration carries cached sample");
@@ -108,6 +109,13 @@ try {
   const managers = Array.from({ length: 100 }, (_, i) => ({ spaceId: `space-${i}`, instanceId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` }));
   await requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "capacity", platform: "linux", daemonVersion: "test", managers, vitals } });
   await until(() => Array.isArray(registration?.managers) && registration.managers.length === 100, "100 Managers plus vitals register");
+  const managerStartFailures = Array.from({ length: 90 }, (_, i) => ({ spaceId: `failed-${i}`, code: "start-failed", message: "Cotal could not start the Manager on this computer.", action: "repair" as const }));
+  const metadata = { name: "over-capacity", platform: "linux" as const, daemonVersion: "test", managers, vitals, managerStartFailures };
+  assert.ok(Buffer.byteLength(JSON.stringify(metadata)) > 16384, "fixture exceeds the limit with messages");
+  await requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata });
+  await until(() => registration?.name === "over-capacity", "the heartbeat fits after compacting the failure report");
+  assert.deepEqual(registration?.managers, managers);
+  assert.deepEqual(registration?.managerStartFailures, managerStartFailures.map(({ spaceId, code, action }) => ({ spaceId, code, action })), "compaction keeps every row and drops only its message");
   const beforeOversize = puts;
   await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(16384), platform: "linux", daemonVersion: "test", managers: [], vitals } }), /exceeds 16384 bytes/);
   assert.equal(puts, beforeOversize, "oversized registration refuses before network");

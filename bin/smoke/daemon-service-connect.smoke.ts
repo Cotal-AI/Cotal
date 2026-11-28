@@ -261,12 +261,15 @@ const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
 const accountOnly = process.argv.includes("--account-only");
+const startupFailureRepro = process.argv.includes("--account-manager-failure-repro");
+const startupCause = process.argv.find(arg => arg.startsWith("--startup-cause="))?.split("=")[1] ?? "connector-setup-failed";
 if (process.argv.includes("--account-custody-repro")) {
   assert.ok(accountOnly && !process.argv.includes("--no-manager-only"), "custody cases require the hosted account-computer fixture");
 }
 let accountDesired = false;
 let accountRevision = 1;
-let accountRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
+let accountRegistration: { managers?: { spaceId: string; instanceId: string }[]; managerStartFailures?: unknown } | undefined;
+let legacyRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
 let accountBindingRevision = 1;
 let accountHttp = 200;
 let intentConflicts = 0;
@@ -349,6 +352,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       accountRegistration = JSON.parse(Buffer.concat(chunks).toString()) as typeof accountRegistration;
+      legacyRegistration = { managers: accountRegistration?.managers };
       res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return;
     }
     await accountGetGate?.();
@@ -391,6 +395,10 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
     if (req.method === "POST" && req.url.endsWith("/manager-service-authority") && JSON.parse(Buffer.concat(chunks).toString()).request?.operation === "prepare") catalogManagerStarts++;
+    if (startupFailureRepro && req.url.endsWith("/manager-service-authority") && ["permission-denied", "start-failed"].includes(startupCause)) {
+      res.writeHead(startupCause === "permission-denied" ? 403 : 400);
+      res.end(JSON.stringify({ error: "fixture authority refusal" })); return;
+    }
     if (req.url === `/space/${catalogSpace}/exchange`) {
       const request = JSON.parse(Buffer.concat(chunks).toString()) as { view?: unknown; managerInstanceId?: unknown };
       exchangeReads.push({ view: request.view, managerInstanceId: request.managerInstanceId });
@@ -2017,6 +2025,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      if (startupFailureRepro) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (claudeWakeOnly || process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
         env.COTAL_ALLOW_CHECKOUT_SEED = "1";
@@ -2310,7 +2319,7 @@ process.stdin.once('data', () => {
         // so an application installed into a directory only the terminal has stays unseen until setup refreshes it.
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") || process.argv.includes("--setup-no-connectors-repro") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         let recoveryRestarts = 0;
-        const launch = () => spawn(cliNode, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        const launch = () => spawn(cliNode, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!startupFailureRepro && (!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
         const attach = () => {
           child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
@@ -2528,6 +2537,84 @@ process.stdin.once('data', () => {
             return;
           }
           saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          if (startupFailureRepro) {
+            const seed = join(root, "config", "cotal", "seed");
+            const stamp = join(seed, "stamp.json"), cursor = join(seed, "reconcile.cursor.json");
+            const stampBytes = readFileSync(stamp);
+            const privateDetail = "/Users/fixture-private-account/.config/cotal/seed/store/999.0.0/claude";
+            const catalogFolder = join(home, "catalog");
+            const spaceId = "assigned-space-id";
+            const rows = (catalog as { spaces: Record<string, unknown>[] }).spaces;
+            rows[0]!.id = spaceId;
+            const expected: Record<string, readonly [string, string]> = {
+              "connector-setup-failed": ["Cotal could not set up the connections to your agent apps on this computer.", "repair"],
+              "sign-in-required": ["Cotal needs a fresh sign-in for this space on this computer.", "sign-in"],
+              "folder-protection": ["Cotal cannot access a folder it needs on this computer.", "none"],
+              "update-pending": ["Cotal must finish updating on this computer before it can start the Manager.", "none"],
+              "space-unavailable": ["Cotal cannot use this space from this computer right now.", "none"],
+              "permission-denied": ["This space has not allowed this computer to start a Manager.", "none"],
+              "local-state-error": ["Cotal cannot use its saved setup for this space on this computer.", "none"],
+              "start-failed": ["Cotal could not start the Manager on this computer.", "repair"],
+            };
+            assert.ok(Object.hasOwn(expected, startupCause), `unknown startup fixture: ${startupCause}`);
+            if (startupCause === "connector-setup-failed") {
+              // A cursor from a newer generation cannot authorize a connector install by this daemon.
+              writeFileSync(cursor, JSON.stringify({ nonce: "fixture-seed", package: "claude", phase: "add", failed: `failed to seed connector "claude" from ${privateDetail}: npm is not on PATH` }), { mode: 0o600 });
+              rmSync(stamp);
+            } else if (startupCause === "sign-in-required") {
+              idpRevoked = true;
+            } else if (startupCause === "folder-protection") {
+              mkdirSync(catalogFolder, { recursive: true, mode: 0o700 });
+              chmodSync(catalogFolder, 0o500);
+            } else if (startupCause === "update-pending") {
+              writeFileSync(join(home, "update-recovery.json"), JSON.stringify({ v: 1, phase: "replacing", previous: fixtureVersion, target: fixtureVersion, installed: fixtureVersion, reason: privateDetail, recordedAt: new Date().toISOString() }), { mode: 0o600 });
+            } else if (startupCause === "space-unavailable") {
+              delete rows[0]!.registration;
+              rows[0]!.unavailable = privateDetail;
+            } else if (startupCause === "local-state-error") {
+              const state = join(home, "daemon", spaceSegment(ON));
+              mkdirSync(state, { recursive: true, mode: 0o700 });
+              writeFileSync(join(state, "manager-cleanup.json"), privateDetail, { mode: 0o600 });
+            }
+            accountDesired = true;
+            const poll = async (test: () => boolean | Promise<boolean>, label: string, timeout = 15_000) => {
+              const deadline = Date.now() + timeout;
+              while (Date.now() < deadline) { if (await test()) return; await sleep(100); }
+              assert.fail(label);
+            };
+            try {
+              if (startupCause === "connector-setup-failed") {
+                let manager: { state?: string; reason?: string } | undefined;
+                await poll(async () => {
+                  manager = resultOf(await ask(paths.socket, { op: "service-status", space: ON })).manager;
+                  return manager?.state === "refused" && manager.reason?.includes(privateDetail) === true;
+                }, "a recorded connector failure locally refuses the real Manager start");
+                console.log("  local Manager refusal", JSON.stringify(manager?.reason));
+              }
+              await poll(() => Array.isArray(accountRegistration?.managerStartFailures) && accountRegistration.managerStartFailures.length > 0, "account heartbeat has no Manager startup failure");
+              const [message, action] = expected[startupCause]!;
+              assert.deepEqual(accountRegistration?.managerStartFailures, [{ spaceId, code: startupCause, message, action }]);
+              assert.doesNotMatch(JSON.stringify(accountRegistration), /fixture-private-account|npm is not on PATH|fixture authority refusal/);
+              assert.deepEqual(legacyRegistration, { managers: [] }, "a reader using the existing Managers field still accepts the record");
+              check(`account heartbeat reports ${startupCause} without local diagnostics`, true);
+              if (startupCause === "connector-setup-failed") {
+                rmSync(cursor);
+                writeFileSync(stamp, stampBytes, { mode: 0o600 });
+                await poll(() => accountRegistration?.managers?.some(row => row.spaceId === spaceId) === true, "running daemon reports answering Manager after seed is repaired", 45_000);
+                assert.deepEqual(accountRegistration?.managerStartFailures, []);
+                check("the same daemon clears the failure when the Manager starts", true);
+              } else if (startupCause === "space-unavailable") {
+                accountDesired = false; accountRevision++;
+                await poll(() => Array.isArray(accountRegistration?.managerStartFailures) && accountRegistration.managerStartFailures.length === 0, "turning the space off clears its failure");
+                check("turning off the desired space clears its reported failure", true);
+              }
+            } finally {
+              if (startupCause === "folder-protection") chmodSync(catalogFolder, 0o700);
+              if (startupCause === "sign-in-required") idpRevoked = false;
+              console.log("  account heartbeat", JSON.stringify({ managers: accountRegistration?.managers, managerStartFailures: accountRegistration?.managerStartFailures }));
+            }
+            return;
+          }
           const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
           accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
           grantActor(ctx[2]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[2]!.store, DENY))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });

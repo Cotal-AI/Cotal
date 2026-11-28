@@ -5,6 +5,7 @@ import { CommandFailure } from "@cotal-ai/workspace";
 import { checkDir } from "./endpoint.js";
 import { bindManagerCleanup } from "./manager-cleanup.js";
 import { daemonCommandCopy } from "./guidance.js";
+import { managerStartupCode } from "./manager-start-failure.js";
 
 // Reports are observational. Teardown still obtains authority directly after its parent leaves.
 function report(frame: object): void {
@@ -27,7 +28,8 @@ const command: Command = {
   async run(args) {
     const home = args.values["session-directory"];
     if (typeof home !== "string" || !process.connected || parentGone) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's session directory and parent channel");
-    checkDir(home);
+    try { checkDir(home); }
+    catch (error) { report({ kind: "manager-start-failure", code: managerStartupCode(error) }); throw error; }
     const expected = args.values["expected-connector-generation"];
     if (typeof expected !== "string" || !expected.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's captured connector generation");
     const provider = resolveAuthProvider();
@@ -40,7 +42,9 @@ const command: Command = {
       catch (error) {
         const status = (error as { status?: unknown }).status;
         const message = error instanceof Error ? error.message : "Manager authority preparation failed";
-        report({ kind: "manager-refusal", reason: message, terminal: error instanceof IdpSessionRejectedError || status === 400 || status === 401 || status === 403 || status === 404, status });
+        const rejected = error instanceof IdpSessionRejectedError;
+        const code = rejected || status === 401 ? "sign-in-required" : status === 403 ? "permission-denied" : managerStartupCode(error);
+        report({ kind: "manager-refusal", reason: message, terminal: rejected || status === 400 || status === 401 || status === 403 || status === 404, status, code });
         throw error;
       }
     };
