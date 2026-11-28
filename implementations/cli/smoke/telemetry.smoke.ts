@@ -11,7 +11,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -249,6 +249,13 @@ for (const level of ["regular", "minimal"]) {
   const s = sandbox(), space = "private-preset-fixture";
   const marker = "private-root-fixture", file = join(s.project, `regular file ${marker}`);
   writeFileSync(file, "original");
+  if (process.platform !== "win32") {
+    const link = join(s.project, `contract ${marker}.json`);
+    symlinkSync(file, link);
+    const denied = await s.run(["endpoint", "check", link, "--json"]), event = denied.sent.find(body => body.event === "command");
+    check("a refused contract link is named only locally", denied.status === 2 && denied.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
+      && event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
+  }
   const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
