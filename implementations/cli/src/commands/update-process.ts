@@ -15,11 +15,29 @@ export interface CommandResult {
   readonly stderr: string;
   readonly error?: string;
   readonly errorCode?: string;
+  readonly scrub?: (text: string) => string;
+  readonly stagingFailure?: Error;
+  readonly missingVersion?: string | null;
 }
 
 export class RegistryUnavailable extends Error {}
 export class StagingTimeout extends Error {
-  constructor(readonly npmOutput: string) { super("Package staging reached its time limit"); }
+  constructor(npmOutput: string) {
+    super("Package staging reached its time limit");
+    stagingDiagnostic.set(this, npmOutput);
+  }
+}
+
+function stagingNpmFailure(result: CommandResult): Error {
+  const text = result.error || result.stderr.trim() || result.stdout.trim() || `npm exited ${result.status}`;
+  const error = new Error(`target staging failed: ${result.scrub?.(text) ?? text}`);
+  stagingDiagnostic.set(error, `target staging failed: ${text}`);
+  return error;
+}
+
+const stagingDiagnostic = new WeakMap<Error, string>();
+export function rawStagingDiagnostic(error: unknown): string {
+  return error instanceof Error ? stagingDiagnostic.get(error) ?? message(error) : message(error);
 }
 
 export function parseNpmVersion(output: string): string {
@@ -149,19 +167,20 @@ export function runNpm(args: string[], inherit = false): CommandResult {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
       ...(inherit && !npm.config ? { stdio: "inherit" as const } : { encoding: "utf8" as const }), windowsHide: true,
     });
-    const scrub = npm.config?.scrub ?? String;
-    const stdout = scrub(String(result.stdout ?? "")), stderr = scrub(String(result.stderr ?? ""));
-    if (inherit && npm.config) { process.stdout.write(stdout); process.stderr.write(stderr); }
+    const scrub = npm.config?.scrub;
+    const stdout = String(result.stdout ?? ""), stderr = String(result.stderr ?? "");
+    if (inherit && scrub) { process.stdout.write(scrub(stdout)); process.stderr.write(scrub(stderr)); }
     return {
       status: result.status,
       signal: result.signal,
       stdout: inherit ? "" : stdout,
       stderr: inherit ? "" : stderr,
-      error: result.error && scrub(result.error.message),
+      error: result.error?.message,
       errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
+      ...(scrub && { scrub }),
     };
   } catch (e) {
-    return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(e)) ?? message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
+    return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code, scrub: npm?.config?.scrub };
   } finally { npm?.config?.dispose(); }
 }
 
@@ -296,12 +315,8 @@ async function runGlobalChild(
       idle = setTimeout(stop, 50_000);
     }
     const closed = await close;
-    if (npm?.config) {
-      stdout = npm.config.scrub(stdout);
-      stderr = npm.config.scrub(stderr);
-      error = npm.config.scrub(error);
-      if (inherit) { process.stdout.write(stdout); process.stderr.write(stderr); stdout = stderr = ""; }
-    }
+    const scrub = npm?.config?.scrub;
+    if (inherit && scrub) { process.stdout.write(scrub(stdout)); process.stderr.write(scrub(stderr)); stdout = stderr = ""; }
     clearTimeout(elapsed);
     clearTimeout(idle);
     if (stopping) {
@@ -316,7 +331,8 @@ async function runGlobalChild(
         ? `${operation} child terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
-    return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
+    const result = { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}), ...(scrub && { scrub }) };
+    return staging && scrub && result.status !== 0 ? { ...result, stagingFailure: stagingNpmFailure(result) } : result;
   } catch (e) {
     if (e instanceof StagingTimeout) throw e;
     return { status: null, stdout: "", stderr: "", error: npm?.config?.scrub(message(e)) ?? message(e) };
@@ -341,6 +357,7 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
   let npm: ReturnType<typeof npmInvocation> | undefined;
   try {
     npm = file === "npm" ? npmInvocation(env, args, staging ?? cache) : undefined;
+    const target = npm?.config ? args.find(arg => arg.startsWith("cotal-ai@"))?.slice("cotal-ai@".length) : undefined;
     if (npm) ({ file, args, windowsVerbatimArguments: verbatim } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const mutation = beginGlobalUpdateChild(root, "install");
     let published = false;
@@ -358,7 +375,7 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
         published = true;
         try {
           mutation.markLive(worker.pid);
-          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim, config: npm?.config?.file });
+          worker.send!({ file, args, cwd: parse(homedir()).root, log: join(cache, "install.log"), verbatim, config: npm?.config?.file, target });
         } catch (cause) { error = message(cause); worker.disconnect?.(); }
       }
       const exit = await closed;
@@ -377,14 +394,16 @@ async function runWindowsInstall(root: string, file: string, args: string[], env
 /** npm --json supplies the code, but its summary is the only field naming the missing spec. */
 export function latestNotAvailable(result: CommandResult, version: string): boolean {
   if (result.status === 0 || result.status === null || result.error) return false;
+  if (result.missingVersion !== undefined) return result.missingVersion === version;
   try {
     const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown } }).error;
     return error?.code === "ETARGET" && error.summary === `No matching version found for cotal-ai@${version}.`;
   } catch { return false; }
 }
 
-export function failure(result: CommandResult): string {
-  return [result.signal && `process terminated by ${result.signal}`, result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
+export function failure(result: CommandResult, raw = false): string {
+  const text = [result.signal && `process terminated by ${result.signal}`, result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
+  return raw ? text : result.scrub?.(text) ?? text;
 }
 
 export function message(value: unknown): string {

@@ -262,10 +262,13 @@ On Linux, it also removes that scratch if the reconciliation cache holds only re
 the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry, authentication, proxy and TLS settings.
-When an update supplies an npm prefix, it carries forward registry addresses, scoped credentials,
-proxy and TLS settings from the global npm configuration that the prefix would otherwise replace.
-Other settings and explicit npm config overrides follow npm's ordinary handling. The standalone
-installer is separate. An unavailable dependency stops the update before replacement.
+Cotal never rewrites, moves or deletes your npm configuration. A managed install or removal with
+a Cotal-supplied prefix can copy `registry`, scoped registries and scoped auth, `proxy`,
+`https-proxy`, `noproxy`, `cafile`, `ca`, and `strict-ssl` from the global npm configuration the
+prefix displaces. The copy is private (mode `0600` on POSIX), lives in the call's scratch folder,
+and is removed when the call ends. It does not carry `offline`, `cache`, `fetch-*`, install layout
+settings, or top-level client `cert` and `key`. Explicit npm config overrides and the standalone
+installer keep their existing behavior. An unavailable dependency stops the update before replacement.
 If npm runs out of space while checking installed extension dependencies, no global install is
 attempted. Free space on the temporary filesystem, then run `cotal update --self` again.
 If a signal terminates the npm dependency check, the command names the signal and leaves installed

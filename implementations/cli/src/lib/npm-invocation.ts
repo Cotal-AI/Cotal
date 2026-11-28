@@ -410,11 +410,9 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[], scratch = 
   if (globalConfig === undefined) return npm;
   const defaultGlobal = resolve(npm.cwd, prefix, "etc", "npmrc");
   if (windows ? defaultGlobal.toLowerCase() === resolve(globalConfig).toLowerCase() : defaultGlobal === resolve(globalConfig)) return npm;
-  let config: ReturnType<typeof privateNpmrc>;
+  let config: NpmCommand["config"];
   try { config = privateNpmrc(globalConfig, scratch, npm.env); }
-  catch (error) {
-    throw Object.assign(new Error("could not prepare npm configuration"), { code: (error as NodeJS.ErrnoException).code });
-  }
+  catch { return npm; } // Let the existing npm operation report an unusable staging directory.
   return config ? { ...npm, config, args: [...npm.args, "--logs-max=0", "--timing=false"],
     env: { ...npm.env, npm_config_globalconfig: config.file } } : npm;
 }

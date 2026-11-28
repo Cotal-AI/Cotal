@@ -5,6 +5,7 @@ const plain = new Set(["registry", "proxy", "https-proxy", "noproxy", "cafile", 
 const scoped = /^@[a-z\d][a-z\d_.-]*:registry$/i;
 const auth = /^\/\/[^\s@?#]+:(?:_authToken|_auth|_password|username|certfile|keyfile)$/;
 const limit = 1024 * 1024;
+const minimumSecretLength = 8;
 
 function readConfig(path: string): string | undefined {
   let fd: number;
@@ -62,13 +63,13 @@ function expanded(value: string, env: NodeJS.ProcessEnv): string {
 function secrets(entries: [string, string][], env: NodeJS.ProcessEnv): string[] {
   const values = new Set<string>();
   const add = (value: string) => {
-    if (!value) return;
+    if (value.length < minimumSecretLength) return;
     for (const variant of [value, JSON.stringify(value).slice(1, -1)]) values.add(variant);
     try { values.add(encodeURIComponent(value)); values.add(decodeURIComponent(value)); } catch { /* Keep the literal value. */ }
   };
   for (const [key, raw] of entries) {
     const value = expanded(decode(raw), env);
-    if (auth.test(key)) {
+    if (/:(?:_authToken|_auth|_password)$/.test(key) && auth.test(key)) {
       add(value);
       if (key.endsWith(":_password") || key.endsWith(":_auth")) {
         const decoded = Buffer.from(value, "base64").toString();
@@ -78,16 +79,18 @@ function secrets(entries: [string, string][], env: NodeJS.ProcessEnv): string[] 
     } else if (key === "registry" || scoped.test(key) || key === "proxy" || key === "https-proxy") {
       try {
         const url = new URL(value);
-        add(url.username); add(url.password);
+        add(url.password);
         for (const [, param] of url.searchParams) add(param);
       } catch { add(value); }
     }
   }
-  return [...values].filter(Boolean).sort((a, b) => b.length - a.length);
+  return [...values].filter(value => value.length >= minimumSecretLength).sort((a, b) => b.length - a.length);
 }
 
 function redact(values: string[]): (output: string) => string {
   return output => {
+    // A URL identifies its password even when it is too short for a substring match.
+    output = output.replace(/(https?:\/\/[^\s/@:]+:)[^\s/@]+@/gi, "$1[redacted]@");
     for (const value of values) output = output.replaceAll(value, "[redacted]");
     return output;
   };

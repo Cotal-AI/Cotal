@@ -49,7 +49,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     const result = await updateRuntime.spawnGlobal(globalRoot, "install", "npm", args, process.env, false, false, staging);
     if (result.status !== 0) {
       if (result.signal) throw new Error(`target staging interrupted: npm terminated by ${result.signal}`);
-      throw new Error(`target staging failed: ${result.error || result.stderr.trim() || result.stdout.trim() || `npm exited ${result.status}`}`);
+      throw result.stagingFailure ?? new Error(`target staging failed: ${result.error || result.stderr.trim() || result.stdout.trim() || `npm exited ${result.status}`}`);
     }
     const source = join(staging, "lib/node_modules/cotal-ai");
     verifyGlobalEntry(join(staging, "lib/node_modules"), version);
