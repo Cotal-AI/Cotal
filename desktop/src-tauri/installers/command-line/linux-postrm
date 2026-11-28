@@ -1,0 +1,7 @@
+#!/bin/sh
+# Removes the /usr/bin/cotal link on package removal (deb: remove, purge or abort-install;
+# rpm: no installed copy left), only while it still points at this package's command.
+case "$1" in remove | purge | abort-install | 0) ;; *) exit 0 ;; esac
+link=/usr/bin/cotal
+if [ -L "$link" ] && [ "$(readlink "$link")" = /usr/lib/Cotal/bin/cotal ]; then rm -f "$link"; fi
+exit 0
