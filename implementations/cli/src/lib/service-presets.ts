@@ -1,7 +1,9 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, loadRoster, oneLine, recordOperationWarning, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, loadRoster, oneLine, presentationOf, recordOperationWarning, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
+import { showSpaceCommand } from "./space-show-command.js";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -192,7 +194,9 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
       if (preset.adapter === WEB_SERVICE_ADAPTER && fallback.kind === "web.creds" && findMesh(space)?.mode === "open") {
         throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the web dashboard requires a registered static-auth space, and the selected space is open; nothing was saved or started", { target: { space, path }, remedy: "select or create a registered static-auth space, then rerun the command for that space" });
       }
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, { target: { space, path }, remedy: `cotal up writes it for this space; or pass --${name} <file>` });
+      throw localDiagnostic(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${preset.name} preset uses this space's ${fallback.kind} for --${name}, and ${path} does not exist yet; nothing was saved or started`, {
+        target: { space, path }, remedy: `inspect the intended project with ${showSpaceCommand(space, presentationOf(values))}; to supply the file for that space, pass --${name} <file> on the original command, keeping the other options unchanged`,
+      }));
     }
     filled[name] = path;
   }

@@ -86,10 +86,7 @@ Named start help lists `--idle-exit` only for `manager` or a saved manager defin
 When a preset option has the wrong numeric type or falls outside its range, the error gives the required type or bound without printing the supplied value.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
-it before adding the missing flags. A default the space cannot fill yet, such as the `web`
-dashboard's `web.creds` on a space
-`cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
-replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
+it before adding the missing flags. If the space lacks a preset file such as the dashboard's `web.creds`, the refusal names the file locally and shows how to inspect the intended project. To supply its file, add the named option to the original command and keep the other flags, including `--dry-run`. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands.
 A foreground start with `--dry-run --json` writes one preview envelope without launching a process.

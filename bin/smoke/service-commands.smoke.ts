@@ -137,7 +137,7 @@ recordMesh({ space: SPACE, server: SERVER, root, mode: "open", ts: new Date().to
 const absent = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
 const creds = presetMaterialPath("fixture.creds", SPACE, root, false);
 check("a file default the space does not keep refuses, naming the file and the flag, and invents none",
-  absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true, absent);
+  absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true && absent.remedy.includes(`space show ${SPACE}`) && !absent.remedy.includes("cotal up"), absent);
 mkdirSync(dirname(creds), { recursive: true, mode: 0o700 });
 writeFileSync(creds, "fixture\n", { mode: 0o600 });
 const filledMissing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));
