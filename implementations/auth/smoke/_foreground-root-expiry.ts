@@ -20,7 +20,7 @@ export async function foregroundRootExpiry({ root, dir, space, server, owner, au
   const actor = "expiry_fixture", replacement = "expiry_replacement";
   const uid = mintLifecycleUid(), store = workspaceSecretStore(root);
   const token = join(root, "foreground-root-fixture.token");
-  const { actorToken } = await cotalAuthProvider.grantAgent({ store, dir, space, owner, actor,
+  const { actorToken } = await cotalAuthProvider.grantAgent({ store, dir, space, broker: { server }, owner, actor,
     scope: [], allowSubscribe: ["general"], allowPublish: [eventChannel({ owner, actor })], parent: `${owner}.cli`,
     lifecycleUid: uid, custody: { kind: "foreground" } });
   writeFileSync(token, actorToken, { mode: 0o600, flag: "wx" });

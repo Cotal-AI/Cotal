@@ -20,7 +20,7 @@ import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl
 import { jetstreamManager } from "@nats-io/jetstream";
 import { openAuthorityClient } from "./authority-client.js";
 import { pluginChannelStateResolver } from "./callout-authority.js";
-import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, assertUserAuthInfo, canonicalRoot, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, readMesh, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
@@ -55,8 +55,17 @@ import {
   type AuthServiceRefusal,
 } from "./store.js";
 
+function registeredSpawnBroker(dir: string, space: string): { server: string; tlsRequired?: boolean } | undefined {
+  const entry = readMesh(space);
+  if (entry?.mode !== "user" || entry.userAuth?.provider !== AUTH_PROVIDER_NAME || entry.userAuth.remote === true || entry.unchecked === true ||
+      canonicalRoot(dir) !== canonicalRoot(userAuthStateDir(entry.root, space, { readOnly: true }))) return undefined;
+  return { server: entry.server, ...(entry.tlsRequired === true ? { tlsRequired: true } : {}) };
+}
+
 async function localSpawnRouting(store: SecretStore, space: string, broker: { server: string; tlsRequired?: boolean } | undefined): Promise<boolean> {
-  if (!broker) throw new Error("delegated grant requires a trusted broker target for channel routing state");
+  // Without a bound broker record, keep the local ledger write compatible. Exchange and callout
+  // recheck the current spawner at the broker's protected routing state before issuing access.
+  if (!broker) return false;
   const keys = await loadServiceKeys(store, space);
   if (!keys) throw new Error("delegated grant requires local auth service signing material to read channel routing state");
   const client = await openAuthorityClient({
@@ -762,7 +771,7 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
     if (custody?.kind !== "local-manager" && custody?.kind !== "foreground")
       throw new Error("grantAgent: custody is required and is local-manager or foreground; a remote-manager row is written only by the auth service's enrollment");
-    const enabled = parent === undefined ? false : await localSpawnRouting(store, space, broker);
+    const enabled = parent === undefined ? false : await localSpawnRouting(store, space, broker ?? registeredSpawnBroker(dir, space));
     // ONE synchronous transaction: the `fresh` occupancy read, the token mint and the write are
     // decided under the same lock, so no other writer can land between the read and the upsert.
     // An earlier occupancy read by the caller authorizes nothing here; this one is authoritative.

@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cotalAuthProvider, ensurePinnedIdp, grantActor, grantManagedActor, loadCalloutAuth, newActorToken, saveAuthServiceInfo, saveIdpSession } from "../src/index.js";
+import { cotalAuthProvider, ensurePinnedIdp, grantActor, saveAuthServiceInfo, saveIdpSession } from "../src/index.js";
 import { dispatchManagerAuthorityRequest } from "../src/service.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, parseRemoteRetainedAgentValidationRequest, remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 
@@ -138,8 +138,7 @@ await cell("actual host dispatcher runs the fixed provider validation and return
       account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     });
     grantActor(dir, { owner, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"] });
-    const retained = { ...newActorToken(), sentinelCreds: (await loadCalloutAuth(store, space))!.sentinelCreds };
-    grantManagedActor(dir, { custody: { kind: "foreground" }, tokenHash: retained.tokenHash,
+    const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space,
       owner, actor: target.actor, lifecycleUid: target.lifecycleUid,
       scope: authority.scope, allowSubscribe: authority.allowSubscribe, allowPublish: authority.allowPublish,
       role: authority.role, parent: authority.parent,

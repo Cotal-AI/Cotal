@@ -34,6 +34,8 @@ import {
   type RemoteManagedAgentEnrollmentRequest, type SecretStore,
 } from "@cotal-ai/core";
 import { PLUGIN_CHANNEL_ROOT, pluginChannelStream, pluginChannelFilter, pluginChannelSubject } from "../../../packages/core/src/plugin-channel-route.js";
+import { pluginChannelSpaceStateSubject } from "../../../packages/core/src/plugin-channel-space-state.js";
+import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
 import { createCalloutAuth, calloutPermissions, cotalAuthProvider, deriveOwnerToken, ensureCalloutAuth, saveServiceKeys, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { findManagedActor, grantActor, ledgerAclResolver, ledgerAuthorizeConnect, newActorToken } from "../src/ledger.js";
 import { pluginChannelStateResolver } from "../src/callout-authority.js";
@@ -129,7 +131,7 @@ async function checkRoutedCallout(control: NatsConnection): Promise<void> {
     raws.push(nc);
     return { nc, actor, history: chatHistDurable(row.owner, actor, row.lifecycleUid!) };
   };
-  await checkDelegationDoors(channel, dial);
+  await checkDelegationDoors(channel, dial, control);
   routed = true;
   const open = (actor: string, read: string[]) => dial(grantActor(dir, { owner: OWNER, actor, scope: [], allowSubscribe: read, allowPublish: read }));
   const broad = await open("routed_broad", [">"]);
@@ -146,7 +148,7 @@ async function checkRoutedCallout(control: NatsConnection): Promise<void> {
   check("callout: the broker refuses plugin history for a broad chat-only grant", denied);
 }
 
-async function checkDelegationDoors(channel: string, dial: (row: ReturnType<typeof grantActor>, token?: string) => Promise<{ nc: NatsConnection }>) {
+async function checkDelegationDoors(channel: string, dial: (row: ReturnType<typeof grantActor>, token?: string) => Promise<{ nc: NatsConnection }>, control: NatsConnection) {
   const instanceId = mintLifecycleUid(), managerLifecycleUid = mintLifecycleUid(), serveEpoch = 4, registrationRevision = 9;
   const identities = { supervisor: newIdentity(), executor: newIdentity(), serve: newIdentity(), goalWriter: newIdentity(), sessionLedger: newIdentity() };
   const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
@@ -186,18 +188,29 @@ async function checkDelegationDoors(channel: string, dial: (row: ReturnType<type
   };
   const parent = (channels: string[]) => grantActor(dir, { owner: OWNER, actor: manager.actor, scope: ["spawn"], allowSubscribe: channels, allowPublish: channels });
   try {
-    await checkLocalSpawn(parent([">"]), channel, dataAccount);
+    const local = await checkLocalSpawn(parent([">"]), channel, dataAccount, control);
+    const localBearer = await exchange(local);
+    assert.equal(localBearer.status, 200);
+    assert.ok(localBearer.token);
     const legacy = ask("legacy_child", channel);
     await authority.enrollManagedAgent(legacy.args);
     const legacyRow = findManagedActor(dir, OWNER, legacy.actor)!;
     check("off: managed spawn writes the reserved-looking ordinary chat grant", legacyRow.allowSubscribe.includes(channel));
+    const readsBeforeInvalid = exchangeRoutingReads;
     const invalid = await exchange({ ...legacy, actorToken: newActorToken().actorToken });
-    check("off: the exchange refuses an invalid secret without reading protected routing state", invalid.status === 401 && exchangeRoutingReads === 0);
+    check("off: the exchange refuses an invalid secret without reading protected routing state", invalid.status === 401 && exchangeRoutingReads === readsBeforeInvalid);
     const legacyBearer = await exchange(legacy);
     check("off: the legacy child exchanges its secret for a bearer", legacyBearer.status === 200 && !!legacyBearer.token);
     const old = await dial(legacyRow, legacyBearer.token);
     check("off: callout grants ordinary chat for the legacy child", (await jetstream(old.nc).publish(chatSubject(space, OWNER, legacy.actor, channel), enc("legacy"))).stream === chatStream(space));
     routed = true;
+    const deniedLocal = await exchange(local);
+    check("on: exchange refuses a no-record local grant under a chat-only parent",
+      deniedLocal.status === 401 && /exceeds its spawner's CURRENT grant/.test(deniedLocal.error ?? "") && !deniedLocal.token);
+    const cachedLocal = await dial(findManagedActor(dir, OWNER, local.actor)!, localBearer.token).then(() => false, () => true);
+    const localDenial = () => calloutDenials.some(line => line.includes(local.actor) && line.includes("exceeds its spawner's CURRENT grant") && line.includes(channel));
+    for (let i = 0; i < 20 && !localDenial(); i++) await wait(20);
+    check("on: callout refuses the no-record local grant's previously issued bearer", cachedLocal && localDenial());
     const denied = ask("routed_denied", channel);
     const refusal = /exceed.*spawner.*grant/;
     await assert.rejects(authority.verifyManagedAgentEnrollment(denied.args), refusal);
@@ -236,7 +249,7 @@ async function checkDelegationDoors(channel: string, dial: (row: ReturnType<type
   }
 }
 
-async function checkLocalSpawn(parent: ReturnType<typeof grantActor>, channel: string, dataAccount: ManagedAgentDeps["dataAccount"]) {
+async function checkLocalSpawn(parent: ReturnType<typeof grantActor>, channel: string, dataAccount: ManagedAgentDeps["dataAccount"], control: NatsConnection) {
   const values = new Map<string, string>();
   const store: SecretStore = {
     get: async key => values.get(key), put: async (key, value) => { values.set(key, value); },
@@ -247,10 +260,43 @@ async function checkLocalSpawn(parent: ReturnType<typeof grantActor>, channel: s
   await saveServiceKeys(store, space, { dataAccount });
   const args = { store, dir, space, owner: OWNER, actor: "local_child", parent: `${parent.owner}.${parent.actor}`, scope: [],
     allowSubscribe: [channel], allowPublish: [channel], lifecycleUid: mintLifecycleUid(), custody: { kind: "foreground" as const } };
-  await assert.rejects(cotalAuthProvider.grantAgent(args), /requires a trusted broker target/);
-  check("local spawn: no broker target refuses before writing", findManagedActor(dir, OWNER, args.actor) === undefined);
-  await cotalAuthProvider.grantAgent({ ...args, broker: { server: SERVERS } });
-  check("local spawn: scoped leader read admits the legacy grant unchanged", findManagedActor(dir, OWNER, args.actor)?.allowPublish[0] === channel);
+  const { actorToken } = await cotalAuthProvider.grantAgent(args);
+  check("local spawn: no broker registration preserves the legacy grant", findManagedActor(dir, OWNER, args.actor)?.allowPublish[0] === channel);
+
+  const registered = userAuthStateDir(dir, space);
+  grantActor(registered, { owner: OWNER, actor: parent.actor, scope: ["spawn"], allowSubscribe: [">"], allowPublish: [">"] });
+  const local = { ...args, dir: registered, actor: "registered_child", lifecycleUid: mintLifecycleUid() };
+  const home = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(dir, "registry-home");
+  try {
+    const record = { space, server: SERVERS, root: dir, mode: "user" as const,
+      ts: new Date().toISOString(), userAuth: { provider: "cotal", idp: { url: ISS, issuer: ISS, audience: space } } };
+    recordMesh(record);
+    await cotalAuthProvider.grantAgent(local);
+    const row = findManagedActor(registered, OWNER, local.actor);
+    check("local spawn: registered off space grants without a broker argument", row?.parent === args.parent &&
+      row.allowSubscribe[0] === channel && row.allowPublish[0] === channel);
+
+    const stateSubject = pluginChannelSpaceStateSubject(space);
+    const js = jetstream(control);
+    await js.publish(stateSubject, enc(JSON.stringify({ version: 1, epoch: 1, enabled: true })));
+    try {
+      const on = { ...local, actor: "registered_on_child", lifecycleUid: mintLifecycleUid() };
+      await assert.rejects(cotalAuthProvider.grantAgent(on), /this release does not support enabled plugin channels/);
+      check("local spawn: registered enabled state reaches the stock refusal before writing", findManagedActor(registered, OWNER, on.actor) === undefined);
+    } finally {
+      await js.publish(stateSubject, enc(JSON.stringify({ version: 1, epoch: 1, enabled: false })));
+    }
+
+    recordMesh({ ...record, server: `nats://127.0.0.1:${await pickFreePort()}` });
+    const explicit = { ...local, actor: "explicit_broker_child", lifecycleUid: mintLifecycleUid(), broker: { server: SERVERS } };
+    await cotalAuthProvider.grantAgent(explicit);
+    check("local spawn: explicit broker takes precedence over the registered target", findManagedActor(registered, OWNER, explicit.actor)?.parent === args.parent);
+  } finally {
+    if (home === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = home;
+  }
+  return { actor: args.actor, actorToken };
 }
 
 try {

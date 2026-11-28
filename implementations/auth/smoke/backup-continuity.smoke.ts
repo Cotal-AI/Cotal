@@ -13,9 +13,6 @@ import {
   findManagedActor,
   generateSigningKey,
   grantActor,
-  grantManagedActor,
-  loadCalloutAuth,
-  newActorToken,
   loadPinnedIdp,
   USER_AUTH_TRUST_SCHEME,
 } from "../src/index.js";
@@ -86,8 +83,7 @@ try {
     allowPublish: ["ops", "general"],
     label: "first label",
   });
-  const retained = { ...newActorToken(), sentinelCreds: (await loadCalloutAuth(store, SPACE))!.sentinelCreds };
-  grantManagedActor(dir, { custody: { kind: "foreground" }, tokenHash: retained.tokenHash,
+  const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE,
     owner: OWNER,
     actor: "worker",
     scope: ["spawn"],
