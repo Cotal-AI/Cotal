@@ -769,6 +769,16 @@ test("first open is a neutral Cloud-default welcome and sign-in is an explicit a
   } finally { a.dom.window.close(); }
 });
 
+test("returning to Cotal Cloud sends Continue to the Cloud sign-in", async () => {
+  const a = await app();
+  try {
+    await a.click("other-host");
+    await a.click("cloud-host");
+    await a.click("login");
+    assert.equal(a.calls.find(request => request.op === "login")?.idp, COTAL_CLOUD_IDP, "Continue sends the Cloud sign-in after returning from another host");
+  } finally { a.dom.window.close(); }
+});
+
 test("legacy computer account without a selected space retains its provider on sign-in again", async () => {
   const provider = "https://cloud.cotal.ai/api/auth";
   const a = await app({ installed: true, count: 0, account: { idpUrl: provider, sub: "legacy-user", mode: "sign-in-required", hostSupport: "supported", spaces: [] } });

@@ -154,6 +154,7 @@ export function nativeStub(scenario) {
         return ok({ state: "disconnected" });
       }
       if (request.op === "login") {
+        state.loginRequests = [...(state.loginRequests ?? []), request];
         if (state.loginLost) return fail("DAEMON_LOST", "The background service stopped before this could finish, so it did not complete. Try again when the service is running.");
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
@@ -994,6 +995,8 @@ export const scenarios = [
     assert.equal(await page.locator("#custom-host").isHidden(), true, "the host field closes");
     assert.equal(await page.locator("#login").textContent(), "Continue with Cotal Cloud");
     assert.equal(await page.locator("#other-host").isVisible(), true, "another host can be chosen again");
+    await page.click("#login");
+    await page.waitForFunction(() => window.__renderState.loginRequests?.some(request => request.idp === "https://cotal.cloud/api/auth"));
   } },
   { name: "settings-before-sign-in-tray", state: {}, act: page => page.evaluate(() => window.__emitTauri("desktop-open-settings", null)), expect: async page => {
     assert.equal(await page.locator("#settings-panel").isVisible(), true, "the tray's Settings opens Settings before sign-in");
