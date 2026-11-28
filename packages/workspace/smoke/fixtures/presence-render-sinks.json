@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1163,
+    "total": 1164,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 941
+    "non-render/control": 942
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5444,6 +5444,13 @@
       "anchor": "list(post)",
       "class": "non-render/control",
       "rationale": "Send refusal remedy: formats the identity's post ACL; not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "kind": "derived-output",
+      "anchor": "channelInAllow(post, channel, mode === \"isolated\")",
+      "class": "non-render/control",
+      "rationale": "Selects the send refusal remedy from the caller's channel ACL and admitted routing family. It does not render presence."
     },
     {
       "path": "implementations/cli/src/commands/send.ts",
