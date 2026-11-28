@@ -154,9 +154,14 @@ its alias.
      "`<name>` is still starting; it can sleep once it is ready".
    - A `once` seat (`implementations/manager/src/seat-types.ts:246`): "`<name>` runs one task and
      ends, so it cannot sleep".
-   - The seat is a delegated or handed-off seat (`handedOff`, `implementations/manager/src/seat-stop.ts:190`):
-     "`<name>` runs outside this Manager, so this Manager cannot put it to sleep".
-   - On a user-auth mesh, the root credential has 24 hours or less left (section 6):
+   - The seat is a handed-off seat that this Manager does not run through a runtime it holds
+     (`handedOff`, `implementations/manager/src/seat-stop.ts:190`), unless that runtime declares
+     `pause` (section 7): "`<name>` runs outside this Manager, so this Manager cannot put it to
+     sleep". A delegated seat (SPEC 13.16) started through `spawnDelegated` on a `pause` runtime
+     may sleep. That is the hosted path.
+   - On a user-auth mesh, including a delegated seat, the seat's incarnation root has 24 hours or
+     less left. This is the root its actor-token exchange stamps on every bearer: not the owner's
+     grant, and not the Manager's standing credentials (section 6):
      "`<name>` cannot sleep: its credential expires at `<UTC>`, and nothing renews it while it
      sleeps; stop it and start a new agent instead".
 3. **Quiesce, then refuse mid-turn.** The Manager sends `quiesce` on the seat's authenticated
@@ -380,7 +385,7 @@ each case, a peer sees the following:
 |---|---|---|
 | Stopped seat (`stop`) | the keeper, after the exit is proved | the agent's last live record, then its graceful `offline` (`packages/core/src/endpoint-connection.ts:923-926`), for under one heartbeat (2 s) |
 | Frozen seat the Manager paused (`pause`) | the keeper, once `pause` resolves | the agent's last live record, still inside the 6 s window, so no `offline` |
-| Frozen seat the runtime paused by itself | the keeper, once the runtime reports it (section 7) | `offline` from 6 s after the last heartbeat (`packages/core/src/endpoint-presence.ts:891`) until the report arrives. The hosted freeze measured `offline` 8 s after the freeze |
+| Frozen seat the runtime paused by itself | the keeper, once the runtime reports it (section 7). The report may come from the runtime's own polling, so its timing is not bounded by this design | `offline` from 6 s after the last heartbeat (`packages/core/src/endpoint-presence.ts:891`) until the report arrives. The hosted freeze measured `offline` 8 s after the freeze |
 | Frozen seat, at wake | the thawed agent itself, once it reconnects | the keeper's last `asleep` for up to 6 s, then `offline` if the reconnect takes longer. The hosted freeze measured idle again 2.5 s after the thaw |
 
 A frozen process cannot write its own record, the same as a stopped one. While the seat sleeps,
@@ -534,8 +539,8 @@ it too.
 ```
 
 - `sleep` is required when `state` is `asleep` and absent otherwise.
-- `wakeBy` is the earlier of the root credential's limit (user-auth mesh only) and the runtime's
-  `keptUntil` (a `pause` runtime only, section 7). It is absent when neither applies.
+- `wakeBy` is the earlier of the credential bound (section 6, by custody) and the runtime's
+  `keptUntil` (section 7). It is absent when neither applies.
 - `sessionDigest` is set for a `stop` sleep whose conversation was persisted (`reopen` true).
 - `reason` is set when the runtime put the seat to sleep without the Manager asking (section 7).
 - A v1 record reads as `state: "live"`, unlinked.
@@ -606,7 +611,20 @@ because no broker read proves one.
 
 ### The 90-day limit
 
-A user-auth root credential lives 90 days and is not renewed
+The credential a wake depends on is the seat's own incarnation root. A user-auth seat and a
+delegated seat (SPEC 13.16) connect through 300 s bearers that they exchange themselves from their
+actor token. A delegated child receives that token in its handoff
+(`packages/core/src/managed-handoff.ts:21-34`). Every agent exchange stamps the incarnation's root
+on the bearer before signing it (`implementations/auth/src/service-exchange-routes.ts:282-285`,
+through `implementations/auth/src/service.ts:1052-1054`). The bearer itself lasts 300 s at most
+(`implementations/auth/src/ledger.ts:798`). The root is not the owner's ledger grant, which carries
+no expiry and only admits or revokes. It is not the Manager's standing family either: those
+credentials last at most 24 h (`implementations/auth/src/service.ts:403-405`), and the Manager
+renews them for itself (`implementations/manager/src/credential-renewal.ts:667-700`). If that
+family lapses, the Manager cannot serve `wake` until it renews it. That is a Manager failure, not a
+bound on the sleep.
+
+The root lives 90 days and is not renewed
 (`implementations/auth/src/root-credential.ts:56-61`, applied at `:140`). An expired root refuses
 the exchange with the expiry in UTC and a repair that depends on the seat's custody (`:125`,
 repair text at `:65-74`, both from #10853). For a Manager seat that repair is to stop the seat and
@@ -623,8 +641,18 @@ spawn it again, so a new lifecycle starts. Until #10836 lands:
 - `wake` after `wakeBy` refuses as in section 1.
 
 A static-auth seat's credential is renewed by the Manager from its seed
-(`implementations/manager/src/credential-renewal.ts:524`). There is no root, so there is no
-`wakeBy`. The renewal loop will include asleep seats.
+(`implementations/manager/src/credential-renewal.ts:524`). There is no root, so the credential
+adds nothing to `wakeBy`. The renewal loop will include asleep seats.
+
+| Custody | Credential bound in `wakeBy` |
+|---|---|
+| Static-auth seat | none |
+| User-auth seat on this Manager | its incarnation root's expiry minus one hour |
+| Delegated seat (SPEC 13.16) | the same: its incarnation root's expiry minus one hour |
+
+`wakeBy` is the earlier of that bound and the runtime's `keptUntil` (section 7). When the runtime
+states no `keptUntil`, `wakeBy` is the credential bound alone. When there is no credential bound
+either (a static-auth seat), `wakeBy` is absent and the sleep has no stated end.
 
 ### The presence writer
 
@@ -668,7 +696,9 @@ interface Runtime {
    *  never starts the seat anywhere else. */
   resume?(handle: AgentHandle): Promise<void>;
   /** Report a change the Manager did not ask for. The Manager watches every live seat on a
-   *  `pause` runtime, since the provider can pause a running seat by itself. */
+   *  `pause` runtime, since the provider can pause a running seat by itself. The runtime may
+   *  drive `report` from its own reads (at a deadline it holds, plus a slow listing for anything
+   *  unexpected); nothing requires a provider callback. */
   watchSleep?(handle: AgentHandle, report: (event: RuntimeSleepEvent) => void): () => void;
 }
 type RuntimeSleepEvent =
@@ -695,9 +725,13 @@ type RuntimeSleepEvent =
 ### The limit a runtime states
 
 `pause` answers `keptUntil`, for example seven days after the pause for a provider that keeps a
-paused sandbox that long. `sleep` stores `wakeBy` as the earlier of `keptUntil` and the root
-credential's limit (section 6), and reports it: "`<name>` can stay asleep until `<UTC>`". A `stop`
-runtime states no limit, because a stopped seat's files and session stay on disk.
+paused sandbox that long. A runtime takes it from the provider's own record of the paused session,
+once `pause` resolves, and may treat a missing value as a failed pause. `keptUntil` stays optional
+in the contract, because not every runtime can state one. `sleep` stores `wakeBy` as the earlier of
+`keptUntil` and the credential bound (section 6, by custody). It reports `wakeBy` as "`<name>` can
+stay asleep until `<UTC>`". When `keptUntil` is absent, `wakeBy` is the credential bound alone, and
+when that is absent too, `wakeBy` is absent. A `stop` runtime states no limit, because a stopped
+seat's files and session stay on disk.
 
 ### Reports from the runtime
 
@@ -716,6 +750,12 @@ runtime states no limit, because a stopped seat's files and session stay on disk
   A later `wake` answers "`<name>` ended while asleep at `<UTC>` (`<reason>`)".
 - A report the Manager cannot place (an unknown seat, or a lifecycle it does not hold) is logged
   and ignored. It never starts, stops or retires anything.
+- The Manager assumes nothing about how soon a report arrives. A runtime may push reports or poll
+  for them, for example by reading at a session deadline it holds and listing slowly for anything
+  else. Until a `paused` report arrives, peers read `offline` for that seat (section 2, "Before
+  the record is written"). With a polling runtime, that gap is about one read round trip. While a
+  seat is live, the Manager acts on what it sees, the seat's own presence, and never on a report
+  it is still waiting for.
 
 The `stop` path built first (section 9) uses none of these methods, and the `pty` runtime
 implements none of them. They are defined now, so the `pause` path is a runtime change and not a
@@ -747,8 +787,9 @@ installed or started outside the cell.
 | 12 | `sleep` against a revision-58 Manager | anything sent, or a sentence other than section 4's |
 | 13 | Delete the Pi session file while asleep, wake, once under each `wake.conversationGone` value | `fresh`: a different lifecycle, `conversation` not `"fresh"`, or the notice missing. `refuse`: a woken process |
 | 14 | Change the Pi session file while asleep, wake, once under each `wake.conversationMoved` value | `copy`: the changed bytes continued, or `conversation` not `"copy"`. `refuse`: a woken process |
-| 15 | A test `pause` runtime in the cell: sleep, DM the seat while frozen, wake; then report `paused` while idle, report `paused` mid-turn, report `ended` | the DM missing from the first turn after wake, a turn taken before `unquiesce`, two writers on the key, presence not `asleep` after a report, a turn not stamped, a wake that relaunches, or `ended` leaving the alias held |
+| 15 | A test `pause` runtime in the cell: sleep, DM the seat while frozen, wake; then report `paused` while idle (pushed, and again from the runtime's own poll after a delay), report `paused` mid-turn, report `ended` | the DM missing from the first turn after wake, a turn taken before `unquiesce`, two writers on the key, presence not `asleep` after a report, the Manager acting before a delayed report arrives, a turn not stamped, a wake that relaunches, or `ended` leaving the alias held |
 | 16 | The test `pause` runtime's `resume` rejects | the seat started anywhere, or not still `asleep` |
+| 17 | A delegated seat on the test `pause` runtime under user auth: sleep, check `wakeBy` against the seat's root expiry; then shorten the Manager's standing lifetime below 24 h and sleep again | `wakeBy` taken from anything but the seat's root and `keptUntil`, or a sleep refused because the Manager's standing credentials are short |
 
 ## 9. Pull requests, in order
 
@@ -771,7 +812,7 @@ Each ships alone and passes its own cells.
    notice. Cell 7.
 7. **The `pause` path** (about 300 lines). `pause`, `resume`, `watchSleep` and the reports, with
    the test runtime the cells use. No stock runtime implements it, and a hosted runtime takes it
-   from here. Cells 15 and 16.
+   from here. Cells 15 to 17.
 
 Pull requests 1 and 2 can land in any order. Pull request 5 needs 1 (one release earlier), 2 and 4.
 Pull requests 6 and 7 need 5.
