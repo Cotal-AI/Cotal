@@ -28,7 +28,13 @@ on:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
       - docs/upgrade-matrix.md
-# No workflow-level queue: every immutable PR head and publication must finish.
+# A new push to a pull request supersedes the matrix of the head it replaces: that head can no
+# longer merge, and its 78 jobs only delay the head that can. Every other event (a publication, a
+# manual candidate, this workflow's own test branch) gets a group of its own, so nothing cancels it
+# and nothing makes it wait.
+concurrency:
+  group: upgrade-matrix-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
   actions: read

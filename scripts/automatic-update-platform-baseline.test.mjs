@@ -509,9 +509,10 @@ test('bootstrap versions bracket stable published releases', () => {
   assert.throws(() => bootstrapVersion('0.164.2-beta.1', 'B'));
 });
 
-test('workflow bounds diagnostics and preserves every immutable release head without cancellation', () => {
+test('workflow bounds diagnostics and cancels only the replaced head of a pull request', () => {
   const workflow = parseYaml(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
-  assert.equal(workflow.concurrency, undefined);
+  assert.equal(workflow.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}");
+  assert(workflow.concurrency.group.endsWith('|| github.run_id }}'));
   assert(workflow.on.pull_request.types.includes('synchronize'));
   assert.deepEqual(workflow.on.workflow_run.workflows, ['Changesets']);
   assert(workflow.jobs.priority);
