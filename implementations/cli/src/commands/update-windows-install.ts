@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
-import { closeSync, fstatSync, openSync, readSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock } from "@cotal-ai/workspace";
+import { scrubProjectedNpmrc } from "../lib/npm-reachability.js";
+import { latestNotAvailable } from "./update-process.js";
 
-interface InstallJob { file: string; args: string[]; cwd: string; log: string; verbatim: boolean }
+interface InstallJob { file: string; args: string[]; cwd: string; log: string; verbatim: boolean; config?: string; target?: string }
 const npmJob = "COTAL_WINDOWS_NPM_JOB";
 
 function recentOutput(path: string): string {
@@ -19,10 +21,23 @@ function recentOutput(path: string): string {
 
 function runNpm(job: InstallJob): void {
   delete process.env[npmJob];
+  const scrub = job.config ? scrubProjectedNpmrc(job.config, process.env) : undefined;
   const child = spawn(job.file, job.args, { windowsVerbatimArguments: job.verbatim, windowsHide: true });
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
-  child.once("error", error => { process.stderr.write(`${error.message}\n`); });
+  if (scrub) {
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+    child.once("close", status => {
+      // The native job log gets only the displayed text, never the raw npm diagnostics.
+      if (job.target && latestNotAvailable({ status, stdout, stderr }, job.target))
+        writeFileSync(`${job.log}.missing-version`, "", { flag: "wx", mode: 0o600 });
+      process.stdout.write(scrub(stdout)); process.stderr.write(scrub(stderr));
+    });
+  } else {
+    child.stdout.pipe(process.stdout);
+    child.stderr.pipe(process.stderr);
+  }
+  child.once("error", error => { process.stderr.write(`${scrub?.(error.message) ?? error.message}\n`); });
   child.once("close", status => { process.exitCode = status ?? 1; });
 }
 
@@ -36,9 +51,10 @@ async function runJob(job: InstallJob): Promise<void> {
     while (status === undefined) { await delay(100); status = native.rootExit(); }
     if (native.drain(20_000) !== "drained") throw new Error("Windows npm job did not drain");
     const output = recentOutput(job.log);
+    const missingVersion = job.config ? (existsSync(`${job.log}.missing-version`) ? job.target : null) : undefined;
     const busy = (status | 0) === -4082;
     process.off("disconnect", parentGone);
-    process.send?.({ status, stdout: output, stderr: "", ...(busy ? { error: "Windows could not replace a file in the npm installation because it is in use. Close the program holding the file, then run `cotal update --self` again." } : {}) }, () => process.disconnect());
+    process.send?.({ status, stdout: output, stderr: "", missingVersion, ...(busy ? { error: "Windows could not replace a file in the npm installation because it is in use. Close the program holding the file, then run `cotal update --self` again." } : {}) }, () => process.disconnect());
   } catch (cause) {
     process.off("disconnect", parentGone);
     process.exitCode = 1;

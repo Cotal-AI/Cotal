@@ -261,8 +261,15 @@ private update scratch idle for more than an hour when it contains only the Node
 On Linux, it also removes that scratch if the reconciliation cache holds only records that prove
 the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
-its permissions unchanged and still applies your registry,
-authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
+its permissions unchanged and still applies your registry, authentication, proxy and TLS settings.
+Cotal never rewrites, moves or deletes your npm configuration. A managed install or removal with
+a Cotal-supplied prefix can copy `registry`, scoped registries and scoped auth, `proxy`,
+`https-proxy`, `noproxy`, `cafile`, `ca`, and `strict-ssl` from the global npm configuration the
+prefix displaces. The copy is private (mode `0600` on POSIX), lives in the call's scratch folder,
+and is removed when the call ends, including on `SIGINT` and `SIGTERM`. It does not carry
+`offline`, `cache`, `fetch-*`, install layout settings, or top-level client `cert` and `key`.
+Explicit npm config overrides and the standalone
+installer keep their existing behavior. An unavailable dependency stops the update before replacement.
 If npm runs out of space while checking installed extension dependencies, no global install is
 attempted. Free space on the temporary filesystem, then run `cotal update --self` again.
 If a signal terminates the npm dependency check, the command names the signal and leaves installed
@@ -929,6 +936,8 @@ status recommends `cotal update --self`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`.
+Extension installs, removals, and built-in seeding keep your global registry access settings without
+changing the original configuration file or carrying forward the displaced file's install layout.
 The Extensions section of `cotal status` shows the recorded pins. `cotal ext root` prints only the
 path, for scripts. The listing's versions are the manifest pins recorded at add time.
 On POSIX, cotal creates a missing Cotal config directory with mode `0700`, even with a

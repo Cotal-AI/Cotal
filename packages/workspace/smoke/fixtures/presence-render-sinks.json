@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1163,
+    "total": 1171,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 941
+    "non-render/control": 949
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -569,6 +569,62 @@
       "anchor": "`process exited ${result.status}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "`npm exited ${result.status}`",
+      "class": "non-render/control",
+      "rationale": "This diagnostic reports npm's process exit, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "`target staging failed: ${result.scrub?.(text) ?? text}`",
+      "class": "non-render/control",
+      "rationale": "This diagnostic reports npm staging failure, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "arget staging failed: ${result.scrub?.(text) ?? text}`);\n  stagingDi",
+      "class": "non-render/control",
+      "rationale": "This diagnostic reports npm staging failure, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "stagingDiagnostic.set(error, `target staging failed: ${text}`)",
+      "class": "non-render/control",
+      "rationale": "The raw npm diagnostic is kept for internal staging classification, not displayed as peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "`target staging failed: ${text}`",
+      "class": "non-render/control",
+      "rationale": "The raw npm diagnostic is kept for internal staging classification, not displayed as peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "return error;",
+      "class": "non-render/control",
+      "rationale": "The returned error reports npm staging failure, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": "stagingNpmFailure(result)",
+      "class": "non-render/control",
+      "rationale": "The result carries npm stage failure diagnostics, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update-process.ts",
+      "kind": "derived-output",
+      "anchor": ";\n  return raw ? text : result.scrub?.(text) ?? text;\n}\n\nexport func",
+      "class": "non-render/control",
+      "rationale": "This formatter handles npm subprocess diagnostics, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/update-windows-install.ts",

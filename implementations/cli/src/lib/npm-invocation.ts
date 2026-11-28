@@ -2,9 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
+import { privateNpmrc } from "./npm-reachability.js";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
@@ -269,10 +270,11 @@ interface NpmCommand {
   node?: string;
   npm?: string;
   lifecycleNode?: boolean;
+  config?: ReturnType<typeof privateNpmrc>;
   missingOnPath?: true;
 }
 
-export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
+function resolveNpmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmCommand {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
   const inheritedNpm = env[UPDATE_NPM];
@@ -372,6 +374,48 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]): NpmComman
     return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd, npm: selectedNpm,
       lifecycleNode: args[0] === "install" && !args.includes("--ignore-scripts") };
   return { file, args, env: withNode(process.execPath), cwd, npm: selectedNpm };
+}
+
+const globalConfigs = new Map<string, string | undefined>();
+
+function effectiveGlobalConfig(npm: NpmCommand, launcher: string[]): string | undefined {
+  const { file, cwd, env } = npm;
+  const configInputs = Object.entries(env).filter(([key]) => /^(?:home|userprofile|path|npm_config_(?:prefix|userconfig))$/i.test(key));
+  const key = JSON.stringify([file, launcher, cwd, configInputs]);
+  if (globalConfigs.has(key)) return globalConfigs.get(key);
+  let globalConfig: string | undefined;
+  let cache: string | undefined;
+  try {
+    cache = mkdtempSync(join(tmpdir(), "cotal-npm-config-"));
+    const probe = cmdSpawnSpec(file, [...launcher, "config", "get", "globalconfig", "--cache", cache, "--json=false", "--logs-max=0", "--timing=false", "--update-notifier=false"], env);
+    const result = spawnSync(probe.file, probe.args, {
+      cwd, env, windowsVerbatimArguments: probe.windowsVerbatimArguments, windowsHide: true,
+      encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 65536,
+    });
+    const path = result.stdout?.replace(/\r?\n$/, "");
+    if (result.status === 0 && path && isAbsolute(path) && !/[\r\n\0]/.test(path)) globalConfig = path;
+  } catch { /* Keep npm's normal invocation when it cannot report a path. */ }
+  finally { if (cache) try { rmSync(cache, { recursive: true, force: true }); } catch { /* A probe cannot block the install. */ } }
+  globalConfigs.set(key, globalConfig);
+  return globalConfig;
+}
+
+export function npmInvocation(env: NodeJS.ProcessEnv, args: string[], scratch = tmpdir()): NpmCommand {
+  const npm = resolveNpmInvocation(env, args);
+  const at = args.indexOf("--prefix");
+  const prefix = args[at + 1];
+  if (at < 0 || !prefix || npm.missingOnPath || !["install", "remove"].includes(args[0] ?? "") ||
+      Object.keys(npm.env).some(key => key.toLowerCase() === "npm_config_globalconfig")) return npm;
+  // npm derives globalconfig from the prefix. Resolve it without our prefix, using the same npm.
+  const globalConfig = effectiveGlobalConfig(npm, npm.args.slice(0, npm.args.length - args.length));
+  if (globalConfig === undefined) return npm;
+  const defaultGlobal = resolve(npm.cwd, prefix, "etc", "npmrc");
+  if (windows ? defaultGlobal.toLowerCase() === resolve(globalConfig).toLowerCase() : defaultGlobal === resolve(globalConfig)) return npm;
+  let config: NpmCommand["config"];
+  try { config = privateNpmrc(globalConfig, scratch, npm.env); }
+  catch { return npm; } // Let the existing npm operation report an unusable staging directory.
+  return config ? { ...npm, config, args: [...npm.args, "--logs-max=0", "--timing=false"],
+    env: { ...npm.env, npm_config_globalconfig: config.file } } : npm;
 }
 
 /** Give lifecycle shells a `node` command when npm itself is launched by absolute Node path. */

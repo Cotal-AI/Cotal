@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { oneLine, processStartToken, recordUpdateDeferral, type OutputWarning } from "@cotal-ai/workspace";
 import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
-import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
+import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message, rawStagingDiagnostic } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
 export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
@@ -143,8 +143,9 @@ async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promis
   }
 }
 
-/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
-function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
+/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies.
+ *  Await npm asynchronously so an interrupt can remove the private configuration while npm runs. */
+async function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): Promise<void> {
   const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
@@ -155,7 +156,7 @@ function checkInstalledClosure(version: string, releasePackages: ReadonlySet<str
       overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
     }));
     const specs = names.map(name => `${name}@${version}`);
-    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
+    const result = await rt.npmAsync(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--json", "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...specs]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
       const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;
@@ -241,7 +242,7 @@ const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECON
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
-  const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
+  const detail = rawStagingDiagnostic(error);
   const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
 }
@@ -251,7 +252,7 @@ export function offlineUpdateMessage(repaired: boolean): string {
 }
 
 export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
-  const detail = message(error);
+  const detail = rawStagingDiagnostic(error);
   const fetchTimedOut = /^target staging failed: npm (?:error|ERR!) code FETCH_ERROR\r?\n/.test(detail) &&
     /^npm (?:error|ERR!) network timeout at: \S/m.test(detail);
   if (fetchTimedOut || (error instanceof RegistryUnavailable || error instanceof StagingTimeout || detail.startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
@@ -273,7 +274,8 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
       // A first-party scoped read can fail while the public registry still answers.
-      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
+      const registryDetail = installedSpecs ? failure(result.stderr.trim() ? { ...result, stdout: "" } : result, true) : detail;
+      if (!registryDetail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
         if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
           const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
@@ -293,7 +295,7 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       }
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
-  return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
+  return registryNetworkFailure(new Error(failure(result, true))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
 export async function waitForReleasePreflight(version: string, current: string, rt: UpdateRuntime, prepareExtensions: () => boolean): Promise<"ready" | "deferred" | "refused"> {
@@ -308,7 +310,7 @@ export async function waitForReleasePreflight(version: string, current: string, 
         if (!prepareExtensions()) return "refused";
         rt.out(`Checking installed extension dependencies for ${version}`);
       }
-      checkInstalledClosure(version, releasePackages, rt);
+      await checkInstalledClosure(version, releasePackages, rt);
       return "ready";
     } catch (error) {
       if (!(error instanceof ReleaseNotAvailable)) throw error;

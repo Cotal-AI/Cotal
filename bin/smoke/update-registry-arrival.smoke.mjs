@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { connect } from 'node:net';
 import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,119 @@ import { emitSentinel } from './sentinel.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^cotal_/i.test(name)));
+
+function interruptNpmCell(scenario) {
+  const [, operation, signal] = /^global-config-interrupt-(closure|stage|remove)-(SIGINT|SIGTERM)$/.exec(scenario) ?? [];
+  if (operation) return { operation, signal };
+}
+
+// Hold the real npm executable at startup so it cannot finish before the CLI is interrupted.
+function holdNpmForInterrupt(root, env, { operation, signal }, token, expectProjection) {
+  const lookup = spawnSync('sh', ['-c', 'command -v npm'], { env, encoding: 'utf8' });
+  assert.equal(lookup.status, 0, lookup.stderr);
+  const tools = join(root, 'interrupt-npm');
+  mkdirSync(tools);
+  const ready = join(tools, 'ready.json'), release = join(tools, 'release'), preload = join(tools, 'hold.mjs');
+  writeFileSync(preload, `import { renameSync, writeFileSync } from 'node:fs';
+import { access } from 'node:fs/promises';
+import { setTimeout } from 'node:timers/promises';
+const ready = ${JSON.stringify(ready)}, release = ${JSON.stringify(release)};
+writeFileSync(ready + '.tmp', JSON.stringify({ pid: process.pid, config: process.env.npm_config_globalconfig ?? null }));
+renameSync(ready + '.tmp', ready);
+for (const deadline = Date.now() + 20000; Date.now() < deadline; await setTimeout(25)) {
+  if (await access(release).then(() => true, () => false)) process.exit(0);
+}
+process.exit(99);
+`);
+  writeFileSync(join(tools, 'npm'), `#!${process.execPath}
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const prefix = args[args.indexOf('--prefix') + 1];
+const matches = { closure: args[0] === 'install' && /^cotal-closure-check-/.test(require('node:path').basename(prefix ?? '')),
+  stage: args[0] === 'install' && args.includes('-g') && /^\\.installing-/.test(require('node:path').basename(prefix ?? '')),
+  remove: args[0] === 'remove' };
+const env = { ...process.env };
+if (matches[${JSON.stringify(operation)}]) env.NODE_OPTIONS = ((env.NODE_OPTIONS ?? '') + ' --import=' + ${JSON.stringify(pathToFileURL(preload).href)}).trim();
+const result = spawnSync(${JSON.stringify(lookup.stdout.trim())}, args, { env, stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`, { mode: 0o700 });
+  env.PATH = `${tools}${delimiter}${env.PATH}`;
+  return async (child, output) => {
+    const exited = once(child, 'exit');
+    const closed = once(child, 'close');
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+    try {
+      for (const deadline = Date.now() + 15000; !existsSync(ready);) {
+        assert(child.exitCode === null && child.signalCode === null && Date.now() < deadline, `npm did not reach ${operation}: ${output()}`);
+        await new Promise(done => setTimeout(done, 20));
+      }
+      const { pid, config } = JSON.parse(readFileSync(ready, 'utf8'));
+      process.kill(pid, 0);
+      if (expectProjection) {
+        assert(config && basename(config) === 'npmrc' && realpathSync(config).startsWith(`${realpathSync(root)}/`), 'npm must receive a private projection');
+        assert.equal(statSync(config).mode & 0o777, 0o600);
+        assert(readFileSync(config, 'utf8').includes(token), 'running npm received the fixture credential');
+      } else assert.equal(config, null, 'unchanged main does not project global config');
+      assert(child.kill(signal));
+      const [code, observed] = await exited;
+      assert.deepEqual([code, observed], [null, signal], output());
+      if (expectProjection) assert(!existsSync(config), 'private npmrc was removed before CLI exit');
+      assert(!output().includes(token), 'fixture token leaked in CLI output');
+      return { code, signal: observed };
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      writeFileSync(release, 'done');
+      await closed;
+      clearTimeout(timer);
+    }
+  };
+}
+
+function watchGlobalNpmrc(root, env, failure, token) {
+  const lookup = spawnSync('sh', ['-c', 'command -v npm'], { env, encoding: 'utf8' });
+  assert.equal(lookup.status, 0);
+  const tools = join(root, 'npm-tools');
+  mkdirSync(tools);
+  const events = join(root, 'npm-events');
+  writeFileSync(join(tools, 'npm'), `#!${process.execPath}
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const token = ${JSON.stringify(token)};
+const config = process.env.npm_config_globalconfig;
+assert(!args.join('\\0').includes(token), 'token entered npm argv');
+if (config) {
+  const prefix = args[args.indexOf('--prefix') + 1];
+  assert(path.relative(prefix, config).startsWith('cotal-npmrc-'), 'npmrc must stay inside the stage');
+  assert.equal(fs.statSync(config).mode & 0o777, 0o600);
+  assert(fs.readFileSync(config, 'utf8').includes(token), 'npm receives fixture credential');
+  assert(args.includes('--logs-max=0') && args.includes('--timing=false'), 'npm must not write debug or timing logs');
+  fs.appendFileSync(${JSON.stringify(events)}, JSON.stringify({ config, stage: args.includes('-g') }) + '\\n');
+  if (${failure} && args.includes('-g')) {
+    process.stdout.write('fixture stdout ' + token + '\\n');
+    process.stderr.write('fixture stderr ' + token + '\\n');
+    process.exit(42);
+  }
+}
+const result = require('node:child_process').spawnSync(${JSON.stringify(lookup.stdout.trim())}, args, { stdio: 'inherit' });
+if (config) {
+  const index = args.indexOf('--cache');
+  const cache = index === -1 ? process.env.npm_config_cache : args[index + 1];
+  for (const name of fs.readdirSync(cache, { recursive: true })) {
+    if (/(?:\\.log|timing\\.json)$/.test(name)) assert(!fs.readFileSync(path.join(cache, name)).includes(token), 'token entered an npm log');
+  }
+}
+process.exit(result.status ?? 1);
+`, { mode: 0o700 });
+  env.PATH = `${tools}${delimiter}${env.PATH}`;
+  return () => {
+    const calls = readFileSync(events, 'utf8').trim().split('\n').map(JSON.parse);
+    assert(calls.some(call => call.stage), 'observed staged install');
+    assert(calls.some(call => !call.stage), 'observed dependency closure');
+    for (const call of calls) assert(!existsSync(call.config), 'private npmrc was removed');
+  };
+}
 
 function reconciliationScratch(parent, worker) {
   const old = new Date(Date.now() - 61 * 60_000);
@@ -81,7 +195,7 @@ async function assertLifecycleExtension(run, { node }, entry, root) {
 }
 
 /** Runs real npm and the built public entry against a loopback registry. */
-export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
+export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir(), expectProjection = true }) {
   if (scenario === 'corepack-node-fallback') return corepackNodeFallbackCell(entry, parent);
   const versionNamedNode = scenario === 'version-named-node';
   const reconcileOrphan = scenario === 'reconcile-orphan';
@@ -91,10 +205,14 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const stagingTimeout = scenario === 'staging-timeout';
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
   const stagingRefused = scenario === 'staging-refused';
+  const secretFailure = scenario === 'global-config-secret-failure';
+  const interrupt = interruptNpmCell(scenario);
+  const globalConfig = scenario === 'global-config' || secretFailure || Boolean(interrupt);
+  const fixtureToken = globalConfig ? randomBytes(20).toString('hex') : '';
   const configAccess = scenario === 'config-access-upgrade' || scenario === 'config-access-auto';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(versionNamedNode || repairSelection || configAccess || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(versionNamedNode || repairSelection || configAccess || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || globalConfig || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -104,13 +222,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
   const extension = extensionMissing ? '@cotal-ai/connector-hermes' : '@cotal-ai/cache-fixture';
-  const extensionPeers = scenario === 'extension-peers' || extensionMissing;
+  const extensionPeers = scenario === 'extension-peers' || extensionMissing || globalConfig;
   const newer = '100.0.0';
   const hostPeers = ['@cotal-ai/core', '@cotal-ai/workspace'];
   const peerArchives = new Map();
   const cliDependencies = version => extensionPeers && version === target
     ? { dependencies: Object.fromEntries(hostPeers.map(peer => [peer, target])) } : {};
-  const prefix = join(root, 'prefix'), home = join(root, 'home');
+  const prefix = join(root, globalConfig ? 'prefix with spaces' : 'prefix'), home = join(root, 'home');
   const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
   const ready = join(root, 'reconcile.pid');
   const releaseReconcile = join(root, 'reconcile-release');
@@ -118,20 +236,21 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     try { return JSON.parse(readFileSync(marker, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  mkdirSync(prefix, { mode: 0o700 });
   const lifecycle = versionNamedNode ? lifecycleRuntime(root, join(root, 'payload/package')) : undefined;
   const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection || configAccess;
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
   if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   if (stagingNetwork) writeFileSync(join(root, 'payload/package/dist/data'), randomBytes(1024 * 1024));
   for (const version of [previous, target]) {
-    writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, ...(staged ? { cotalPreinstall: preinstall } : {}), ...cliDependencies(version), ...lifecycle?.manifest }));
+    writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, ...(staged || globalConfig ? { cotalPreinstall: preinstall } : {}), ...cliDependencies(version), ...lifecycle?.manifest }));
     const contention = scenario === 'concurrent'
       ? `if (process.argv.includes('update')) { const deadline = Date.now() + 30000; while (!existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
       : '';
     const hold = reconcileInterrupted && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { writeFileSync(${JSON.stringify(ready)}, String(process.pid)); ${reconcileOrphan ? `const deadline = Date.now() + 60000; const timer = setInterval(() => { if (existsSync(${JSON.stringify(releaseReconcile)}) || Date.now() >= deadline) clearInterval(timer); }, 20);` : 'setTimeout(() => process.exit(99), 60000);'} }\n` : '';
     writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${contention}${hold}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n`, { mode: 0o755 });
-    if (staged) {
+    if (staged || globalConfig) {
       const fail = scenario === 'selection-rollback' && version === target
         ? `if (process.argv.includes('update')) { console.error('fixture reconciliation failed'); process.exit(7); }\n` : '';
       writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${fail}console.log('cotal-ai ${version}');\n`, { mode: 0o755 });
@@ -175,7 +294,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   let invalidStagingMetadata = true;
   const backlog = [];
   const server = createServer((request, response) => {
-    requests.push({ at: Date.now(), path: request.url });
+    requests.push({ at: Date.now(), path: request.url, ...(globalConfig && readMarker()?.operation === 'global install' ? { staging: true } : {}) });
+    if (globalConfig && request.headers.authorization !== `Bearer ${fixtureToken}`) return response.writeHead(401).end();
     if (disconnected || armed && scenario === 'offline-archive' && request.url?.endsWith(`/${target}.tgz`)) {
       disconnected = true;
       return request.socket.destroy();
@@ -278,7 +398,24 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
-  env.npm_config_registry = origin;
+  let checkNpmrc, interruptNpm;
+  if (globalConfig) {
+    const etc = join(prefix, 'etc');
+    mkdirSync(etc);
+    const npmrc = join(etc, 'npmrc');
+    const originalNpmrc = `registry=${origin}/\n//${new URL(origin).host}/:_authToken=${fixtureToken}\n`;
+    writeFileSync(npmrc, originalNpmrc, { mode: 0o600 });
+    for (const key of Object.keys(env)) {
+      if (/^(?:npm_config_(?:cache|registry|prefix|userconfig|globalconfig|https?_proxy|proxy|noproxy)|(?:https?_proxy|all_proxy|no_proxy))$/i.test(key)) delete env[key];
+    }
+    writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
+    Object.assign(env, { HTTP_PROXY: 'http://127.0.0.1:1', HTTPS_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
+    // Keep unchanged main's pre-staging closure on loopback as well.
+    if (interrupt && !expectProjection) writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n${originalNpmrc}`);
+    if (interrupt) interruptNpm = holdNpmForInterrupt(root, env, interrupt, fixtureToken, expectProjection);
+    const check = interrupt ? () => {} : watchGlobalNpmrc(root, env, secretFailure, fixtureToken);
+    checkNpmrc = () => { check(); assert(readFileSync(npmrc, 'utf8') === originalNpmrc, 'original npmrc is unchanged'); };
+  } else env.npm_config_registry = origin;
   let interrupted, orphan, abandoned, pausedArchive;
   let closureStart, closureEnd;
   let cwd = root;
@@ -289,7 +426,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       output += bytes;
       if (extensionPeers) {
         if (output.includes('Checking installed extension dependencies')) closureStart ??= requests.length;
-        if (output.includes('recovery archives')) closureEnd ??= requests.length;
+        if (output.includes(globalConfig ? 'release archives checked' : 'recovery archives')) closureEnd ??= requests.length;
       }
       if (extensionMissing && !installedAtWait && /Waiting for .*connector-hermes/.test(output)) {
         installedAtWait = readInstallation();
@@ -302,6 +439,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     });
     child.stderr.on('data', bytes => output += bytes);
     interrupted = child;
+    if (interruptNpm && args.includes('--self')) return { ...await interruptNpm(child, () => output), output };
     const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
     try {
       const { code, signal } = await new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
@@ -312,7 +450,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const install = await run('npm', ['install', '-g', `cotal-ai@${previous}`], 60000);
     assert.equal(install.code, 0, install.output);
     const packageRoot = join(prefix, 'lib/node_modules/cotal-ai');
-    if (scenario === 'offline-staging' || staged) {
+    if (scenario === 'offline-staging' || staged || globalConfig) {
       cpSync(join(repo, 'bin/dist'), join(packageRoot, 'dist'), { recursive: true });
       cpSync(join(repo, 'bin/package.json'), join(packageRoot, 'package.json'));
       symlinkSync(join(repo, 'bin/node_modules'), join(packageRoot, 'node_modules'), 'dir');
@@ -327,6 +465,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     }
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
+    if (globalConfig) rmSync(join(home, '.npm'), { recursive: true, force: true });
     armed = true;
     if (stagingTimeout) {
       const tools = join(root, 'staging-tools'), pidFile = join(root, 'staging.pid');
@@ -956,6 +1095,10 @@ exec npm "$@"
     if (lifecycle) env.PATH = lifecycle.path;
     const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(lifecycle?.node ?? process.execPath, [entry, 'update', '--self'], 660000)));
     const update = updates[0];
+    if (interrupt) {
+      checkNpmrc();
+      return { scenario, code: update.code, signal: update.signal };
+    }
     if (abandoned) await abandoned;
     const waitLine = "Waiting for another updater to release npm's global root";
     for (const result of updates) assert.doesNotMatch(result.output, /Reserving npm's global root/);
@@ -1040,10 +1183,27 @@ exec npm "$@"
       assert.match(update.output, /connector-hermes@99\.0\.0 is not yet available.*No global install was attempted.*run `cotal update --self` again in a few minutes/);
       assert.doesNotMatch(update.output, /Correct the reported failure/);
       assert.deepEqual(readInstallation(), originalInstallation);
+    } else if (secretFailure) {
+      assert(!update.output.includes(fixtureToken), 'fixture token leaked in CLI output');
+      assert.notEqual(update.code, 0);
+      assert.match(update.output, /fixture stderr \[redacted\]/);
+      assert.equal(selected, previous);
+      checkNpmrc();
     } else if (extensionPeers) {
+      if (globalConfig) assert(!update.output.includes(fixtureToken), 'fixture token leaked in CLI output');
       assert.equal(update.code, 0, update.output);
-      assert.equal(selected, target);
-      assert.match(update.output, /installed globally and reconciled/);
+      if (globalConfig) {
+        checkNpmrc();
+        assert.match(update.output, /cotal-ai@99\.0\.0 in use and reconciled/);
+        const active = await run(process.execPath, [entry, '--version'], 60000);
+        assert.equal(active.code, 0, active.output);
+        assert.match(active.output, /^cotal-ai 99\.0\.0\b/);
+        assert(!existsSync(join(home, '.npm')), 'self-update does not create a default npm cache');
+        assert(requests.some(request => request.path === `/${target}.tgz` && request.staging), 'staged CLI npm uses the same configured registry');
+      } else {
+        assert.equal(selected, target);
+        assert.match(update.output, /installed globally and reconciled/);
+      }
       assert(closureStart !== undefined && closureEnd !== undefined);
       const paths = requests.slice(closureStart, closureEnd).map(request => decodeURIComponent(request.path));
       assert(paths.includes(`/${extension}/-/${target}.tgz`), 'preflight downloads the installed extension archive');
@@ -1107,7 +1267,7 @@ exec npm "$@"
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (!versionNamedNode && !reconcileInterrupted && !['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'staging-killed', 'concurrent', 'extension-peers', 'extension-arrives', 'corepack'].includes(scenario)) {
+    if (!versionNamedNode && !reconcileInterrupted && !globalConfig && !['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'staging-killed', 'concurrent', 'extension-peers', 'extension-arrives', 'corepack'].includes(scenario)) {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -1249,13 +1409,164 @@ async function corepackNodeFallbackCell(entry, parent) {
   }
 }
 
+async function globalConfigExtensionCell(setting, interrupt, expectProjection) {
+  const root = mkdtempSync(join(tmpdir(), 'global-config-ext-'));
+  const scoped = setting === 'scoped-auth', tls = setting === 'cafile' || setting === 'strict-ssl';
+  const name = scoped ? '@fixture/global-config-extension' : 'global-config-extension-fixture', version = '1.0.0';
+  const token = scoped || interrupt ? randomBytes(20).toString('hex') : undefined;
+  const home = join(root, 'home'), prefix = join(root, 'npm prefix'), config = join(root, 'config');
+  const tmp = join(root, 'tmp'), source = join(root, 'package'), cache = join(root, 'read-only cache');
+  const ext = join(config, 'cotal', 'extensions');
+  const manifest = { name, version, main: 'index.mjs', peerDependencies: { '@cotal-ai/core': '*' } };
+  const requests = [], proxied = [];
+  let registry, bytes;
+  const serve = (req, res) => {
+    if (scoped && req.headers.authorization !== `Bearer ${token}`) return res.writeHead(401).end();
+    const path = decodeURIComponent(req.url);
+    requests.push(path);
+    if (path === `/${name}.tgz`) return res.end(bytes);
+    if (path !== `/${name}`) return res.writeHead(404).end();
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ name, 'dist-tags': { latest: version }, versions: { [version]: { ...manifest, dist: {
+      tarball: `${registry}/${name}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+    } } } }));
+  };
+  const proxy = createServer((req, res) => {
+    const url = URL.parse(req.url);
+    if (req.method !== 'GET' || url?.origin !== registry) return res.writeHead(403).end();
+    proxied.push(url.pathname);
+    const upstream = request(url, reply => { res.writeHead(reply.statusCode, reply.headers); reply.pipe(res); });
+    upstream.on('error', () => res.destroy());
+    upstream.end();
+  });
+  const tunnels = new Set();
+  proxy.on('connect', (req, socket, head) => {
+    if (req.url !== new URL(registry).host) return socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+    proxied.push('CONNECT');
+    tunnels.add(socket);
+    const upstream = connect(new URL(registry).port, '127.0.0.1', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+    socket.once('close', () => { tunnels.delete(socket); upstream.destroy(); });
+  });
+  let server, interruptNpm;
+  const env = Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/^(?:npm_config_|(?:https?_proxy|all_proxy|no_proxy|node_extra_ca_certs|node_tls_reject_unauthorized)$)/i.test(key)));
+  Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: config, TMPDIR: tmp,
+    DO_NOT_TRACK: '1', COTAL_SKIP_CONNECTOR_SEED: '1', npm_config_fetch_retries: '0', npm_config_update_notifier: 'false',
+    HTTPS_PROXY: 'http://127.0.0.1:1', HTTP_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' });
+  const run = async (...args) => {
+    const child = spawn(process.execPath, [join(repo, 'bin/dist/cotal.js'), 'ext', ...args], { cwd: home, env, timeout: 60_000 });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    if (interruptNpm && args[0] === 'remove') return { ...await interruptNpm(child, () => output), output };
+    const [code] = await once(child, 'close');
+    return { code, output };
+  };
+  try {
+    for (const dir of [home, join(prefix, 'etc'), tmp, source]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirSync(cache, { mode: 0o500 });
+    writeFileSync(join(source, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(source, 'index.mjs'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: 'global-config-extension-fixture', summary: 'Fixture command', run() {} });`);
+    const archive = join(root, 'fixture.tgz');
+    assert.equal(spawnSync('tar', ['-czf', archive, '-C', root, 'package'], { env }).status, 0);
+    bytes = readFileSync(archive);
+    const cert = join(root, 'ca.pem'), key = join(root, 'loopback.key');
+    if (tls) {
+      const config = join(root, 'loopback.cnf');
+      writeFileSync(config, '[req]\nprompt=no\ndistinguished_name=subject\nx509_extensions=loopback\n[subject]\nCN=127.0.0.1\n[loopback]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\n');
+      const generated = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+        '-config', config, '-keyout', key, '-out', cert], { env, encoding: 'utf8' });
+      assert.equal(generated.status, 0, generated.error?.message ?? generated.stderr);
+    }
+    server = tls ? createHttpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, serve) : createServer(serve);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    registry = `${tls ? 'https' : 'http'}://127.0.0.1:${server.address().port}`;
+    writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\n`);
+    const npmrc = join(prefix, 'etc/npmrc');
+    let contents = `registry=${registry}/\n${setting === 'cache' ? `cache=${cache}\n` : 'global=true\npackage-lock=false\nsave=false\n'}`;
+    if (scoped) contents = `registry=http://127.0.0.1:1/\n@fixture:registry=${registry}/\n//${new URL(registry).host}/:_authToken=${token}\n`;
+    if (interrupt) {
+      contents += `//${new URL(registry).host}/:_authToken=${token}\n`;
+      if (!expectProjection) writeFileSync(join(home, '.npmrc'), `prefix=${prefix}\nregistry=${registry}/\n`);
+      interruptNpm = holdNpmForInterrupt(root, env, interrupt, token, expectProjection);
+    }
+    if (setting === 'cafile') contents += `cafile=${cert}\n`;
+    if (setting === 'strict-ssl') contents += 'strict-ssl=false\n';
+    if (setting === 'proxy') {
+      delete env.NO_PROXY;
+      proxy.listen(0, '127.0.0.1');
+      await once(proxy, 'listening');
+      contents += `proxy=http://127.0.0.1:${proxy.address().port}\n`;
+    }
+    if (setting === 'default') env.npm_config_registry = registry;
+    else writeFileSync(npmrc, contents);
+    const added = await run('add', name);
+    if (token) assert(!added.output.includes(token), 'fixture token leaked in extension output');
+    assert.equal(added.code, 0, added.output);
+    assert(requests.includes(`/${name}.tgz`), 'extension install fetched through the fixture registry');
+    if (setting === 'proxy') assert(proxied.includes(`/${name}.tgz`) || proxied.includes('CONNECT'), 'extension install used the configured proxy');
+    const dependency = file => JSON.parse(readFileSync(join(ext, file), 'utf8'));
+    assert(dependency('package.json').dependencies[name] && dependency('package-lock.json').packages[''].dependencies[name]);
+    const removed = await run('remove', name);
+    if (interrupt) {
+      assert(readFileSync(npmrc, 'utf8') === contents, 'original npmrc is unchanged');
+      assert(existsSync(join(ext, 'node_modules', name)), 'interrupted removal did not remove the package');
+      return { scenario: `global-config-interrupt-remove-${interrupt.signal}`, code: removed.code, signal: removed.signal };
+    }
+    assert.equal(removed.code, 0, removed.output);
+    assert(!existsSync(join(ext, 'node_modules', name)), 'removal changes the project, not the global tree');
+    assert(!dependency('package.json').dependencies?.[name] && !dependency('package-lock.json').packages['']?.dependencies?.[name]);
+    if (setting === 'cache') assert.deepEqual(readdirSync(cache), []);
+    if (setting !== 'default') assert.equal(readFileSync(npmrc, 'utf8'), contents);
+    return { scenario: `global-config-ext-${setting}`, requests };
+  } finally {
+    for (const socket of tunnels) socket.destroy();
+    proxy.closeAllConnections();
+    if (proxy.listening) await new Promise(done => proxy.close(done));
+    server?.closeAllConnections();
+    if (server?.listening) await new Promise(done => server.close(done));
+    if (existsSync(cache)) chmodSync(cache, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  const runInterrupt = scenario => {
+    const interrupt = interruptNpmCell(scenario);
+    const expectProjection = process.argv[3] !== 'main';
+    return interrupt.operation === 'remove' ? globalConfigExtensionCell('interrupt', interrupt, expectProjection)
+      : registryArrivalCell({ scenario, expectProjection });
+  };
+  if (process.argv[2] === 'global-config-shape') {
+    const { npmInstallShape } = await import('./npm-install-shape.mjs');
+    const baseline = JSON.parse(readFileSync(new URL('./fixtures/npm-install-shape.json', import.meta.url), 'utf8'));
+    const result = await npmInstallShape(repo);
+    const expected = baseline[result.npm];
+    assert(expected, `no unchanged-main install-shape fixture for npm ${result.npm}`);
+    assert.equal(result.cells.length, 33);
+    for (const [index, cell] of result.cells.entries()) assert.deepEqual(cell, expected[index], `${cell.setting}/${cell.mode} on npm ${result.npm}`);
+    emitSentinel({ passed: result.cells.length, failed: 0 });
+    process.exit(0);
+  }
   const mountPoint = mkdtempSync(join(tmpdir(), 'closure-mount-probe-'));
   let canMount;
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint], { env: childEnv }).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
   const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'config-access-upgrade', 'config-access-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
-  for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
+  if (!process.argv[2] && ['linux', 'darwin'].includes(process.platform)) {
+    selected.push('global-config', 'global-config-secret-failure', ...['mirror', 'default', 'scoped-auth', 'proxy', 'cafile', 'strict-ssl'].map(setting => `global-config-ext-${setting}`));
+    for (const operation of ['closure', 'stage', 'remove']) for (const signal of ['SIGINT', 'SIGTERM'])
+      selected.push(`global-config-interrupt-${operation}-${signal}`);
+    if (process.getuid?.()) selected.push('global-config-ext-cache');
+  }
+  for (const scenario of selected) console.log(JSON.stringify(await (interruptNpmCell(scenario) ? runInterrupt(scenario) : scenario.startsWith('global-config-ext-')
+    ? globalConfigExtensionCell(scenario.slice('global-config-ext-'.length)) : registryArrivalCell({ scenario }))));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
