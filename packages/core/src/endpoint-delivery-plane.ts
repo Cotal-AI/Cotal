@@ -979,7 +979,13 @@ export class EndpointDeliveryPlane {
     const parsed = parseSubject(m.subject);
     if (!parsed || parsed.kind !== kind || !channelSubjectInSpace(this.identity.space, m.subject) || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const channel = parsed.rest;
-    if (this.withheldChannel(channel)) { m.nak(30_000); return; }
+    if (this.withheldChannel(channel)) {
+      // Do not let reserved CHAT backlog occupy the shared consumer's ACK window. EXT has
+      // its own cursor, so delay isolated fan-out until authority is known again.
+      if (kind === "chat") m.ack();
+      else m.nak(30_000);
+      return;
+    }
     if ((kind !== "chat") !== isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) { m.ack(); return; }
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
@@ -1144,8 +1150,8 @@ export class EndpointDeliveryPlane {
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
     if (!isRecord(entry)) { m.ack(); return; } // non-object envelope — permanently invalid
-    if (typeof entry.channel === "string" && this.withheldChannel(entry.channel)) { m.nak(30_000); return; }
-    if (typeof entry.channel === "string" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel)) {
+    if (typeof entry.channel === "string" && (this.withheldChannel(entry.channel) ||
+        isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel))) {
       m.ack();
       return;
     }

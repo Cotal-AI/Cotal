@@ -27,7 +27,7 @@ import { recordsBucket } from "../src/endpoint-records.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
 import { pluginChannelSpaceStateSubject } from "../src/plugin-channel-space-state.js";
 import { PLUGIN_CHANNEL_ROOT } from "../src/plugin-channel-route.js";
-import { CONTROL_DELIVERY, FANOUT_DURABLE, MENTION_NOTICE_KEY, chatStream, chatSubject, chatWildcard, controlServiceSubject,
+import { CONTROL_DELIVERY, FANOUT_DURABLE, MENTION_NOTICE_KEY, chatStream, chatSubject, controlServiceSubject,
   dlvStream, dmStream, inboxStream, membersBucket, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "../src/index.js";
 import { PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
@@ -387,7 +387,7 @@ async function checkStalePluginOnChat(fixture: Awaited<ReturnType<typeof startEn
     watchPresence: false, card: { kind: "agent", name: "legacy-chat-reader" } });
   const seen: string[] = [], tapped: string[] = [];
   legacyRead.on("message", (msg, delivery, meta) => { if (meta.kind === "channel") seen.push(msg.id); delivery.ack(); });
-  legacyRead.tap((_subject, msg) => { if (msg) tapped.push(msg.id); }, { subject: chatWildcard(space) });
+  legacyRead.tap((_subject, msg) => { if (msg) tapped.push(msg.id); }, { subject: chatSubject(space, "*", "*", channel) });
   await legacyRead.start();
   if (!(await until(() => daemon.getRoster().some(({ card }) => card.name === "legacy-chat-reader"))))
     throw new Error("stale CHAT fixture could not resolve its mention target");

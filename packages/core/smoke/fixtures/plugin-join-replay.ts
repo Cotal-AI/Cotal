@@ -117,9 +117,16 @@ export async function checkPluginFirstFanout(check: Check): Promise<void> {
     await internals(reader).conn.nc!.flush();
     const missing = await jsm.consumers.info(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE).then(() => false, isConsumerNotFound);
     const early = await writer.multicast("retained before the first delivery host bind", { channel, mentions: ["early-recipient"] });
-    await fixture.startDelivery();
-    check("first EXT fan-out bind routes a retained mention accepted before the consumer existed", missing && await until(() =>
-      pointed.some((value) => !!value && typeof value === "object" && "message" in value && value.message === early.id)), pointed);
+    const daemon = await fixture.startDelivery(async (ep) => {
+      if (!(await until(() => ep.getRoster().some(({ card }) => card.name === "early-recipient"))))
+        throw new Error("first delivery fixture could not resolve its mention target before arming");
+    });
+    const delivered = await until(() =>
+      pointed.some((value) => !!value && typeof value === "object" && "message" in value && value.message === early.id));
+    const consumer = await jsm.consumers.info(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE);
+    check("first EXT fan-out bind routes a retained mention accepted before the consumer existed", missing && delivered,
+      { pointed, pending: consumer.num_pending, delivered: consumer.delivered, floor: consumer.ack_floor, mode: consumer.config.deliver_policy,
+        roster: daemon.getRoster().map(({ card }) => card.name), missing });
   } finally { await fixture.close(); }
 }
 

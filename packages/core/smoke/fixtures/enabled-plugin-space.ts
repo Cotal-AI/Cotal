@@ -105,11 +105,12 @@ export async function startEnabledPluginSpace() {
         await connection.close();
       }
     };
-    const startDelivery = async () => {
+    const startDelivery = async (beforePlane3?: (ep: CotalEndpoint) => Promise<void>) => {
       const creds = await mintCreds(auth, newIdentity(), "delivery", { pluginChannelsEnabled: true });
       const ep = endpoint({ creds, channels: [], consume: false, registerPresence: false, watchPresence: true,
         card: { name: "delivery", kind: "endpoint", role: "delivery" } });
       await ep.start();
+      await beforePlane3?.(ep);
       await ep.startPlane3((target, uid) => ep.aclForOwner(target, uid), { readPluginChannelAuthority: true });
       return ep;
     };
