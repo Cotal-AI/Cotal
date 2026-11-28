@@ -34,6 +34,14 @@
         <ul id="app-list" class="app-list" data-testid="app-list" aria-label="Agent apps"></ul>
         <div class="apps-footer"><p>Each app installs for your user only, from its maker’s own installer.</p><button id="apps-refresh" class="text-button" type="button">Check again</button></div>
       </section>
+      <section id="conflicts-panel" class="settings-card apps-card" aria-labelledby="conflicts-title" hidden>
+        <div class="settings-heading"><h1 id="conflicts-title" tabindex="-1">Space conflicts</h1><button id="conflicts-back" class="text-button" type="button">Back</button></div>
+        <p class="apps-lead">Choose whether to keep each existing registration on this computer or switch that space name to your signed-in account.</p>
+        <section id="conflicts-migration" class="apps-callout conflict-migration" data-testid="conflicts-migration" aria-label="Account address move" hidden></section>
+        <p id="conflicts-message" class="apps-message" role="status"></p>
+        <ul id="conflict-list" class="app-list conflict-list" data-testid="conflict-list" aria-label="Conflicting spaces"></ul>
+        <div class="apps-footer"><p>Replacing a space updates only this computer’s local registration.</p><button id="conflicts-refresh" class="text-button" type="button">Refresh spaces</button></div>
+      </section>
       <section class="connection-card" aria-labelledby="connection-title">
         <h1 id="loading-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
         <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>
@@ -43,6 +51,7 @@
         <p id="applied-update" class="muted" role="status" hidden></p>
         <p id="link-context" class="context" hidden></p>
         <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
+        <section id="space-conflicts-callout" class="apps-callout conflict-callout" data-testid="space-conflicts-callout" aria-label="Space name conflicts" hidden></section>
         <div id="sign-in-panel">
           <form id="login-form">
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>

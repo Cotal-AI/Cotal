@@ -645,7 +645,7 @@ try {
         const conflict = await cli(["spaces", "--refresh", "--json"]);
         const result = conflict.doc.result;
         check("H6 a live name conflict keeps the existing registration and applies a healthy catalog space", conflict.status === 4 && result?.refresh === "partial" && result.collisions === 1 && result.failedProviders.length === 0 && result.spaces.some((s: { space: string }) => s.space === "catalog-alongside-conflict") && readFileSync(meshFile(manualConflict.space), "utf8") === manualBytes, conflict.doc);
-        check("H6 the renderer turns the live conflict reply into recovery guidance", !!result && /kept those registrations.*`cotal sync`.*`cotal space`/.test(catalogRefreshNotice(result, idp)), conflict.doc);
+        check("H6 the renderer turns the live conflict reply into recovery guidance", !!result && /Space "catalog-conflict" conflicts.*kept that registration.*keep or replace/.test(catalogRefreshNotice(result, idp)) && !/cotal sync|cotal space/.test(catalogRefreshNotice(result, idp)), conflict.doc);
       } finally {
         slugs = slugs.slice(0, -2);
         rmSync(meshFile(manualConflict.space));

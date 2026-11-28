@@ -26,9 +26,10 @@ export type DesktopRequest =
   | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
   | { readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
+  | { readonly op: "space-conflict-resolve"; readonly space: string; readonly idp: string }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
-  | { readonly op: "login"; readonly idp: string }
+  | { readonly op: "login"; readonly idp: string; readonly migrateFrom?: string }
   | { readonly op: "logout"; readonly idp: string }
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
   | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string }
@@ -44,7 +45,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   }
   const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
+  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : o.op === "space-conflict-resolve" ? ["op", "space", "idp"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp", "migrateFrom"] : o.op === "logout" ? ["op", "idp"] : o.op === "spaces" || o.op === "agent-apps" ? ["op", "refresh"] : o.op === "agent-app-install" || o.op === "agent-app-sign-in" ? ["op", "name"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-policy") {
     if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
@@ -66,6 +67,10 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
+  if (o.op === "space-conflict-resolve") {
+    if (!isDaemonSpaceName(o.space) || typeof o.idp !== "string" || o.idp.length > 2048) throw new Error("invalid space conflict resolution");
+    return { op: "space-conflict-resolve", space: o.space, idp: normalizeIdpUrl(o.idp) };
+  }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
   if (o.op === "agent-apps") {
     if (o.refresh !== undefined && typeof o.refresh !== "boolean") throw new Error("invalid refresh");
@@ -85,11 +90,18 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "spaces", ...(o.refresh !== undefined ? { refresh: o.refresh } : {}) };
   }
   if (typeof o.idp !== "string" || o.idp.length > 2048) throw new Error("invalid provider");
+  const idp = normalizeIdpUrl(o.idp);
   if (o.op === "setup") {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
-    return { op: "setup", space: o.space, idp: normalizeIdpUrl(o.idp) };
+    return { op: "setup", space: o.space, idp };
   }
-  return { op: o.op as "login" | "logout", idp: normalizeIdpUrl(o.idp) };
+  if (o.op === "login" && o.migrateFrom !== undefined) {
+    if (typeof o.migrateFrom !== "string" || o.migrateFrom.length > 2048) throw new Error("invalid migration source");
+    const migrateFrom = normalizeIdpUrl(o.migrateFrom);
+    if (!migrateFrom.startsWith("https://") || migrateFrom === idp) throw new Error("invalid migration source");
+    return { op: "login", idp, migrateFrom };
+  }
+  return { op: o.op as "login" | "logout", idp };
 }
 
 export async function readDesktopRequest(input: Readable): Promise<DesktopRequest> {
@@ -435,7 +447,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result: await updateViaDaemon(client, req) }); return;
     }
     if (req.op === "login") {
-      const result = await loginViaDaemon({ ...client, idp: req.idp, onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }) });
+      const result = await loginViaDaemon({ ...client, idp: req.idp, ...(req.migrateFrom !== undefined ? { migrateFrom: req.migrateFrom } : {}), onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }) });
       emit({ v: 1, event: "result", ...result });
       return;
     }

@@ -17,8 +17,9 @@
  */
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
-import { deleteIdpSpaceCatalog, establishIdpSession, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
-import { homeCotalDir, isCommandFailure, removeCatalogAccount, type KeptCatalogCredential } from "@cotal-ai/workspace";
+import { resolveSpaceCatalogConsumer } from "@cotal-ai/core";
+import { commitStagedIdpSession, deleteIdpSpaceCatalog, establishIdpSession, fetchStagedIdpSpaceCatalog, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError, normalizeIdpUrl, signedInMachineAccounts, stageIdpSession } from "@cotal-ai/auth";
+import { CommandFailure, homeCotalDir, isCommandFailure, loadMeshes, removeCatalogAccount, resolveNativeMigration, withProjectTrustMigration, type KeptCatalogCredential } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
 /** The client id stock `cotal login` presents by default. */
@@ -43,6 +44,7 @@ interface LoginStart {
   readonly idp: string;
   readonly clientId?: string;
   readonly discoveryPins?: { url: string; issuer: string; audience: string };
+  readonly migrateFrom?: string;
   readonly onPrompt: (attempt: string, prompt: LoginPrompt) => void;
   /** Deliver the terminal result to the requester. The attempt counts as settled, for a cancel's
    *  answer, only once this resolves, so a cancel ack never overtakes the result it reports. */
@@ -64,6 +66,53 @@ export interface LoginCoordinator {
   close(): Promise<void>;
 }
 
+async function runEndorsedMigration(sessionDir: string, id: string, abort: AbortController, req: LoginStart): Promise<LoginResult> {
+  if (resolve(sessionDir) !== resolve(homeCotalDir()))
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Account migration requires the default Cotal home.");
+  const oldUrl = normalizeIdpUrl(req.migrateFrom!);
+  const targetUrl = normalizeIdpUrl(req.idp);
+  const entries = loadMeshes().filter((entry) => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === oldUrl);
+  const pins = new Map(entries.map((entry) => [JSON.stringify([entry.userAuth!.idp.issuer, entry.userAuth!.idp.audience]), entry.userAuth!.idp]));
+  if (!entries.length || pins.size !== 1)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "No single trusted catalog account was found at the previous provider address.");
+  const trusted = [...pins.values()][0]!;
+  const accounts = signedInMachineAccounts(sessionDir).filter((account) => account.idpUrl === oldUrl);
+  const oldAccount = accounts[0];
+  if (accounts.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || entries.some((entry) => entry.catalogOwner !== oldAccount.ownerKey))
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "The previous provider account is no longer signed in on this computer.");
+  const consumer = resolveSpaceCatalogConsumer();
+  if (!consumer.prepareMigration)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Space catalog migration is unavailable in this daemon.");
+  const resolution = await resolveNativeMigration({ url: oldUrl, issuer: trusted.issuer, audience: trusted.audience });
+  const idp = normalizeIdpUrl(resolution.bundle.userAuth.idp.url);
+  if (idp !== targetUrl)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "The previous provider address does not endorse moving to the selected provider.");
+  const candidate = await stageIdpSession({
+    dir: sessionDir,
+    idpUrl: idp,
+    migrationFrom: oldUrl,
+    clientId: req.clientId ?? DEFAULT_CLIENT_ID,
+    expectedPins: { idpUrl: idp, issuer: trusted.issuer, audience: trusted.audience, sub: oldAccount.sub },
+    signal: abort.signal,
+    onPrompt: (p) => req.onPrompt(id, {
+      verificationUri: p.verificationUri,
+      verificationUriComplete: p.verificationUriComplete,
+      userCode: p.userCode,
+      expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
+    }),
+  });
+  if (abort.signal.aborted) throw new IdpLoginCancelled();
+  const catalog = await fetchStagedIdpSpaceCatalog(candidate, consumer.validate);
+  if (abort.signal.aborted) throw new IdpLoginCancelled();
+  let committed: ReturnType<typeof commitStagedIdpSession> | undefined;
+  await withProjectTrustMigration(true, false, async () => {
+    const commit = consumer.prepareMigration!(oldAccount, catalog.account, catalog.snapshot);
+    committed = commitStagedIdpSession(candidate);
+    commit();
+  });
+  return { outcome: "signed-in", idp, sub: candidate.sub, ...(committed?.label ? { label: committed.label } : {}) };
+}
+
 export function createLoginCoordinator(opts: { readonly sessionDir: string; readonly establish?: Establish }): LoginCoordinator {
   const establish = opts.establish ?? establishIdpSession;
   let current: Attempt | undefined;
@@ -75,6 +124,7 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
 
   const run = async (id: string, abort: AbortController, req: LoginStart): Promise<LoginResult> => {
     try {
+      if (req.migrateFrom !== undefined) return await runEndorsedMigration(opts.sessionDir, id, abort, req);
       const r = await establish({
         dir: opts.sessionDir,
         idpUrl: req.idp,

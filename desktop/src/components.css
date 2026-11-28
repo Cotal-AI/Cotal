@@ -322,4 +322,18 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .apps-callout p { margin: 0 0 12px; color: var(--ink-2); font-size: var(--t-label); }
 .apps-logos { display: flex; gap: 6px; margin-bottom: 10px; }
 .apps-callout .actions { display: flex; align-items: center; gap: 16px; margin: 0; }
+.conflict-callout { margin: 8px 0; padding: 10px 14px; }
+.conflict-callout h2 { font-size: 14px; margin: 0 0 2px; }
+.conflict-callout p { margin: 0 0 8px; }
+.connection-card:has(#space-conflicts-callout:not([hidden])) { max-height: calc(100vh - 150px); overflow-y: auto; }
+.conflict-callout .actions, .conflict-migration .actions { flex-wrap: wrap; gap: 12px; }
+.conflict-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+.conflict-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.conflict-actions .button { padding: 7px 14px; font-size: 13px; box-shadow: 3px 3px 0 var(--ink); }
+.conflict-actions .button.secondary { background: var(--card); }
+.conflict-empty { padding: 12px 0; color: var(--dim); font-size: var(--t-label); }
+@media (max-width: 560px) {
+  .conflict-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .conflict-actions { justify-content: flex-start; }
+}
 @media (prefers-reduced-motion: reduce) { .app-bar::before { animation: none; width: 100%; opacity: .5; } }

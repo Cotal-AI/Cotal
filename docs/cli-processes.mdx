@@ -731,8 +731,12 @@ After sign-in, the daemon registers an account computer with hosts that support 
 With several accounts, the status summary prefers a supported provider and breaks ties by
 provider URL, then subject. The `accounts` list reports each computer UUID once, preferring a
 supported provider when several sign-in addresses identify the same account. Catalog refresh
-replies include an optional `failedProviders` list of provider URLs. The desktop app reports
-other providers' failures as a notice when the active provider refreshed successfully.
+replies include an optional `failedProviders` list of provider URLs, optional `collisionDetails`
+naming each colliding space and its existing origin (`manual`, `catalog` or `up`), and optional
+`migration` when an endorsing previous provider address points to the active provider. The desktop
+app reports other providers' failures as a notice when the active provider refreshed successfully,
+offers one-button account migration for endorsed address moves, and resolves individual space
+conflicts in-app without requiring command-line steps.
 Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. The
 heartbeat lists the answering Managers this computer hosts for the account's spaces, each as the

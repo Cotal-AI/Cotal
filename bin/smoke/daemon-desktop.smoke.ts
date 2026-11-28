@@ -33,6 +33,23 @@ for (const invalid of [{ ...recover, candidate: "B".repeat(64) }, { ...recover, 
   assert.throws(() => parseDesktopRequest(invalid));
   check("both boundaries reject an invalid recovery request", !recoveryFrame(invalid).ok);
 }
+const resolveConflict = { op: "space-conflict-resolve", space: "team", idp: "https://cotal.cloud/api/auth" };
+assert.deepEqual(parseDesktopRequest(resolveConflict), resolveConflict);
+check("space-conflict-resolve has the same shape on both boundaries", recoveryFrame(resolveConflict).ok);
+for (const invalid of [{ ...resolveConflict, space: "bad space" }, { ...resolveConflict, idp: "file:///tmp/auth" }, { ...resolveConflict, extra: 1 }]) {
+  assert.throws(() => parseDesktopRequest(invalid));
+  check("both boundaries reject invalid space-conflict-resolve", !recoveryFrame(invalid).ok);
+}
+const migrateLogin = { op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cloud.cotal.ai/api/auth" };
+assert.deepEqual(parseDesktopRequest(migrateLogin), migrateLogin);
+check("login-start accepts migrateFrom on the daemon boundary", parseRequest(JSON.stringify({ v: 1, id: "m1", op: "login-start", idp: migrateLogin.idp, migrateFrom: migrateLogin.migrateFrom })).ok);
+for (const invalid of [
+  { op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "http://127.0.0.1:4000/api/auth" },
+  { op: "login", idp: "https://cotal.cloud/api/auth", migrateFrom: "https://cotal.cloud/api/auth" },
+]) {
+  assert.throws(() => parseDesktopRequest(invalid));
+  check("daemon protocol rejects invalid migrateFrom", !parseRequest(JSON.stringify({ v: 1, id: "m2", op: "login-start", idp: invalid.idp, migrateFrom: invalid.migrateFrom })).ok);
+}
 check("spaces refresh remains a typed field", parseDesktopRequest({ op: "spaces", refresh: true }).op === "spaces");
 await assert.rejects(readDesktopRequest(Readable.from(["x".repeat(65537)]))); checks++;
 await assert.rejects(readDesktopRequest(Readable.from(['{"op":"status"}\n{"op":"install"}\n']))); checks++;

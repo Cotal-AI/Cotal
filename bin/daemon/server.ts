@@ -28,7 +28,7 @@ import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
 import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
-import { desktopSpaces } from "./desktop-state.js";
+import { desktopSpaces, resolveSpaceConflict } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
@@ -48,6 +48,27 @@ function managerResultError(op: string, error: unknown, log: (message: string) =
 
 function managerUnavailable(op: string, cause: string) {
   return { code: "MANAGER_UNAVAILABLE" as const, message: `the daemon could not complete ${op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" };
+}
+
+function logoutErrorResponse(id: string, idp: string, error: unknown, onCleared: () => void): DaemonResponse {
+  if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "OPERATION_UNKNOWN" || error.code === "OPERATION_PARTIAL" || error.code === "DEPENDENCY_UNAVAILABLE")) {
+    const changed: LogoutChange[] = [];
+    for (const change of error.changed ?? []) {
+      if (!change || typeof change !== "object" || !("idp" in change) || change.idp !== idp || !("kind" in change)) continue;
+      if (change.kind === "local-login" && "cleared" in change && change.cleared === true)
+        changed.push({ kind: "local-login", idp, cleared: true });
+      else if (change.kind === "idp-session" && "revoked" in change && change.revoked === true)
+        changed.push({ kind: "idp-session", idp, revoked: true });
+    }
+    if (changed.some(change => change.kind === "local-login")) onCleared();
+    return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy, outcome: error.outcome, ...(error.changed ? { changed } : {}) } };
+  }
+  return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "OPERATION_UNKNOWN", outcome: "unknown", message: "the sign-out outcome could not be confirmed; no success is assumed" } };
+}
+
+function spacesErrorResponse(id: string, error: unknown): DaemonResponse {
+  if (isCommandFailure(error)) return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } };
+  return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } };
 }
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
@@ -398,16 +419,18 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => { if (req.name !== undefined) await account.rename(req.name); return status(); });
         return;
       }
-      if (req.op === "spaces") {
-        replyTask(desktopSpaces(machineHome, req.refresh === true).then((result) => {
+      if (req.op === "spaces" || req.op === "space-conflict-resolve") {
+        const task = req.op === "spaces" ? desktopSpaces(machineHome, req.refresh === true)
+          : reconciler.serial(async () => {
+              const disc = services.disconnect(req.space); void disc.catch(() => {});
+              try { await managers.disconnect(req.space); } finally { await disc.catch(() => {}); }
+              return resolveSpaceConflict(machineHome, req.space, req.idp);
+            });
+        replyTask(task.then((result) => {
           counters.spacesAnswered++;
+          if (req.op === "space-conflict-resolve") { account.signedIn(); notifyStatusWatchers(); }
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        }, (error: unknown) => {
-          counters.requestsRefused++;
-          if (isCommandFailure(error) && error.code === "DEPENDENCY_UNAVAILABLE")
-            return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } });
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } });
-        }));
+        }, (error: unknown) => { counters.requestsRefused++; return write(spacesErrorResponse(req.id, error)); }));
         return;
       }
       if (req.op === "space-recover") {
@@ -521,20 +544,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, async (error: unknown) => {
           counters.requestsRefused++;
-          if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "OPERATION_UNKNOWN" || error.code === "OPERATION_PARTIAL" || error.code === "DEPENDENCY_UNAVAILABLE")) {
-            const changed: LogoutChange[] = [];
-            for (const change of error.changed ?? []) {
-              if (!change || typeof change !== "object" || !("idp" in change) || change.idp !== req.idp || !("kind" in change)) continue;
-              if (change.kind === "local-login" && "cleared" in change && change.cleared === true)
-                changed.push({ kind: "local-login", idp: req.idp, cleared: true });
-              else if (change.kind === "idp-session" && "revoked" in change && change.revoked === true)
-                changed.push({ kind: "idp-session", idp: req.idp, revoked: true });
-            }
-            if (changed.some(change => change.kind === "local-login")) account.signedIn();
-            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy, outcome: error.outcome, ...(error.changed ? { changed } : {}) } });
-            return;
-          }
-          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "OPERATION_UNKNOWN", outcome: "unknown", message: "the sign-out outcome could not be confirmed; no success is assumed" } });
+          await write(logoutErrorResponse(req.id, req.idp, error, () => account.signedIn()));
         }).finally(() => { logoutActive = false; }));
         return;
       }
@@ -545,6 +555,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       const started = login.start({
         idp: req.idp,
         discoveryPins: req.discoveryPins,
+        ...(req.migrateFrom !== undefined ? { migrateFrom: req.migrateFrom } : {}),
         ...(req.clientId !== undefined ? { clientId: req.clientId } : {}),
         onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
         onResult: async (attempt, result) => {

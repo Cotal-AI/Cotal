@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string };
+export type Request = { op: string; candidate?: string; holder?: string; space?: string; idp?: string; migrateFrom?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string; lifecycleUid?: string };
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
@@ -95,6 +95,40 @@ export function activeComputerAccount(account: ComputerAccount & { accounts?: Co
   return supported.length === 1 ? supported[0] : undefined;
 }
 
+export interface SpaceCollision {
+  space: string;
+  catalogLabel: string;
+  catalogIdp: string;
+  existingOrigin: "manual" | "catalog" | "up";
+  existingIdp?: string;
+}
+
+export interface EndorsedMigration {
+  fromIdp: string;
+  toIdp: string;
+  spaces: string[];
+}
+
+export function parseSpaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
+  if (!Array.isArray(result.collisionDetails)) return [];
+  return result.collisionDetails.filter((item): item is SpaceCollision =>
+    typeof item === "object" && item !== null &&
+    typeof (item as SpaceCollision).space === "string" &&
+    typeof (item as SpaceCollision).catalogLabel === "string" &&
+    typeof (item as SpaceCollision).catalogIdp === "string" &&
+    ["manual", "catalog", "up"].includes((item as SpaceCollision).existingOrigin) &&
+    ((item as SpaceCollision).existingIdp === undefined || typeof (item as SpaceCollision).existingIdp === "string"));
+}
+
+export function parseEndorsedMigration(result: Record<string, unknown>): EndorsedMigration | undefined {
+  const m = result.migration;
+  if (!m || typeof m !== "object" || Array.isArray(m)) return undefined;
+  const candidate = m as Record<string, unknown>;
+  if (typeof candidate.fromIdp !== "string" || typeof candidate.toIdp !== "string" || !Array.isArray(candidate.spaces)) return undefined;
+  const spaces = candidate.spaces.filter((s): s is string => typeof s === "string");
+  return spaces.length ? { fromIdp: candidate.fromIdp, toIdp: candidate.toIdp, spaces } : undefined;
+}
+
 /** Return a non-blocking notice only when the active provider refreshed successfully. */
 export function catalogRefreshNotice(result: Record<string, unknown>, provider?: string): string {
   const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
@@ -106,7 +140,19 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
   }
   if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
   const notices = [];
-  if (Number(result.collisions) > 0) notices.push("Some space names conflict with existing registrations. Cotal kept those registrations. With the Cotal CLI installed, run `cotal sync` to list the conflicting names and `cotal space` to check their sources.");
+  const count = Number(result.collisions) || 0;
+  if (count > 0) {
+    const migration = parseEndorsedMigration(result);
+    const details = parseSpaceCollisions(result);
+    if (migration) {
+      notices.push(`${count === 1 ? "1 space" : `${count} spaces`} (${migration.spaces.join(", ")}) ${count === 1 ? "is" : "are"} still registered under ${new URL(migration.fromIdp).host}. Choose Move account to switch ${count === 1 ? "it" : "them"} to ${new URL(migration.toIdp).host}.`);
+    } else if (details.length) {
+      const names = details.map(item => item.space).join(", ");
+      notices.push(`${details.length === 1 ? `Space "${names}" conflicts` : `Spaces ${names} conflict`} with ${details.length === 1 ? "an existing registration" : "existing registrations"} on this computer. Cotal kept ${details.length === 1 ? "that registration" : "those registrations"}; review ${details.length === 1 ? "it" : "them"} to keep or replace.`);
+    } else {
+      notices.push("Some space names conflict with existing registrations on this computer. Cotal kept those registrations; review them in Space conflicts to keep or replace.");
+    }
+  }
   if (failed?.length) notices.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
   return notices.join(" ");
 }

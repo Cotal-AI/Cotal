@@ -111,7 +111,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         return ok(statusPayload());
       }
       if (r.op === "spaces") return ok({
-        ...(r.refresh && (options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon || options.catalogCollision) ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: options.ownProviderFailed ? [COTAL_CLOUD_IDP] : options.otherProviderFailed ? ["https://hack.cotal.ai/api/auth"] : [] }), ...(options.catalogCollision ? { collisions: 1 } : {}) } : {}),
+        ...(r.refresh && (options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon || options.catalogCollision) ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: options.ownProviderFailed ? [COTAL_CLOUD_IDP] : options.otherProviderFailed ? ["https://hack.cotal.ai/api/auth"] : [] }), ...(options.catalogCollision ? { collisions: 1, collisionDetails: [{ space: "local-dev", catalogLabel: "Local dev", catalogIdp: options.provider ?? COTAL_CLOUD_IDP, existingOrigin: "up" }] } : {}) } : {}),
         spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: options.provider ?? COTAL_CLOUD_IDP })),
       });
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
@@ -463,14 +463,17 @@ test("another provider failure does not block successful sign-in", async () => {
   } finally { a.dom.window.close(); }
 });
 
-for (const linked of [false, true]) test(`catalog conflicts do not block sign-in${linked ? " from a link to an unavailable space" : ""}`, async () => {
+  for (const linked of [false, true]) test(`catalog conflicts do not block sign-in${linked ? " from a link to an unavailable space" : ""}`, async () => {
   const a = await app({ installed: true, catalogCollision: true, ...(linked ? { count: 2, link: `cotal://connect?idp=${encodeURIComponent(COTAL_CLOUD_IDP)}&space=missing` } : {}) });
   try {
     await a.click("login"); await a.login();
     assert.equal(a.node("step-caption").textContent, "Step 3 of 4");
     assert.equal(a.node("recovery-panel").hidden, true);
+    assert.equal(a.node("space-conflicts-callout").hidden, false);
+    assert.match(a.node("space-conflicts-callout").textContent ?? "", /local-dev.*kept what was already here/);
+    assert.doesNotMatch(a.node("space-conflicts-callout").textContent ?? "", /cotal sync|cotal space/);
     const message = a.node("notice").textContent ?? "";
-    assert.match(message, /kept those registrations.*`cotal sync`.*`cotal space`/);
+    assert.doesNotMatch(message, /cotal sync|cotal space/);
     if (linked) assert.match(message, /The requested space is not available to this account/);
     else assert.equal(a.node<HTMLSelectElement>("space").value, "team");
   } finally { a.dom.window.close(); }

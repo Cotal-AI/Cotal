@@ -2,13 +2,14 @@ import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate,
 import { listen } from "@tauri-apps/api/event";
 import { agentInventory, renderAgents, shownAgentName, type AgentAction, type LocalAgent } from "./agents";
 import { AgentApps } from "./agent-apps";
+import { SpaceConflicts } from "./space-conflicts";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type EndorsedMigration, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -81,6 +82,26 @@ let settingsOpen = false;
 let appsOpen = false;
 let appsOpener: HTMLElement | undefined;
 let appsLoadedAt = 0;
+let conflictsOpen = false;
+let conflictsOpener: HTMLElement | undefined;
+const spaceConflicts = new SpaceConflicts({
+  openPanel: () => openConflicts(),
+  moveAccount: migration => runEndorsedMove(migration),
+  replaceSpace: async item => {
+    const result = await request({ op: "space-conflict-resolve", space: item.space, idp: item.catalogIdp });
+    applySpacesPayload(result, signedInProvider ?? item.catalogIdp);
+    await refresh();
+  },
+  signOutProvider: async idp => {
+    const result = await request({ op: "logout", idp });
+    if (result.localLoginCleared !== true && result.localLogin !== "absent") throw new Error("Sign-out was not confirmed. Refresh and check before retrying.");
+    signedOutProviders.add(canonicalProvider(idp));
+    if (sameProvider(signedInProvider, idp)) signedInProvider = undefined;
+    await spaces(true);
+    await refresh();
+  },
+  changed: () => { showStage(stage); renderSettings(); },
+});
 const agentApps = new AgentApps({
   platform: () => appPlatform,
   announce: message => announce(message),
@@ -168,13 +189,16 @@ function renderSettings(): void {
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
   // Settings also opens before sign-in: the name, the service log and the version matter most when sign-in fails.
+  const overlay = settingsOpen || appsOpen || conflictsOpen;
   el("open-settings").hidden = setupActive || loginActive;
-  text("open-settings", settingsOpen || appsOpen ? "Back" : "Settings");
-  el("settings-panel").hidden = !settingsOpen || appsOpen;
+  text("open-settings", overlay ? "Back" : "Settings");
+  el("settings-panel").hidden = !settingsOpen || appsOpen || conflictsOpen;
   el("apps-panel").hidden = !appsOpen;
-  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen || appsOpen;
-  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen || appsOpen);
+  el("conflicts-panel").hidden = !conflictsOpen;
+  document.querySelector<HTMLElement>(".connection-card")!.hidden = overlay;
+  document.querySelector(".app")!.classList.toggle("settings-open", overlay);
   renderApps();
+  renderConflicts();
   const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
@@ -540,7 +564,7 @@ function showStage(next: Stage, focus = false): void {
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
   if (recovery) {
-    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
+    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh", "space-conflicts-callout"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
@@ -553,6 +577,8 @@ function showStage(next: Stage, focus = false): void {
   el("connection-icon").dataset.tone = recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
   text("connection-title", title); text("connection-description", description);
   setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : setupActive ? "spinner" : "connect");
+  if (!recovery && (next === "connect" || finished) && !setupActive && !loginActive) spaceConflicts.renderCallout(el("space-conflicts-callout"), busy);
+  else el("space-conflicts-callout").hidden = true;
   const target = accountSpaces.get(selectedSpace());
   if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
   text("connection-description", description);
@@ -802,7 +828,7 @@ function buttons(): void {
     if (running && !button.querySelector(".icon-spinner")) { const spin = icon("spinner"); spin.classList.add("button-spinner"); button.prepend(spin); }
     if (!running) button.querySelectorAll(".button-spinner").forEach(spin => spin.remove());
   }
-  for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart"]) (el(id) as HTMLButtonElement).disabled = busy;
+  for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart", "conflicts-refresh"]) (el(id) as HTMLButtonElement).disabled = busy || spaceConflicts.busy;
 }
 function updateCountdown(): void {
   const remaining = Math.max(0, Math.ceil((approvalExpires - Date.now()) / 1000));
@@ -1068,11 +1094,10 @@ async function refresh(): Promise<void> {
   }
   buttons();
 }
-async function spaces(refreshCatalog: boolean): Promise<void> {
-  const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
-  const result = await request({ op: "spaces", refresh: refreshCatalog });
+function applySpacesPayload(result: Record<string, unknown>, activeProvider?: string, resetKept = false): void {
   signedInProvidersKnown = Array.isArray(result.signedInProviders);
   signedInProviders = Array.isArray(result.signedInProviders) ? result.signedInProviders.filter((item): item is string => typeof item === "string") : [];
+  spaceConflicts.applySpacesResult(result, resetKept);
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
   const connectedProviders = [...providers].filter(([space]) => connections.has(space));
   const retainedSpaces = [...accountSpaces].filter(([space]) => connections.has(space) || computerAccount?.spaces.some(row => row.space === space));
@@ -1094,8 +1119,14 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   if (preferred) select.value = preferred;
   choosingSpace = !preferred;
   const message = catalogRefreshNotice(result, activeProvider ?? providers.get(select.value));
-  if (message) notice(message);
+  if (spaceConflicts.hasUnresolved && !result.failedProviders?.toString()) notice("");
+  else if (message) notice(message);
   buttons();
+}
+async function spaces(refreshCatalog: boolean, resetKept = false): Promise<void> {
+  const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
+  const result = await request({ op: "spaces", refresh: refreshCatalog });
+  applySpacesPayload(result, activeProvider, resetKept);
 }
 async function action(fn: () => Promise<void>): Promise<void> {
   if (busy) return; busy = true; refreshGeneration++; buttons();
@@ -1112,33 +1143,39 @@ function nextAfterSignIn(): void {
   else {
     showStage("connect", true);
     if (requestedSpace && !selectedSpace()) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", "The requested space is not available to this account. Ask its owner for access, then refresh spaces."].filter(Boolean).join(" "));
-    else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("connect", true); }
+    else if (!el<HTMLSelectElement>("space").options[1] && !spaceConflicts.hasUnresolved) { problem = "NO_SPACES"; showStage("connect", true); }
   }
+}
+async function runSignInFlow(provider: string, migrateFrom?: string): Promise<void> {
+  conflictsOpen = false;
+  loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
+  try {
+    if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
+    const result = await request({ op: "login", idp: provider, ...(migrateFrom ? { migrateFrom } : {}) });
+    problem = undefined;
+    if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
+    signedInProvider = provider;
+    for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
+    if (migrateFrom) signedOutProviders.add(canonicalProvider(migrateFrom));
+    notice(""); await spaces(true, true); await refresh();
+    if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
+      editing = false; completedSetup = true; listOpened = true; showStage("finished");
+    } else nextAfterSignIn();
+    if (migrateFrom && !spaceConflicts.hasUnresolved) notice(`Moved your spaces to ${new URL(provider).host}.`);
+    // The account switch stands; credential files of the previous account it could not delete are named.
+    const kept = keptCredentialsNotice(result);
+    if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
+  } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
+}
+function runEndorsedMove(migration: EndorsedMigration): Promise<void> {
+  return action(() => runSignInFlow(canonicalProvider(migration.toIdp), canonicalProvider(migration.fromIdp)));
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
 el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
 el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
 el("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  void action(async () => {
-    loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
-    try {
-      const provider = canonicalProvider(el<HTMLInputElement>("provider").value.trim());
-      if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
-      const result = await request({ op: "login", idp: provider });
-      problem = undefined;
-      if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
-      signedInProvider = provider;
-      for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
-      notice(""); await spaces(true); await refresh();
-      if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
-        editing = false; completedSetup = true; listOpened = true; showStage("finished");
-      } else nextAfterSignIn();
-      // The account switch stands; credential files of the previous account it could not delete are named.
-      const kept = keptCredentialsNotice(result);
-      if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
-    } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
-  });
+  void action(() => runSignInFlow(canonicalProvider(el<HTMLInputElement>("provider").value.trim())));
 });
 el("recover").addEventListener("click", () => {
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
@@ -1278,7 +1315,20 @@ function renderApps(): void {
   agentApps.renderStrip(el("apps-strip"), el<HTMLButtonElement>("apps-chip"));
   syncAppsChip();
   // With no app ready, installing one is the step that matters, so the dashboard button steps back.
-  el("dashboard").classList.toggle("primary", !agentApps.apps || agentApps.readyCount > 0);
+  el("dashboard").classList.toggle("primary", (!agentApps.apps || agentApps.readyCount > 0) && !(spaceConflicts.hasUnresolved && spaceConflicts.migration));
+}
+function renderConflicts(): void {
+  spaceConflicts.renderPanel(el("conflicts-migration"), el("conflict-list"), el("conflicts-message"), busy);
+}
+function openConflicts(): void {
+  if (loginActive || setupActive) return;
+  conflictsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  appsOpen = false; settingsOpen = false; conflictsOpen = true;
+  renderSettings(); el("conflicts-title").focus();
+}
+function closeConflicts(): void {
+  conflictsOpen = false; renderSettings(); showStage(stage);
+  (conflictsOpener?.isConnected && conflictsOpener.getClientRects().length ? conflictsOpener : el("connection-title")).focus();
 }
 /** The Agent apps screen opens from the Ready screen, and Back returns focus to the control that opened it. */
 function openApps(): void {
@@ -1338,10 +1388,12 @@ el("setup-installer").addEventListener("click", event => { event.preventDefault(
 el("settings-download").addEventListener("click", () => void openInstaller());
 el("apps-back").addEventListener("click", closeApps);
 el("apps-refresh").addEventListener("click", () => void agentApps.load(true));
+el("conflicts-back").addEventListener("click", closeConflicts);
+el("conflicts-refresh").addEventListener("click", () => void action(async () => { await spaces(true); renderConflicts(); }));
 el("recover-apps").addEventListener("click", () => openApps());
 el("apps-chip").addEventListener("click", () => openApps());
 window.addEventListener("focus", () => { if (isTauri() && agentApps.apps && !agentApps.busy && Date.now() - appsLoadedAt > 30_000) void agentApps.load(); });
-el("open-settings").addEventListener("click", () => { if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("open-settings").addEventListener("click", () => { if (conflictsOpen) { closeConflicts(); return; } if (appsOpen) { closeApps(); return; } if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));

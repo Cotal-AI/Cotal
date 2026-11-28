@@ -1,5 +1,6 @@
 ---
+"@cotal-ai/cli": patch
 "cotal-ai": patch
 ---
 
-Desktop setup continues after sign-in when catalog space names conflict, keeps the existing registrations, and shows how to find the conflicts and their sources.
+Desktop setup never stops after sign-in when catalog space names collide with local registrations, returns structured collision names, origins, and endorsed provider-move candidates across the daemon protocol, offers one-button account migration when a previous provider address endorses the new provider (`nativeMigration`), and lets users keep or replace conflicting registrations in-app without command-line dead ends.
