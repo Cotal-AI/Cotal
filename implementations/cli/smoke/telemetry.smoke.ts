@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, CommandFailure, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
 import { recordedProcessRefusal } from "../src/commands/service-registry.js";
 import { membershipConversionRefusal } from "../src/commands/up-stores.js";
@@ -132,6 +132,19 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const code = await exited;
   const rows = received.slice(before);
   check("overlapping commands send one install and both command events for the same id", code === 0 && rows.length === 3 && rows.filter((body) => body.event === "install").length === 1 && rows.some((body) => body.command === "version") && rows.some((body) => body.command === "daemon" && body.subcommand === "desktop") && rows.every((body) => body.installId === s.settings().installId), rows.map((body) => body.event));
+}
+
+{
+  const s = sandbox();
+  const prepared = await s.run(["space", "create", "lock-test", "--root", s.project, "--json"]);
+  check("prepare the project for the maintenance lock refusal", prepared.status === 0);
+  const held = acquireMaintenanceLock(s.project, { operation: "fixture" });
+  try {
+    const busy = await s.run(["up", "--space", "lock-test", "--no-manager", "--json"]);
+    const event = busy.sent.find((body) => body.event === "command");
+    check("a contended stack lock names the holder PID only locally", busy.status === 2 && busy.stdout.includes(`(pid ${process.pid})`)
+      && event?.errorCode === "LIFECYCLE_BLOCKED" && event.errorMessage === null && event.errorStack === null);
+  } finally { releaseMaintenanceLock(held); }
 }
 
 {
