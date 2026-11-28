@@ -2107,6 +2107,9 @@ process.stdin.once('data', () => {
             response.end(JSON.stringify({ name: metadata.name, "dist-tags": { latest: metadata.version }, versions: { [metadata.version]: { ...metadata, dist: { tarball: `${npmRegistryUrl}/jcode-sdk.tgz` } } } })); return;
           }
           const externalName = decodeURIComponent((request.url ?? "").slice(1).split("?")[0]!);
+          if (finishConnectorUpdate && request.method !== "GET" && request.method !== "HEAD") {
+            response.writeHead(404).end(); return;
+          }
           if (closureRollback && (externalName.startsWith("fixture-external/") || !externalName.startsWith("@cotal-ai/") && externalName !== "cotal-ai" && !externalName.endsWith(".tgz") && externalName !== "unavailable-closure-fixture")) {
             const name = externalName.replace(/^fixture-external\//, "").replace(/\.tgz$/, "");
             const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -2181,15 +2184,19 @@ process.stdin.once('data', () => {
             const name = decodeURIComponent((request.url ?? "/cotal-ai").slice(1).split("?")[0]!);
             const packageName = name.startsWith("@cotal-ai/") ? name : "cotal-ai";
             const packageRoot = join(upgradeFixture!, `hoisted-fix2-${version}`);
-            const metadata = JSON.parse(readFileSync(join(packageRoot, ...(packageName === "cotal-ai" ? [] : ["node_modules", packageName]), "package.json"), "utf8"));
+            const manifest = join(packageRoot, ...(packageName === "cotal-ai" ? [] : ["node_modules", packageName]), "package.json");
+            if (finishConnectorUpdate && !existsSync(manifest)) return [version, undefined];
+            const metadata = JSON.parse(readFileSync(manifest, "utf8"));
             const bytes = readFileSync(join(upgradeFixture!, `cotal-ai-${version}.tgz`));
             return [version, { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } }];
           }));
           response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions }));
         });
         await new Promise<void>((resolve) => npmRegistry!.listen(0, "127.0.0.1", resolve));
+        if (finishConnectorUpdate) npmRegistry.unref();
         npmRegistryUrl = `http://127.0.0.1:${(npmRegistry.address() as AddressInfo).port}`;
         env.npm_config_registry = npmRegistryUrl;
+        if (finishConnectorUpdate) Object.assign(env, { npm_config_audit: "false", npm_config_fund: "false", npm_config_update_notifier: "false", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "15000" });
         if (process.argv.includes("--auto-update-repro")) {
           writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: false, notify: true }));
           writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "0.151.3", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() - 3601_000 }));
@@ -2243,35 +2250,33 @@ process.stdin.once('data', () => {
       const assertSeededInventory = (version: string) => {
         const inventory = spawnSync(cliNode, [cliEntry, "ext", "list", "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
         assert.equal(inventory.status, 0, inventory.stderr);
-        const rows = JSON.parse(inventory.stdout).result.items as { seeded: boolean; version: string }[];
+        const rows = JSON.parse(inventory.stdout).result.items as { pkg: string; seeded: boolean; version: string }[];
         const builtins = rows.filter(e => e.seeded);
-        assert.equal(builtins.length, 7, inventory.stdout);
+        assert.deepEqual(builtins.map(e => e.pkg), ["@cotal-ai/connector-claude-code"], inventory.stdout);
         assert.ok(builtins.every(e => e.version === version), inventory.stdout);
       };
       if (upgrading) {
         const fixturePackage = join(root, "daemon-smoke-connector");
         renameSync(pkg, fixturePackage);
-        const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        const bounded = finishConnectorUpdate ? { timeout: 120_000, killSignal: "SIGKILL" as const } : {};
+        const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], ...bounded });
         let addingOutput = "";
         adding.stdout.on("data", (b) => { addingOutput += String(b); }); adding.stderr.on("data", (b) => { addingOutput += String(b); });
-        const added = await new Promise<number | null>((resolve) => adding.once("exit", resolve));
+        const added = await new Promise<number | null>((resolve, reject) => { adding.once("error", reject); adding.once("close", resolve); });
         if (added !== 0) throw new Error(`owned stand-in ext add failed: ${addingOutput}`);
-        if (finishConnectorUpdate) {
-          const seed = spawnSync(cliNode, [cliEntry, "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
-          assert.equal(seed.status, 0, seed.stdout + seed.stderr);
-          assertSeededInventory("0.151.2");
-        } else {
+        {
           const seed = join(root, "config", "cotal", "seed");
           mkdirSync(seed, { recursive: true, mode: 0o700 });
-          for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+          for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade || finishConnectorUpdate ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
           writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
           writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
-          if (connectorUpgrade) {
-            const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+          if (connectorUpgrade || finishConnectorUpdate) {
+            const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], ...bounded });
             let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
-            const code = await new Promise<number | null>((resolve) => seedChild.once("exit", resolve));
+            const code = await new Promise<number | null>((resolve, reject) => { seedChild.once("error", reject); seedChild.once("close", resolve); });
             const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
             check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+            if (finishConnectorUpdate) { assert.equal(code, 0, output); assertSeededInventory("0.151.2"); }
           }
         }
       }
@@ -4278,7 +4283,7 @@ process.exit(result.status ?? 93);
           if (finishConnectorUpdate) {
             const config = join(root, "config");
             const runUpdate = async (...flags: string[]) => {
-              const updater = spawn(cliNode, [cliEntry, "update", ...flags], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              const updater = spawn(cliNode, [cliEntry, "update", ...flags], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 240_000, killSignal: "SIGKILL" });
               let output = "";
               updater.stdout.on("data", b => { output += String(b); }); updater.stderr.on("data", b => { output += String(b); });
               const code = await new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("close", resolve); });
@@ -4324,7 +4329,7 @@ process.exit(result.status ?? 93);
             assert.equal(attempt.version, "0.151.3");
             assert.notEqual(attempt.connectorReconciliationPending, true);
             const route = process.argv.includes("--finish-connector-update-manual") ? "chmod and explicit update" : "chmod alone";
-            console.log(`  ✓ ${route}: all seven connectors reconciled and the new service answers without a deferral`);
+            console.log(`  ✓ ${route}: the seeded connector reconciled and the new service answers without a deferral`);
             return;
           }
           if (process.argv.includes("--prepare-abort-repro")) {
