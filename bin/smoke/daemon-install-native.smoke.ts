@@ -41,7 +41,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
@@ -49,7 +49,7 @@ import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
-import { admitDarwinSeatHost, planDarwinSeatHost } from "../daemon/seat-host-darwin.js";
+import { admitDarwinSeatHost, darwinSeatHostGenerationRoot, planDarwinSeatHost } from "../daemon/seat-host-darwin.js";
 import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
@@ -196,6 +196,16 @@ try {
       code(() => planDarwinSeatHost({ ...input, cotalHome: join(root, "Library/LaunchAgents") })) !== "none" &&
       code(() => planDarwinSeatHost({ ...input, argv: ["node", input.argv[1]] })) !== "none");
     check("an ordinary caller cannot admit itself as the receipt-bound host", code(() => admitDarwinSeatHost(plan)) !== "none");
+    const generationRoot = darwinSeatHostGenerationRoot(input, input.generation);
+    const nextRoot = darwinSeatHostGenerationRoot(input, "3".repeat(64));
+    check("PTY host generations share a stable private lineage but not a generation directory",
+      dirname(generationRoot) === dirname(nextRoot) && generationRoot !== nextRoot && basename(generationRoot) === input.generation);
+    check("PTY host custody is disjoint across space, installation and daemon-home boundaries",
+      [{ ...input, space: "other" }, { ...input, installedRoot: join(root, "other-install") },
+        { ...input, daemonHome: join(root, "other-daemon") }]
+        .every(other => dirname(darwinSeatHostGenerationRoot(other, input.generation)) !== dirname(generationRoot)));
+    check("PTY host custody cannot derive a path from a non-generation token",
+      code(() => darwinSeatHostGenerationRoot(input, "../unknown")) !== "none");
   }
   // Windows has no user id for a launchd GUI domain, so the adapter refuses there before it reads
   // anything, and the lifecycle cells, which drive it with injected launchctl answers, do not run.

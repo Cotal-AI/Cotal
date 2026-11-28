@@ -40,21 +40,36 @@ function canonical(path: string): boolean {
   return isAbsolute(path) && resolve(path) === path && !/[\u0000-\u001f\u007f]/u.test(path);
 }
 
-/** Derive the host identity from the daemon home, logical install, exact space and generation. */
-export function planDarwinSeatHost(input: {
+export interface DarwinSeatHostScope {
   cotalHome: string;
   daemonHome?: string;
   installedRoot: string;
   space: string;
+}
+
+function hostLineage(scope: DarwinSeatHostScope): readonly [string, string, string] {
+  const state = scope.daemonHome ?? join(scope.cotalHome, "daemon");
+  if (![scope.cotalHome, state, scope.installedRoot].every(canonical) ||
+      /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(scope.cotalHome) ||
+      !scope.space || /[\u0000-\u001f\u007f]/u.test(scope.space)) throw refusal();
+  return [state, scope.installedRoot, scope.space];
+}
+
+export function darwinSeatHostGenerationRoot(scope: DarwinSeatHostScope, generation: string): string {
+  const lineage = hostLineage(scope);
+  if (!/^[a-f0-9]{64}$/.test(generation)) throw refusal();
+  return join(scope.cotalHome, "daemon", "pty-hosts", digest(JSON.stringify(lineage)).slice(0, 32), generation);
+}
+
+/** Derive the host identity from the daemon home, logical install, exact space and generation. */
+export function planDarwinSeatHost(input: DarwinSeatHostScope & {
   generation: string;
   argv: readonly [node: string, entry: string, ...args: string[]];
 }): DarwinSeatHostPlan {
-  const { cotalHome, daemonHome, installedRoot, space, generation, argv } = input;
-  const state = daemonHome ?? join(cotalHome, "daemon");
-  if (![cotalHome, state, installedRoot, argv[0], argv[1]].every(canonical) ||
-      /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(cotalHome) || !space || !generation ||
-      [space, generation].some(value => /[\u0000-\u001f\u007f]/u.test(value))) throw refusal();
-  const id = digest(JSON.stringify([state, installedRoot, space, generation])).slice(0, 32);
+  const { cotalHome, daemonHome, generation, argv } = input;
+  const lineage = hostLineage(input);
+  if (![argv[0], argv[1]].every(canonical) || !generation || /[\u0000-\u001f\u007f]/u.test(generation)) throw refusal();
+  const id = digest(JSON.stringify([...lineage, generation])).slice(0, 32);
   const label = `ai.cotal.pty.${id}`;
   const directory = join(cotalHome, "daemon", "pty-host-launchd");
   const source = join(directory, `${label}.plist`);
