@@ -410,6 +410,19 @@ the keeper is the only writer in every case, and after wake the agent is.
 To keep older readers quiet, a new reader will log a dropped record once per key and status,
 rather than every 2 s. That changes only the new side.
 
+Observed on a real `nats-server`, with `@cotal-ai/core` built from `aa1038dad1`, in an open-mode
+space. An agent ran and then stopped, and a stand-in keeper wrote `status: "asleep"` on its key
+every 2 s.
+- A peer that had seen the agent read `idle` before the sleep and `offline` 8 s into it.
+- A peer that joined after the sleep read nothing for the agent, both through its watch and through
+  an on-demand `readPresence`.
+- The key still held the `asleep` record.
+- Each peer emitted 5 `dropped presence entry` warnings in 8 s, one per keeper write.
+- 9 s after the keeper stopped, the key was gone (bucket TTL).
+
+That is the older-reader behavior stated above, and the repeated warning is the reason for the
+once-per-key rule.
+
 ### What a new reader does with `asleep`
 
 `asleep` is not live and not absent. Every site that asks "is it live" by `status !== "offline"`
