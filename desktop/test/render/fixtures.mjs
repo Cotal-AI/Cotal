@@ -804,7 +804,7 @@ export const scenarios = [
       const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
       assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
       if (observed === "refusal") {
-        assert.equal(await page.locator("#connection-title").textContent(), "Can't reach your space");
+        assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
       }
@@ -855,7 +855,7 @@ export const scenarios = [
   } },
   { name: "surface-both-refused", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected", lastRefusal: "This space is set up under another sign-in on this computer." })) } }, expect: async page => {
     assert.equal(await page.locator("#tray-label").textContent(), "Can't connect");
-    assert.equal(await page.locator("#connection-title").textContent(), "Can't reach your space");
+    assert.equal(await page.locator("#connection-title").textContent(), "Can't connect to your spaces");
     assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
   } },
   { name: "welcome", state: {} },

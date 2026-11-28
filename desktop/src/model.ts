@@ -88,6 +88,8 @@ export function computerSummary(rows: readonly ComputerSpace[], anyConnected: bo
 /** The ten words the window, pill, dot, tray menu and tooltip share. A problem names itself; there is no
  *  generic "needs attention". The dot follows the word, so the two cannot disagree. */
 export type SurfaceWord = "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed";
+/** The one Start the stopped card and the tray send. It asks the service to start; it does not install it. */
+export const SERVICE_START: { op: "start" } = { op: "start" };
 export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "problem"; title: string; description: string }
 /** The fields the window reads off one status frame. `diskFull` is the frame's own flag. `generation`
  *  present means an update is in progress. `recovery` is the repair #10913 reports; nothing else is. */
@@ -117,7 +119,7 @@ export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnect
   const desired = input.rows.filter(row => row.desired);
   const refused = (row: ComputerSpace) => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed);
   // A refusal is checked before any connection, so one refused row cannot make the computer Connected.
-  if (desired.length && desired.every(refused)) return { word: "Can't connect", dot: "problem", title: "Can't reach your space", description: "Cotal reconnects by itself when the space answers again." };
+  if (desired.length && desired.every(refused)) return { word: "Can't connect", dot: "problem", title: "Can't connect to your spaces", description: "Cotal reconnects by itself when the space answers again." };
   if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
   if (input.anyConnected) return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
   if (desired.some(row => row.observed !== "removed on this computer")) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
