@@ -1,0 +1,181 @@
+name: Scenarios
+
+# Each scenario starts from a clean machine in a named setup (fresh, an older release, the npm
+# command line, offline), installs the PUBLISHED release the way a person does, and checks that the
+# app opens, its background service runs and the sign-in state is right. GitHub-hosted runners are
+# new machines every job, so nothing needs resetting. The summary job writes one table per run,
+# scenario by OS. scenarios/README.md explains how to run one by hand on a test VM.
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release to test, x.y.z or latest'
+        type: string
+        default: latest
+      only:
+        description: 'Comma-separated scenario names; empty runs them all'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: latest
+  pull_request:
+    paths:
+      - 'scenarios/**'
+      - '.github/workflows/scenarios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scenarios-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DO_NOT_TRACK: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      scenarios: ${{ steps.list.outputs.scenarios }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - id: list
+        env:
+          ONLY: ${{ inputs.only || '' }}
+        run: |
+          set -euo pipefail
+          all=$(node scenarios/run.mjs list | awk '{print $1}')
+          if [ -n "$ONLY" ]; then
+            for name in ${ONLY//,/ }; do grep -qx "$name" <<< "$all" || { echo "::error::unknown scenario $name"; exit 1; }; done
+            all=$(tr ',' '\n' <<< "$ONLY")
+          fi
+          echo "scenarios=$(jq -cnR '[inputs | select(length > 0)]' <<< "$all")" >> "$GITHUB_OUTPUT"
+
+  scenario:
+    needs: plan
+    name: ${{ matrix.scenario }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.plan.outputs.scenarios) }}
+        os: [ubuntu, fedora, opensuse, el10, macos-arm, macos-intel, windows]
+        include:
+          - os: ubuntu
+            runner: ubuntu-24.04
+          - os: fedora
+            runner: ubuntu-24.04
+            lxd: true
+          - os: opensuse
+            runner: ubuntu-24.04
+            lxd: true
+          - os: el10
+            runner: ubuntu-24.04
+            lxd: true
+          - os: macos-arm
+            runner: macos-15
+          - os: macos-intel
+            runner: macos-15-intel
+          - os: windows
+            runner: windows-2025
+    env:
+      SCENARIO: ${{ matrix.scenario }}
+      SYSTEM: ${{ matrix.os }}
+      VERSION: ${{ inputs.version || 'latest' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Give the runner user a systemd user manager and an X server
+        if: matrix.os == 'ubuntu'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-utils > /dev/null
+          uid=$(id -u)
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$uid.service"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user show-environment > /dev/null
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Run the scenario
+        if: ${{ !matrix.lxd }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SCENARIO_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
+        run: node scenarios/run.mjs run "$SCENARIO" --version "${VERSION#v}" --out "$RUNNER_TEMP/scenario" --system "$SYSTEM"
+      # GitHub has no Fedora, openSUSE or Enterprise Linux runners, so each is the same LXD virtual
+      # machine scenarios/machines/lxd.sh makes on a test PC, inside an Ubuntu runner.
+      - name: Start LXD for the virtual machine
+        if: ${{ matrix.lxd }}
+        run: |
+          set -euo pipefail
+          sudo snap install lxd --channel=6/stable || sudo snap refresh lxd --channel=6/stable
+          sudo lxd waitready
+          sudo lxd init --auto
+          sudo usermod -aG lxd "$USER"
+          sudo iptables -P FORWARD ACCEPT
+      - name: Make the virtual machine
+        if: ${{ matrix.lxd }}
+        run: sg lxd -c "scenarios/machines/lxd.sh create $SYSTEM"
+      - name: Run the scenario in the virtual machine
+        if: ${{ matrix.lxd }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SCENARIO_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
+        run: |
+          set -euo pipefail
+          status=0
+          sg lxd -c "scenarios/machines/lxd.sh run $SYSTEM \"$SCENARIO\" --version \"${VERSION#v}\" --system $SYSTEM" || status=$?
+          mkdir -p "$RUNNER_TEMP/scenario"
+          cp -R "scenarios/results/$SYSTEM-$SCENARIO/." "$RUNNER_TEMP/scenario/"
+          exit "$status"
+      - name: Keep the result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scenario-${{ matrix.scenario }}-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/scenario
+            !${{ runner.temp }}/scenario/downloads
+          if-no-files-found: error
+
+  table:
+    needs: [plan, scenario]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      # A job that dies before its scenario writes a result uploads nothing, so the table is told
+      # every cell to expect and shows each missing one as a failure.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: scenario-*
+          path: results
+      - name: Write the scenario-by-OS table
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXPECT_SCENARIOS: ${{ join(fromJSON(needs.plan.outputs.scenarios), ',') }}
+        run: |
+          set -euo pipefail
+          node scenarios/run.mjs table results --run-url "$RUN_URL" --expect-scenarios "$EXPECT_SCENARIOS" \
+            --expect-systems ubuntu,fedora,opensuse,el10,macos-arm,macos-intel,windows | tee -a "$GITHUB_STEP_SUMMARY"

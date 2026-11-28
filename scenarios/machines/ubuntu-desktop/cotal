@@ -1,0 +1,7 @@
+#!/bin/bash
+# The cotal command from the live checkout. Outside a profile the checkout never writes the connector
+# seed store; inside one (cotal-dev profile) it seeds that profile's own store.
+set -euo pipefail
+[ -f /work/Cotal/bin/dist/cotal.js ] || { echo "cotal: nothing is built yet; run 'cotal-dev build' first" >&2; exit 1; }
+if [ -n "${COTAL_PROFILE:-}" ]; then export COTAL_ALLOW_CHECKOUT_SEED=1; else export COTAL_SKIP_CONNECTOR_SEED=1; fi
+exec node /work/Cotal/bin/dist/cotal.js "$@"

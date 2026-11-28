@@ -1,0 +1,170 @@
+#!/bin/bash
+# cotal-dev: run Cotal from the live checkout in /work/Cotal. Same commands as on the Mac.
+set -euo pipefail
+
+repo=/work/Cotal
+cache=/work/cache
+stamp=$cache/app-runtime-staged
+released_app=/usr/bin/cotal-desktop
+mkdir -p "$cache"
+cd "$repo"
+
+die() { echo "cotal-dev: $*" >&2; exit 1; }
+# Matches executable paths only (/proc/*/exe), never command lines.
+running() {
+  local exe
+  for exe in /proc/[0-9]*/exe; do [[ $(readlink "$exe" 2>/dev/null) == "$1"* ]] && return 0; done
+  return 1
+}
+
+build() {
+  local t=$SECONDS
+  pnpm install --frozen-lockfile --reporter=silent
+  if ! pnpm build > "$cache/build.log" 2>&1; then
+    tail -25 "$cache/build.log"
+    die "build failed (full log: $cache/build.log)"
+  fi
+  echo "built $(git log -1 --format='%h %s') in $((SECONDS - t))s"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || echo "  (includes your uncommitted changes)"
+}
+
+update() {
+  git fetch --quiet origin main
+  if [ -z "$(git status --porcelain --untracked-files=no)" ] && [ "$(git rev-list --count origin/main..HEAD)" = 0 ]; then
+    git merge --ff-only --quiet origin/main
+  else
+    # Your commits and edits are kept on top of the new main.
+    git rebase --autostash --quiet origin/main ||
+      die "your changes conflict with main. Fix the files, then 'git rebase --continue' (or 'git rebase --abort'), then 'cotal-dev build'"
+  fi
+  build
+}
+
+app() {
+  running "$released_app" && die "an installed Cotal app is running; quit it first. The dev app hands off to a running Cotal and closes."
+  [ -f bin/dist/cotal.js ] || die "nothing is built yet; run 'cotal-dev build' first"
+  if [ ! -e "$stamp" ] || [ bin/dist/cotal.js -nt "$stamp" ]; then
+    running "$repo/desktop/src-tauri/target/" && die "a dev app from this checkout is still running; quit it first"
+    if systemctl --user is-active -q cotal-daemon.service 2>/dev/null &&
+      systemctl --user show -p ExecStart --value cotal-daemon.service | grep -Fq "$repo/"; then
+      systemctl --user stop cotal-daemon.service
+      echo "stopped the background service, which ran the old build. Continue in the app, or 'systemctl --user start cotal-daemon', starts it on the new one."
+    fi
+    echo "staging the app's runtime from this build..."
+    rm -rf desktop/src-tauri/runtime desktop/src-tauri/binaries desktop/src-tauri/.runtime-stage-*
+    { pnpm --filter cotal-ai seeded-connectors && pnpm --dir desktop prepare:runtime; } > "$cache/stage.log" 2>&1 ||
+      { tail -25 "$cache/stage.log"; die "staging failed (full log: $cache/stage.log)"; }
+    touch "$stamp"
+  fi
+  exec pnpm --dir desktop app:dev
+}
+
+# Profiles: isolated Cotal homes for command-line configurations, one folder each. The app window
+# always uses the account's default service, so a profile never reaches it.
+profiles=$HOME/.cotal-profiles
+
+profile_dir() {
+  [[ ${1:-} =~ ^[a-z0-9][a-z0-9-]{0,19}$ ]] || die "a profile name is 1-20 lowercase letters, digits and dashes"
+  echo "$profiles/$1"
+}
+
+profile_env() {
+  export COTAL_PROFILE=$2 COTAL_PROFILE_DIR=$1 COTAL_HOME=$1/home XDG_CONFIG_HOME=$1/config XDG_DATA_HOME=$1/data XDG_STATE_HOME=$1/state XDG_CACHE_HOME=$1/cache
+}
+
+# Every `cotal daemon` call inside a profile reaches that profile's own service, never the default one.
+profile_cotal() {
+  if [ "${1:-}" = daemon ]; then cotal "$@" --daemon-home "$COTAL_PROFILE_DIR/daemon"; else cotal "$@"; fi
+}
+
+enter() {
+  local dir
+  dir=$(profile_dir "$1")
+  [ -d "$dir" ] || die "no profile '$1'. Make it: cotal-dev profile new $1"
+  case "$(realpath "$dir")/" in "$(realpath -m "$HOME/.cotal")"/*) die "profile '$1' is inside the real Cotal home";; esac
+  profile_env "$dir" "$1"
+  local root
+  root=$(cotal ext root 2>/dev/null) || die "cotal ext root failed inside profile '$1'"
+  case "$root" in "$dir"/*) ;; *) die "profile '$1' is not isolated: cotal ext root is $root";; esac
+}
+
+profile_new() {
+  local name=$1 template=${2:-blank} dir
+  dir=$(profile_dir "$name")
+  [ ! -e "$dir" ] || die "profile '$name' exists. Reset it: cotal-dev profile reset $name"
+  mkdir -p "$profiles/_templates/blank"
+  [ -d "$profiles/_templates/$template" ] || die "no template '$template' in $profiles/_templates"
+  (umask 077; mkdir -p "$dir"/{home,config,data,state,cache,daemon})
+  cp -a "$profiles/_templates/$template/." "$dir/"
+  echo "$template" > "$dir/.template"
+  cat > "$dir/.bashrc" <<RC
+[ -f ~/.bashrc ] && . ~/.bashrc
+cotal() { if [ "\${1:-}" = daemon ]; then command cotal "\$@" --daemon-home "\$COTAL_PROFILE_DIR/daemon"; else command cotal "\$@"; fi; }
+PS1="(cotal:$name) \$PS1"
+RC
+  enter "$name"
+  echo "made profile '$name' from template '$template' at $dir"
+}
+
+# Removes the profile's own service first, so no unit is left pointing at a deleted folder. A
+# profile that never installed one is refused as TARGET_NOT_FOUND, which leaves nothing to remove.
+profile_remove() {
+  local dir out verdict
+  dir=$(profile_dir "$1")
+  [ -d "$dir" ] || die "no profile '$1'"
+  out=$( (enter "$1" && profile_cotal daemon uninstall --yes --json) 2>/dev/null) || true
+  verdict=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s);console.log(r.outcome==="ok"?"removed":r.error?.code==="TARGET_NOT_FOUND"?"none":"refused")}catch{console.log("refused")}})')
+  [ "$verdict" != refused ] || die "could not remove profile '$1's service; nothing was deleted: ${out:-no answer}"
+  rm -rf "$dir"
+}
+
+profile() {
+  local verb=${1:-list}
+  shift || true
+  case $verb in
+    new)
+      if [ "${2:-}" = --from ]; then profile_new "${1:-}" "${3:-}"; else profile_new "${1:-}"; fi ;;
+    shell) enter "${1:-}"; exec bash --rcfile "$COTAL_PROFILE_DIR/.bashrc" -i ;;
+    run)
+      local name=${1:-}
+      [ "${2:-}" = -- ] || die "usage: cotal-dev profile run <name> -- <command>"
+      shift 2
+      enter "$name"
+      if [ "${1:-}" = cotal ]; then shift; profile_cotal "$@"; else exec "$@"; fi ;;
+    reset)
+      local dir template
+      dir=$(profile_dir "${1:-}")
+      template=$(cat "$dir/.template" 2>/dev/null || echo blank)
+      profile_remove "$1"
+      profile_new "$1" "$template" ;;
+    rm) profile_remove "${1:-}"; echo "removed profile '$1'" ;;
+    list)
+      for dir in "$profiles"/*/; do
+        local name
+        name=$(basename "$dir")
+        [ "$name" = _templates ] || [ ! -d "$dir" ] || echo "$name (from $(cat "$dir/.template" 2>/dev/null || echo ?))"
+      done ;;
+    *) die "profile commands: new <name> [--from <template>], shell, run <name> -- <command>, reset, rm, list" ;;
+  esac
+}
+
+status() {
+  git fetch --quiet origin main
+  echo "checkout: $repo"
+  echo "  at $(git log -1 --format='%h %s (%cr)')"
+  echo "  $(git rev-list --count HEAD..origin/main) commit(s) behind main, $(git rev-list --count origin/main..HEAD) of your own"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] || echo "  uncommitted changes in: $(git status --porcelain --untracked-files=no | wc -l) file(s)"
+}
+
+case ${1:-help} in
+  update) update ;;
+  build) build ;;
+  app) app ;;
+  status) status ;;
+  profile) shift; profile "$@" ;;
+  *) echo "cotal-dev update   pull main, rebuild
+cotal-dev build    rebuild after your own edits
+cotal-dev app      run the desktop app from the checkout with live reload
+cotal-dev status   where the checkout stands
+cotal-dev profile new <name> [--from <template>] | shell <name> | run <name> -- <command> | reset <name> | rm <name> | list" ;;
+esac
