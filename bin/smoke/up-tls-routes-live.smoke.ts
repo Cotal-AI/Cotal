@@ -81,7 +81,7 @@ function sh(cmd: string, args: string[], cwd?: string): void {
 /** A throwaway CA plus a leaf it signs. The CA is what makes the admission leg a real verification
  *  rather than a disabled one: it is handed to `tls.connect` as `ca`, so `rejectUnauthorized` stays
  *  on and the chain and hostname are genuinely checked. */
-function mintPki(): { ca: string; cert: string; key: string; ipCert: string; ipKey: string; expiredCert: string; expiredKey: string; otherCert: string; otherKey: string } {
+function mintPki(): { ca: string; cert: string; key: string; ipCert: string; ipKey: string; dnsCert: string; dnsKey: string; expiredCert: string; expiredKey: string; otherCert: string; otherKey: string } {
   sh("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "ca.key"),
     "-out", join(pki, "ca.pem"), "-days", "2", "-subj", "/CN=cotal-smoke-ca",
     "-addext", "basicConstraints=critical,CA:TRUE"]);
@@ -102,6 +102,13 @@ function mintPki(): { ca: string; cert: string; key: string; ipCert: string; ipK
   sh("openssl", ["x509", "-req", "-in", join(pki, "ip.csr"), "-CA", join(pki, "ca.pem"),
     "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "ip.pem"),
     "-days", "2", "-extfile", join(pki, "ip.ext")]);
+
+  sh("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", join(pki, "dns.key"),
+    "-out", join(pki, "dns.csr"), "-subj", "/CN=localhost"]);
+  writeFileSync(join(pki, "dns.ext"), "subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\n");
+  sh("openssl", ["x509", "-req", "-in", join(pki, "dns.csr"), "-CA", join(pki, "ca.pem"),
+    "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "dns.pem"),
+    "-days", "2", "-extfile", join(pki, "dns.ext")]);
 
   // EXPIRED. OpenSSL 3.4+ accepts absolute `-not_before`/`-not_after`; 3.0.x does not (and 3.6+
   // rejects `-days -1`). Try absolute dates first, fall back to `-days -1` which yields an
@@ -128,6 +135,7 @@ function mintPki(): { ca: string; cert: string; key: string; ipCert: string; ipK
     ipCert: join(pki, "ip.pem"), ipKey: join(pki, "ip.key"),
     expiredCert: join(pki, "expired.pem"), expiredKey: join(pki, "expired.key"),
     otherCert: join(pki, "other.pem"), otherKey: join(pki, "other.key"),
+    dnsCert: join(pki, "dns.pem"), dnsKey: join(pki, "dns.key"),
   };
 }
 
@@ -503,6 +511,27 @@ async function main(): Promise<void> {
     assert.equal(await serverInfo(port), undefined, "nothing may be listening after a hostname refusal");
     absentStacks.add(cwd);
     console.log("  ✓ wrong-host cert: refused before launch, naming the mismatch, no listener");
+  });
+
+  await route("dns-only-certificate", async () => {
+    const { home, cwd } = sandbox();
+    const port = await freePort();
+    rememberSandbox(home, port, cwd);
+    const args = ["up", "--no-manager", "--host", "0.0.0.0", "--store-dir", "./store",
+      "--tls-cert", pkiFiles.dnsCert, "--tls-key", pkiFiles.dnsKey, "--server"];
+    const wrong = cotal([...args, `tls://127.0.0.1:${port}`], home, cwd);
+    assert.notEqual(wrong.status, 0, `an IP URL cannot use the DNS-only leaf:\n${wrong.out}`);
+    assert.match(wrong.out, /would fail IP address verification/);
+    assert.equal(await serverInfo(port), undefined);
+
+    const server = `tls://localhost:${port}`;
+    const up = cotal([...args, server], home, cwd);
+    assert.equal(up.status, 0, `the DNS URL must start the authenticated broker and delivery daemon:\n${up.out}`);
+    const meshes = cotal(["meshes", "--json"], home, cwd);
+    assert.ok(meshes.out.includes(`"server":"${server}"`), `the recorded URL must keep the certificate name:\n${meshes.out}`);
+    const send = cotal(["send", "-c", "general", "DNS-only TLS probe"], home, cwd);
+    assert.equal(send.status, 0, `a later process must reach the broker over verified TLS:\n${send.out}`);
+    down(home, cwd);
   });
 
 
@@ -1155,10 +1184,10 @@ async function main(): Promise<void> {
     if (!o.ok) console.log((o.err ?? "").split("\n").map((l) => `        ${l}`).join("\n"));
   }
   const failed = outcomes.filter((o) => !o.ok);
-  if (outcomes.length !== 20)
-    throw new Error(`HARNESS: expected 20 routes, recorded ${outcomes.length} — a route did not run at all`);
+  if (outcomes.length !== 21)
+    throw new Error(`HARNESS: expected 21 routes, recorded ${outcomes.length}. A route did not run.`);
   if (failed.length > 0)
-    throw new Error(`${failed.length}/20 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
+    throw new Error(`${failed.length}/21 routes FAILED: ${failed.map((f) => f.route).join(", ")}`);
 }
 
 const failures: unknown[] = [];
@@ -1185,4 +1214,4 @@ try {
   }
 }
 if (failures.length > 0) throw new AggregateError(failures, "up-tls-routes failed");
-console.log("✓ up-tls-routes: 20/20 routes encrypt or refuse; admission proved on each, one variable apart");
+console.log("✓ up-tls-routes: 21/21 routes encrypt or refuse. Admission proved on each, one variable apart.");

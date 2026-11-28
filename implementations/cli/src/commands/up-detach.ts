@@ -285,6 +285,8 @@ export async function awaitSpawnedListener(l: {
   creds?: string;
   /** The listener serves TLS, so a certificate this client refuses ends the wait. */
   tls: boolean;
+  /** A fresh DNS-addressed start checks that the TLS connection reached this launch. */
+  serverName?: string;
   /** Where the listener's output goes, named when it never answers. */
   log: string;
   boundListener?: DetachOpts["boundListener"];
@@ -295,7 +297,7 @@ export async function awaitSpawnedListener(l: {
   let facts: BrokerFacts;
   try {
     if (!(await waitReady(server, l.creds, l.tls, l.log))) throw exitedBeforeReady(l) ?? new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
-    facts = await brokerVersion(server, space, l.creds);
+    facts = await brokerVersion(server, space, l.creds, l.serverName);
   } catch (e) {
     await stopFailedListener(child, true, l.heldLock);
     throw e;
@@ -447,6 +449,7 @@ export async function serveReadyListener(l: {
 }
 
 export interface DetachOpts {
+  serverName?: string;
   /**
    * The listener's transport, resolved and validated by the CALLER.
    *
@@ -569,9 +572,10 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
+  const serverName = opts.boundListener?.serverName ?? opts.serverName;
   const args = [
     "-c", confPath,
-    ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
+    ...(serverName ? ["--name", serverName] : []),
   ];
   const { path: bin, source, version } = renderingBinary;
   return { root, server, space, useAuth, storeDir, host, transport, setup, maxPayload, confPath, args, bin, source, version };
@@ -602,7 +606,7 @@ export async function startMeshDetached(
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener, opts.heldLock);
   child.unref();
 
-  await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener, heldLock: opts.heldLock });
+  await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener, heldLock: opts.heldLock, serverName: opts.serverName });
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile: opts.seed, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),

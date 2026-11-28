@@ -1,4 +1,6 @@
-import { createServer } from "node:net";
+import { lookup } from "node:dns/promises";
+import { createServer, isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
 import { CommandFailure, brokerAddressForDisplay } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -7,6 +9,27 @@ import { c } from "../ui.js";
  *  the probe/registry URL stays whatever it already is (loopback by default), which the wildcard
  *  bind necessarily covers. */
 export const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
+
+/** The legacy TLS dial and certificate name is distinct from its local bind. */
+export function tlsDialName(server: string | undefined): string | undefined {
+  if (!server || !/^tls:\/\//i.test(server)) return undefined;
+  const hostname = URL.parse(server)?.hostname;
+  return hostname && !hostname.startsWith("[") && !isIP(hostname) ? hostname : undefined;
+}
+
+/** Check the machine's resolver, including its hosts file. The URL keeps the name for TLS. */
+export async function assertLocalTlsDialName(server: string | undefined, bind = "127.0.0.1"): Promise<void> {
+  const name = tlsDialName(server);
+  if (!name) return;
+  const local = new Set(Object.values(networkInterfaces()).flatMap((rows) => rows?.map(({ address }) => address) ?? []));
+  const addresses = await lookup(name, { all: true }).catch(() => []);
+  const covered = (address: string, family: number) => bind === address || bind === name ||
+    WILDCARD_HOSTS.has(bind) && (bind !== "0.0.0.0" || family === 4);
+  if (addresses.some(({ address, family }) => covered(address, family)) && addresses.every(({ address }) => local.has(address))) return;
+  throw new CommandFailure("refused", "USAGE_INVALID", `--server names ${name}, which does not resolve exclusively to local addresses with one reachable through the broker bind ${bind}; nothing was started or written`, {
+    remedy: "resolve the TLS server name to a local address and use a matching --host",
+  });
+}
 
 /** Establish that a bind-host value IS a host, BEFORE anything brackets it, and return the
  *  bracketed literal a URL can hold (#1697).

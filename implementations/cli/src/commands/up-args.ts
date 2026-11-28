@@ -27,6 +27,7 @@ import {
   meshesForRoot,
   userAuthSpacesOnDisk,
   readMaintenanceJournal,
+  readBrokerPolicy,
   rootNamesNoSpace,
   SPACE_NAME_MAX,
   spaceNameTooLong,
@@ -55,7 +56,7 @@ import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
 import { assertStoreDirArgument, startupStoreProblem } from "../lib/store-dir.js";
 import { parseMaxFileStore, parseAuthTimeout, parseMaxPayload, assertManagerPayload, parseAccountResolver, tlsAddress } from "./up-transport.js";
-import { WILDCARD_HOSTS } from "./up-host.js";
+import { tlsDialName, WILDCARD_HOSTS } from "./up-host.js";
 
 /** `--recreate-issued-stores <backup-dir>` names a directory the step creates, so it must not exist
  *  and its parent must. Checked before anything starts; the step checks again when it creates it. */
@@ -112,7 +113,9 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
-  const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
+  const server = args.values.server as string | undefined;
+  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot();
+  const serverProblem = server !== undefined && !args.values.file ? upServerProblem(server, args.values["tls-cert"] !== undefined || Boolean(tlsDialName(server) && readBrokerPolicy(tlsRoot)?.transport.kind === "tls-required")) : undefined;
   if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server), args.values.host as string | undefined)}`);
   // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
   // before the controller stack writes its journal or trust.
@@ -122,7 +125,6 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   if (spaceTooLong) throw new CommandFailure("refused", "USAGE_INVALID", `${spaceTooLong}; nothing was started or written`, { remedy: `choose a space name of at most ${SPACE_NAME_MAX} characters` });
   // A prepared or controller-owned root has no route that serves TLS, so any TLS input refuses here,
   // once and naming the route that does, before the checks below send it from one TLS form to another.
-  const tlsRoot = typeof args.values.root === "string" ? resolve(args.values.root) : freshFolderRoot(args.values) ?? cotalRoot();
   if (!args.values.file && requestsTls(args.values) && !readMaintenanceJournal(tlsRoot)) controllerStackApplies(tlsRoot, (args.values.space as string | undefined) ?? folderSpace(), args.values);
   // A --tls-cert broker serves TLS only, and its address says so, so every client dials tls:// and
   // checks the certificate against the address it names.
@@ -237,11 +239,9 @@ function assertUpStoreWritable(root: string, storeDir: string | undefined, befor
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
-/** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both
- *  launch routes need one nats:// or tls:// URL with an IP address and a TCP port, and without this
- *  check a typo reached their first write. The message names at most the host, never the whole
- *  value, which may carry a credential. */
-function upServerProblem(server: string): string | undefined {
+/** Validate one broker URL without exposing a value that may carry a credential. Only a legacy
+ *  TLS start can use a dial name instead of an IP address. */
+function upServerProblem(server: string, servesTls: boolean): string | undefined {
   let url: URL;
   try { url = new URL(server); } catch { return "--server is not a URL"; }
   if (url.protocol !== "nats:" && url.protocol !== "tls:") return "--server must be a nats:// or tls:// URL";
@@ -252,8 +252,7 @@ function upServerProblem(server: string): string | undefined {
   if (!url.port) return "--server names no port";
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
   if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
-  // The broker reports its listener by IP address, which is how both launch routes find it ready.
-  if (!isIP(url.hostname)) return `--server names the host ${url.hostname}, and up needs the IP address the broker listens on`;
+  if (!isIP(url.hostname) && !(servesTls && url.protocol === "tls:")) return `--server names the host ${url.hostname}, and up needs the IP address the broker listens on`;
   return undefined;
 }
 
@@ -304,7 +303,7 @@ function upHostProblem(host: string | undefined, server: string | undefined): { 
   try { url = new URL(`nats://${host}:1`); } catch { url = undefined; }
   if (!url || url.port !== "1" || url.pathname || url.search || url.hash || url.username || url.password)
     return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy };
-  if (server !== undefined && !bindReaches(host, server))
+  if (server !== undefined && !tlsDialName(server) && !bindReaches(host, server))
     return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy };
   return undefined;
 }

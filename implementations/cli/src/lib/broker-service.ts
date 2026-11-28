@@ -92,21 +92,23 @@ function restoreAdmits(root: string, space: string, server: string): boolean {
  *  definition, so an address the service would refuse never becomes a stack's recorded address or a
  *  saved definition's. The host is returned URL-shaped. */
 export function brokerListenAddress(server: string): { protocol: string; host: string; port: number } {
-  let url: URL;
-  try { url = new URL(server); } catch { return refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL"); }
-  if (!["nats:", "tls:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL without credentials, path, query or fragment");
-  const port = url.port ? Number(url.port) : 4222;
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) refuse("UNSUPPORTED", "the broker address needs one concrete TCP port");
-  // nats-server writes its ports report from the bound listener's own address: one entry for a
-  // concrete bind, one per interface address for a wildcard bind, and never a DNS name. The
-  // declared target must therefore be one concrete IP literal that readiness can find in that
-  // report; a declared name or wildcard has no single attributable address and refuses here.
+  const { url, port } = brokerUrlAndPort(server);
+  // The controller matches this address against nats-server's per-launch ports report.
   const host = url.hostname.startsWith("[") && url.hostname.endsWith("]") ? url.hostname.slice(1, -1) : url.hostname;
   const family = isIP(host);
   if (family === 0) refuse("UNSUPPORTED", "the broker address must name a concrete IP literal; a DNS name cannot be matched to the broker's own listener report, so no listener readiness would be attributable", { server });
   if (family === 4 ? host === "0.0.0.0" : /^[0:]+$/.test(host)) refuse("UNSUPPORTED", "the broker address is a wildcard bind; its listener report names every interface, so no single declared address could be attributed to this broker", { server });
   if (family === 6 && /^(0{0,4}:){0,5}:?ffff:/i.test(host)) refuse("UNSUPPORTED", "the broker address is an IPv4-mapped IPv6 literal, which nats-server reports in IPv4 form; declare the IPv4 address itself", { server });
   return { protocol: url.protocol, host: new URL(`nats://${family === 6 ? `[${host}]` : host}:${port}`).hostname, port };
+}
+
+function brokerUrlAndPort(server: string): { url: URL; port: number } {
+  let url: URL;
+  try { url = new URL(server); } catch { return refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL"); }
+  if (!["nats:", "tls:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL without credentials, path, query or fragment");
+  const port = url.port ? Number(url.port) : 4222;
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) refuse("UNSUPPORTED", "the broker address needs one concrete TCP port");
+  return { url, port };
 }
 
 /** Why `server` cannot be a broker definition's address, as {@link brokerListenAddress} refuses it,
@@ -157,16 +159,19 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
 /** Bind a broker address's listener once and release it: the OS error when that fails, "timeout"
  *  when the bind does not finish, or undefined when the address is free. */
 export async function listenerBindError(server: string, bindHost?: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
-  const target = brokerListenAddress(server);
+  const { host, port } = brokerListenAddress(server);
+  return bindError(bindHost ?? host, port);
+}
+
+async function bindError(requestedHost: string, port: number): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
   // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
-  const requestedHost = bindHost ?? target.host;
   const host = requestedHost.startsWith("[") ? requestedHost.slice(1, -1) : requestedHost;
   const probe = createServer();
   let timer: NodeJS.Timeout | undefined;
   const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {
     timer = setTimeout(() => resolve("timeout"), LISTENER_PROBE_TIMEOUT_MS);
     probe.once("error", resolve);
-    probe.listen({ host, port: target.port, exclusive: true }, () => resolve(undefined));
+    probe.listen({ host, port, exclusive: true }, () => resolve(undefined));
   });
   // Closed on every path, bound or not, so a refusal leaves no handle that keeps the command alive.
   clearTimeout(timer);
@@ -223,18 +228,21 @@ export async function addressHolder(what: string, host: string, port: number): P
 
 /** An occupied legacy broker bind and the two ways to start without that conflict. */
 export async function brokerAddressConflict(server: string, command: string | ((server: string, host: string) => Promise<{ original: string; alternate?: string }>), bindHost?: string, onWait?: (address: string, seconds: number) => void): Promise<{ message: string; remedy: string } | undefined> {
+  const { url: address, port } = brokerUrlAndPort(server);
+  const dialHost = address.protocol === "tls:" && bindHost !== undefined && !address.hostname.startsWith("[") && !isIP(address.hostname)
+    ? bindHost : brokerListenAddress(server).host;
+  const host = bindHost ?? dialHost;
   let deadline: number | undefined;
   for (;;) {
-    const error = await listenerBindError(server, bindHost);
+    const error = await bindError(host, port);
     if (error === undefined || error === "timeout" || error.code !== "EADDRINUSE") return undefined;
-    const { host, port } = brokerListenAddress(server), address = new URL(server);
-    const { says, frees, timeWait } = await addressHolder("the broker address", bindHost ?? host, port);
+    const { says, frees, timeWait } = await addressHolder("the broker address", host, port);
     if (onWait && timeWait) {
       if (deadline === undefined) {
         // Linux can retain the socket briefly after its 60-second TIME-WAIT timer reaches zero.
         const waitSeconds = 65;
         deadline = performance.now() + waitSeconds * 1000;
-        onWait(`${bindHost ?? host}:${port}`, waitSeconds);
+        onWait(`${host}:${port}`, waitSeconds);
       }
       const remaining = deadline - performance.now();
       if (remaining > 0) {
@@ -243,10 +251,10 @@ export async function brokerAddressConflict(server: string, command: string | ((
       }
     }
     // The socket can clear between the bind and the TCP table read.
-    if (deadline !== undefined && !timeWait && await listenerBindError(server, bindHost) === undefined) return undefined;
+    if (deadline !== undefined && !timeWait && await bindError(host, port) === undefined) return undefined;
     const { original, alternate } = typeof command === "string"
       ? { original: command, alternate: `${command} --server ${address.protocol}//${address.hostname}:<port>` }
-      : await command(server, bindHost ?? host);
+      : await command(server, host);
     const retry = `${frees} and run ${codeSpan(original)} again`;
     return { message: says, remedy: alternate ? `start it at another address with ${codeSpan(alternate)}, or ${retry}` : retry };
   }
