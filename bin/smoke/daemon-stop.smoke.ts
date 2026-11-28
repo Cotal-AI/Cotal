@@ -172,13 +172,36 @@ if (process.platform === "linux") {
   check("install on an already-installed service leaves the stop marker", alreadyInstalled.status === 0 && existsSync(marker) && (alreadyInstalled.doc?.error?.message ?? "") === "", { status: alreadyInstalled.status, error: alreadyInstalled.doc?.error, marker: existsSync(marker) });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const beforeSetup = operations().length;
-  const setupStart = spawnSync(process.execPath, ["--input-type=module", "-e", "import { startInstalled } from './bin/dist/daemon/install.js'; const started = await startInstalled({ state: process.argv[1] }, process.argv[1], undefined, undefined, true); console.log(JSON.stringify({ unit: started.unit }));", resolvedHome], { cwd: join(here, "../.."), env, encoding: "utf8", timeout: 30_000 });
+  const setupStart = spawnSync(process.execPath, ["--input-type=module", "-e", "import { readFileSync } from 'node:fs'; import { runSetup } from './bin/dist/daemon/setup.js'; import { daemonPathsFor } from './bin/dist/daemon/endpoint.js'; const home = process.argv[1]; const calls = JSON.parse(readFileSync(process.env.DAEMON_UNIT_FIXTURE, 'utf8')).calls; const watch = setInterval(() => { const rows = readFileSync(calls, 'utf8'); if (rows.includes('\"start\"')) { clearInterval(watch); process.exit(0); } }, 100); await runSetup({ space: 'smoke', version: 'test', waitSeconds: 0, paths: daemonPathsFor(home, process.env), daemonHome: home, report() {} });", resolvedHome], { cwd: join(here, "../.."), env, encoding: "utf8", timeout: 30_000 });
   const setupOps = operations().slice(beforeSetup);
   check("setup after a stop enables before it starts and clears the marker", setupStart.status === 0 && setupOps.indexOf("enable") >= 0 && setupOps.indexOf("enable") < setupOps.lastIndexOf("start") && !existsSync(marker), { status: setupStart.status, stderr: setupStart.stderr, setupOps });
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "disabled" })}\n`);
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const beforeDirectInstall = operations().length;
-  const direct = spawnSync(process.execPath, ["--input-type=module", "-e", "import { startInstalled } from './bin/dist/daemon/install.js'; const started = await startInstalled({ state: process.argv[1] }, process.argv[1], undefined, undefined, true); console.log(JSON.stringify({ unit: started.unit }));", resolvedHome], { cwd: join(here, "../.."), env, encoding: "utf8", timeout: 30_000 });
+  const appScript = [
+    "import { readFileSync } from 'node:fs';",
+    "import { registerHooks } from 'node:module';",
+    "import { Readable, Writable } from 'node:stream';",
+    "registerHooks({ load(url, context, next) {",
+    "  const loaded = next(url, context);",
+    "  const source = Buffer.isBuffer(loaded.source) ? loaded.source.toString('utf8') : loaded.source;",
+    "  if (String(url).endsWith('/daemon/desktop-path.js') && typeof source === 'string') {",
+    "    return { format: loaded.format, shortCircuit: true, source: source.replace('[\"-l\", \"-i\", \"-c\", print]', '[\"-c\", print]') };",
+    "  }",
+    "  return loaded;",
+    "}});",
+    "const { runDesktopBridge } = await import('./bin/dist/daemon/desktop.js');",
+    "const { daemonPathsFor } = await import('./bin/dist/daemon/endpoint.js');",
+    "const home = process.argv[1];",
+    "const calls = JSON.parse(readFileSync(process.env.DAEMON_UNIT_FIXTURE, 'utf8')).calls;",
+    "const watch = setInterval(() => {",
+    "  if (readFileSync(calls, 'utf8').includes('\"start\"')) { clearInterval(watch); process.exit(0); }",
+    "}, 100);",
+    "const input = Readable.from(['{\"op\":\"install\"}\\n']);",
+    "const output = new Writable({ write(chunk, _e, done) { process.stderr.write(chunk); done(); } });",
+    "await runDesktopBridge({ version: 'test', resolveTarget: () => ({ paths: daemonPathsFor(home, process.env), home }), input, output });",
+  ].join("\n");
+  const direct = spawnSync(process.execPath, ["--input-type=module", "-e", appScript, resolvedHome], { cwd: join(here, "../.."), env, encoding: "utf8", timeout: 30_000 });
   const directOps = operations().slice(beforeDirectInstall);
   check("the app install start after a stop enables before it starts and clears the marker", direct.status === 0 && directOps.indexOf("enable") >= 0 && directOps.indexOf("enable") < directOps.lastIndexOf("start") && !existsSync(marker), { status: direct.status, stderr: direct.stderr, directOps });
   writeFileSync(marker, "\n", { mode: 0o600 });
@@ -309,7 +332,7 @@ if (process.platform === "linux") {
       "  enable() { calls.push('enable'); enabled = true; },",
       "  plan() { throw new Error('unused'); }, publish() {}, register() {}, check() {},",
       "  stopped() { return !enabled; },",
-      "  start() { started = true; },",
+      "  start(_receipt, resume) { started = true; if (resume) enabled = true; },",
       "  isEnabled() { throw new Error('print-disabled failed'); },",
       "  stop() {}, restart() {}, remove() {},",
       "};",
@@ -331,35 +354,52 @@ if (process.platform === "linux") {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      const doc = stdout.trim() ? JSON.parse(stdout) as { failed?: { message: string; code?: string; native?: string; cause?: string }; calls: string[]; enabled: boolean; started: boolean; marker: boolean } : undefined;
+      const doc = stdout.trim() ? JSON.parse(stdout) as { failed?: { message: string; code?: string; native?: string; cause?: string; causeNative?: string }; calls: string[]; enabled: boolean; started: boolean; marker: boolean } : undefined;
       resolve({ status, stderr, doc });
     });
   });
   handshake = (request) => request.op === "daemon-stop" && !request.commit ? { ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "provenance is unknown" } } : undefined;
   const refused = await probeStop("refuse", 100_000);
-  check("a refused prepare turns automatic start back on and does not end the task", refused.doc?.failed?.causeNative === "STOP_NOT_SENT" && refused.doc.failed.code === "OPERATION_UNKNOWN" && refused.doc.failed.message === "the background service was not stopped. Automatic start is still on." && refused.doc.enabled && !refused.doc.calls.includes("finish") && refused.doc.marker === false, refused);
+  check("a refused prepare turns automatic start back on and does not end the task", refused.doc?.failed?.native === "STOP_NOT_SENT" && refused.doc.failed.code === "OPERATION_UNKNOWN" && refused.doc.failed.message === "the background service was not stopped. Automatic start is still on. Run `cotal daemon stop` again." && refused.doc.enabled && !refused.doc.calls.includes("finish") && refused.doc.marker === false, refused);
   handshake = () => undefined;
   const silent = await probeStop("silent", 100_000);
-  check("a prepare that is not answered turns automatic start back on", silent.doc?.failed?.message === "the background service was not stopped. Automatic start is still on." && silent.doc.failed.code === "OPERATION_UNKNOWN" && silent.doc.enabled && !silent.doc.calls.includes("finish") && silent.doc.marker === false, silent);
+  check("a prepare that is not answered turns automatic start back on", silent.doc?.failed?.message === "the background service was not stopped. Automatic start is still on. Run `cotal daemon stop` again." && silent.doc.failed.code === "OPERATION_UNKNOWN" && silent.doc.enabled && !silent.doc.calls.includes("finish") && silent.doc.marker === false, silent);
   handshake = (request) => request.commit ? { ok: false, error: { code: "OPERATION_UNKNOWN", message: "commit failed" } } : { ok: true, result: { version: "test" } };
   const commitFailed = await probeStop("commit", 100_000);
   check("a failed commit leaves automatic start off and names another stop", commitFailed.doc?.enabled === false && !commitFailed.doc?.calls.includes("finish") && commitFailed.doc?.marker === false && commitFailed.doc?.failed?.code === "OPERATION_UNKNOWN" && commitFailed.doc.failed.message.includes("automatic start is already off") && commitFailed.doc.failed.message.includes("cotal daemon stop"), commitFailed);
   handshake = undefined;
-  const missingAction = new Error("the replacement does not have one enabled native task instance; ownership is ambiguous; the task was not enabled");
+  const missingAction = new Error("the replacement does not have one enabled native task instance");
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
-  const { startInstalled } = await import("../dist/daemon/install.js");
+  const { startInstalled } = await import("../daemon/install.js");
+  let enabledState = false;
   let disabledRead = "";
   let disabledCode = "";
-  try { await startInstalled({ state: resolvedHome }, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => false }); }
+  const failingStart = () => { enabledState = true; throw missingAction; };
+  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: failingStart, enabled: () => enabledState, setEnabled: (next) => { enabledState = next; } }); }
   catch (error) { disabledRead = error instanceof Error ? error.message : String(error); disabledCode = error instanceof CommandFailure ? error.code : ""; }
-  check("a disabled task does not say automatic start is on", disabledCode === "OPERATION_UNKNOWN" && disabledRead.includes("the task was not enabled") && disabledRead.includes("Automatic start is still off") && !disabledRead.includes("Automatic start is on again") && existsSync(marker), { disabledCode, disabledRead });
+  check("a failed start of a disabled task ends disabled, keeps the marker, and says nothing was started", disabledCode === "OPERATION_UNKNOWN" && disabledRead.includes("Nothing was started") && !disabledRead.includes("the task was not enabled") && !disabledRead.includes("Automatic start is on again") && existsSync(marker) && enabledState === false, { disabledCode, disabledRead, enabledState });
+  enabledState = true;
   let enabledRead = "";
-  try { await startInstalled({ state: resolvedHome }, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => true }); }
+  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => enabledState, setEnabled: (next) => { enabledState = next; } }); }
   catch (error) { enabledRead = error instanceof Error ? error.message : String(error); }
-  check("an enabled task says automatic start is on and clears the marker", enabledRead.includes("Automatic start is on again") && !existsSync(marker), enabledRead);
+  check("a failed start that leaves the task enabled keeps the marker and never says the task was not enabled", enabledRead.includes("Nothing was started") && !enabledRead.includes("the task was not enabled") && !enabledRead.includes("Automatic start is on again") && existsSync(marker) && enabledState === true, { enabledRead, enabledState });
+  writeFileSync(marker, "stopped\n", { mode: 0o600 });
+  enabledState = false;
+  let unreadableReads = 0;
+  let unreadableRead = "";
+  let unreadableCode = "";
+  const unreadableStart = () => { enabledState = true; throw missingAction; };
+  try {
+    await startInstalled(livePaths, resolvedHome, undefined, undefined, true, {
+      windowsFailure: unreadableStart,
+      enabled: () => { unreadableReads += 1; if (unreadableReads > 1) throw new Error("unreadable"); return enabledState; },
+      setEnabled: (next) => { enabledState = next; },
+    });
+  } catch (error) { unreadableRead = error instanceof Error ? error.message : String(error); unreadableCode = error instanceof CommandFailure ? error.code : ""; }
+  check("an unreadable Windows start of a stopped task ends disabled and keeps the marker", unreadableCode === "OPERATION_UNKNOWN" && unreadableRead.includes("Nothing was started") && !unreadableRead.includes("the task was not enabled") && existsSync(marker) && enabledState === false, { unreadableCode, unreadableRead, enabledState });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const readFailure = await probeStop("unread");
-  check("a failed read after a start says the service started", readFailure.doc?.started === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === true, readFailure);
+  check("a macOS start whose automatic start cannot be read says the service started and leaves no stop marker", readFailure.doc?.started === true && readFailure.doc.enabled === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === false, readFailure);
   for (const listener of prior) server.on("connection", listener as (socket: Socket) => void);
   server.close();
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);

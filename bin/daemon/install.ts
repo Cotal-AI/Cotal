@@ -293,6 +293,10 @@ export function linuxAutostartWarning(paths: DaemonPaths, daemonHome?: string, s
     const state = result.status === 0 ? result.stdout.trim() : undefined;
     if (linger && state === "enabled") return;
     if (state === "disabled" || state === "enabled-runtime") {
+      if (personStopped(paths)) {
+        const lingerNote = linger ? "" : ` Linger is off, so it will not keep running after logout. Ask an administrator to run ${codeSpan(enableLingerCommand(user))}.`;
+        return `The service is not enabled at boot and will not start automatically after a restart.${lingerNote} Run ${codeSpan(daemonCommandCopy("start", daemonHome))}.`;
+      }
       return `The service is not enabled at boot and will not start automatically after a restart.${linger ? ` Run ${codeSpan(enableUnitCommand(receipt.unit))}.` : ` Linger is off, so it will not keep running after logout. ${lingerRepair(user, receipt.unit)}`}`;
     }
     if (!linger && state === "enabled") return `Linger is off, so the service will not keep running after logout or start at boot before you log in. Ask an administrator to run ${codeSpan(enableLingerCommand(user))}.`;
@@ -328,7 +332,9 @@ function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): vo
   assertNoServiceRepair(paths);
   const existing = readReceipt(paths);
   if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
-    remedy: `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
+    remedy: personStopped(paths)
+      ? `start it again with ${codeSpan(daemonCommandCopy("start", daemonHome))}`
+      : `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
   });
 }
 
@@ -575,38 +581,54 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon.
  *  `resume` turns automatic start back on. `cotal daemon start`, setup and the app's Start pass it,
  *  so a service the person stopped starts again and stays set to start on its own. */
-export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void, resume = false, probe?: { service?: NativeService; windowsFailure?: unknown; enabled?: () => boolean }): Promise<UninstallPlan> {
+export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void, resume = false, probe?: { service?: NativeService; windowsFailure?: unknown | (() => unknown); enabled?: () => boolean; setEnabled?: (enabled: boolean) => void }): Promise<UninstallPlan> {
   const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
   try {
   assertDesktopSetupComplete();
   if (process.platform === "win32" || probe?.windowsFailure !== undefined || probe?.enabled) {
+    const readEnabled = (): boolean => {
+      if (probe?.enabled) return probe.enabled();
+      const current = recordedUnit(paths, daemonHome);
+      return scheduledTaskService(nativeRun).isEnabled?.(current.receipt) === true;
+    };
+    // The end state has to match the state this command found, so read it before the start can change it.
+    let wasEnabled = false;
+    let known = false;
+    if (resume) { try { wasEnabled = readEnabled(); known = true; } catch { known = false; } }
     try {
-      if (probe?.windowsFailure !== undefined) throw probe.windowsFailure;
+      const failure = typeof probe?.windowsFailure === "function" ? probe.windowsFailure() : probe?.windowsFailure;
+      if (failure !== undefined) throw failure;
       const started = await restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true, undefined, resume);
       if (resume) clearPersonStop(paths);
       return started;
     } catch (error) {
-      // The sentence follows the task. An enabled task says automatic start is on. A disabled task does not.
-      let automaticOn = false;
-      let readable = false;
-      if (resume) {
-        try {
-          if (probe?.enabled) automaticOn = probe.enabled();
-          else {
-            const current = recordedUnit(paths, daemonHome);
-            const task = scheduledTaskService(nativeRun);
-            automaticOn = task.isEnabled?.(current.receipt) === true;
-          }
-          readable = true;
-        } catch { readable = false; }
-      }
-      if (automaticOn) clearPersonStop(paths);
+      let automaticOn = wasEnabled;
+      let restored = known;
+      const putBack = (enabled: boolean): void => {
+        if (probe?.setEnabled) { probe.setEnabled(enabled); return; }
+        const current = recordedUnit(paths, daemonHome);
+        const task = scheduledTaskService(nativeRun);
+        if (enabled) task.enable?.(current.receipt);
+        else if (personStopped(paths)) task.prepareStop(current.receipt);
+      };
+      // A read that fails after the start changed the task must still end in one state: disabled with the marker, or enabled with none.
+      const settle = (): void => {
+        if (personStopped(paths)) { putBack(false); automaticOn = false; restored = true; return; }
+        restored = false;
+      };
+      try {
+        if (known) {
+          if (readEnabled() !== wasEnabled) putBack(wasEnabled);
+          automaticOn = wasEnabled;
+        } else settle();
+      } catch { try { settle(); } catch { restored = false; } }
       const message = error instanceof CommandFailure ? error.message : error instanceof Error ? error.message : String(error);
-      const outcome = readable
-        ? (automaticOn ? `${message} Automatic start is on again, and the service did not start. Run \`cotal daemon start\` again.` : `${message} Automatic start is still off.`)
-        : message;
-      if (error instanceof CommandFailure) throw new CommandFailure(error.outcome, error.code, outcome, { remedy: error.remedy, native: error.native, cause: error });
-      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", outcome, { cause: error });
+      const same = !known || automaticOn === wasEnabled;
+      const ended = restored
+        ? `Nothing was started. ${message} Automatic start is ${automaticOn ? "on" : "off"}${same ? ", as it was before this command" : ""}.`
+        : `${message} Automatic start could not be put back as it was before this command.`;
+      if (error instanceof CommandFailure) throw new CommandFailure(error.outcome, error.code, ended, { remedy: error.remedy, native: error.native, cause: error });
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { cause: error });
     }
   }
   const recorded = recordedUnit(paths, daemonHome);
@@ -626,7 +648,11 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
     else submitSystemdUnitControl("start", plan.unit);
     if (service && resume) {
       try { automaticOn = service.isEnabled?.(receipt) === true; }
-      catch (error) { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the service started, but automatic start could not be read", { cause: error }); }
+      catch (error) {
+        // The start returned, so automatic start was turned on. A failed re-read must not leave the stop marker on a running service.
+        clearPersonStop(paths);
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the service started, but automatic start could not be read", { cause: error });
+      }
     }
     if (service && resume && !automaticOn) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service started, but automatic start was not confirmed on");
   } catch (error) {
@@ -725,7 +751,7 @@ export async function stopInstalled(paths: DaemonPaths, daemonHome: string | und
         if (!service.enable) throw error;
         try { service.enable(receipt); }
         catch (restore) { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start was turned off, and it could not be turned back on. The background service is still running. Run `cotal daemon stop` again.", { cause: restore }); }
-        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the background service was not stopped. Automatic start is still on.", { cause: error });
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the background service was not stopped. Automatic start is still on. Run `cotal daemon stop` again.", { native: error.native, cause: error, remedy: "run `cotal daemon stop` again" });
       }
     }
     if (service?.finishStop) await service.finishStop(receipt);
@@ -1316,9 +1342,10 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       }
     }
   } catch (error) {
-    let recovery = "ownership is ambiguous; the task was not enabled";
+    if (startOnly && personStopped(paths)) { try { task.prepareStop(receipt); } catch { /* the failure below reports the start; the marker stays */ } }
+    let recovery = startOnly ? "the start was not proven" : "ownership is ambiguous; the task was not enabled";
     try {
-      if (!pauseAttempted) throw new Error("no task pause was attempted");
+      if (!pauseAttempted) throw new Error(startOnly ? "a start does not pause the task" : "no task pause was attempted");
       task.inspect(receipt);
       recovery = await recoverPausedTask({
         pendingEnd: task.pendingEnd,
@@ -1341,7 +1368,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         enable() { task.enable(receipt); },
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? "run \`cotal daemon start\` again" : "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }
 
