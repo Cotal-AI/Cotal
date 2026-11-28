@@ -84,6 +84,7 @@ jobs:
             runner: windows-2025
     env:
       SCENARIO: ${{ matrix.scenario }}
+      SYSTEM: ${{ matrix.os }}
       VERSION: ${{ inputs.version || 'latest' }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -110,7 +111,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SCENARIO_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
-        run: node scenarios/run.mjs run "$SCENARIO" --version "${VERSION#v}" --out "$RUNNER_TEMP/scenario"
+        run: node scenarios/run.mjs run "$SCENARIO" --version "${VERSION#v}" --out "$RUNNER_TEMP/scenario" --system "$SYSTEM"
       # GitHub has no Fedora runners, so Fedora is the same LXD virtual machine scenarios/machines/lxd.sh
       # makes on a test PC, inside an Ubuntu runner.
       - name: Start LXD for the Fedora machine
@@ -132,7 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           status=0
-          sg lxd -c "scenarios/machines/lxd.sh run fedora \"$SCENARIO\" --version \"${VERSION#v}\"" || status=$?
+          sg lxd -c "scenarios/machines/lxd.sh run fedora \"$SCENARIO\" --version \"${VERSION#v}\" --system fedora" || status=$?
           mkdir -p "$RUNNER_TEMP/scenario"
           cp -R "scenarios/results/fedora-$SCENARIO/." "$RUNNER_TEMP/scenario/"
           exit "$status"
@@ -156,6 +157,8 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
+      # A job that dies before its scenario writes a result uploads nothing, so the table is told
+      # every cell to expect and shows each missing one as a failure.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: scenario-*
@@ -163,4 +166,8 @@ jobs:
       - name: Write the scenario-by-OS table
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node scenarios/run.mjs table results --run-url "$RUN_URL" | tee -a "$GITHUB_STEP_SUMMARY"
+          EXPECT_SCENARIOS: ${{ join(fromJSON(needs.plan.outputs.scenarios), ',') }}
+        run: |
+          set -euo pipefail
+          node scenarios/run.mjs table results --run-url "$RUN_URL" --expect-scenarios "$EXPECT_SCENARIOS" \
+            --expect-systems ubuntu,fedora,macos-arm,macos-intel,windows | tee -a "$GITHUB_STEP_SUMMARY"

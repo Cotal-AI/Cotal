@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disposable Ubuntu, Fedora and Windows 11 test machines in LXD, each with a "clean" snapshot.
+# Disposable Ubuntu and Fedora test machines in LXD, each with a "clean" snapshot.
 # Usage: scenarios/machines/lxd.sh <create|reset|run|shell|stop|delete|list> [os] [scenario] [runner options]
 set -euo pipefail
 export PATH=$PATH:/snap/bin
@@ -16,8 +16,7 @@ name_of() {
   case "$1" in
     ubuntu) echo cotal-test-ubuntu ;;
     fedora) echo cotal-test-fedora ;;
-    windows11) echo cotal-test-win11 ;;
-    *) die "unknown machine '$1' (ubuntu, fedora or windows11)" ;;
+    *) die "unknown machine '$1' (ubuntu or fedora)" ;;
   esac
 }
 image_of() {
@@ -76,7 +75,6 @@ create() {
   vm=$(name_of "$os")
   exists "$vm" && die "$vm already exists. Use reset, or delete it first."
   one_at_a_time "$vm"
-  if [ "$os" = windows11 ]; then exec "$here/windows11.sh" create "$vm" "$(pool)"; fi
   lxc launch "$(image_of "$os")" "$vm" --vm -s "$(pool)" -c limits.cpu=2 -c limits.memory=3GiB -d root,size=24GiB
   wait_agent "$vm"
   provision_linux "$os" "$vm"
@@ -101,7 +99,6 @@ run() {
   local os=$1 scenario=$2 vm out
   shift 2
   vm=$(name_of "$os")
-  [ "$os" != windows11 ] || exec "$here/windows11.sh" run "$vm" "$scenario" "$@"
   reset "$os"
   out="$scenarios/results/$os-$scenario"
   rm -rf "$out" && mkdir -p "$out"
@@ -119,7 +116,6 @@ run() {
 shell() {
   local vm
   vm=$(name_of "$1")
-  [ "$1" != windows11 ] || exec "$here/windows11.sh" shell "$vm"
   as_user "$vm" bash -l
 }
 

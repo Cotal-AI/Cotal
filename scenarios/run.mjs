@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Runs one named starting setup against the published Cotal release on a disposable machine.
 //   node scenarios/run.mjs list
-//   node scenarios/run.mjs run <scenario> [--version <x.y.z|latest>] [--out <dir>] [--label <os label>]
-//   node scenarios/run.mjs table <results-dir> [--run-url <url>]
+//   node scenarios/run.mjs run <scenario> [--version <x.y.z|latest>] [--out <dir>] [--label <os label>] [--system <key>]
+//   node scenarios/run.mjs table <results-dir> [--run-url <url>] [--expect-scenarios a,b] [--expect-systems x,y]
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -35,7 +35,8 @@ async function runOne(name, values) {
   const out = resolve(values.out ?? join(process.cwd(), 'scenario-results', name));
   const downloads = join(out, 'downloads');
   mkdirSync(downloads, { recursive: true });
-  const report = new Report(out, { scenario: name, title: scenario.title, os: values.label ?? await os.label(), platform: process.platform, arch: process.arch, machine, target: values.version, run: process.env.SCENARIO_JOB_URL });
+  const label = values.label ?? await os.label();
+  const report = new Report(out, { scenario: name, title: scenario.title, os: label, system: values.system ?? label, platform: process.platform, arch: process.arch, machine, target: values.version, run: process.env.SCENARIO_JOB_URL });
   const ctx = { os, out, downloads, report, version: values.version };
   try {
     const left = os.leftovers(homedir());
@@ -53,7 +54,10 @@ async function runOne(name, values) {
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { version: { type: 'string', default: 'latest' }, out: { type: 'string' }, label: { type: 'string' }, 'run-url': { type: 'string' } },
+  options: {
+    version: { type: 'string', default: 'latest' }, out: { type: 'string' }, label: { type: 'string' }, system: { type: 'string' },
+    'run-url': { type: 'string' }, 'expect-scenarios': { type: 'string' }, 'expect-systems': { type: 'string' },
+  },
 });
 const [command, arg] = positionals;
 if (command === 'list') {
@@ -66,8 +70,9 @@ if (command === 'list') {
     process.exitCode = 2;
   }
 } else if (command === 'table' && arg) {
-  console.log(table(resolve(arg), values['run-url']));
+  const list = (text) => (text ? text.split(',').map((item) => item.trim()).filter(Boolean) : undefined);
+  console.log(table(resolve(arg), values['run-url'], { scenarios: list(values['expect-scenarios']), systems: list(values['expect-systems']) }));
 } else {
-  console.error('usage: node scenarios/run.mjs list | run <scenario> [--version v] [--out dir] [--label text] | table <dir> [--run-url url]');
+  console.error('usage: node scenarios/run.mjs list | run <scenario> [--version v] [--out dir] [--label text] [--system key] | table <dir> [--run-url url] [--expect-scenarios a,b] [--expect-systems x,y]');
   process.exitCode = 2;
 }

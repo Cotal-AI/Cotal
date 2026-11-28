@@ -15,27 +15,37 @@ function results(directory) {
 function cell(row) {
   const versions = row.from ? `${row.from} → ${row.version ?? '?'}` : row.version ?? '';
   const mark = row.outcome === 'passed' ? '✅' : row.outcome === 'skipped' ? '⏭️' : '❌';
-  const text = `${mark} ${versions}`.trim();
+  const text = `${mark} ${row.outcome === 'missing' ? 'no result' : versions}`.trim();
   return row.outcome === 'passed' || !row.run ? text : `[${text}](${row.run})`;
 }
 
-/** One Markdown table, scenario by OS, then one line for each scenario that did not pass. */
-export function table(directory, runUrl) {
-  const rows = results(directory);
-  const systems = [...new Set(rows.map((row) => row.os))].sort();
-  const names = [...SCENARIOS.map((row) => row.name), ...new Set(rows.map((row) => row.scenario))].filter((name, index, all) => all.indexOf(name) === index && rows.some((row) => row.scenario === name));
-  const title = (name) => SCENARIOS.find((row) => row.name === name)?.title ?? name;
-  const lines = [`| Scenario | ${systems.join(' | ')} |`, `|---|${systems.map(() => '---').join('|')}|`];
-  for (const name of names) {
-    const cells = systems.map((os) => rows.find((row) => row.scenario === name && row.os === os));
-    lines.push(`| ${title(name)} | ${cells.map((row) => (row ? cell(row) : '')).join(' | ')} |`);
+/**
+ * One Markdown table, scenario by system, then one line for each cell that did not pass. Every
+ * expected cell without a result counts as a failure, so a job that died early cannot vanish.
+ */
+export function table(directory, runUrl, expect = {}) {
+  const rows = results(directory).map((row) => ({ ...row, system: row.system ?? row.os }));
+  const systems = expect.systems ?? [...new Set(rows.map((row) => row.system))].sort();
+  const names = expect.scenarios ?? SCENARIOS.map((row) => row.name).filter((name) => rows.some((row) => row.scenario === name));
+  for (const scenario of names) {
+    for (const system of systems) {
+      if (!rows.some((row) => row.scenario === scenario && row.system === system)) {
+        rows.push({ scenario, system, os: system, outcome: 'missing', reason: 'the job stopped before the scenario recorded a result', run: runUrl });
+      }
+    }
   }
-  const failed = rows.filter((row) => row.outcome !== 'passed');
-  const passed = rows.length - failed.length;
-  const summary = [`${passed} of ${rows.length} passed${runUrl ? ` in [this run](${runUrl})` : ''}.`];
+  const counted = rows.filter((row) => names.includes(row.scenario) && systems.includes(row.system));
+  const label = (system) => counted.find((row) => row.system === system && row.outcome !== 'missing')?.os ?? system;
+  const title = (name) => SCENARIOS.find((row) => row.name === name)?.title ?? name;
+  const lines = [`| Scenario | ${systems.map(label).join(' | ')} |`, `|---|${systems.map(() => '---').join('|')}|`];
+  for (const name of names) {
+    lines.push(`| ${title(name)} | ${systems.map((system) => cell(counted.find((row) => row.scenario === name && row.system === system))).join(' | ')} |`);
+  }
+  const failed = counted.filter((row) => row.outcome !== 'passed');
+  const summary = [`${counted.length - failed.length} of ${counted.length} passed${runUrl ? ` in [this run](${runUrl})` : ''}.`];
   for (const row of failed) {
-    const why = row.outcome === 'skipped' ? row.reason : row.failed?.[0] ?? row.reason?.split('\n')[0] ?? 'no result recorded';
-    summary.push(`- **${title(row.scenario)}** on ${row.os}: ${why}${row.run ? ` ([log](${row.run}))` : ''}`);
+    const why = row.outcome === 'skipped' || row.outcome === 'missing' ? row.reason : row.failed?.[0] ?? row.reason?.split('\n')[0] ?? 'no result recorded';
+    summary.push(`- **${title(row.scenario)}** on ${label(row.system)}: ${why}${row.run ? ` ([log](${row.run}))` : ''}`);
   }
   return `${lines.join('\n')}\n\n${summary.join('\n')}\n`;
 }
