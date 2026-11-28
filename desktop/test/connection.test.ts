@@ -412,3 +412,155 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
     }
   }
 });
+
+test("a set-up computer that loses its network stays on its screen and never runs setup", async () => {
+  const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
+  assert.ok(!Array.isArray(output) && "output" in output);
+  const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
+  assert.ok(bundle && "code" in bundle);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
+  const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const win = dom.window;
+  const doc = win.document as Document;
+  const calls: Request[] = [];
+  const tray: Record<string, unknown>[] = [];
+  const callbacks = new Map<number, (frame: unknown) => void>();
+  let callback = 0;
+  let pushStatus: ((status: Record<string, unknown>) => void) | undefined;
+  const account = (observed: string) => ({ mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed }] });
+  const statusFor = (observed: string) => ({ state: "ready", version: "0.164.15", managers: [{ space: "first", state: "answering", instanceId: "m1", connectors: [{ agent: "claude", state: "available" }], ...(observed === "connected" ? {} : { connection: { state: observed, reason: "this computer cannot look up cotal.cloud" } }) }], account: account(observed) });
+  win.setTimeout = () => 1;
+  win.clearTimeout = () => {};
+  win.isTauri = true;
+  win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+  win.__TAURI_INTERNALS__ = {
+    transformCallback: (fn: (frame: unknown) => void) => { callbacks.set(++callback, fn); return callback; },
+    unregisterCallback() {},
+    async invoke(cmd: string, args: { request?: Request; label?: string; connected?: boolean; onEvent?: { id: number } } = {}) {
+      if (cmd === "first_paint") return true;
+      if (cmd === "plugin:event|listen" || cmd === "plugin:deep-link|get_current" || cmd === "desktop_presence" || cmd === "set_update_notice" || cmd === "app_update_receipt" || cmd === "app_update_check" || cmd === "app_update_apply") return cmd === "desktop_presence" ? { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" } : cmd === "app_update_check" || cmd === "app_update_apply" ? { phase: "unconfigured" } : null;
+      if (cmd === "set_connection_state") { tray.push({ connected: args.connected, label: args.label }); return; }
+      assert.equal(cmd, "daemon_request");
+      const req = args.request!;
+      calls.push(req);
+      if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "darwin", arch: "arm64", memoryBytes: 0 } };
+      if (req.op === "status") return { v: 1, event: "result", ok: true, result: statusFor("connected") };
+      if (req.op === "status-watch") {
+        let index = 0;
+        pushStatus = (next) => callbacks.get(args.onEvent!.id)!({ index: index++, message: { v: 1, event: "status", ok: true, watchMode: "push", result: next } satisfies Frame });
+        pushStatus(statusFor("connected"));
+        return await new Promise<Frame>(() => {});
+      }
+      if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://cloud.cotal.ai/api/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
+      throw new Error(`Unexpected request ${req.op}`);
+    },
+  };
+  const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  try {
+    win.eval(bundle.code);
+    await settle();
+    assert.equal(doc.getElementById("connection-title")!.textContent, "This computer is connected");
+    pushStatus!(statusFor("offline"));
+    await settle();
+    assert.equal(doc.getElementById("connection-title")!.textContent, "No internet connection", "the window names the lost connection");
+    assert.equal(doc.getElementById("tray-label")!.textContent, "Offline", "the pill names the lost connection");
+    assert.equal(doc.querySelector("#journey")!.closest(".app") ? doc.querySelector(".app")!.classList.contains("later-open") : true, true, "the setup steps stay hidden");
+    assert.equal(doc.getElementById("recovery-panel")!.hidden, true, "Try again is not offered for a lost connection");
+    assert.deepEqual(tray.at(-1), { connected: false, label: "Offline" }, "the tray tooltip uses the pill's words");
+    assert.equal(calls.some(call => call.op === "setup"), false, "losing the network never runs setup");
+  } finally { win.close(); }
+});
+
+test("another installation's service offers no setup button and no command line", async () => {
+  const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
+  assert.ok(!Array.isArray(output) && "output" in output);
+  const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
+  assert.ok(bundle && "code" in bundle);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
+  const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const win = dom.window;
+  const doc = win.document as Document;
+  const calls: Request[] = [];
+  const callbacks = new Map<number, (frame: unknown) => void>();
+  let callback = 0;
+  win.setTimeout = () => 1;
+  win.clearTimeout = () => {};
+  win.isTauri = true;
+  win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+  win.__TAURI_INTERNALS__ = {
+    transformCallback: (fn: (frame: unknown) => void) => { callbacks.set(++callback, fn); return callback; },
+    unregisterCallback() {},
+    async invoke(cmd: string, args: { request?: Request; onEvent?: { id: number } } = {}) {
+      if (cmd === "first_paint") return true;
+      if (cmd === "set_connection_state" || cmd === "set_update_notice") return;
+      if (cmd === "plugin:event|listen" || cmd === "plugin:deep-link|get_current" || cmd === "desktop_presence" || cmd === "app_update_receipt" || cmd === "app_update_check" || cmd === "app_update_apply") return cmd === "desktop_presence" ? { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" } : cmd === "app_update_check" || cmd === "app_update_apply" ? { phase: "unconfigured" } : null;
+      assert.equal(cmd, "daemon_request");
+      const req = args.request!;
+      calls.push(req);
+      const ready = { state: "ready", version: "0.164.15", managers: [{ space: "first", state: "answering", instanceId: "m1", connectors: [{ agent: "claude", state: "available" }] }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed: "connected" }] } };
+      if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "darwin", arch: "arm64", memoryBytes: 0 } };
+      if (req.op === "status") return calls.filter(call => call.op === "status").length > 2
+        ? { v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation, so this one cannot refresh it", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js", native: { code: "ANOTHER_INSTALLATION", detail: { owner: { kind: "cli", location: "/usr/local/lib/node_modules/cotal-ai" } } } } }
+        : { v: 1, event: "result", ok: true, result: ready };
+      if (req.op === "status-watch") return await new Promise<Frame>(() => {});
+      if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://cloud.cotal.ai/api/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
+      throw new Error(`Unexpected request ${req.op}`);
+    },
+  };
+  const settle = async () => { for (let i = 0; i < 40; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  try {
+    win.eval(bundle.code);
+    await settle();
+    doc.getElementById("refresh")!.click();
+    await settle();
+    assert.equal(doc.getElementById("connection-title")!.textContent, "Another copy of Cotal runs the background service");
+    assert.equal(doc.getElementById("recover")!.textContent, "Repair", "Repair, not Try again or Connect, is the one button");
+    assert.equal(/\/usr\/local|bin\/cotal|`/.test(doc.getElementById("refusal-detail")!.textContent ?? ""), false, "Details shows no command line");
+    assert.equal(calls.filter(call => call.op === "setup").length, 0, "nothing runs setup again");
+  } finally { win.close(); }
+});
+
+test("a space that is not connected shows its reason and never a command line", async () => {
+  const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
+  assert.ok(!Array.isArray(output) && "output" in output);
+  const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
+  assert.ok(bundle && "code" in bundle);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
+  const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
+  const win = dom.window;
+  const doc = win.document as Document;
+  const calls: Request[] = [];
+  win.setTimeout = () => 1;
+  win.clearTimeout = () => {};
+  win.isTauri = true;
+  win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+  win.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    unregisterCallback() {},
+    async invoke(cmd: string, args: { request?: Request } = {}) {
+      if (cmd === "first_paint") return true;
+      if (cmd !== "daemon_request") return cmd === "desktop_presence" ? { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" } : cmd === "app_update_check" || cmd === "app_update_apply" ? { phase: "unconfigured" } : null;
+      const req = args.request!;
+      calls.push(req);
+      if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "darwin", arch: "arm64", memoryBytes: 0 } };
+      if (req.op === "status") return { v: 1, event: "result", ok: true, result: { state: "ready", version: "0.164.15", managers: [{ space: "first", state: "starting", reason: "the space is not answering", next: "run `cotal daemon status --space first`" }] } };
+      if (req.op === "status-watch") return await new Promise<Frame>(() => {});
+      if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://example.com/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://example.com/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
+      if (req.op === "service-status") return { v: 1, event: "result", ok: true, result: { state: "disconnected" } };
+      throw new Error(`Unexpected request ${req.op}`);
+    },
+  };
+  const settle = async () => { for (let i = 0; i < 40; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  try {
+    win.eval(bundle.code);
+    await settle();
+    (doc.getElementById("space") as HTMLSelectElement).value = "first";
+    doc.getElementById("space")!.dispatchEvent(new win.Event("change"));
+    await settle();
+    doc.getElementById("refresh")!.click();
+    await settle();
+    const detail = doc.getElementById("refusal-detail")!.textContent ?? "";
+    assert.match(detail, /the space is not answering/, "Details keeps the reason");
+    assert.equal(/`|cotal daemon/.test(detail), false, "Details shows no command line");
+  } finally { win.close(); }
+});

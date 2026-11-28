@@ -1633,7 +1633,11 @@ A broker connection lost during startup's ready call is also retried. Recovery n
 `service-connect`. Other refusals, including ended authority and damaged local records, stop these
 retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
 daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. With no current
+`service-status` reads the daemon's current answer without contacting the space. For a space
+whose hosted Manager is running, it reports that Manager and succeeds only while the Manager
+answers with no lost connection. Otherwise it refuses with the code `OFFLINE` (this computer cannot
+look up the space's host) or `SPACE_UNREACHABLE` (it can, and the space does not answer), or with
+`MANAGER_<STATE>`, such as `MANAGER_STARTING`, for the Manager's own state. With no current
 answer or saved register request, a space that is not registered locally reports `NOT_REGISTERED`
 (`TARGET_NOT_FOUND`). Check the name or run `cotal space` to list registered spaces. A registered
 user-auth space without a request reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`), including after a
