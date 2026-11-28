@@ -360,8 +360,9 @@ try {
       (bareSpace.remedy ?? "").includes(`run \`cotal down\` in ${meshA.root}`) && /`cotal service stop <service-name> --space teamA`/.test(bareSpace.remedy ?? ""),
     bareSpace && { code: bareSpace.code, message: bareSpace.message, remedy: bareSpace.remedy });
   const previewSpace = await rejection(run([], { space: "teamA", "dry-run": true, json: true }));
+  const previewRoot = meshA.root;
   check("...and its JSON preview names only a JSON preview to run there",
-    previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && ["cotal", "pnpm cotal"].some(cli => previewSpace.remedy === `run \`${cli} down --dry-run --json\` from ${meshA.root}`),
+    previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && ["cotal", "pnpm cotal"].some(cli => previewSpace.remedy === `run \`${cli} down --dry-run --json\` from ${previewRoot}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(meshA.root, 0o000);
