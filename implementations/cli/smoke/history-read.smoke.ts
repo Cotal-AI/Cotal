@@ -364,7 +364,8 @@ async function checkDegradedConsoleSends(fixture: Awaited<ReturnType<typeof star
   const consoleEnv = { HOME: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, DO_NOT_TRACK: "1" };
   let session: ConsoleSession | undefined;
   try {
-    const cs = session = new ConsoleSession(["--space", space, "--server", `nats://127.0.0.1:${(proxy.address() as AddressInfo).port}", "--creds", creds], home,
+    const proxyServer = `nats://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const cs = session = new ConsoleSession(["--space", space, "--server", proxyServer, "--creds", creds], home,
       consoleEnv, { cols: 160, rows: 36, cwd: shell });
     const tab = new RegExp(`([1-9]): #${channel.replaceAll(".", "\\.")}\\b`);
     if (!(await cs.waitFor(tab, 20_000))) throw new Error(`scoped console tab did not appear: ${clean(cs.out).slice(-1600)}`);
