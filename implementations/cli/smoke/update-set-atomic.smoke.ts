@@ -85,11 +85,14 @@ for (let attempt = 0; attempt < 2; attempt++) {
   const repeated = run(['update', '--self']);
   assert.equal(repeated.status, 0, repeated.stderr);
 }
+const packageMetadata = ['package.json', 'package-lock.json'].map(file => readFileSync(join(prefix, file), 'utf8'));
 for (const pkg of missing) {
   const removed = run(['ext', 'remove', pkg]);
   assert.equal(removed.status, 0, removed.stderr);
   assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes(`"${pkg}"`));
 }
+assert.deepEqual(['package.json', 'package-lock.json'].map(file => readFileSync(join(prefix, file), 'utf8')), packageMetadata);
+assert.equal(digest(join(prefix, 'node_modules/kept-ext')), keptBefore);
 const repairSeed = run(['ext', 'seed', '--repair']);
 assert.equal(repairSeed.status, 0, repairSeed.stderr);
 console.log('deleted local extensions do not block update retries, removal or seed repair');

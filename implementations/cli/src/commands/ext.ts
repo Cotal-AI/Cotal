@@ -629,6 +629,19 @@ async function remove(pkg: string): Promise<void> {
   }
 }
 
+/** Check whether reconciliation has already removed the package and all its npm records. */
+function extensionIsOnlyRecorded(pkg: string, prefix: string): boolean {
+  if (lstatSync(extensionPackageDir(pkg), { throwIfNoEntry: false })) return false;
+  try {
+    const metadata = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8"));
+    const key = `node_modules/${pkg}`;
+    return lock.lockfileVersion >= 2 && lock.packages?.[""] !== undefined &&
+      !Object.hasOwn(metadata.dependencies ?? {}, pkg) && !Object.hasOwn(lock.packages[""].dependencies ?? {}, pkg) &&
+      !Object.hasOwn(lock.dependencies ?? {}, pkg) && !Object.keys(lock.packages).some(path => path === key || path.startsWith(`${key}/`));
+  } catch { return false; }
+}
+
 async function removeUnlocked(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
@@ -676,8 +689,11 @@ async function removeUnlocked(pkg: string): Promise<void> {
       reservations.push(pidPath);
     }
     assertExtensionServiceInstancesStopped(pkg);
-    const r = await npm(["remove", "--no-audit", "--no-fund", "--ignore-scripts", "--install-links", pkg], extensionsDir());
-    if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
+    const prefix = extensionsDir();
+    if (!extensionIsOnlyRecorded(pkg, prefix)) {
+      const r = await npm(["remove", "--no-audit", "--no-fund", "--ignore-scripts", "--install-links", pkg], prefix);
+      if (r.status !== 0) throw new Error(`npm remove failed:\n${r.output.split("\n").slice(-6).join("\n")}`);
+    }
     const remaining = manifest.extensions.filter((e) => e.pkg !== pkg);
     warnAbsentExtensions(remaining, extensionsDir(), extensionsDir(), console.error);
     saveExtensionsManifest({ extensions: remaining });
