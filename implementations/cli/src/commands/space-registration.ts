@@ -542,9 +542,8 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
     const problem = projectRootProblem(prepared.root);
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem === "missing"
-      ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again`
-      : problem ? displayRemedy(preparedRootRemedy(name, problem)) : flag === "--project"
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem
+      ? displayRemedy(preparedRootRemedy(name, problem, `run ${flag === "--project" ? "setup" : "this create"} again`), presentation === "json" ? "cotal" : undefined) : flag === "--project"
         ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
         : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
@@ -721,6 +720,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     try { if (projectRootProblem(p.root) !== "not-directory") runningOwner = liveMeshOwner(p.root, name); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code ?? ((error as Error)?.cause as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ELOOP") throw refuse("LIFECYCLE_BLOCKED", "a symbolic link loop prevents checking whether the prepared space is running; nothing was forgotten", { ...target, root: p.root }, "inspect the project folder and its process records for a symbolic link loop; restore the original path, then retry");
       if (code !== "EACCES" && code !== "EPERM") throw error;
       throw refuse("PERMISSION_DENIED", "this account cannot check whether the prepared space is running; nothing was forgotten", { ...target, root: p.root },
         "restore access to the project folder and its process records, then try again");
