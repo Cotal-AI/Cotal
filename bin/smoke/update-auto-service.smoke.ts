@@ -3,7 +3,8 @@ import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
@@ -35,7 +36,7 @@ syncBuiltinESMExports();
 process.execArgv = [];
 `);
 const env: NodeJS.ProcessEnv = {
-  PATH: `${native}:${process.env.PATH}`, HOME: home, USER: "smoke", LOGNAME: "smoke",
+  PATH: [native, ...(process.env.PATH ?? "").split(":").filter(isAbsolute)].join(":"), HOME: home, USER: "smoke", LOGNAME: "smoke",
   XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(root, "data"),
   XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"),
   COTAL_HOME: home, TMPDIR: join(root, "tmp"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
@@ -262,8 +263,11 @@ try {
   assert.equal(JSON.parse(busDown.text).error.code, "DEPENDENCY_UNAVAILABLE");
   assert.match(JSON.parse(busDown.text).error.remedy, /logged-in session/);
   const calls = readFileSync(nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
-  assert.ok(calls.length > 0);
-  assert.ok(calls.every(call => call.tool === "systemctl" && call.args.join(" ") === "--user show-environment"), "only read-only ownership observation is allowed");
+  const managerProbe = { tool: "systemctl", args: ["--user", "show-environment"] };
+  const lingerProbe = { tool: "loginctl", args: ["show-user", env.USER, "--property=Linger", "--no-ask-password", "--no-pager"] };
+  assert.ok(calls.some(call => isDeepStrictEqual(call, managerProbe)), "dry run must check the user manager");
+  const unexpected = calls.filter(call => ![managerProbe, lingerProbe].some(probe => isDeepStrictEqual(call, probe)));
+  assert.deepEqual(unexpected, [], "only read-only user manager and autostart probes are allowed");
   console.log("PASS only an active verified native schedule suppresses advisory, and no native mutation occurred");
 } finally { await stop(); }
 emitSentinel({ passed: counted.cells(), failed: 0 });
