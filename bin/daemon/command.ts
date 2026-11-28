@@ -28,14 +28,14 @@ import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
-import { chooseAccountChoice, IdpConfigurationError, listIdpAccounts, normalizeIdpUrl } from "@cotal-ai/auth";
+import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
-import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
+import { installedUnitForSetup, listSavedSetupAccounts, runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy, daemonServiceRequirement, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
@@ -479,7 +479,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       try { discovery = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: true }); }
       catch (error) {
         if (process.platform === "linux" && error instanceof EndpointRefusal && error.code === "NOT_RUNNING" && readReceipt(paths)) {
-          const providers = listIdpAccounts(home ?? homeCotalDir()).filter(account => account.expiresAt > Math.floor(Date.now() / 1000));
+          const providers = listSavedSetupAccounts(home ?? homeCotalDir());
           if (providers.length === 1) {
             idp = providers[0]!.idp;
             resumeAccountInstall = true;

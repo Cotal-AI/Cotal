@@ -2477,6 +2477,22 @@ process.stdin.once('data', () => {
             const { code: retryCode, doc: retryDoc } = await cli("setup");
             check("J0 bare retry identifies the linger blocker without a second approval", retryCode === 2 && retryDoc.error?.code === "PERMISSION_DENIED" && retryDoc.error?.remedy.includes("sudo loginctl enable-linger") && !retryDoc.error?.message.includes("--idp") && deviceCodeRequests === before + 1 && !existsSync(enabledFlag) && pathCalls.length === noNativeChange, { code: retryCode, error: retryDoc.error });
             writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
+            const sessionFile = join(home, "idp-sessions.json");
+            const savedSession = readFileSync(sessionFile);
+            const recordedUnit = readFileSync(pathUnit);
+            const damagedSession = '{"fixture-marker":';
+            writeFileSync(sessionFile, damagedSession);
+            try {
+              const { code, doc, err } = await cli("setup");
+              check("J0 bare retry refuses an unreadable sign-in cache without changing local setup state",
+                code === 2 && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.cause?.code === "LOCAL-STATE-ERROR"
+                && doc.error?.message === "the local sign-in cache (idp-sessions.json) could not be read; no approval was requested"
+                && doc.error?.remedy === "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced"
+                && !(JSON.stringify(doc) + err).includes("fixture-marker") && readFileSync(sessionFile, "utf8") === damagedSession
+                && readFileSync(pathUnit).equals(recordedUnit) && readFileSync(pathReceipt, "utf8") === partialReceipt
+                && !existsSync(enabledFlag) && pathCalls.length === noNativeChange && deviceCodeRequests === before + 1,
+                { code, error: doc.error });
+            } finally { writeFileSync(sessionFile, savedSession); }
             const resumed = await cli("setup");
             check("J0 bare retry enables the recorded service and registers once linger is on", resumed.code === 0 && resumed.doc.target?.idp === idpUrl && deviceCodeRequests === before + 1 && existsSync(enabledFlag) && readFileSync(pathReceipt, "utf8") === partialReceipt && pathCalls.includes("/start"), { code: resumed.code, doc: resumed.doc });
             await killAndAwaitExit(child, "SIGTERM");

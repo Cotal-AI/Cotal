@@ -281,8 +281,9 @@ function firstAccountSignInFailure(result: Extract<LoginResult, { outcome: "fail
   return new CommandFailure("refused", "AUTH_REQUIRED", result.message);
 }
 
-function hasSavedSetupAccount(dir: string, idp: string): boolean {
-  try { return listIdpAccounts(dir).some(account => account.idp === idp && account.expiresAt > Math.floor(Date.now() / 1000)); }
+export function listSavedSetupAccounts(dir: string) {
+  const now = Math.floor(Date.now() / 1000);
+  try { return listIdpAccounts(dir).filter(account => account.expiresAt > now); }
   catch {
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no approval was requested", {
       native: { code: "LOCAL-STATE-ERROR" }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
@@ -303,7 +304,7 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
     await refuseUnsupervisedDaemon(opts);
     planInstall(opts.paths, opts.daemonHome);
     const sessionDir = opts.daemonHome ?? homeCotalDir();
-    if (opts.discoveryPins || !hasSavedSetupAccount(sessionDir, opts.idp)) {
+    if (opts.discoveryPins || !listSavedSetupAccounts(sessionDir).some(account => account.idp === opts.idp)) {
       const signed = await loginBeforeInstall(opts, sessionDir);
       if (signed.outcome === "failed") throw firstAccountSignInFailure(signed);
       credentialsRemoved(signed);
