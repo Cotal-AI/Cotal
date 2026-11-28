@@ -142,6 +142,7 @@ Task dispatch:
 |---|---|
 | [Message flow](presence-and-delivery.mdx) | How presence, routing, durable delivery, and attention determine what peers can observe and receive. |
 | [The delivery daemon](delivery-daemon.mdx) | Why durable channel delivery needs a trusted service, and what happens without it. |
+| [Artifacts](artifacts.mdx) | How agents share bytes too large for a message, who may read them, and how long they last. |
 
 ##### Reference
 

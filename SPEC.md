@@ -410,7 +410,8 @@ Receivers MUST ignore unknown object fields. Unknown conformant extension `Part.
 MUST be ignored unless the receiver explicitly supports that extension. Bare unrecognized
 core-kind values are not conformant. Messages MUST fit the broker's configured maximum payload;
 bytes that do not fit move out of the message and are referenced by an `artifact` part (above).
-The transport that serves those bytes is not defined by this document.
+The `artifacts` endpoint (§13.23) is one transport that serves those bytes; a receiver MAY resolve a
+digest by any other means, and MUST verify the bytes against it in either case.
 
 **Schema.** The JSON Schema (draft-07) at
 [`spec/cotal.schema.json`](spec/cotal.schema.json) is **authoritative for message shapes**:
@@ -7345,6 +7346,85 @@ that never serves its endpoint never runs it, and `command-state` then gets no a
   drops a reply from a runtime presence no longer shows for the agent. A process that exits takes
   its prompts with it; a reader derives that from presence or from `unavailable` on a call.
 
+### 13.23 The `artifacts` endpoint
+
+**Contract note.** The names in this section are drafts: the endpoint `artifacts`, its eight
+commands, the capability token `artifacts`, the credential profiles `artifact-data` and
+`artifact-sweeper`, the three index buckets, and the audit event `artifact.unconfirmed-commit`. They
+may change before they are declared stable.
+
+The endpoint `artifacts` serves the bytes an `artifact` part (§5) references. Its contract is a core
+constant: cluster URN `ai.cotal.artifacts`, revision 2, every input schema closed. Every command is
+ephemeral and untargeted. The reference serves it from the delivery daemon, only when asked
+(`cotal up --serve artifacts`); a daemon not asked serves nothing new.
+
+| command | input | output | repeat-safe |
+|---|---|---|---|
+| `put-begin` | `{name, mediaType, size, digest}` | `{uploadId}` | no |
+| `put-chunk` | `{uploadId, seq, data}` (`data` base64, at most one raw chunk) | `{received}` | no |
+| `put-commit` | `{uploadId}` | `{digest, size}` | no |
+| `fetch-begin` | `{digest, channel}` | `{name, mediaType, size}` | yes |
+| `fetch-chunk` | `{digest, channel, offset}` | `{data, complete}` | yes |
+| `list` | `{channel, limit?, after?}` | `{rows, next?}` | yes |
+| `confirm-attach` | `{digest, channel, seq}` | `{}` | no |
+| `pin` | `{digest, channel}` | `{}` | no |
+
+**Callers.** An agent holds the request rows for these commands only when minted with the capability
+token `artifacts`; no agent's baseline credential carries them, and no grant is made implicitly. A
+caller without the token is refused by the broker (`permission-denied`, `not-executed`).
+
+**Caller fence.** Every command first requires that the live read-ACL row for the caller's alias is
+the caller's own lifecycle. Possession and staging are keyed on the caller's lifecycle UID.
+
+**Put.** `put-begin` stages an upload in the server's memory and refuses before any byte past the
+per-artifact limit or the per-lifecycle staging bounds (`resource-exhausted`, `not-executed`). Chunks
+arrive in order; a chunk out of order or past the declared size ends the upload. `put-commit` hashes
+the staged bytes and refuses unless they hash to the declared digest. A commit writes, in this order,
+a reservation row, the chunks, the meta record and the caller's possession row. The bytes are not
+visible to anyone until attached. A client MUST size each `put-chunk` from the serialized request it
+is about to send, re-measured per call, and MUST refuse before publishing when one raw byte cannot fit
+the broker's limit.
+
+**Attach.** A publisher posts an `artifact` part on a channel, learns the chat sequence the broker
+acknowledged for that post, and calls `confirm-attach` with it. The server reads that one chat entry
+and attaches the digest to the channel only when the entry is a post by the caller, on that channel,
+referencing that digest, and the caller possesses the digest with live bytes. Every refusal for which
+the caller is not entitled is the same reply:
+`{code: "permission-denied", message: "confirm-attach: not authorized for that artifact", outcome: "not-executed"}`
+with no details. A repeated confirm changes nothing. An attachment lapses 14 days after it is made
+unless pinned.
+
+**Fetch.** `fetch-begin` and `fetch-chunk` check the caller's read access to the channel BEFORE
+anything that depends on the digest, so a caller who may not read the channel receives the same
+refusal whether or not the digest exists anywhere. A caller who may read the channel receives
+`unknown digest` when no attachment of the digest exists in that channel, and `artifact expired`
+when the attachment lapsed or its bytes are gone. Each chunk repeats both checks. A client MUST
+verify the fetched bytes against the digest before use.
+
+**List.** `list` applies the same read check, then returns the channel's live attachments in digest
+order, paged so that each reply fits the broker's limit. A lapsed, unpinned attachment is not listed
+even before the server removes it.
+
+**Pin.** `pin` clears an attachment's expiry. It requires that the caller possess the digest or be the
+lifecycle that confirmed the attachment.
+
+**Lifetime.** A commit's reservation protects its bytes for 24 hours. A digest with no live
+attachment and no live reservation is removed, with its possession rows; a re-put after that is a new
+commit, and an old possession row never authorizes it. When a reservation lapses for a commit that
+finished and was never confirmed by its committer, the server emits the audit event
+`artifact.unconfirmed-commit {digest, principal, lifecycleUid}`. The reference emits it as a named
+line in the daemon's log; no audit stream carries it.
+
+**Residuals (named).**
+- The attachment records the lifecycle that confirmed it, not the one that published the post: a
+  successor that put the same bytes may confirm a predecessor's post.
+- A reference published on a second channel for a digest already attached elsewhere, whose confirm
+  never arrives, emits nothing: no reservation lapses, and readers of that channel are refused with
+  nothing on the audit surface.
+- `pin` has no quota in this revision; a mesh's admission hook decides any limit.
+- The daemon's data credential reads the index buckets by a body-selected leader read and the chat
+  stream by sequence for `confirm-attach`; both reads are sealed in one module each.
+
 ---
 
 ## 14. Workflow runs (v0.5)
@@ -8347,7 +8427,20 @@ single-function profiles, each granting only the verbs its function needs and no
   its sender cancelled; creates, reads and writes `KV_cotal_anycast_<space>`; and publishes a
   sender's notice on `P.inst.*.*.<owner>.<actor>` as itself. The `TASK` read reaches every request
   body in the space and the delete reaches any request, so both are bounded only by the profile's
-  trust.
+  trust. For `confirm-attach` (§13.23) it also holds `STREAM.MSG.GET` on `CHAT`, a strict subset of
+  its whole-stream consume, read in one sealed place that returns the subject and the referenced
+  artifact digests only.
+- `artifact-data` (draft): the `artifacts` endpoint's request path, held by the delivery daemon only
+  when it serves that endpoint. On the three artifact index buckets: `STREAM.INFO`, leader-served
+  `STREAM.MSG.GET`, and value publishes; on the artifact object store: `STREAM.INFO`, chunk and meta
+  publishes under `$O.<obj>.C.>` and `$O.<obj>.M.>`, and the subject-scoped
+  `DIRECT.GET.OBJ_<obj>.$O.<obj>.>` only. No consumer create, purge or message delete anywhere, no
+  body-addressed direct get, no `CHAT`, records or auth row. Never issuable to a peer.
+- `artifact-sweeper` (draft): the `artifacts` endpoint's garbage collection, used only by the lease
+  holder. On the three index buckets: `STREAM.INFO`, consumer create, info and delete for
+  completeness-proven scans, flow control, and value publishes for deletes and tombstones; on the
+  object store: `STREAM.INFO` and `STREAM.PURGE`. No message get or direct get anywhere and no `$O`
+  publish, so it reads no object bytes. Never issuable to a peer.
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
@@ -8446,6 +8539,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-28 | **The `artifacts` endpoint (§5, §13.23), additive, draft names.** A registered endpoint `artifacts` (cluster `ai.cotal.artifacts`, revision 2) serves the bytes an `artifact` part references: `put-begin`, `put-chunk`, `put-commit`, `fetch-begin`, `fetch-chunk`, `list`, `confirm-attach` and `pin`. An agent holds its request rows only when minted with the capability token `artifacts`; no baseline credential changes. Fetch and list check the channel read before anything that depends on the digest; every `confirm-attach` refusal for an unentitled caller is one tuple with no details; a lapsed reservation of a finished, unconfirmed commit emits `artifact.unconfirmed-commit`. The reference serves it from the delivery daemon only when asked (`cotal up --serve artifacts`). §5 names it as one transport for the referenced bytes. No existing subject, cluster or digest changes. |
 | 2026-11-26 | **Targeted session evictions run outside the in-order admin chain (Appendix B).** A slow eviction can hold one slot without holding the other targeted requests. A delivery daemon runs at most four `evictSessionConnections` requests at once, alongside other admin commands. The verb's request and reply are unchanged. |
 | 2026-11-25 | **A spawn runs only the variant and modes its model catalog lists (§13.6), breaking.** The Manager cluster advances to revision 58. A variant the catalog does not list was launched and then run at another effort by the harness; it is now refused. `spawn` takes `modes`, a map of mode ids to a toggle's boolean or a choice's option id. A `models` row MAY carry `isDefault`, `defaultVariant` and `modes`. Before anything is minted, the Manager refuses a variant or mode the connector's catalog does not list for the launched model, or for the default row when none is named, and refuses `modes` for a connector that does not render them or a runtime that starts seats elsewhere. A seat's modes are recorded with its launch and replayed on resume. A launch that names no variant and no mode is unchanged. |
 | 2026-11-25 | **The owner labels an agent (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 7 with `set-label`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ label }` of any string and output `{ label }`. It sets `meta["ai.cotal.label"]`, which readers show in place of the name, and leaves `card.name`, so `@mentions`, direct messages and name lookups still resolve it. It refuses as `bad-request`, `not-executed`, a label that breaks the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words. It runs in turn with `set-name`, and a `set-label` before naming settles ends naming with the owner's label. An interactive ledger row's mint and a static `agent-caller` mint add the `owner` row for `set-label`; no `grant` row admits it. Earlier commands and their digests are unchanged. No subject changes. |

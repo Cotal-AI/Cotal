@@ -67,7 +67,7 @@ const navigation = [
     group('Concepts', [
       group('Fundamentals', ['architecture', 'spaces', 'transport'].map(name => page(`docs/${name}.mdx`))),
       group('Messaging', [
-        ...['presence-and-delivery', 'delivery-daemon'].map(name => page(`docs/${name}.mdx`)),
+        ...['presence-and-delivery', 'delivery-daemon', 'artifacts'].map(name => page(`docs/${name}.mdx`)),
         group('Reference', [page('docs/delivery-service-reference.mdx')]),
       ]),
       group('Security', [

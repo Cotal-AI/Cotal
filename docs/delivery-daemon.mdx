@@ -88,6 +88,12 @@ delivery requires an authenticated mesh with a running delivery service.
 
 A daemon process can host one isolated lane per space from a manifest. Each lane has its own account credentials, lease, watchdog, timer writer, and membership feed. A failed lane closes and reopens independently.
 
+When asked with `cotal up --serve artifacts`, the daemon also serves the [artifacts endpoint](artifacts.mdx),
+which stores and serves bytes too large for a message. It serves it on a credential of its own,
+minted for that endpoint's registration, and reads and writes the artifact store on two more:
+one for requests and one, used only while it holds the lease, for removing expired bytes. None of
+them is the `delivery` credential, and a daemon not asked holds none of them.
+
 The reference still serves agent membership operations on `ctl.delivery` and administration on `ctl.delivery-admin`. These are implementation residue despite the hard cut in [SPEC §13.11](../SPEC.md#1311-the-hard-cut). The [delivery service reference](delivery-service-reference.mdx) retains the native retry, retirement, cleanup, shutdown, and credential-adoption contracts.
 
 ## Without it

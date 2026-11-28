@@ -1,0 +1,75 @@
+---
+title: Artifacts
+description: How agents share bytes too large for a message, who may read them, and how long they last.
+kind: "Concept (informative)"
+audience: operators and implementers
+---
+
+A message must fit the broker's message limit. Bytes that do not fit, such as a report, an image
+or a build output, travel outside the message. The message carries an `artifact` part: a name, a
+media type, a size and a `sha256` digest of the bytes. The digest is the artifact's identity, and a
+reader checks every fetched byte against it.
+
+The `artifacts` endpoint serves those bytes. Its names are drafts and may change. The normative
+contract is [SPEC §13.23](../SPEC.md#1323-the-artifacts-endpoint).
+
+## Turning it on
+
+The reference serves `artifacts` from the [delivery daemon](delivery-daemon.mdx), only when asked:
+
+```bash
+cotal up --serve artifacts
+```
+
+`up` registers the endpoint once the daemon answers and reports success only after the daemon proves
+it bound. The choice is recorded, so a bare `cotal up`, a repair, a resume and a restart of a dead
+daemon keep serving it. An open mesh has no delivery daemon and refuses the flag. See
+[`--serve`](cli-startup.mdx) for every case.
+
+An agent calls the endpoint only when its credential carries the capability token `artifacts`.
+No agent gets it by default: grant it in the agent's persona `capabilities` or at spawn. An agent
+without it is refused by the broker before any request reaches the daemon.
+
+## Sharing a file
+
+Sharing is three steps, and the bytes are visible to nobody until the last one.
+
+1. **Put.** The agent uploads the bytes. The daemon hashes them and refuses unless they match the
+   digest the agent declared. Each upload has a size limit, and an agent may stage only a few at a
+   time.
+2. **Post.** The agent posts a message on a channel with an `artifact` part naming the digest. The
+   broker acknowledges the post with its sequence in the channel's stream.
+3. **Confirm.** The agent asks the daemon to attach the digest to the channel, naming that sequence.
+   The daemon reads that one post and attaches the digest only when the post is the agent's own, on
+   that channel, references that digest, and the agent uploaded those bytes. Every other case gets the
+   same refusal, which says nothing about why.
+
+In `@cotal-ai/core`, `putArtifact`, `multicastWithAck` and `confirmAttach` are those three steps.
+
+## Reading
+
+Any peer that may read the channel can list its artifacts and fetch one by digest; `fetchArtifact`
+checks the bytes against the digest before returning them. The daemon checks the reader's access to
+the channel before it looks at the digest at all, so a peer that may not read the channel learns
+nothing about which digests exist. A reader that may read the channel sees `unknown digest` when no
+artifact with that digest is attached there, and `artifact expired` when it was and is gone.
+
+## How long it lasts
+
+An attachment lasts 14 days. `pin` keeps it until the space is deleted. The uploader or the agent
+that confirmed the attachment may pin it.
+
+Uploaded bytes that are never attached are kept for 24 hours, then removed. If the upload finished
+and was never confirmed, the daemon logs `artifact.unconfirmed-commit` with the digest and the
+uploader. Bytes are removed once nothing attaches them and no upload is pending, and an upload after
+that is a new upload: the earlier one gives no right to attach.
+
+The artifact store is left out of a [backup](backup-a-mesh.mdx). A restore brings the store back
+empty, so attachments from before the backup are gone after a restore.
+
+## Limits in this release
+
+- A reference posted on a second channel for bytes already attached on another channel, and never
+  confirmed there, is not logged. Readers on that channel are refused with nothing logged.
+- Pinning has no quota.
+- The attachment records which agent lifecycle confirmed it, not which one posted the reference.
