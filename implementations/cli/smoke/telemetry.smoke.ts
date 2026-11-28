@@ -256,6 +256,18 @@ for (const level of ["regular", "minimal"]) {
   const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
   const addEvent = add.sent.find(body => body.event === "command");
   check("a refused registration root stays local", add.status === 1 && add.stdout.includes(marker) && addEvent?.errorCode === "USAGE_INVALID" && addEvent.errorMessage === "--root must name an existing directory" && !JSON.stringify(add.sent).includes(marker), shown(add));
+  for (const path of [file, join(file, "child")]) {
+    const r = await s.run(["up", "--store-dir", path, "--server", "nats://127.0.0.1:1", "--json"]), event = r.sent.find(body => body.event === "command");
+    check("a file in the requested store path is named only locally", r.status === 1 && r.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
+      && event?.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+  }
+  const records = join(s.home, ".cotal", "meshes"), record = join(records, "relative.json");
+  mkdirSync(records, { recursive: true });
+  const legacy = JSON.stringify({ space: "relative", root: `../folder ${marker}`, origin: "up", mode: "auth", server: "nats://127.0.0.1:4222", ts: new Date(0).toISOString() });
+  writeFileSync(record, legacy, { mode: 0o600 });
+  const claim = await s.run(["up", "--detach", "--no-manager", "--space", "relative", "--server", "nats://127.0.0.1:4222"]), claimEvent = claim.sent.find(body => body.event === "command");
+  check("a relative registration path stays local and the claim leaves the record intact", claim.status === 2 && claim.stderr.includes(marker) && readFileSync(record, "utf8") === legacy
+    && claimEvent?.errorCode === "CONFLICT" && claimEvent.errorMessage === null && claimEvent.errorStack === null && !JSON.stringify(claim.sent).includes(marker), shown(claim));
   const odd = join(s.project, `tab\tfolder ${marker}`);
   const refused = await s.run(["space", "create", space, "--root", odd, "--json"]);
   const reported = refused.sent.filter(body => body.event === "command");
