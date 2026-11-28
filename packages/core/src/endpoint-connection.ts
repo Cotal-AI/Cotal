@@ -18,12 +18,15 @@ import { withDeadline } from "./deadline.js";
 import { bearerRenewalDeadlineMs, RepeatedRefusal, dialerFor, authOpts, describeStatusError, expiryAwareErrorEvent, isAuthRejection, kvWatchConsumer } from "./endpoint-dial.js";
 import type { TransportState } from "./endpoint-options.js";
 import { credsRenewalDelayMs, credsClaims } from "./identity.js";
-import { type IssuedSubjectPermission, importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow } from "./issued-authority.js";
+import { type IssuedSubjectPermission, type IssuedSubjectPermissions, importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow } from "./issued-authority.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
-import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBinding } from "./native-connection.js";
+import { type NativeConnectionBinding, nativeBindingAfter, nativeConnectionBinding, watchNativeConnection } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
+import { isPermissionDenied } from "./permission-denied.js";
+import { readPluginChannelRouteProjection } from "./plugin-channel-projection.js";
+import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
 import { PRESENCE_STORAGE } from "./streams.js";
-import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
+import { channelBucket, presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import type { CotalMessage } from "./types.js";
@@ -83,6 +86,9 @@ export class EndpointConnection {
    *  {@link stop} or a rebuild moved the epoch retires its watch and starts that delete itself, so
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
+  private readonly projectionWires = new WeakMap<NatsConnection, ReturnType<typeof watchNativeConnection>>();
+  private readonly admittedProjection = new WeakMap<NatsConnection, NativeConnectionBinding & { permissions?: IssuedSubjectPermissions }>();
+  private readonly presentedPermissions = new WeakMap<NatsConnection, () => IssuedSubjectPermissions | undefined>();
 
   constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly delivery: Readonly<DeliveryState>, private readonly deps: EndpointConnectionDeps, private readonly parts: Pick<EndpointParts, "anycastRail" | "channelDiscovery" | "consumers" | "credentials" | "deliveryLease" | "deliveryPlane" | "liveness" | "presence" | "principalServe" | "provisioning" | "reconnection" | "subscriptions">) {}
 
@@ -90,6 +96,98 @@ export class EndpointConnection {
   private requireLifecycleUid(what: string): string { return this.deps.requireLifecycleUid(what); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private emit(event: string, ...args: unknown[]) { return this.deps.emit(event, ...args); }
+
+  /** True only after this exact wire has a valid route. A native reconnect cannot install a new
+   *  rail or epoch over the old subscriptions. That requires the full bind path. */
+  private async validatePluginChannelProjection(nc: NatsConnection): Promise<boolean> {
+    if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) return false;
+    const optional = this.identity.card.kind === "endpoint";
+    if (!this.authed || this.identity.dmOnly || (optional && !this.identity.readChannelRoutingProjection)) return true;
+    if (optional && this.projectionReadKnownDenied(nc)) return this.withoutViewerProjection(nc);
+    let wire = this.projectionWires.get(nc);
+    if (!wire) {
+      wire = watchNativeConnection(nc, "plugin channel projection");
+      this.projectionWires.set(nc, wire);
+    }
+    const { serverId, cid } = wire.binding();
+    const permissions = this.presentedPermissions.get(nc)?.();
+    const result = await readPluginChannelRouteProjection(nc, this.identity.space).then(
+      (projection) => ({ projection }),
+      (error: unknown) => ({ error }),
+    );
+    if (this.lifecycle.stopped || this.conn.nc !== nc) return false;
+    // This status reader keeps moving while the endpoint's status handler awaits the KV read.
+    try {
+      const current = wire.binding();
+      if (current.serverId !== serverId || current.cid !== cid) return false;
+    } catch {
+      return false;
+    }
+    if ("error" in result) {
+      if (optional && isPermissionDenied(result.error)) return this.withoutViewerProjection(nc);
+      throw result.error;
+    }
+    const { enabled, epoch } = result.projection;
+    if (this.conn.pluginChannelEpoch !== undefined &&
+        (epoch !== this.conn.pluginChannelEpoch || enabled !== this.conn.pluginChannelsEnabled))
+      throw new Error("plugin channel routing changed; a full endpoint bind is required");
+    this.conn.pluginChannelsEnabled = enabled;
+    this.conn.pluginChannelEpoch = epoch;
+    this.admittedProjection.set(nc, { serverId, cid, permissions });
+    return true;
+  }
+
+  private projectionReadKnownDenied(nc: NatsConnection): boolean {
+    const permission = this.conn.watchDeletePermissions.get(nc)?.();
+    return permission !== undefined && !issuedPermitsSubject(permission, `$JS.API.STREAM.MSG.GET.KV_${channelBucket(this.identity.space)}`);
+  }
+
+  private withoutViewerProjection(nc: NatsConnection): true {
+    if (this.admittedProjection.has(nc)) throw new Error("channel routing projection access changed; a full endpoint bind is required");
+    return true;
+  }
+
+  channelRoutingMode(): "legacy" | "isolated" | undefined {
+    const nc = this.conn.nc;
+    if (!nc || nc.isClosed() || this.lifecycle.stopped || !this.conn.nativeBound || this.identity.dmOnly) return undefined;
+    if (!this.authed) return "legacy";
+    const admitted = this.admittedProjection.get(nc);
+    if (!admitted) return undefined;
+    try {
+      const current = this.projectionWires.get(nc)?.binding();
+      if (current?.cid !== admitted.cid || current.serverId !== admitted.serverId) return undefined;
+      return this.conn.pluginChannelsEnabled ? "isolated" : "legacy";
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Only the credential presented on this admitted wire can contribute plugin discovery rows. */
+  admittedPluginPermissions(nc: NatsConnection): IssuedSubjectPermissions | undefined {
+    if (this.conn.nc !== nc || this.channelRoutingMode() !== "isolated") return undefined;
+    return this.admittedProjection.get(nc)?.permissions;
+  }
+
+  private recoverPluginChannelsOnNativeReconnect(nc: NatsConnection): void {
+    const wire = this.projectionWires.get(nc);
+    if (!this.conn.pluginChannelsEnabled || !wire) return;
+    let validated: NativeConnectionBinding;
+    try { validated = wire.binding(); }
+    catch { return; }
+    const epoch = this.conn.pluginChannelEpoch;
+    const stillCurrent = () => {
+      if (this.lifecycle.stopped || this.conn.nc !== nc || this.conn.pluginChannelEpoch !== epoch) return false;
+      try {
+        const binding = wire.binding();
+        return binding.serverId === validated.serverId && binding.cid === validated.cid;
+      } catch {
+        return false;
+      }
+    };
+    void this.parts.consumers.recoverPluginChannels(stillCurrent).catch((error: Error) => {
+      if (stillCurrent()) this.emitRecoverable(error);
+    });
+  }
 
   async bindConnection(): Promise<void> {
     this.clearConnectionScoped();
@@ -135,6 +233,7 @@ export class EndpointConnection {
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
     let watchDeletePermission: IssuedSubjectPermission | undefined;
+    let presentedPermissions: IssuedSubjectPermissions | undefined;
     this.conn.nc = await dialerFor(this.identity.servers)({
       servers: this.identity.servers,
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
@@ -166,10 +265,13 @@ export class EndpointConnection {
       ...authOpts({ token: this.identity.token, user: this.identity.user, pass: this.identity.pass, creds: this.cred.currentCreds !== undefined || this.identity.credsSource ? () => this.parts.credentials.presentCreds() : undefined, bearer: this.identity.userMode ? () => this.parts.credentials.presentBearer() : undefined, sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
         onCreds: (creds) => {
           watchDeletePermission = undefined;
+          presentedPermissions = undefined;
           try {
             const nats = credsClaims(creds).nats;
             if (nats?.pub !== undefined)
               watchDeletePermission = importNativeSubjectPermissions({ pub: nats.pub }).publish;
+            if (nats?.sub !== undefined)
+              presentedPermissions = importNativeSubjectPermissions({ ...(nats.pub === undefined ? {} : { pub: nats.pub }), sub: nats.sub });
           } catch {
             // Unknown/malformed claims cannot prove a denial. Keep the existing broker check.
           }
@@ -179,12 +281,17 @@ export class EndpointConnection {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
     this.conn.watchDeletePermissions.set(this.conn.nc, () => watchDeletePermission);
+    this.presentedPermissions.set(this.conn.nc, () => presentedPermissions);
     this.conn.ownedConnections.add(this.conn.nc);
     const owned = this.conn.nc;
     void owned.closed().then(() => this.conn.ownedConnections.delete(owned));
     this.identity.onConnection?.(this.conn.nc);
     requireBrokerFloor(this.conn.nc);
     this.parts.credentials.armAuthExpiryReconnectFence(this.conn.nc);
+    if (!(await this.validatePluginChannelProjection(this.conn.nc))) {
+      if (this.lifecycle.stopped) return;
+      throw new Error("transport changed during plugin channel projection validation");
+    }
     this.watchStatus();
     this.conn.js = jetstream(this.conn.nc);
 
@@ -393,7 +500,8 @@ export class EndpointConnection {
           decoded = undefined;
         }
         const parsed = parseSubject(m.subject);
-        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+        if (parsed?.kind === PLUGIN_CHANNEL_ROOT && (this.channelRoutingMode() !== "isolated" || decoded === undefined)) continue;
+        if (decoded !== undefined && (parsed?.kind === PLUGIN_CHANNEL_ROOT || parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
           if (!isFromSubjectSender(decoded, parsed)) continue;
           // A message whose parts cannot be read is dropped, as history drops it (#7060).
           if (parsed.kind !== "evp" && (!Array.isArray(decoded.parts) || !decoded.parts.every(isReadableMessagePart))) continue;
@@ -565,6 +673,21 @@ export class EndpointConnection {
         }
         if (s.type === "reconnect") {
           this.parts.credentials.armAuthExpiryReconnectFence(nc);
+          try {
+            if (!(await this.validatePluginChannelProjection(nc))) continue;
+            if (!(await this.parts.deliveryPlane.validateDaemonPluginRoute(nc))) continue;
+          } catch (error) {
+            if (this.lifecycle.stopped || this.conn.nc !== nc) continue;
+            this.conn.nativeBound = false;
+            this.emitRecoverable(error as Error);
+            // Close rather than reuse subscriptions bound under an unproved route. The terminal
+            // supervisor owns the full bind and retry backoff. A failed read cannot throw out of
+            // this status loop or fire a ready event.
+            await this.parts.credentials.closeWithoutLibraryReconnect(nc).catch((e: Error) => this.emitRecoverable(e));
+            continue;
+          }
+          if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) continue;
+          this.recoverPluginChannelsOnNativeReconnect(nc);
           // The library re-subscribed on a connection the broker authorized again: re-run the check.
           this.parts.principalServe.rebindPrincipalServes(true);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
@@ -708,6 +831,8 @@ export class EndpointConnection {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   clearConnectionScoped(): void {
+    this.conn.pluginChannelsEnabled = false;
+    this.conn.pluginChannelEpoch = undefined;
     if (this.cred.authExpiryReconnectTimer) {
       clearTimeout(this.cred.authExpiryReconnectTimer);
       this.cred.authExpiryReconnectTimer = undefined;

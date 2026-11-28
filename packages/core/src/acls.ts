@@ -15,6 +15,7 @@
  */
 import { Kvm, type KV } from "@nats-io/kv";
 import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey, patternInAllow } from "./subjects.js";
+import { classifyChannel } from "./plugin-channel-route.js";
 import type { AclRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
 
@@ -168,8 +169,9 @@ export async function reissueAcl(
   owner: string,
   lifecycleUid: string,
   allowSubscribe: string[],
+  pluginChannelsEnabled = false,
 ): Promise<AclRecord> {
-  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: true });
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: true, pluginChannelsEnabled });
 }
 
 /**
@@ -182,8 +184,9 @@ export async function commitAcl(
   owner: string,
   lifecycleUid: string,
   allowSubscribe: string[],
+  pluginChannelsEnabled = false,
 ): Promise<AclRecord> {
-  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: false });
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: false, pluginChannelsEnabled });
 }
 
 /**
@@ -201,8 +204,9 @@ async function writeAcl(
   owner: string,
   lifecycleUid: string,
   allowSubscribe: string[],
-  opts: { reissue: boolean },
+  opts: { reissue: boolean; pluginChannelsEnabled?: boolean },
 ): Promise<AclRecord> {
+  if (opts.pluginChannelsEnabled) for (const channel of allowSubscribe) classifyChannel(channel);
   const key = aclKey(owner, lifecycleUid);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -215,7 +219,7 @@ async function writeAcl(
       issued = [...allowSubscribe];
     } else {
       issued = [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
-      const excess = allowSubscribe.filter((a) => !patternInAllow(issued, a));
+      const excess = allowSubscribe.filter((a) => !patternInAllow(issued, a, opts.pluginChannelsEnabled));
       if (excess.length > 0) {
         throw new Error(
           `commitAcl: cannot raise ACL above mint-time ceiling without reissue ` +

@@ -18,7 +18,9 @@ import {
   type InlinePersona,
   type PersonaEndpoint,
 } from "@cotal-ai/core";
+import { CHANNEL_ROUTING_NOT_READY, hasPluginChannelRoot } from "./agent-channels.js";
 import type { MeshAgent } from "./agent.js";
+import { isAuthed } from "./config.js";
 
 /** Client-side floor for a spawn action's submit + follow. The manager acceptance carries the exact
  *  connector-selected readiness budget, and core extends the follow through that budget plus
@@ -82,6 +84,7 @@ export class AgentSupervision {
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
+    const mode = this.ep.channelRoutingMode?.();
     for (const ch of opts?.join ?? []) {
       try {
         assertValidChannel(ch);
@@ -89,7 +92,9 @@ export class AgentSupervision {
         return { ok: false, error: `join: ${(e as Error).message}` };
       }
       if (!isConcreteChannel(ch)) return { ok: false, error: `join: "${ch}" must be a concrete channel (no wildcard)` };
-      if (!channelInAllow(this.config.allowSubscribe, ch))
+      if (mode === undefined && isAuthed(this.config) && hasPluginChannelRoot(ch))
+        return { ok: false, error: `join: ${CHANNEL_ROUTING_NOT_READY}` };
+      if (!channelInAllow(this.config.allowSubscribe, ch, mode === "isolated"))
         return { ok: false, error: `join: "${ch}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]; a spawn can only hand on channels you may read yourself` };
     }
     let instance: string | undefined;

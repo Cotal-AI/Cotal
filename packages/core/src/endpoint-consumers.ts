@@ -9,13 +9,14 @@ import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { withDeadline } from "./deadline.js";
+import { endpointChannelRoute, isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { authenticatedMessage, kindFromParsed, isUsableMessageId, isFromSubjectSender, dmOnlyDelivery } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { DmDurableMissingError, type DmOnlyOptions, DmBindRefusedError } from "./endpoint-options.js";
 import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { taskDurableConfig } from "./streams.js";
-import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, chatSubject } from "./subjects.js";
+import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatStream, subjectMatches } from "./subjects.js";
 import type { MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
@@ -44,6 +45,8 @@ export class EndpointConsumers {
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
    *  signal now that there is no per-instance chat durable. */
   private firstConnect = true;
+  private readonly pluginHistoryFrontiers = new Map<string, number>();
+  private pluginHistoryRecovery?: Promise<void>;
   /** The refusals a channel's live subscription callback received. nats.js hands a subscription
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
@@ -61,6 +64,11 @@ export class EndpointConsumers {
   /** Whether a live chat subscription's own callback already received this refusal. */
   ownsChatSubRefusal(err: PermissionViolationError): boolean {
     return this.chatSubRefusals.has(err);
+  }
+
+  pluginReplayFence(channel: string): () => boolean {
+    const sub = this.delivery.chatSubs.get(channel);
+    return () => sub !== undefined && this.delivery.chatSubs.get(channel) === sub && !this.lifecycle.stopped;
   }
 
   /** Lazily obtain a JetStream manager — so a non-consuming endpoint (e.g. the supervisor,
@@ -119,11 +127,17 @@ export class EndpointConsumers {
       for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
       if (armed) await this.parts.history.backfillArmed(armed, this.identity.backfillFloor);
+      if (armed) {
+        for (const [channel, frontier] of armed) this.rememberPluginHistory(channel, frontier);
+      } else {
+        await this.recoverPluginChannels();
+      }
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
     // later leave can tombstone the §7 boundary; idempotent on relaunch. Open mode has no Plane-3.
-    if (this.firstConnect && this.authed && this.identity.channels.length) await this.parts.bootMemberships.armBootDurableMemberships();
+    if (this.firstConnect && this.authed && this.identity.channels.length)
+      await this.parts.bootMemberships.armBootDurableMemberships((channel) => isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel));
     this.firstConnect = false;
 
     // Anycast: a shared work-queue consumer for our role — one instance grabs each task.
@@ -138,6 +152,38 @@ export class EndpointConsumers {
         );
       }
       await this.pump(taskStream(this.identity.space), taskDurable(this.identity.card.role), this.authed ? { takeRole: this.identity.card.role } : {});
+    }
+  }
+
+  rememberPluginHistory(channel: string, frontier: number): void {
+    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !this.delivery.chatSubDenied.has(channel))
+      this.pluginHistoryFrontiers.set(channel, frontier);
+  }
+
+  recoverPluginChannels(stillCurrent: () => boolean = () => true): Promise<void> {
+    const nc = this.conn.nc;
+    const epoch = this.conn.pluginChannelEpoch;
+    const onSameRoute = () => this.conn.nc === nc && this.conn.pluginChannelEpoch === epoch &&
+      this.conn.pluginChannelsEnabled && !this.lifecycle.stopped && stillCurrent();
+    const previous = this.pluginHistoryRecovery?.catch(() => {});
+    const recovery = Promise.resolve(previous).then(() => this.recoverPluginHistoryWindows(onSameRoute));
+    this.pluginHistoryRecovery = recovery;
+    const clear = () => { if (this.pluginHistoryRecovery === recovery) this.pluginHistoryRecovery = undefined; };
+    void recovery.then(clear, clear);
+    return recovery;
+  }
+
+  private async recoverPluginHistoryWindows(stillCurrent: () => boolean): Promise<void> {
+    for (const [channel, from] of this.pluginHistoryFrontiers) {
+      if (!stillCurrent()) return;
+      const sub = this.delivery.chatSubs.get(channel);
+      if (!sub || !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) continue;
+      const replayFence = this.pluginReplayFence(channel);
+      const stillJoined = () => stillCurrent() && replayFence() && this.pluginHistoryFrontiers.get(channel) === from;
+      const through = await this.parts.history.channelFrontier(channel);
+      if (!stillJoined() || through <= from) continue;
+      await this.parts.history.recoverPluginHistory(channel, from, through, stillJoined);
+      if (stillJoined()) this.pluginHistoryFrontiers.set(channel, through);
     }
   }
 
@@ -338,7 +384,8 @@ export class EndpointConsumers {
   subscribeChat(channel: string): void {
     if (!this.conn.nc || this.delivery.chatSubs.has(channel)) return;
     this.delivery.chatSubDenied.delete(channel);
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    const subject = route.subject("*", "*");
     const sub = this.conn.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
@@ -351,6 +398,7 @@ export class EndpointConsumers {
           if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
           this.delivery.chatSubDenied.add(channel);
           this.delivery.chatSubs.delete(channel);
+          this.pluginHistoryFrontiers.delete(channel);
           const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
             this.identity.channels.splice(i, 1);
@@ -369,7 +417,8 @@ export class EndpointConsumers {
           return;
         }
         const parsed = parseSubject(m.subject);
-        if (!parsed || parsed.kind !== "chat" || hasStoredOrigin(m.headers)) return;
+        if (!parsed || parsed.kind !== route.kind || !subjectMatches(subject, m.subject) || hasStoredOrigin(m.headers)) return;
+        if (route.kind === "chat" && isRoutedPluginChannel(this.conn.pluginChannelsEnabled, parsed.rest)) return;
         let msg: CotalMessage;
         try {
           msg = m.json<CotalMessage>();
@@ -392,6 +441,7 @@ export class EndpointConsumers {
 
   /** Close a channel's core subscription (manager-free leave). */
   unsubscribeChat(channel: string): void {
+    this.pluginHistoryFrontiers.delete(channel);
     const sub = this.delivery.chatSubs.get(channel);
     if (sub) {
       try {

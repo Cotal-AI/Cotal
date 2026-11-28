@@ -12,13 +12,18 @@ import { jetstreamManager, JetStreamApiCodes, type JetStreamManager, type JsMsg,
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
+import { projectChannelGrants } from "./channel-grants.js";
+import { isRoutedPluginChannel } from "./endpoint-channel-route.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import type { ChannelMember } from "./endpoint-options.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
-import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, subjectMatches } from "./subjects.js";
+import { PLUGIN_CHANNEL_ROOT } from "./plugin-channel-route.js";
+import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, patternInAllow, subjectMatches } from "./subjects.js";
 import type { ChannelConfig, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
+
+const PLUGIN_HISTORY_ONLY_REASON = "plugin channel posts are retained in channel history, not stored as individual copies";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
@@ -95,8 +100,10 @@ export class EndpointSubscriptions {
     channel: string,
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {
     if (!this.conn.jsm) throw new Error(this.notLiveMsg());
+    const pluginHistoryOnly = isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
     if (this.identity.channels.includes(channel))
-      return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel) };
+      return { joined: false, backfilled: 0, durable: this.delivery.plane3Channels.has(channel),
+        ...(pluginHistoryOnly ? { reason: PLUGIN_HISTORY_ONLY_REASON } : {}) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
     // Arm the watermark BEFORE going live: the backfill reads ≤ frontier and the core-sub only ever
@@ -132,7 +139,9 @@ export class EndpointSubscriptions {
     let durable = false;
     let reason: string | undefined;
     const family = isChannelFamily(channel);
-    if (!family && !isConcreteChannel(channel))
+    if (pluginHistoryOnly) {
+      reason = PLUGIN_HISTORY_ONLY_REASON;
+    } else if (!family && !isConcreteChannel(channel))
       reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
     else if (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === "durable") {
       try {
@@ -150,6 +159,8 @@ export class EndpointSubscriptions {
       }
     }
     const backfilled = await this.parts.history.backfillArmed(armed);
+    const frontier = armed.get(channel);
+    if (frontier !== undefined) this.parts.consumers.rememberPluginHistory(channel, frontier);
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 
@@ -170,7 +181,8 @@ export class EndpointSubscriptions {
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
-    if (this.authed && (isChannelFamily(channel) || isConcreteChannel(channel))) {
+    if (this.authed && !isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) &&
+        (isChannelFamily(channel) || isConcreteChannel(channel))) {
       const memberships = await this.parts.bootMemberships.fetchMemberships(channel);
       if (memberships === undefined && this.delivery.plane3Channels.has(channel))
         await this.parts.durable.durableLeaveChannel(channel, this.delivery.plane3Channels.get(channel));
@@ -245,9 +257,10 @@ export class EndpointSubscriptions {
    *  entry (configured-but-empty), each tagged with its {@link ChannelConfig}. Works even on
    *  observer endpoints (no consumers needed). */
   async listChannels(): Promise<{ channel: string; messages: number; config?: ChannelConfig }[]> {
-    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const nc = this.conn.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
     if (this.parts.channelDiscovery.readsChannelsOnDemand) await this.parts.channelDiscovery.readChannels();
-    const mgr = await jetstreamManager(this.conn.nc);
+    const mgr = await jetstreamManager(nc);
     // Subjects carry the sender (chat.<sender>.<channel>), so collapse across senders: sum
     // each channel's counts regardless of who published.
     const counts = new Map<string, number>();
@@ -269,12 +282,26 @@ export class EndpointSubscriptions {
       // and must stay loud rather than returning a valid-looking registry-only subset.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
+    if (this.conn.nc !== nc) throw new Error("connection changed while listing channels");
     const channels = new Set<string>([...counts.keys(), ...this.channelRegistry.channelConfigs.keys()]);
+    const isolated = this.conn.pluginChannelsEnabled;
+    if (isolated) for (const channel of channels) {
+      if (isRoutedPluginChannel(true, channel)) channels.delete(channel);
+    }
+    const permissions = this.parts.connection.admittedPluginPermissions(nc);
+    if (permissions) {
+      const grants = projectChannelGrants(permissions, { space: this.identity.space, mode: "isolated" })
+        .read.filter(({ kind }) => kind === PLUGIN_CHANNEL_ROOT).map(({ channel }) => channel);
+      for (const grant of grants) channels.add(grant);
+      for (const channel of [...(this.identity.allowSubscribe ?? []), ...this.identity.channels, ...this.delivery.plane3Channels.keys()]) {
+        if (isRoutedPluginChannel(true, channel) && patternInAllow(grants, channel, true)) channels.add(channel);
+      }
+    }
     return [...channels]
       .map((channel) => ({
         channel,
-        messages: counts.get(channel) ?? 0,
-        config: this.channelRegistry.channelConfigs.get(channel),
+        messages: isRoutedPluginChannel(isolated, channel) ? 0 : counts.get(channel) ?? 0,
+        config: isRoutedPluginChannel(isolated, channel) ? undefined : this.channelRegistry.channelConfigs.get(channel),
       }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
   }

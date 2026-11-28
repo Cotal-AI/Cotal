@@ -17,8 +17,15 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   CotalEndpoint,
+  chatSubject,
+  dmDurable,
+  dmStream,
+  PLUGIN_CHANNEL_ROOT,
+  PLUGIN_MENTION_POINTER_KEY,
   seedChannelRegistry,
   isReachable,
   createSpaceAuth,
@@ -28,8 +35,10 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
+  unicastSubject,
   CONTROL_DELIVERY,
   DEV_OWNER,
+  type CotalMessage,
 } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
@@ -37,6 +46,7 @@ import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 
 const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -71,6 +81,452 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const channels = ["normal-ch", "quiet-ch", "muted-ch"];
+const legacyChannel = `${PLUGIN_CHANNEL_ROOT}.linear.legacy`;
+const legacyGrant = `${PLUGIN_CHANNEL_ROOT}.>`;
+const ageChannel = "age-control";
+const routingRetry = "The connection is not ready to route plugin channels. Try again once connected.";
+const runTool = (seat: MeshAgent, name: string, args: Record<string, unknown> = {}) =>
+  cotalToolSpecs(seat.config, "smoke").find((tool) => tool.name === name)!.run(seat, seat.config, args);
+const waitFor = async (test: () => boolean) => {
+  for (let i = 0; i < 75; i++) {
+    if (test()) return true;
+    await sleep(100);
+  }
+  return false;
+};
+
+async function checkPluginToolDelivery(agent: MeshAgent, chatOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string, daemonId: string): Promise<void> {
+  const run = runTool;
+
+  const initial = await publisher.multicast("plugin join history", { channel: plugin });
+  const pluginJoin = await run(agent, "cotal_join", { channel: plugin });
+  const chatJoin = await run(agent, "cotal_join", { channel: chat });
+  const chatSend = await run(agent, "cotal_send", { channel: chat, text: "ordinary tool post" });
+  const pluginSend = await run(agent, "cotal_send", { text: "plugin tool post" });
+  check("the same connector tools join and post on both rails without promising a plugin stored copy",
+    !chatJoin.isError && !pluginJoin.isError && !chatSend.isError && !pluginSend.isError &&
+    agent.joinedChannels().includes(plugin) && !agent.ep.hasDurableMembership(plugin) &&
+    pluginSend.text.startsWith(`Posted to #${plugin}`) && !pluginJoin.text.includes("offline won't be replayed"),
+    { chatJoin, pluginJoin, chatSend, pluginSend });
+  const scopedList = await run(agent, "cotal_channels", { filter: plugin });
+  const info = await run(agent, "cotal_channel_info", { channel: plugin });
+  check("plugin list and info reflect the caller's join with no shared registry metadata",
+    !scopedList.isError && scopedList.text.includes(`● #${plugin}`) && !scopedList.text.includes("durable backstop") &&
+    !info.isError && info.text === `#${plugin}: no shared registry entry. Replay on join is on.`, { scopedList, info });
+
+  check("joined plugin history is historical and never starts an automatic turn",
+    await waitFor(() => agent.peekInbox("pull-only").some((item) => item.id === initial.id && item.historical)) &&
+    !agent.peekInbox("automatic").some((item) => item.id === initial.id));
+  const historical = await run(agent, "cotal_inbox", { peek: true });
+  check("the existing inbox renders retained plugin posts in its history framing",
+    !historical.isError && historical.text.includes("plugin join history") && historical.text.includes("(history)"));
+  agent.drainInbox();
+
+  const pluginFrontier = await agent.ep.channelFrontier(plugin);
+  for (let i = 0; i < 6; i++) await publisher.multicast(`chat sequence fixture ${i}`, { channel: chat });
+  const chatFrontier = await agent.ep.channelFrontier(chat);
+  check("the focus cells use distinct broker offsets for chat and plugin history", chatFrontier > pluginFrontier + 1);
+  await agent.setAttention("focus");
+  await publisher.multicast("plugin in focus", { channel: plugin });
+  await publisher.multicast("chat in focus", { channel: chat });
+  const recall = await agent.recallAmbient();
+  check("focus recalls the two rails from separate watermarks",
+    recall.items.some((item) => item.channel === plugin && item.text === "plugin in focus") &&
+    recall.items.some((item) => item.channel === chat && item.text === "chat in focus") &&
+    !recall.items.some((item) => item.id === initial.id), recall);
+  await agent.setAttention("open");
+
+  const mode = await run(agent, "cotal_channel_mode", { channel: plugin, mode: "quiet" });
+  const ambient = await publisher.multicast("quiet plugin ambient", { channel: plugin });
+  check("quiet plugin ambient waits for a pull",
+    !mode.isError && await waitFor(() => agent.peekInbox("pull-only").some((item) => item.id === ambient.id)) &&
+    !agent.peekInbox("automatic").some((item) => item.id === ambient.id));
+
+  const incoming: string[] = [];
+  const pointers = new Set<string>();
+  agent.on("incoming", (item: InboxItem) => incoming.push(item.id));
+  agent.ep.on("message", (msg) => {
+    const part = msg.parts[0];
+    const pointer = part?.kind === "data" &&
+      (part.data as Record<string, { message?: string }> | null)?.[PLUGIN_MENTION_POINTER_KEY];
+    if (pointer && typeof pointer.message === "string") pointers.add(pointer.message);
+  });
+  const joinedMention = await publisher.multicast("live plugin mention also stored as a pointer", { channel: plugin, mentions: [agent.displayName] });
+  check("a joined plugin mention arrives once across live delivery and the directed pointer",
+    await waitFor(() => pointers.has(joinedMention.id) && incoming.includes(joinedMention.id)) &&
+    agent.peekInbox("automatic").filter((item) => item.id === joinedMention.id).length === 1 &&
+    incoming.filter((id) => id === joinedMention.id).length === 1);
+
+  await agent.leaveChannel(plugin);
+  const fresh = await publisher.multicast("fresh plugin mention via pointer", { channel: plugin, mentions: [agent.displayName] });
+  check("an unjoined quiet plugin channel wakes only for the resolved post, not its notice",
+    await waitFor(() => pointers.has(fresh.id) && agent.peekInbox("automatic").some((item) => item.id === fresh.id && item.kind === "channel" &&
+      item.channel === plugin && item.mentionsMe && !item.historical)) && !agent.joinedChannels().includes(plugin) &&
+    !agent.peekInbox().some((item) => item.kind === "dm" && item.fromId === daemonId));
+
+  await agent.setChannelMode(plugin, "muted");
+  await agent.setChannelMode(chat, "muted");
+  const rawModes = (await chatOnly.ep.readPresence()).find((p) => p.card.id === agent.id)?.channelModes;
+  const roster = await run(chatOnly, "cotal_roster");
+  check("a CHAT-only peer sees ordinary mute but no plugin name in presence or the roster",
+    agent.channelMode(plugin) === "muted" && rawModes?.[chat] === "muted" &&
+    Object.keys(rawModes).every((name) => !name.startsWith(`${PLUGIN_CHANNEL_ROOT}.`)) &&
+    !roster.isError && roster.text.includes(`locally muted #${chat}`) && !roster.text.includes(`#${PLUGIN_CHANNEL_ROOT}.`), { rawModes, roster });
+  const muted = await publisher.multicast("muted plugin mention", { channel: plugin, mentions: [agent.displayName] });
+  chatOnly.drainInbox();
+  const outside = await publisher.multicast("plugin mention for chat-only seat", { channel: plugin, mentions: [chatOnly.displayName] });
+  check("muted plugin pointers and plugin posts for an ordinary chat wildcard do not wake their recipients",
+    await waitFor(() => pointers.has(muted.id)) &&
+    !agent.peekInbox().some((item) => item.id === muted.id || item.id.includes(muted.id)) && chatOnly.pendingWake() === 0 &&
+    !chatOnly.peekInbox().some((item) => item.id === outside.id || item.id.includes(outside.id) || item.channel === plugin));
+
+  const listed = await run(chatOnly, "cotal_channels", { all: true });
+  check("even an all-channel listing cannot discover a plugin name outside the issued credential",
+    chatOnly.config.allowSubscribe.includes(plugin) && !listed.isError && !listed.text.includes(`#${plugin}`), listed);
+
+  await agent.setChannelMode(plugin, "normal");
+  await agent.joinChannel(plugin);
+  agent.drainInbox();
+  let duringGap: Promise<CotalMessage> | undefined;
+  const publishInGap = (state: { connected: boolean }) => {
+    if (state.connected || duringGap) return;
+    const now = Date.now;
+    Date.now = () => now() - 6 * 60_000;
+    try {
+      duringGap = publisher.multicast("aged plugin post during reconnect", { channel: plugin, mentions: [agent.displayName] });
+    } finally {
+      Date.now = now;
+    }
+  };
+  agent.on("transport", publishInGap);
+  try {
+    const returned = await agent.reconnect();
+    const missed = await duringGap;
+    check("an aged post in a genuine transport gap catches up as plugin history without a wake",
+      returned.ok && missed !== undefined &&
+      await waitFor(() => agent.peekInbox("pull-only").some((item) => item.id === missed.id && item.historical)) &&
+      !agent.peekInbox("automatic").some((item) => item.id === missed.id), { returned, missed });
+  } finally {
+    agent.off("transport", publishInGap);
+  }
+}
+
+async function checkPluginToolPermissions(limited: MeshAgent, wildcard: MeshAgent, readOnly: MeshAgent, publisher: CotalEndpoint, plugin: string, chat: string) {
+  const family = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
+  const root = `${PLUGIN_CHANNEL_ROOT}.>`;
+  const rootJoin = await runTool(wildcard, "cotal_join", { channel: root });
+  const familyJoin = await runTool(wildcard, "cotal_join", { channel: family });
+  check("a plugin subtree grant refuses the shared root and joins its own family history-only",
+    rootJoin.isError === true && rootJoin.text.includes("outside your read ACL") && !wildcard.joinedChannels().includes(root) &&
+    !familyJoin.isError && familyJoin.text.includes("retained in channel history, not stored as individual copies") && wildcard.joinedChannels().includes(family),
+    { rootJoin, familyJoin });
+
+  const before = await publisher.channelFrontier(plugin);
+  const absent = `${plugin}.missing`;
+  for (const [tool, args, expected] of [
+    ["cotal_send", { text: "no write" }, "outside your post ACL"],
+    ["cotal_join", {}, "outside your read ACL"],
+    ["cotal_channel_info", {}, "no shared registry entry. Replay on join is on."],
+    ["cotal_channel_mode", { mode: "quiet" }, "is not within your read ACL"],
+  ] as const) {
+    const existing = await runTool(limited, tool, { ...args, channel: plugin });
+    const missing = await runTool(limited, tool, { ...args, channel: absent });
+    check(`${tool} gives a CHAT-only seat the same answer for an existing and absent plugin name`,
+      existing.isError === missing.isError && Boolean(existing.isError) === (tool !== "cotal_channel_info") &&
+      existing.text.includes(expected) && existing.text.replaceAll(plugin, "CHANNEL") === missing.text.replaceAll(absent, "CHANNEL"),
+      { existing, missing });
+  }
+  const spawn = await limited.spawn("unauthorized-helper", undefined, { join: [plugin] });
+  check("CHAT-only spawn cannot delegate a plugin join", !spawn.ok && spawn.error?.includes("a spawn can only hand on channels") === true, spawn);
+
+  const send = cotalToolSpecs(readOnly.config, "smoke").find((tool) => tool.name === "cotal_send")!;
+  const help = (send.schema.shape.channel as { description?: string }).description;
+  const noDefault = await runTool(readOnly, "cotal_send", { text: "no default" });
+  check("send help does not promise the read-only plugin as a default",
+    help?.includes("If there is no default, give a channel you may post to") === true && !help.includes(`default: ${plugin}`) &&
+    noDefault.isError === true && noDefault.text.includes("there is no default"), { help, noDefault });
+
+  const mode = readOnly.ep.channelRoutingMode;
+  const chatMode = limited.ep.channelRoutingMode;
+  readOnly.ep.channelRoutingMode = limited.ep.channelRoutingMode = () => undefined;
+  try {
+    const send = await runTool(limited, "cotal_send", { channel: plugin, text: "not ready" });
+    const omit = await runTool(readOnly, "cotal_send", { text: "not ready either" });
+    const join = await runTool(limited, "cotal_join", { channel: plugin });
+    const rootWhileUnknown = await runTool(limited, "cotal_join", { channel: root });
+    const chatSend = await runTool(limited, "cotal_send", { channel: chat, text: "ordinary chat control" });
+    check("unknown routing refuses plugin sends and joins at the client while ordinary CHAT sends still work",
+      [send, omit, join, rootWhileUnknown].every((r) => r.isError && r.text.endsWith(routingRetry)) && !chatSend.isError &&
+      await publisher.channelFrontier(plugin) === before, { send, omit, join, rootWhileUnknown, chatSend });
+    const priorMode = limited.channelMode(plugin);
+    const attention = await runTool(limited, "cotal_channel_mode", { channel: plugin, mode: "muted" });
+    const chatAttention = await runTool(limited, "cotal_channel_mode", { channel: chat, mode: "quiet" });
+    check("unknown routing refuses plugin attention without changing local state and permits CHAT attention",
+      attention.isError === true && attention.text.endsWith(routingRetry) && limited.channelMode(plugin) === priorMode &&
+      !chatAttention.isError && limited.channelMode(chat) === "quiet", { attention, chatAttention });
+    const spawn = await limited.spawn("not-ready-helper", undefined, { join: [plugin] });
+    check("unknown routing refuses spawn delegation of a plugin join with the retry sentence",
+      !spawn.ok && spawn.error === `join: ${routingRetry}`, spawn);
+  } finally {
+    readOnly.ep.channelRoutingMode = mode;
+    limited.ep.channelRoutingMode = chatMode;
+  }
+}
+
+async function checkPluginPointerAdmission(seat: MeshAgent, publisher: CotalEndpoint, plugin: string, daemonId: string) {
+  const mode = seat.ep.channelRoutingMode;
+  const lease = seat.ep.readDeliveryLeaseEntry;
+  const raw = new Set<string>();
+  const events: string[] = [];
+  const noRaw = () => !seat.peekInbox().some((item) => item.kind === "dm" && item.fromId === daemonId);
+  seat.ep.on("message", (msg) => {
+    if (msg.from.id === daemonId) raw.add(msg.id);
+  });
+  seat.on("incoming", (item: InboxItem) => events.push(item.id));
+  const received = (post: CotalMessage) => [...raw].some((id) => id.includes(post.id));
+  const surfaced = (post: CotalMessage) => seat.peekInbox("automatic").filter((item) => item.id === post.id &&
+    item.kind === "channel" && item.channel === plugin && item.mentionsMe && !item.historical).length === 1;
+  const publish = (text: string) => publisher.multicast(text, { channel: plugin, mentions: [seat.displayName] });
+
+  // Hold only the connector's view of admission, not the live broker delivery or the daemon read.
+  seat.ep.channelRoutingMode = () => undefined;
+  try {
+    const post = await publish("mention during unknown route");
+    const queued = await waitFor(() => received(post)) && noRaw() && !surfaced(post);
+    seat.ep.channelRoutingMode = mode;
+    check("a real notice received before route admission resolves to one channel mention, never a DM",
+      queued && await waitFor(() => surfaced(post)) && noRaw() && events.filter((id) => id === post.id).length === 1);
+  } finally {
+    seat.ep.channelRoutingMode = mode;
+  }
+
+  let failedReads = 0;
+  seat.ep.readDeliveryLeaseEntry = async () => { failedReads++; throw new Error("fixture lease read temporarily unavailable"); };
+  try {
+    const post = await publish("mention during unreadable lease");
+    const queued = await waitFor(() => received(post) && failedReads > 0) && noRaw() && !surfaced(post);
+    seat.ep.readDeliveryLeaseEntry = lease;
+    check("a real notice received during lease-read failure resolves once after recovery",
+      queued && await waitFor(() => surfaced(post)) && noRaw() && events.filter((id) => id === post.id).length === 1);
+  } finally {
+    seat.ep.readDeliveryLeaseEntry = lease;
+  }
+
+  seat.ep.readDeliveryLeaseEntry = async () => { throw new Error("fixture lease read unavailable past deadline"); };
+  try {
+    const post = await publish("mention past admission deadline");
+    const dropped = await waitFor(() => received(post) && seat.droppedPluginMentionNotices === 1);
+    seat.ep.readDeliveryLeaseEntry = lease;
+    const peek = await runTool(seat, "cotal_inbox", { peek: true });
+    const drain = await runTool(seat, "cotal_inbox");
+    const again = await runTool(seat, "cotal_inbox", { peek: true });
+    const note = "Dropped plugin mention notices: 1.";
+    check("a notice in isolated mode that exceeds the lease-read deadline is counted without a body and clears only on read",
+      dropped && noRaw() && peek.text.includes(note) && drain.text.includes(note) && !again.text.includes(note) &&
+      !peek.text.includes("mention past admission deadline") && !drain.text.includes("mention past admission deadline"));
+  } finally {
+    seat.ep.readDeliveryLeaseEntry = lease;
+  }
+}
+
+async function checkLegacyEndpoint(config: AgentConfig, publisher: CotalEndpoint, publisherCreds: string, seatCreds: string, lifecycleUid: string) {
+  const seat = new MeshAgent({ ...config, kind: "endpoint", name: "legacy-endpoint-seat", role: undefined,
+    id: undefined, creds: seatCreds, lifecycleUid, subscribe: [], muted: [legacyChannel] });
+  seat.on("error", () => {});
+  try {
+    void seat.start().catch(() => {});
+    await seat.waitUntilConnected();
+    const join = await runTool(seat, "cotal_join", { channel: legacyChannel });
+    const send = await runTool(seat, "cotal_send", { channel: legacyChannel, text: "ordinary chat from an endpoint seat" });
+    const presence = (await seat.ep.readPresence()).find((p) => p.card.id === seat.id);
+    check("a scoped endpoint seat admits legacy routing and can join and send on a plugin-shaped CHAT name",
+      seat.ep.channelRoutingMode() === "legacy" && !join.isError && !send.isError && presence?.card.kind === "endpoint" &&
+      presence.channelModes?.[legacyChannel] === "muted", { join, send, presence });
+
+    const parts: CotalMessage["parts"] = [{ kind: "data", data: {
+      [PLUGIN_MENTION_POINTER_KEY]: { channel: legacyChannel, message: "ordinary-dm-data", seq: 1 },
+    } }];
+    const received = new Set<string>();
+    seat.ep.on("message", (m: CotalMessage) => received.add(m.id));
+    const mode = seat.ep.channelRoutingMode;
+    seat.ep.channelRoutingMode = () => undefined;
+    try {
+      const one = await publisher.unicast(seat.id, "", { parts });
+      const two = await publisher.unicast(seat.id, "", { parts });
+      const waiting = await waitFor(() => received.has(one.id) && received.has(two.id)) && seat.inboxCount() === 0;
+      const sender = publisher.principal;
+      const nc = await connect({ servers: config.servers, authenticator: credsAuthenticator(new TextEncoder().encode(publisherCreds)), inboxPrefix: `_INBOX_${sender.actor}` });
+      try {
+        const recipient = seat.ep.principal;
+        const subject = unicastSubject(config.space, recipient.owner, recipient.actor, sender.owner, sender.actor);
+        const otherSpace = { ...one, id: "ordinary-other-space-envelope", space: "another-space" };
+        await jetstream(nc).publish(subject, JSON.stringify(otherSpace), { msgID: otherSpace.id });
+        check("pointer-shaped mail declaring another space does not enter this space's routing hold",
+          await waitFor(() => seat.peekInbox("automatic").some((i) => i.id === otherSpace.id && i.kind === "dm")));
+      } finally {
+        await nc.close();
+      }
+      seat.ep.channelRoutingMode = mode;
+      const delivered = await waitFor(() => [one.id, two.id].every((id) => seat.peekInbox("automatic").some((i) => i.id === id && i.kind === "dm")));
+      const inbox = await runTool(seat, "cotal_inbox", { peek: true });
+      check("two ordinary DMs with identical pointer-shaped data reach the inbox on legacy admission without a drop count",
+        waiting && delivered && seat.droppedPluginMentionNotices === 0 && !inbox.text.includes("Dropped plugin mention notices:"));
+    } finally {
+      seat.ep.channelRoutingMode = mode;
+    }
+  } finally {
+    await seat.stop();
+  }
+}
+
+async function checkNarrowedPluginPointer(provisioner: Pick<CotalEndpoint, "commitAcl">, publisher: CotalEndpoint, seat: MeshAgent, plugin: string, chat: string): Promise<void> {
+  const config = seat.config;
+  const uid = config.lifecycleUid!;
+  await seat.stop();
+  const creds = typeof config.creds === "function" ? await config.creds() : config.creds!;
+  const recipient = seat.ep.principal;
+  const nc = await connect({ servers: config.servers, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${recipient.actor}` });
+  let post: CotalMessage;
+  try {
+    const jsm = await jetstreamManager(nc);
+    const info = () => jsm.consumers.info(dmStream(config.space), dmDurable(recipient.owner, recipient.actor, uid));
+    const before = (await info()).num_pending;
+    post = await publisher.multicast("plugin mention before narrowing", { channel: plugin, mentions: [seat.displayName] });
+    let stored = false;
+    for (let i = 0; i < 50; i++) {
+      if ((await info()).num_pending > before) { stored = true; break; }
+      await sleep(100);
+    }
+    check("the daemon queued directed mail before the recipient's grant narrowed", stored);
+  } finally {
+    await nc.close();
+  }
+  await provisioner.commitAcl(seat.id, uid, [chat]);
+  const returned = new MeshAgent({ ...config, subscribe: [chat] });
+  returned.on("error", () => {});
+  let denied = false;
+  const read = returned.ep.readPluginMentionHistory.bind(returned.ep);
+  returned.ep.readPluginMentionHistory = async (pointer) => {
+    try {
+      return await read(pointer);
+    } catch (error) {
+      if (pointer.message === post.id && (error as Error).message.includes("access or delivery binding could not be verified")) denied = true;
+      throw error;
+    }
+  };
+  try {
+    await returned.start();
+    const control = await publisher.unicast(returned.id, "ordinary mail after denied plugin pointer");
+    for (let i = 0; i < 50 && (!denied || !returned.peekInbox().some((item) => item.id === control.id)); i++) await sleep(100);
+    check("live ACL narrowing blocks a queued plugin pointer and leaves ordinary mail deliverable",
+      denied && returned.peekInbox("automatic").some((item) => item.id === control.id) &&
+      !returned.peekInbox().some((item) => item.channel === plugin || item.id === post.id || item.id.includes(post.id)));
+  } finally {
+    await returned.stop();
+  }
+}
+
+async function checkLatePluginPointer(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, daemon: Pick<CotalEndpoint, "principal" | "card" | "renewDeliveryLease" | "unicastAttributed">, revision: number, seat: MeshAgent, publisher: CotalEndpoint) {
+  const { channel, space, jsm } = fixture;
+  const notices = new Map<string, CotalMessage>();
+  const incoming: InboxItem[] = [];
+  const focusWakes: InboxItem[] = [];
+  seat.ep.on("message", (m: CotalMessage) => { if (m.from.id === daemon.card.id) notices.set(m.id, m); });
+  seat.on("incoming", (item: InboxItem) => incoming.push(item));
+  seat.on("mention-wake", (item: InboxItem) => focusWakes.push(item));
+
+  const stream = dmStream(space);
+  const windowMs = ((await jsm.streams.info(stream)).config.duplicate_window ?? 0) / 1_000_000;
+  if (windowMs < 120_000 || windowMs >= 299_000) throw new Error(`expected a DM duplicate window of two to five minutes, got ${windowMs}ms`);
+  const creds = typeof seat.config.creds === "function" ? await seat.config.creds() : seat.config.creds!;
+  const nc = await connect({ servers: fixture.servers, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${seat.ep.principal.actor}` });
+  try {
+    const scoped = await jetstreamManager(nc);
+    const durable = dmDurable(seat.ep.principal.owner, seat.ep.principal.actor, seat.config.lifecycleUid!);
+    const cursor = () => scoped.consumers.info(stream, durable);
+    const before = (await cursor()).delivered.stream_seq;
+    const post = await publisher.multicast("late daemon notice uses the original post identity", { channel, mentions: [seat.displayName] });
+    const first = await waitFor(() => seat.peekInbox("automatic").some((i) => i.id === post.id && i.mentionsMe));
+    const firstNotice = [...notices.values()].find((m) => m.id.includes(post.id));
+    const firstSeq = (await cursor()).delivered.stream_seq;
+    if (!firstNotice || firstSeq <= before) throw new Error("the first daemon notice was not delivered from the DM stream");
+    const shown = seat.drainInbox().filter((i) => i.id === post.id && i.mentionsMe);
+
+    // Advance both ordinary handled windows through the exact-drain path used by adapters that
+    // commit a turn after its original buffered entries have gone. No fake plugin event is emitted.
+    seat.drainInboxDeliveries(Array.from({ length: 8192 }, (_, i) => `ordinary-handled-${i}`));
+    const deadline = performance.now() + windowMs + 1000;
+    while (performance.now() < deadline) {
+      revision = await daemon.renewDeliveryLease(0, revision);
+      await sleep(Math.min(5_000, Math.ceil(deadline - performance.now())));
+    }
+    const second = await daemon.unicastAttributed(seat.id, "", { parts: firstNotice.parts });
+    let committed = false;
+    for (let i = 0; i < 50 && !committed; i++) {
+      const info = await cursor();
+      committed = info.ack_floor.stream_seq >= second.ack.seq;
+      if (!committed) await sleep(100);
+    }
+    const delivered = (await cursor()).delivered.stream_seq === second.ack.seq;
+    const evidence = { firstSeq, secondSeq: second.ack.seq, committed, delivered, elapsedMs: second.msg.ts - firstNotice.ts,
+      windowMs, wakes: incoming.filter((i) => i.id === post.id && i.mentionsMe).length };
+    console.log(`  late pointer replay: ${JSON.stringify(evidence)}`);
+    check("two distinct daemon pointer records beyond the broker window yield one plugin post and mention",
+      first && shown.length === 1 && notices.has(second.msg.id) && firstSeq < second.ack.seq &&
+      !second.ack.duplicate && firstNotice.id !== second.msg.id && evidence.elapsedMs > windowMs && committed && delivered &&
+      evidence.wakes === 1 && focusWakes.every((i) => i.id !== post.id) &&
+      !seat.peekInbox().some((i) => i.id === post.id || i.id === firstNotice.id || i.id === second.msg.id), evidence);
+  } finally {
+    await nc.close();
+  }
+}
+
+async function checkEnabledPluginChannels(): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const seats: MeshAgent[] = [];
+  try {
+    const { servers, space, channel: plugin, chatChannel: chat } = fixture;
+    const daemon = await fixture.startDelivery();
+    const startSeat = async (name: string, read: string[], post: string[], subscribe: string[], options: Partial<Pick<AgentConfig, "allowSubscribe" | "quiet" | "muted" | "kind">> = {}) => {
+      const grant = await fixture.mintAgent({ read, post });
+      const seat = new MeshAgent({ name, servers, space, kind: "agent", tls: false, id: grant.actor,
+        creds: grant.creds, lifecycleUid: grant.lifecycleUid, subscribe, allowSubscribe: read, allowPublish: post, ...options });
+      seats.push(seat);
+      seat.on("error", () => {});
+      await seat.start();
+      return seat;
+    };
+    const publisher = await startSeat("plugin-publisher", [chat, plugin], [chat, plugin], []);
+    const seat = await startSeat("plugin-seat", [chat, plugin], [chat, plugin], []);
+    const chatOnly = await startSeat("chat-only-seat", [">"], [">"], [">"], { allowSubscribe: [">", plugin] });
+    const limited = await startSeat("limited-seat", [">"], [">"], [">"]);
+    const wildcard = await startSeat("wildcard-seat", [`${PLUGIN_CHANNEL_ROOT}.linear.>`], [], []);
+    const readOnly = await startSeat("read-only-seat", [plugin], [">"], [plugin]);
+    const pending = await startSeat("pending-seat", [plugin], [], []);
+    const endpointSeat = await startSeat("plugin-endpoint-seat", [chat, plugin], [plugin], [], { kind: "endpoint", quiet: [chat, plugin] });
+    const endpointModes = (await limited.ep.readPresence()).find((p) => p.card.id === endpointSeat.id)?.channelModes;
+    check("an endpoint seat admits isolated routing and keeps boot plugin attention out of shared presence",
+      endpointSeat.connected && endpointSeat.ep.channelRoutingMode() === "isolated" && endpointSeat.channelMode(plugin) === "quiet" &&
+      endpointModes?.[chat] === "quiet" && !Object.hasOwn(endpointModes, plugin), endpointModes);
+    const replay = await startSeat("pointer-replay-seat", [plugin], [], []);
+    const lease = await daemon.acquireDeliveryLease(0);
+    const ready = await daemon.markDeliveryLeaseReady(0, lease);
+    const rosterReady = () => [seat.id, chatOnly.id, pending.id, replay.id].every((id) => daemon.getRoster().some((p) => p.card.id === id));
+    for (let i = 0; i < 50 && !rosterReady(); i++) await sleep(100);
+    check("the enabled daemon sees the authenticated test seats and holds their delivery lease",
+      rosterReady() && await seat.ep.deliveryLeaseHolder(0) === daemon.card.id);
+    await checkPluginToolDelivery(seat, chatOnly, publisher.ep, plugin, chat, daemon.card.id);
+    const renewed = await daemon.renewDeliveryLease(0, ready);
+    await checkPluginToolPermissions(limited, wildcard, readOnly, publisher.ep, plugin, chat);
+    await checkPluginPointerAdmission(pending, publisher.ep, plugin, daemon.card.id);
+    const replayRevision = await daemon.renewDeliveryLease(0, renewed);
+    await checkNarrowedPluginPointer(fixture.provisioner, publisher.ep, seat, plugin, chat);
+    await checkLatePluginPointer(fixture, daemon, replayRevision, replay, publisher.ep);
+  } finally {
+    await Promise.allSettled(seats.map((seat) => seat.stop()));
+    await fixture.close();
+  }
+}
 
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
@@ -79,7 +535,7 @@ try {
   // and the two peers' bind-only durables + scoped "agent" creds.
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: mgrCreds });
-  await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { "fx51-durable": { deliveryClass: "durable" }, "fx51fam.dur": { deliveryClass: "durable" }, "fx51star.dur": { deliveryClass: "durable" }, "fx51left.dur": { deliveryClass: "durable" }, "fx51left.sub.dur": { deliveryClass: "durable" } } } });
+  await seedChannelRegistry({ servers, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { "fx51-durable": { deliveryClass: "durable" }, "fx51fam.dur": { deliveryClass: "durable" }, "fx51star.dur": { deliveryClass: "durable" }, "fx51left.dur": { deliveryClass: "durable" }, "fx51left.sub.dur": { deliveryClass: "durable" }, [legacyChannel]: { deliveryClass: "live", description: "Legacy chat" }, [ageChannel]: { deliveryClass: "live" }, "normal-ch": { description: "Ordinary chat" } } } });
   const mgr = new CotalEndpoint({ space, servers, creds: mgrCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
   await mgr.start();
@@ -90,9 +546,9 @@ try {
   const ottoPrincipal = `${DEV_OWNER}.${ottoId.id}`;
   const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1)
   const pubbyUid = mintLifecycleUid();
-  const chACL = { subscribe: channels, allowSubscribe: [...channels, "fx51-durable", "fx51fam.>", "fx51star.*"], allowPublish: [...channels, "fx51-durable", "fx51fam.dur", "fx51star.dur"] };
+  const chACL = { subscribe: channels, allowSubscribe: [...channels, legacyGrant, ageChannel, "fx51-durable", "fx51fam.>", "fx51star.*"], allowPublish: [...channels, legacyGrant, "fx51-durable", "fx51fam.dur", "fx51star.dur"] };
   const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...chACL, role: "generalist", lifecycleUid: ottoUid });
-  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, lifecycleUid: pubbyUid });
+  const pubbyCreds = await provisionAgent(mgr, auth, pubbyId, { ...chACL, allowPublish: [...chACL.allowPublish, ageChannel], lifecycleUid: pubbyUid });
   // A reader provisioned WITHOUT any durable-read grant: it cannot join fx51-durable's backstop, so
   // its listChannels() row must render the cannot-establish health, never "active" or a bare
   // omission (the #445 undefined-state cell).
@@ -109,8 +565,8 @@ try {
     servers,
     creds: ottoCreds,
     subscribe: channels,
-    allowSubscribe: channels,
-    allowPublish: channels,
+    allowSubscribe: [...channels, legacyGrant, ageChannel],
+    allowPublish: [...channels, legacyGrant],
     quiet: ["quiet-ch"], // operator file default (not an ACL — rides the agent config)
     muted: ["muted-ch"],
     kind: "agent",
@@ -393,6 +849,62 @@ try {
   check("restart drops runtime override, keeps file defaults",
     fresh.channelMode("normal-ch") === undefined && fresh.channelMode("quiet-ch") === "quiet" && fresh.channelMode("muted-ch") === "muted");
 
+  await agent.setAttention("open");
+  agent.drainInbox();
+  const tools = cotalToolSpecs(cfg, "smoke");
+  const tool = (name: string) => tools.find((t) => t.name === name)!;
+  const send = tool("cotal_send");
+  const normalSent = await send.run(agent, cfg, { text: "ordinary default" });
+  const legacySent = await send.run(agent, cfg, { channel: legacyChannel, text: "legacy explicit" });
+  check("off-space sends retain their ordinary chat receipts for plain and plugin-shaped names",
+    normalSent.text === "Posted to #normal-ch. Agents on it see it; mention one to make it act." &&
+    legacySent.text === `Posted to #${legacyChannel}. Agents on it see it; mention one to make it act.`, { normalSent, legacySent });
+  check("plugin-shaped name in an off space keeps its ordinary CHAT history",
+    (await pub.channelHistoryPage(legacyChannel, { limit: 1 })).items.some((m) => m.parts[0]?.kind === "text" && m.parts[0].text === "legacy explicit"));
+  const list = await tool("cotal_channels").run(agent, cfg, {});
+  const info = await tool("cotal_channel_info").run(agent, cfg, { channel: legacyChannel });
+  check("off-space list and info retain plugin-shaped names from the ordinary registry",
+    list.text.includes(`#${legacyChannel}`) && info.text.includes("operator's note — purpose: Legacy chat"), { list, info });
+  const joined = await tool("cotal_join").run(agent, cfg, { channel: legacyChannel });
+  const refused = await send.run(agent, cfg, { channel: ageChannel, text: "must not post" });
+  check("off-space plugin-shaped join is live and a valid outside-post-ACL name still refuses",
+    !joined.isError && joined.text.startsWith(`Joined #${legacyChannel} (live).`) &&
+    refused.isError === true && refused.text.startsWith(`Can't post to #${ageChannel}: it's outside your post ACL`), { joined, refused });
+  const ordinaryDm = await pub.unicast(agent.id, "ordinary DM", { parts: [
+    { kind: "data", data: { [PLUGIN_MENTION_POINTER_KEY]: { channel: legacyChannel, message: "not-a-pointer", seq: 1 } } },
+  ] });
+  for (let i = 0; i < 30 && !agent.peekInbox().some((m) => m.id === ordinaryDm.id); i++) await sleep(100);
+  check("off-space direct mail containing pointer-shaped data keeps ordinary DM framing",
+    agent.peekInbox("automatic").some((m) => m.id === ordinaryDm.id && m.kind === "dm" && !m.historical));
+  agent.drainInbox();
+
+  const legacyEndpointId = newIdentity();
+  const legacyEndpointUid = mintLifecycleUid();
+  const legacyEndpointCreds = await provisionAgent(mgr, auth, legacyEndpointId, { ...chACL, lifecycleUid: legacyEndpointUid });
+  await checkLegacyEndpoint(cfg, agent.ep, ottoCreds, legacyEndpointCreds, legacyEndpointUid);
+
+  const ageDaemon = await newDaemon("delivery-age");
+  try {
+    const nc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(pubbyCreds)), inboxPrefix: `_INBOX_${pubbyId.id}` });
+    try {
+      const now = Date.now();
+      for (const [id, ts] of [["fresh-stored-mention", now], ["old-stored-mention", now - 6 * 60_000]] as const) {
+        const msg: CotalMessage = { id, ts, space, from: pub.card, channel: ageChannel, mentions: ["otto"], parts: [{ kind: "text", text: id }] };
+        await jetstream(nc).publish(chatSubject(space, DEV_OWNER, pubbyId.id, ageChannel), JSON.stringify(msg), { msgID: id });
+      }
+      for (let i = 0; i < 50 && !agent.peekInbox().some((m) => m.id === "old-stored-mention"); i++) await sleep(100);
+      check("fresh stored mention wakes and an older-than-five-minute copy is historical and pull-only",
+        !agent.joinedChannels().includes(ageChannel) &&
+        agent.peekInbox("automatic").some((m) => m.id === "fresh-stored-mention" && !m.historical) &&
+        agent.peekInbox("pull-only").some((m) => m.id === "old-stored-mention" && m.historical) &&
+        !agent.peekInbox("automatic").some((m) => m.id === "old-stored-mention"));
+    } finally {
+      await nc.close();
+    }
+  } finally {
+    await ageDaemon.stop();
+  }
+
   await agent.stop();
   await pub.stop();
   await mgr.stop();
@@ -402,7 +914,8 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-const EXPECTED_CELLS = 40;
+await checkEnabledPluginChannels();
+const EXPECTED_CELLS = 80;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

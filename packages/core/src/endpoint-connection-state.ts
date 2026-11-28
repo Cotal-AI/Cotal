@@ -37,6 +37,9 @@ export interface ConnectionState {
   readonly requestsAwaitingReply: Map<NatsConnection, Set<(error: Error) => void>>;
   /** The issuer-bound generation, learned once per connection from the accepted row. */
   issuedGeneration?: string;
+  /** Routing metadata from the last validated agent transport. Not a broker grant. */
+  pluginChannelsEnabled: boolean;
+  pluginChannelEpoch?: number;
   /** Whether the current connection has a binding to report: the last `transport` edge, cleared
    *  when a reconnect is requested on it. Read by {@link nativeConnections}. */
   nativeBound: boolean;
@@ -49,6 +52,7 @@ export function newConnectionState(): ConnectionState {
     watchDeletePermissions: new WeakMap<object, () => IssuedSubjectPermission | undefined>(),
     ownedConnections: new Set<NatsConnection>(),
     requestsAwaitingReply: new Map<NatsConnection, Set<(error: Error) => void>>(),
+    pluginChannelsEnabled: false,
     nativeBound: false,
   };
 }

@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
-import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
+import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, mintCreds, newIdentity, readPluginMaintenanceState, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Connection, type Presentation, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -20,6 +20,15 @@ function clearRemedy(values: Values, presentation: Presentation): string {
   }
   const format = presentation === "rich" ? "" : ` --${presentation}`;
   return `preview the space-wide scope with ${codeSpan(`${command} --dry-run${format}`)}, then confirm it with ${codeSpan(`${command} --yes${format}`)}`;
+}
+
+/** The local operator reads state with a one-shot provisioner, not the chat-only purger. */
+export async function hasLocalPluginHistory(conn: Connection): Promise<boolean> {
+  if (!conn.auth || !conn.root) return false;
+  const creds = await mintCreds(conn.auth, newIdentity(), "provisioner");
+  const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ creds, tls: conn.tls }), maxReconnectAttempts: 0 });
+  try { return (await readPluginMaintenanceState(nc, conn.space)).state.enabled; }
+  finally { await nc.close(); }
 }
 
 /** Explicit space-wide purge, using only the existing purger instrument or user purger view. */
@@ -64,10 +73,12 @@ export async function historyClear(values: Values): Promise<void> {
   let release = values.yes ? noticeOnInterrupt(interrupted) : undefined;
   try {
     const conn = await connectOrThrow(values, "purger");
+    const pluginChannels = await hasLocalPluginHistory(conn);
+    const scope = pluginChannels ? "retained chat history" : "all retained channel history";
     const target = { space: conn.space, broker: brokerLabel(conn.server), includeDms: values.dms === true };
     recordOperationSpace(conn.space);
     if (!values.yes) {
-      const answer = await prompts.confirm({ message: `Permanently clear all retained channel history${values.dms ? " and DM history" : " (DMs kept)"} in ${oneLine(conn.space)} at ${oneLine(target.broker)}? Agents and identity are not reset.`, initialValue: false });
+      const answer = await prompts.confirm({ message: `Permanently clear ${scope}${values.dms ? " and DM history" : " (DMs kept)"} in ${oneLine(conn.space)} at ${oneLine(target.broker)}?${pluginChannels ? " Plugin channel history is kept." : ""} Agents and identity are not reset.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) {
         writeResult(presentation, { command: "history", target, result: { kind: "history-clear", confirmed: false, purged: false }, noOp: true }, (): Report => ({ sections: [{ title: "History kept", blocks: [{ kind: "lines", lines: ["No stream was purged. Agents, identity and retained messages were left unchanged."] }] }] }));
         return;
@@ -115,11 +126,11 @@ export async function historyClear(values: Values): Promise<void> {
     const warnings = absent.length === 0 ? undefined : [{ code: "HISTORY_STREAM_ABSENT", target, message: `these streams are not on the broker, so they were not purged: ${absent.join(", ")}` }];
     writeResult(presentation, { command: "history", target, warnings, noOp, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({
       sections: [{ title: noOp ? "No retained history to clear" : "History purge acknowledged", blocks: [
-        { kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] },
+        { kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", scope], ["DM history", result.includeDms ? "included" : "not included"]] },
         ...(noOp ? [] : [
           { kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) },
         ]),
-        { kind: "lines", lines: [noOp ? "0 messages purged." : "These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] },
+        { kind: "lines", lines: [noOp ? "0 messages purged." : "These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge.", ...(pluginChannels ? ["Plugin channel history was not purged."] : [])] },
       ] }],
     }));
   } finally { release?.(); }

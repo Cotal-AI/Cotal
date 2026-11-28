@@ -36,6 +36,7 @@ import {
 } from "./issued-authority.js";
 import { chatSubject, token } from "./subjects.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
+import { channelRoute } from "./plugin-channel-route.js";
 
 export function admissionBucket(space: string): string {
   return `cotal_admission_${token(space)}`;
@@ -318,16 +319,18 @@ export class RunAdmissionDenied extends EpEnvelopeError {
   }
 }
 
-export function assertAdmittedPublish(view: RunAdmissionView, channel: string, caller: EpCaller): void {
+export function assertAdmittedPublish(view: RunAdmissionView, channel: string, caller: EpCaller, pluginChannelsEnabled = false): void {
   assertNotRevoked(view);
-  const subject = chatSubject(view.admission.space, caller.owner, caller.actor, channel);
+  const { space } = view.admission;
+  const subject = pluginChannelsEnabled ? channelRoute(space, caller.owner, caller.actor, channel, "isolated").subject : chatSubject(space, caller.owner, caller.actor, channel);
   if (!issuedPermitsSubject(view.admission.ceiling.publish, subject)) throw new RunAdmissionDenied(view.admission.runId, "publish to", channel);
 }
 
-export function assertAdmittedSubscribe(view: RunAdmissionView, channel: string): void {
+export function assertAdmittedSubscribe(view: RunAdmissionView, channel: string, pluginChannelsEnabled = false): void {
   assertNotRevoked(view);
-  const pattern = chatSubject(view.admission.space, "*", "*", channel);
-  if (!issuedPermitsPattern(view.admission.ceiling.subscribe, pattern)) throw new RunAdmissionDenied(view.admission.runId, "read", channel);
+  const { space } = view.admission;
+  const subject = pluginChannelsEnabled ? channelRoute(space, "*", "*", channel, "isolated").subject : chatSubject(space, "*", "*", channel);
+  if (!issuedPermitsPattern(view.admission.ceiling.subscribe, subject)) throw new RunAdmissionDenied(view.admission.runId, "read", channel);
 }
 
 export function assertNotRevoked(view: RunAdmissionView): void {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { channelInAllow, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
-import type { AgentConfig } from "./config.js";
+import { channelInAllow, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "@cotal-ai/core";
+import { CHANNEL_ROUTING_NOT_READY, hasPluginChannelRoot, isPluginChannel } from "./agent-channels.js";
+import { isAuthed, type AgentConfig } from "./config.js";
 import { CHANNEL_CATCHUP_AGE_MS, afterRecallMark, MAX_INBOX, TAKE_WAIT_MS, TAKE_RETRY_MS, MAX_IN_FLIGHT, MAX_AHEAD, CLASSIFICATION_CAP, FOCUS_EXCLUSION_CAP, IDLESS_READS, PROTECTED_DISPOSITION_CAP, handOver, idlessDigest, ingestDedupKey } from "./agent-inbox-model.js";
 import type { AgentInboxDeps, InboxItem, InboxSnapshot, Pending, IdlessTally, IdlessCopy, RecallMark, InboxScope, ExactDrainResult, DeliveryNotice } from "./agent-inbox-model.js";
 export { deliveryNoticeOf, afterRecallMark, MAX_INBOX } from "./agent-inbox-model.js";
@@ -72,6 +73,10 @@ export class AgentInbox {
    *  got wrong (it acked at receive time, before handling). Two rotating windows bound memory. */
   private handledIds = new Set<string>();
   private handledIdsPrev = new Set<string>();
+  // Plugin notices can be independently queued after broker dedup expires. CHAT and DM traffic
+  // cannot rotate away their handled identities; the key is still the plugin channel and post id.
+  private handledPluginIds = new Set<string>();
+  private handledPluginIdsPrev = new Set<string>();
   /** Receive-time classes for overflow-evicted, unhandled channel ambient. Capacity exhaustion
    *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
    *  live/durable copy changing from quiet to automatic. */
@@ -125,6 +130,8 @@ export class AgentInbox {
   /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
    *  published after it ("since you entered focus"). Undefined unless in focus. */
   private focusSince?: number;
+  private pluginFocusSince = new Map<string, number>();
+  private focusRoutingMode?: "legacy" | "isolated";
   private enteringFocus = false;
   /** The receive-key namespace secret (#624): a per-session random value minted at construction,
    *  never written to any wire or log. Minted receive keys are `${secret}.${seq}`, so they are
@@ -235,7 +242,41 @@ export class AgentInbox {
     this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id ? notice : undefined);
   }
 
-  ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice?: DeliveryNotice): void {
+  /** Resolve a verified daemon pointer through the current read authority. The retained post, not
+   *  the directed notice, enters the channel's existing attention and deduplication lanes. */
+  async ingestPluginMention(pointer: PluginMentionPointer, delivery: Delivery, read: (pointer: PluginMentionPointer) => Promise<CotalMessage | undefined>): Promise<void> {
+    if (this.channelMode(pointer.channel) === "muted") {
+      delivery.ack();
+      return;
+    }
+    const epoch = this.transportDrops;
+    let message: CotalMessage | undefined;
+    try {
+      message = await read(pointer);
+    } catch (error) {
+      this.handleEndpointWarning(error as Error);
+      return;
+    }
+    if (this.transportDrops !== epoch || this.ep.channelRoutingMode() !== "isolated") return;
+    if (!message || message.channel !== pointer.channel || message.id !== pointer.message ||
+        !message.mentions?.includes(this.ep.card.name.toLowerCase())) {
+      delivery.ack();
+      return;
+    }
+    this.ingest(message, delivery, { kind: "channel", historical: false }, undefined, true);
+  }
+
+  private pluginChannel(channel: string | undefined): boolean {
+    return channel !== undefined && this.ep.channelRoutingMode() === "isolated" && isPluginChannel(channel);
+  }
+
+  private messageKey(m: CotalMessage, kind: MessageMeta["kind"] | undefined): string | undefined {
+    const id = ingestDedupKey(m.id);
+    if (id === undefined || kind !== "channel" || !this.pluginChannel(m.channel)) return id;
+    return `${this.recvKeySecret}:${m.channel}:${id}`;
+  }
+
+  ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice?: DeliveryNotice, pluginPointer = false): void {
     // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
     // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
     // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
@@ -244,12 +285,12 @@ export class AgentInbox {
     // empty-id messages arrived and only the first ever buffered. Treating an empty id as NO id
     // costs the coalescing for those messages only (a redelivered copy can surface twice), which is
     // the wire contract's at-least-once stance; collapsing distinct messages is not a stance at all.
-    const key = ingestDedupKey(m.id);
+    const key = this.messageKey(m, meta?.kind);
     // Already SURFACED and drained? This is a post-handle cross-path duplicate (the transition window's
     // second copy, arriving after the first was handled). Don't surface it again; if it's the durable
     // copy, ack it so JetStream stops redelivering — safe because the logical message was already
     // handled (handledIds is recorded at drain time, never at receive time).
-    if (key !== undefined && (this.handledIds.has(key) || this.handledIdsPrev.has(key))) {
+    if (key !== undefined && this.wasHandled(key)) {
       if (delivery.durable) delivery.ack();
       return;
     }
@@ -266,9 +307,10 @@ export class AgentInbox {
     // dropped as-is. A durable duplicate also re-announces the still-pending item through the
     // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
     // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
-    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key) ?? this.gated.find((p) => p.item.id === key);
+    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.recvKey === key) ?? this.gated.find((p) => p.item.recvKey === key);
     if (existing) {
       if (delivery.durable) {
+        const firstPointer = pluginPointer && delivery.redelivery?.deliveryCount === 1;
         existing.ack = delivery.ack;
         // A fresh copy is a fresh ownership: a hold that outlived the copy it renewed keeps this one.
         this.own(existing, delivery.redelivery);
@@ -277,7 +319,7 @@ export class AgentInbox {
         // A role request taken for an earlier copy and not yet shown needs a take of this one: the
         // broker redelivered it, so the earlier take may have lost it to another holder.
         else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);
-        this.emit("incoming", existing.item);
+        if (!firstPointer) this.emit("incoming", existing.item);
       }
       return;
     }
@@ -313,7 +355,7 @@ export class AgentInbox {
       const tally = digest === undefined ? undefined : this.reserveIdless(digest, item.channel ?? "");
       const copy = tally ? this.settleIdless(tally) : undefined;
       const idless = copy && { digest: digest as string, copy };
-      // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
+      // A frontier read is asynchronous. Channel traffic retained while entering focus must not also
       // appear in post-watermark recall if it lands after the server captured the frontier.
       if (this.enteringFocus) this.excludeFromFocus(item);
       if (this.dropUnsafe) {
@@ -328,20 +370,20 @@ export class AgentInbox {
         return;
       }
       if (cm === "muted") {
-        this.evictedClassifications.delete(item.id);
+        this.evictedClassifications.delete(item.recvKey);
         this.excludeFromFocus(item);
-        this.protectDisposition(item.id, "drop");
+        if (key !== undefined) this.protectDisposition(key, "drop");
         delivery.ack();
         return;
       }
-      const remembered = item.id === "" ? undefined : this.evictedClassifications.get(item.id); // #624: an empty id never carries a remembered classification
-      if (remembered) this.evictedClassifications.delete(item.id);
+      const remembered = key === undefined ? undefined : this.evictedClassifications.get(key);
+      if (remembered) this.evictedClassifications.delete(item.recvKey);
       const snapshottedPullOnly = item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet"));
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
-      // An unsafe channel cannot recall even a fresh mention. Keep that body in the existing
-      // bounded pull lane, never the automatic lane, including on quiet channels. Muted and
-      // historical traffic retain their earlier gates. Exclude this id so recall cannot repeat it.
-      if (this._attention === "focus" && item.mentionsMe && !item.historical && this.focusRecallUnsafeChannels.has(item.channel ?? "")) {
+      // Plugin mentions may arrive outside the joined set, and unsafe channels cannot reliably
+      // recall a mention. Keep the body in the pull lane and exclude it from stream recall.
+      if (this._attention === "focus" && item.mentionsMe && !item.historical &&
+          (this.pluginChannel(item.channel) || this.focusRecallUnsafeChannels.has(item.channel ?? ""))) {
         this.excludeFromFocus(item);
         this.buffer(item, delivery, true, idless);
         this.emit("mention-wake", item);
@@ -350,7 +392,7 @@ export class AgentInbox {
       // Current normal+focus remains the stronger hard gate unless this exact id was previously
       // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
       if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
-        this.protectDisposition(item.id, "drop");
+        if (key !== undefined) this.protectDisposition(key, "drop");
         delivery.ack();
         // #662: recall cannot pick this copy out from an identical one with another disposition, so
         // its body is held here, pull-only, and recall hands back only copies nothing is bound to.
@@ -461,25 +503,25 @@ export class AgentInbox {
     if (p.item.kind !== "channel" || p.item.mentionsMe || !p.item.channel) return;
     if (p.item.id === "") return; // #624: an empty id is never a key; one delivery's classification must not inherit to another
     if (this.classificationUnsafe) return;
-    if (!this.evictedClassifications.has(p.item.id) && this.evictedClassifications.size >= CLASSIFICATION_CAP) {
+    if (!this.evictedClassifications.has(p.item.recvKey) && this.evictedClassifications.size >= CLASSIFICATION_CAP) {
       this.classificationUnsafe = true;
       this.evictedClassifications.clear();
       return;
     }
-    this.evictedClassifications.set(p.item.id, { pullOnly: p.pullOnly, channel: p.item.channel });
+    this.evictedClassifications.set(p.item.recvKey, { pullOnly: p.pullOnly, channel: p.item.channel });
   }
 
   private excludeFromFocus(item: InboxItem): void {
     if ((!this.enteringFocus && this._attention !== "focus") || item.kind !== "channel" || !item.channel) return;
     if (item.id === "") return; // #662: an id-less delivery is counted in focusIdless instead
-    if (!this.focusExcludedIds.has(item.id) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
+    if (!this.focusExcludedIds.has(item.recvKey) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
       const oldest = this.focusExcludedIds.entries().next().value as [string, string] | undefined;
       if (oldest) {
         this.focusExcludedIds.delete(oldest[0]);
         this.focusRecallUnsafeChannels.add(oldest[1]);
       }
     }
-    this.focusExcludedIds.set(item.id, item.channel);
+    this.focusExcludedIds.set(item.recvKey, item.channel);
   }
 
   /** #662: the tally for one more settled or handed-back copy of an id-less message; the caller adds
@@ -496,7 +538,7 @@ export class AgentInbox {
     return tally;
   }
 
-  /** #662: add one settled copy, bounded by the chat frontier read after it arrived. If that read
+  /** Add one settled copy, bounded by its channel's frontier read after it arrived. If that read
    *  fails, or answers only after the transport dropped, nothing bounds the copy, so the channel's
    *  recall is reported incomplete instead. */
   private settleIdless(tally: IdlessTally): IdlessCopy {
@@ -506,7 +548,7 @@ export class AgentInbox {
       if (episode === this.focusIdless) this.focusRecallUnsafeChannels.add(tally.channel);
     };
     const copy: IdlessCopy = { epoch: this.idlessEpoch, ready: Promise.resolve() };
-    copy.ready = this.ep.chatFrontier().then((frontier) => {
+    copy.ready = this.ep.channelFrontier(tally.channel).then((frontier) => {
       if (drops === this.transportDrops) copy.frontier = frontier;
       else unbounded();
     }, unbounded);
@@ -613,10 +655,8 @@ export class AgentInbox {
     const text = partsToText(m.parts);
     return {
       id: m.id,
-      // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
-      // an empty id is never a dedup key, so it is never an address either; but the delivery still
-      // needs to be individually drainable/ackable, or it can never clear and never commit).
-      recvKey: m.id !== "" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,
+      // Plugin delivery uses a separate key; an empty wire id gets its own per-delivery address.
+      recvKey: this.messageKey(m, kind) ?? `${this.recvKeySecret}.${++this.recvKeySeq}`,
       ts: m.ts,
       fromId: m.from.id,
       fromName: m.from.name,
@@ -970,8 +1010,8 @@ export class AgentInbox {
   private commitPending(taken: Pending[]): InboxItem[] {
     for (const p of taken) {
       p.ack();
-      this.markHandled(p.item.id, p.pullOnly);
-      this.evictedClassifications.delete(p.item.id);
+      if (p.item.id !== "") this.markHandled(p.item.recvKey, p.pullOnly);
+      this.evictedClassifications.delete(p.item.recvKey);
     }
     return taken.map((p) => p.item);
   }
@@ -980,12 +1020,30 @@ export class AgentInbox {
     return scope === "all" || (scope === "pull-only" ? p.pullOnly : !p.pullOnly);
   }
 
+  private wasHandled(id: string): boolean {
+    return this.isPluginReceiveKey(id)
+      ? this.handledPluginIds.has(id) || this.handledPluginIdsPrev.has(id)
+      : this.handledIds.has(id) || this.handledIdsPrev.has(id);
+  }
+
+  private isPluginReceiveKey(id: string): boolean {
+    return id.startsWith(`${this.recvKeySecret}:`);
+  }
+
   /** Record an id as surfaced/handled, for {@link ingest}'s commit-aware cross-path dedup. Bounded via
    *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
    *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
   private markHandled(id: string, pullOnly = false): void {
     if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
     if (pullOnly) this.protectDisposition(id, "pull-only");
+    if (this.isPluginReceiveKey(id)) {
+      this.handledPluginIds.add(id);
+      if (this.handledPluginIds.size >= 4096) {
+        this.handledPluginIdsPrev = this.handledPluginIds;
+        this.handledPluginIds = new Set();
+      }
+      return;
+    }
     this.handledIds.add(id);
     if (this.handledIds.size >= 4096) {
       this.handledIdsPrev = this.handledIds;
@@ -1190,10 +1248,23 @@ export class AgentInbox {
     return Object.fromEntries(this.channelModes);
   }
 
+  sharedChannelModes(legacy: boolean): Record<string, ChannelMode> {
+    return legacy ? this.channelModeEntries() : Object.fromEntries(
+      [...this.channelModes].filter(([channel]) => !hasPluginChannelRoot(channel)),
+    );
+  }
+
+  refreshSharedChannelModes(): Promise<void> {
+    // The endpoint has already recorded the transport edge. Reset its mirror synchronously,
+    // before the first presence write on a replacement wire.
+    if (![...this.channelModes.keys()].some(hasPluginChannelRoot)) return Promise.resolve();
+    return this.ep.setChannelModes(this.sharedChannelModes(this.ep.channelRoutingMode() === "legacy"));
+  }
+
   /** Set (or clear, with `"normal"`) one channel's attention override. Validates the channel is
    *  concrete and within this agent's read ACL (`allowSubscribe` — so a mode can be pre-set for a
    *  channel it may read but hasn't joined yet), updates the AUTHORITATIVE in-memory map, then mirrors
-   *  the whole map to presence (best-effort; advisory). Per-instance + runtime: it NEVER writes the
+   *  the shared subset to presence (advisory). Per-instance + runtime: it NEVER writes the
    *  agent file (a shared template) and resets on restart.
    *
    *  It does not purge messages already buffered from that channel. Quiet makes its buffered ambient
@@ -1203,15 +1274,18 @@ export class AgentInbox {
   async setChannelMode(channel: string, mode: ChannelMode | "normal"): Promise<void> {
     if (!isConcreteChannel(channel))
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
-    if (!channelInAllow(this.config.allowSubscribe, channel))
-      throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
     await this.inOrder(() => {
+      const route = this.ep.channelRoutingMode();
+      if (route === undefined && isAuthed(this.config) && hasPluginChannelRoot(channel))
+        throw new Error(CHANNEL_ROUTING_NOT_READY);
+      if (!channelInAllow(this.config.allowSubscribe, channel, route === "isolated"))
+        throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
       if (mode === "normal") this.channelModes.delete(channel);
       else {
         this.channelModes.set(channel, mode);
         this.lowerBuffered(channel, mode === "muted");
       }
-      return this.ep.setChannelModes(this.channelModeEntries());
+      return this.ep.setChannelModes(this.sharedChannelModes(route === "legacy"));
     });
   }
 
@@ -1220,9 +1294,10 @@ export class AgentInbox {
    *  entry a host is handing over keeps its lane, since the turn carrying it acks it. If that turn
    *  fails instead, {@link releaseInFlight} lowers the entry when the hand-over ends. */
   lowerBuffered(channel: string, mentions: boolean, keep: string[] = []): void {
+    const isolated = this.ep.channelRoutingMode() === "isolated";
     for (const p of this.inbox) {
-      if (p.pullOnly || p.item.kind !== "channel" || !p.item.channel || !channelInAllow([channel], p.item.channel)) continue;
-      if (channelInAllow(keep, p.item.channel)) continue;
+      if (p.pullOnly || p.item.kind !== "channel" || !p.item.channel || !channelInAllow([channel], p.item.channel, isolated)) continue;
+      if (channelInAllow(keep, p.item.channel, isolated)) continue;
       if (p.item.mentionsMe && !mentions) continue;
       if (this.inFlightIds.has(p.item.recvKey)) {
         this.lowerOnRelease.add(p.item.recvKey);
@@ -1233,7 +1308,7 @@ export class AgentInbox {
     }
   }
 
-  /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
+  /** Set the attention mode. Entering `focus` captures the relevant history frontiers
    *  (recall surfaces ambient published after it); leaving focus clears it. Requires a live
     *  connection only for `focus` (it reads the stream frontier). Ambient already *buffered* when
     *  focus is entered is not retroactively ack-dropped. Traffic retained during the asynchronous
@@ -1250,7 +1325,17 @@ export class AgentInbox {
       this.focusRecallUnsafeChannels.clear();
       this.enteringFocus = this._attention !== "focus";
       try {
-        this.focusSince = await this.ep.chatFrontier();
+        const routingMode = this.ep.channelRoutingMode();
+        const channels = this.ep.joinedChannels();
+        const pluginChannels = routingMode === "isolated" ? channels.filter(isPluginChannel) : [];
+        const chatSince = routingMode !== "isolated" || pluginChannels.length !== channels.length ? await this.ep.chatFrontier() : undefined;
+        const pluginSince = new Map<string, number>();
+        for (const channel of pluginChannels) {
+          if (isConcreteChannel(channel)) pluginSince.set(channel, await this.ep.channelFrontier(channel));
+        }
+        this.focusRoutingMode = routingMode;
+        this.focusSince = chatSince;
+        this.pluginFocusSince = pluginSince;
       } catch (error) {
         this.enteringFocus = false;
         this.focusExcludedIds.clear();
@@ -1264,6 +1349,8 @@ export class AgentInbox {
     } else {
       this.enteringFocus = false;
       this.focusSince = undefined;
+      this.focusRoutingMode = undefined;
+      this.pluginFocusSince.clear();
       this.focusExcludedIds.clear();
       this.focusIdless = new Map();
       this.focusIdlessEntries = 0;
@@ -1278,7 +1365,7 @@ export class AgentInbox {
   }
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
-   *  read back from the chat stream on demand and **replay-gated per channel** (a `replay=off`
+   *  read back from the channel's history on demand and **replay-gated per channel** (a `replay=off`
    *  channel yields nothing, and is named in `droppedChannels` — recall must not become a history
    *  bypass, and it must not claim a suppressed channel's window was empty and complete either).
    *  Items are marked `historical` (catch-up framing). `droppedChannels` also names channels whose
@@ -1296,8 +1383,11 @@ export class AgentInbox {
   }
 
   private async recallAmbientOnce(underway: ReadonlySet<string>): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
-    if (this._attention !== "focus" || this.focusSince === undefined)
+    if (this._attention !== "focus")
       return { items: [], droppedChannels: [] };
+    const routingMode = this.ep.channelRoutingMode();
+    if ((this.focusRoutingMode === "isolated" || routingMode === "isolated") && routingMode !== this.focusRoutingMode)
+      return { items: [], droppedChannels: this.ep.joinedChannels() };
     const items: InboxItem[] = [];
     const droppedChannels: string[] = [];
     for (const channel of this.ep.joinedChannels()) {
@@ -1305,7 +1395,8 @@ export class AgentInbox {
         droppedChannels.push(channel);
         continue;
       }
-      if (this.focusRecallUnsafeChannels.has(channel)) {
+      const since = routingMode === "isolated" && isPluginChannel(channel) ? this.pluginFocusSince.get(channel) : this.focusSince;
+      if (since === undefined || this.focusRecallUnsafeChannels.has(channel)) {
         droppedChannels.push(channel);
         continue;
       }
@@ -1319,7 +1410,7 @@ export class AgentInbox {
         // The read starts after every copy settled before it knows its frontier, so a copy it
         // cannot bind is behind the focus start or out of retention.
         await this.idlessReady(tallies, channel);
-        read = await this.ep.recallChannel(channel, this.focusSince);
+        read = await this.ep.recallChannel(channel, since);
         if (read.unanswered) break;
         await this.idlessReady(tallies, channel); // copies settled during the read
         const unsure = read.messages.some(
@@ -1360,7 +1451,8 @@ export class AgentInbox {
       let incomplete = dropped;
       for (const [i, m] of messages.entries()) {
         if (m.id !== "") {
-          if (underway.has(m.id) || !this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
+          const item = this.toInboxItem(m, "channel", true);
+          if (underway.has(item.recvKey) || !this.focusExcludedIds.has(item.recvKey)) items.push(item);
           continue;
         }
         if (tallies !== this.focusIdless) continue; // focus was left or re-entered during the read

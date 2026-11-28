@@ -6,6 +6,7 @@ import {
   historyLimitOf,
   historyLimitRestoreStaging,
   historyLimitStreamOf,
+  readPluginMaintenanceState,
   consumerConfigFromCheckpoint,
   deliveryBucket,
   downloadStreamSnapshot,
@@ -29,13 +30,13 @@ import {
   hardenedAuthorityStreamNames,
   setHistoryLimit,
   type HistoryLimit,
-  type HistoryLimitStream,
+  type StoredHistoryLimitStream,
 } from "@cotal-ai/core";
 import { constants, fsyncSync, openSync, readSync, closeSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { artifactStreams, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { declaredArtifactStreams, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { connectIsolatedBroker, type IsolatedBroker } from "./isolated-broker.js";
 
 export const RESTORE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -76,7 +77,7 @@ function smokeFailRestoreStream(pass: RestorePass | "age", stream: string): bool
 /** The history limit the backup recorded, when `record` is CHAT's, INBOX's, DLV's or DM's. Every
  *  restore check holds that stream at {@link historyLimitRestoreStaging} of it, which keeps the
  *  recorded count and sets no age, so nothing expires while the restored state is compared. */
-function recordedHistoryLimit(space: string, record: BackupManifest["streams"][number]): { kind: HistoryLimitStream; limit: HistoryLimit } | undefined {
+function recordedHistoryLimit(space: string, record: BackupManifest["streams"][number]): { kind: StoredHistoryLimitStream; limit: HistoryLimit } | undefined {
   const kind = historyLimitStreamOf(space, record.stream);
   return kind && { kind, limit: historyLimitOf(record.config) };
 }
@@ -254,8 +255,9 @@ async function createOmittedInfrastructure(
   broker: IsolatedBroker,
   space: string,
   restored: readonly string[],
+  pluginChannels: boolean,
 ): Promise<void> {
-  const inventory = spaceBackupInventory(space);
+  const inventory = spaceBackupInventory(space, pluginChannels);
   // The workflow stores are endpoint stores: createEndpointStreams below creates the ones the
   // artifact did not hold and verifies the restored ones.
   const workflow = inventory.backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name);
@@ -310,7 +312,7 @@ async function createOmittedInfrastructure(
       if (next <= offset) throw new Error("post-restore inventory pagination made no progress");
       offset = next;
     }
-    validateSpaceBackupInventory(space, names);
+    validateSpaceBackupInventory(space, names, { pluginChannels });
   } finally {
     await drainAndClose(nc).catch(() => {});
   }
@@ -325,16 +327,26 @@ export async function restoreAndValidate(
   onlyRegistry: boolean,
   checkpoints: readonly PersistentConsumerCheckpoint[],
   completeInfrastructure: boolean,
+  pluginChannels = false,
 ): Promise<void> {
-  const wanted = onlyRegistry ? spaceBackupInventory(space).registry : artifactStreams(staged.manifest);
+  const wanted = onlyRegistry ? spaceBackupInventory(space).registry : declaredArtifactStreams(staged.manifest);
   for (const name of wanted) await restoreStream(broker, space, snapshotDir, pass, staged.manifest.streams.find((entry) => entry.stream === name)!);
   for (const name of wanted)
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, 0);
-  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted);
+  if (completeInfrastructure) await createOmittedInfrastructure(broker, space, wanted, pluginChannels);
   if (!onlyRegistry) for (const checkpoint of checkpoints)
     await recreateCheckpoint(broker, space, checkpoint, staged.manifest.mode === "open");
   if (!onlyRegistry) for (const name of wanted) {
     const count = checkpoints.filter((checkpoint) => checkpoint.stream === name).length;
     await validateRestoredStream(broker, space, staged.manifest.streams.find((entry) => entry.stream === name)!, count);
   }
+}
+
+/** Read the restored records store with a separate read-only phase before listener exposure. */
+export async function restoredPluginState(broker: IsolatedBroker, space: string): ReturnType<typeof readPluginMaintenanceState> {
+  const login = await broker.addLogin({ profile: "backup", scope: { operation: "plugin-state" } });
+  const nc = await connectIsolatedBroker(broker, login);
+  try {
+    return await readPluginMaintenanceState(nc, space);
+  } finally { await drainAndClose(nc).catch(() => {}); }
 }

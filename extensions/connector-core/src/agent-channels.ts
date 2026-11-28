@@ -2,13 +2,28 @@
  *  channel listing with its event-plane rows, and joining or leaving a channel. The mesh agent keeps
  *  one forwarder per public member. */
 import {
-  subjectMatches,
+  channelInAllow,
+  classifyChannel,
   isConcreteChannel,
   isChannelFamily,
+  patternInAllow,
+  PLUGIN_CHANNEL_ROOT,
   eventChannelPrincipal,
   type ChannelMode,
 } from "@cotal-ai/core";
 import type { MeshAgent } from "./agent.js";
+
+export function isPluginChannel(channel: string): boolean {
+  try { return classifyChannel(channel).kind !== "chat"; }
+  catch { return false; }
+}
+
+/** Includes reserved names and patterns that the isolated route rejects. */
+export function hasPluginChannelRoot(channel: string): boolean {
+  return channel === PLUGIN_CHANNEL_ROOT || channel.startsWith(`${PLUGIN_CHANNEL_ROOT}.`);
+}
+
+export const CHANNEL_ROUTING_NOT_READY = "The connection is not ready to route plugin channels. Try again once connected.";
 
 /** Whether the configured broker is one the caller could actually start themselves. Matches the
  *  host of a `nats://`/`ws://`/`wss://` server string; anything else (a hosted mesh, a LAN box) is
@@ -44,6 +59,10 @@ export class AgentChannels {
   private joinedChannels(...args: Parameters<MeshAgent["joinedChannels"]>): ReturnType<MeshAgent["joinedChannels"]> { return this.deps.joinedChannels(...args); }
   private requireConnected(...args: Parameters<MeshAgent["requireConnected"]>): ReturnType<MeshAgent["requireConnected"]> { return this.deps.requireConnected(...args); }
 
+  private pluginChannel(channel: string): boolean {
+    return this.ep.channelRoutingMode?.() === "isolated" && isPluginChannel(channel);
+  }
+
   // ---- channel registry ----------------------------------------------------
 
   /** The boot-time "push" half of channel onboarding: a fenced, one-line description per
@@ -54,7 +73,7 @@ export class AgentChannels {
   channelBriefing(): string | undefined {
     const lines = this.ep
       .joinedChannels()
-      .map((c) => ({ c, d: this.ep.getChannelConfig(c)?.description }))
+      .map((c) => ({ c, d: this.pluginChannel(c) ? undefined : this.ep.getChannelConfig(c)?.description }))
       .filter((x): x is { c: string; d: string } => Boolean(x.d))
       .map((x) => `  #${x.c} — ${x.d}`);
     if (!lines.length) return undefined;
@@ -71,7 +90,7 @@ export class AgentChannels {
    *  registry read ({@link readChannels}). Config only — never membership (that view is kept off
    *  agents on purpose). */
   channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean; event?: "own" | "agent" } {
-    const cfg = this.ep.getChannelConfig(channel);
+    const cfg = this.pluginChannel(channel) ? undefined : this.ep.getChannelConfig(channel);
     return {
       description: cfg?.description,
       instructions: cfg?.instructions,
@@ -110,6 +129,9 @@ export class AgentChannels {
     }[]
   > {
     const mine = this.ep.joinedChannels();
+    const isolated = this.ep.channelRoutingMode?.() === "isolated";
+    const matches = (pattern: string, channel: string) =>
+      (isolated && !isConcreteChannel(channel) ? patternInAllow : channelInAllow)([pattern], channel, isolated);
     const pending = this.ep.pendingDurableLeaves();
     const unclosed = new Set(pending);
     // Non-gating delivery-health signal (#445): "active" requires an AFFIRMATIVE bounded round-trip
@@ -152,20 +174,20 @@ export class AgentChannels {
     const held = (channel: string): "active" | "degraded" | "unknown" =>
       !leaseReadable
         ? "unknown"
-        : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel)))
+        : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && matches(m.channel, channel)))
           ? "active"
           : "degraded";
     // Health applies where stored copies were asked for: the channel itself or a family over it. A
     // channel read only through a pattern with * or the root > is live only and has none.
     const health = (channel: string, stored: boolean): "active" | "degraded" | "unknown" | undefined =>
-      stored && this.ep.channelDeliveryClass(channel) === "durable" ? held(channel) : undefined;
+      stored && !this.pluginChannel(channel) && this.ep.channelDeliveryClass(channel) === "durable" ? held(channel) : undefined;
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
       durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
       event?: "own" | "agent"; follow?: "family" | "live";
     }[] = (await this.ep.listChannels()).map((c) => {
-      const joined = mine.some((p) => subjectMatches(p, c.channel));
-      const stored = mine.some((p) => p === c.channel || (isChannelFamily(p) && subjectMatches(p, c.channel)));
+      const joined = mine.some((p) => matches(p, c.channel));
+      const stored = mine.some((p) => p === c.channel || (isChannelFamily(p) && matches(p, c.channel)));
       return {
         channel: c.channel,
         description: c.config?.description,
@@ -181,7 +203,7 @@ export class AgentChannels {
       };
     });
     for (const pattern of mine) {
-      if (isConcreteChannel(pattern)) continue;
+      if (isConcreteChannel(pattern) || this.pluginChannel(pattern)) continue;
       const family = isChannelFamily(pattern);
       rows.push({
         channel: pattern,
@@ -215,12 +237,8 @@ export class AgentChannels {
     return rows;
   }
 
-  /** Join a channel mid-session (backfills history if replay is on; idempotent). `durable` reports
-   *  whether a durable backstop is active (Plane-3, SPEC §8, for a `durable`-class channel when a
-   *  manager is present) — `false` means joined LIVE only, so messages sent while this session is
-   *  offline won't be replayed. `reason` explains a `durable:false` on a channel that EXPECTED a
-   *  backstop (e.g. no privileged provisioner); absent on a `live`-class channel (joined live is the
-   *  contract there). */
+  /** Join through the endpoint and backfill history when replay is on. `durable` reports an active
+   *  stored-copy backstop. A `reason` explains its absence where the delivery policy needs it. */
   async joinChannel(
     channel: string,
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {

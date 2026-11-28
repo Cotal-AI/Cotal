@@ -8,12 +8,13 @@ import type { JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   acceptedReadGrant, actorLedgerSource, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, connectionAcceptedToken, EpEnvelopeError,
-  importNativeSubjectPermissions, mintGeneration, parseServiceSpec, prepareListing, parseServiceStatus, readSvcRecordLeader, recordSpecKey, recordStatusKey,
+  importNativeSubjectPermissions, mintGeneration, parseServiceSpec, prepareListing, parseServiceStatus, readPluginChannelSpaceState, readSvcRecordLeader, recordSpecKey, recordStatusKey,
   RECORD_KINDS, remoteManagerServePrincipal, serveIssuanceGateKv, SERVICE_ACCESS_TTL_SECONDS, writeAcceptedRow,
   type EpGateState, type HeldIssuerSession, type IssuedAuthorityRef,
 } from "@cotal-ai/core";
 import type { ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { startAuthCallout, type AuthCalloutLimits, type CalloutAuth, type CalloutConnection } from "./callout.js";
+import { assertChatListsContained, readChatParentRow } from "./chat-parent-pin.js";
 import { chatAwareAclResolver, type ChatSessionAuthority } from "./chat-session-authority.js";
 import { authorizeConnectCredential, type ConnectReader } from "./connect-reader.js";
 import type { ConnectLimiter } from "./connect-limit.js";
@@ -82,6 +83,7 @@ export function managerGateReads(deps: {
 /** The callout's hooks, as `startAuthCallout` and `calloutPermissions` take them. */
 export interface CalloutAuthority {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
+  resolvePluginChannelState: (space: string) => Promise<{ enabled: boolean }>;
   /** The callout's required native-key issuance recorder (SPEC 13.1 `natkey.`): create-only, then
    *  the same connect authority re-read before the minted JWT may leave. */
   recordIssuance: NativeIssuanceRecorder;
@@ -154,6 +156,11 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
     }
   });
   return {
+    resolvePluginChannelState: async (requestedSpace) => {
+      refuse();
+      if (requestedSpace !== space) throw new EpEnvelopeError("permission-denied", "channel routing state belongs to a different space");
+      return (await readPluginChannelSpaceState(deps.recordsJsm, space)).state;
+    },
     resolveEndpointCaller: async (t) => {
       refuse();
       // A chat session is not an actor grant, so no caller policy can name it: it is minted no
@@ -279,7 +286,9 @@ export function serveCallout(nc: CalloutConnection, args: {
   connectLimiter?: ConnectLimiter;
 }): { done: Promise<void> } {
   const { space, dir, callout, issuer, hooks } = args;
-  const resolveAcl = chatAwareAclResolver(dir, ledgerAclResolver(dir));
+  const resolveLedgerAcl = ledgerAclResolver(dir);
+  const resolveAcl = chatAwareAclResolver(dir, resolveLedgerAcl);
+  const resolveRoutedAcl = chatAwareAclResolver(dir, (token) => resolveLedgerAcl(token, true));
   return startAuthCallout(nc, {
     ...(args.serviceAuthority !== undefined ? { serviceAuthority: args.serviceAuthority } : {}),
     xkeySeed: callout.xkey.seed,
@@ -291,7 +300,15 @@ export function serveCallout(nc: CalloutConnection, args: {
     recordIssuance: hooks.recordIssuance,
     // A chat principal resolves from its closed row (the agent leaf, no role); every other
     // principal from the grant ledger.
-    permissionsFor: calloutPermissions((token) => ({ ...resolveAcl(token), ...(args.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}) }), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing),
+    permissionsFor: calloutPermissions(
+      (token, enabled) => {
+        const acl = (enabled ? resolveRoutedAcl : resolveAcl)(token);
+        if (enabled && acl.kind === undefined)
+          assertChatListsContained(readChatParentRow(dir, token.owner), { read: acl.allowSubscribe ?? [], post: acl.allowPublish ?? [] }, true);
+        return args.eventPayloadsWithheld === true ? { ...acl, eventPayloads: false } : acl;
+      },
+      hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing, hooks.resolvePluginChannelState,
+    ),
     log: (l) => console.error(l),
     ...(args.limits !== undefined ? { limits: args.limits } : {}),
     ...(args.connectLimiter !== undefined ? { connectLimiter: args.connectLimiter } : {}),

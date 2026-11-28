@@ -9,6 +9,7 @@ import { JetStreamApiCodes } from "@nats-io/jetstream";
 import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { assertIdToken } from "./endpoint-subjects.js";
 import { isCasLoss } from "./endpoint-records.js";
+import { endpointChannelRoute } from "./endpoint-channel-route.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import {
   anycastSubject,
@@ -70,7 +71,8 @@ export class EndpointMessaging {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.identity.space, this.identity.owner, this.identity.actor, channel), msg);
+    const route = endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, channel);
+    await this.publishMsg(route.subject(this.identity.owner, this.identity.actor), msg, route.kind === "chat" ? undefined : route.stream);
     return msg;
   }
 
@@ -198,6 +200,8 @@ export class EndpointMessaging {
     // would have been refused before it ever reached the wire.
     if (!isConcreteChannel(opts.channel))
       throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    if (endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, opts.channel).kind !== "chat")
+      throw new Error("serialized appends require a chat channel");
     assertIdToken(opts.id, "publish id");
     if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
       throw new Error(
@@ -260,6 +264,8 @@ export class EndpointMessaging {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(opts.channel))
       throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    if (endpointChannelRoute(this.identity.space, this.conn.pluginChannelsEnabled, opts.channel).kind !== "chat")
+      throw new Error("serialized appends require a chat channel");
     // Reuse the existing id grammar rather than mint a second one: [A-Za-z0-9_-]{1,64} admits a
     // UUID and rejects every character that could break a wire header (CR, LF, space, colon).
     assertIdToken(opts.id, "publish id");
@@ -420,12 +426,12 @@ export class EndpointMessaging {
     return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
-  private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
+  private async publishMsg(subject: string, msg: CotalMessage, stream?: string): Promise<void> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
     assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
     try {
-      await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id, ...(stream ? { expect: { streamName: stream } } : {}) });
     } catch (error) {
       if (error instanceof TimeoutError)
         throw new Error(
