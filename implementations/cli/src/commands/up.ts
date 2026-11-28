@@ -140,7 +140,7 @@ import {
 import { freezeSmokeRestoreListener, spawnMarkedListener, unreadableUnboundRestoreRefusal } from "../lib/restore-listener-spawn.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { freshStackServer, legacyUpRetry, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
+import { freshStackServer, legacyUpRetry, retryRecordedStackAddress, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
 import {
   parseMaxFileStore,
@@ -1123,7 +1123,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
-            managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
+            managerName, retryAtRecordedAddress: () => retryRecordedStackAddress(args.raw, invokedFrom), retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
