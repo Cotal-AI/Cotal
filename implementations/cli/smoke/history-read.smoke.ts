@@ -315,6 +315,9 @@ async function checkEnabledScopedViews(
     const consoleReady = await consoleView.until((line) => line.includes(`watching space ${space}`));
     const outside = await sendPlugin(hiddenChannel, "outside scoped terminal live grant");
     const seen = await sendPlugin(channel, "inside scoped terminal live grant");
+    const writer = save("scoped-view-chat-writer.creds", (await fixture.mintAgent({ post: [fixture.chatChannel] })).creds);
+    const ordinaryText = "ordinary CHAT alongside scoped terminal grant";
+    const ordinary = await run(["send", "-c", fixture.chatChannel, ordinaryText, "--creds", writer, ...scope]);
     const watchSeen = await watch.until((line) => line.includes('"type":"event"') && line.includes("inside scoped terminal live grant"));
     const consoleSeen = await consoleView.until((line) => line.includes("inside scoped terminal live grant"));
     const membership = await watch.until((line) => {
@@ -325,6 +328,8 @@ async function checkEnabledScopedViews(
     check("a scoped observer's watch and console surface its own isolated live post and no other plugin name or post",
       watchReady && consoleReady && outside.status === 0 && seen.status === 0 && watchSeen && consoleSeen && membership && !outsideSeen,
       { watch: watch.lines.slice(-4), console: consoleView.lines.slice(-4), stderr: consoleView.stderr() });
+    const ordinarySeen = await Promise.all([watch, consoleView].map((output) => output.until((line) => line.includes(ordinaryText))));
+    check("both scoped terminal views also display ordinary live CHAT", ordinary.status === 0 && ordinarySeen.every(Boolean), shown(ordinary));
   } finally {
     await killAndAwaitExit(watch.child, "SIGINT");
     await killAndAwaitExit(consoleView.child, "SIGINT");
