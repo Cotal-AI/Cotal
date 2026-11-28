@@ -94,6 +94,10 @@ cotal meshes add
 The guided form probes the broker, reports whether it requires credentials, offers spaces already represented by the folder's credentials, and shows the record before saving it.
 Scripts use the explicit flags. Nothing prompts without a terminal.
 
+In a project, the legacy `cotal meshes add` treats `--root ''` like an omitted `--root` and registers that project's root.
+Use `cotal space add` in scripts that read `--root` from a variable. It rejects an empty value without writing a registration, even with `--force`.
+Omit `--root` only when you want to register the current project as the local root.
+
 ### Keep copied instance records separate
 
 Each root keeps its manager and user-auth service identities in `.cotal/space.<hex>/`.
