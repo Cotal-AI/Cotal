@@ -114,8 +114,8 @@ const statusOnSelection = (text: ReturnType<typeof run>, json: ReturnType<typeof
     !/^This folder$/m.test(text.stdout) && json.envelope?.target?.space === "sel07" &&
     json.envelope.result?.selected?.space === "sel07" && json.envelope.result.selected.resolved === true;
 const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UNAVAILABLE",
-  'no broker answered at nats://127.0.0.1:24712; "sel07" is registered here but its mesh is not up',
-  `start it where it runs, or \`${launcher} space forget sel07\` to unregister it`) && r.envelope?.target?.space === "sel07";
+  'no broker answered at nats://127.0.0.1:24712 from this machine; "sel07" is still registered here',
+  `check the address and connection to the host; start the broker there if it is stopped. To unregister this space, run \`${launcher} space forget sel07\``) && r.envelope?.target?.space === "sel07";
 
 const before = run(["whoami", "--json"]);
 check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
@@ -688,7 +688,7 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
     check("ps in a legacy copy targets the explicit selection",
       selectedRefusal(r), shown(r));
     check("who there names no stopped space of this folder and no cotal up that would restart it",
-      refusedWith(text, "TARGET_UNAVAILABLE", 'no broker answered at nats://127.0.0.1:24712; "sel07" is registered here but its mesh is not up', 'start it where it runs, or `cotal space forget sel07` to unregister it') && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr), shown(text));
+      refusedWith(text, "TARGET_UNAVAILABLE", 'no broker answered at nats://127.0.0.1:24712 from this machine; "sel07" is still registered here', 'check the address and connection to the host; start the broker there if it is stopped. To unregister this space, run `cotal space forget sel07`') && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr), shown(text));
     check("space show there shows the selection, not \"lg01\" as this folder's stopped space",
       shownHere.status === 0 && /^ {2}space: +sel07 \(selected\)$/m.test(shownHere.stdout) && !/lg01/.test(shownHere.stdout), shown(shownHere));
     // A copy and a folder whose name a later `up` took over hold the same records, so both are named

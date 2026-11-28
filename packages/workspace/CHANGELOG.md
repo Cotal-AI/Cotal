@@ -1,5 +1,38 @@
 # @cotal-ai/workspace
 
+## 0.184.1
+
+### Patch Changes
+
+- 0a2d3dd: Keep a refused service definition’s credential file path in its local diagnostic and out of error telemetry. When service launch coordinates disagree with the registration, show both targets in the local remedy without sending them in the error message.
+- c3e56b3: Keep paths out of telemetry when a file blocks the config folder or a command refuses an unexpanded `--store-dir`. The CLI still names the affected folder. For a blocked config folder it now asks for an unused name instead of printing a move command that splits paths at spaces and can replace an existing file.
+- Updated dependencies [7c5c7ff]
+  - @cotal-ai/core@0.184.1
+
+## 0.184.0
+
+### Minor Changes
+
+- 68fc37d: A launch now runs only an effort level or mode its harness lists for the model, and is refused before launch otherwise. A model catalog row can name its default variant, the harness's default model, and modes such as a fast tier, which `cotal models` prints and `cotal spawn --mode id=value` chooses. The Manager's `spawn` takes `modes` (Manager revision 58) and checks a variant or modes against the last catalog it read for that connector, reading one only when it holds none. A mode the account cannot use is listed with an `unavailable` reason, which `cotal models` prints, and a launch that turns it on is refused with that reason. A launch that sets it off, `false` or the choice's default, still runs. A connector declares `supportsModes` to render them, and a resumed seat launches with the modes it was spawned with. A variant on a connector without a catalog, or on a model its catalog does not list, is now refused rather than launched at a setting the harness picks.
+
+### Patch Changes
+
+- 14aa844: Keep service identifiers and preference link paths local when startup or configuration is refused. Preserve JSON or plain output in the printed startup retry after a separately started service is stopped.
+- f9301f2: Keep the requested loopback broker port in first-start advice for a named prepared space. Do not suggest starting a local broker for a remote address.
+- 902f3c3: Reclaim abandoned extension staging copies from the top-level connector configuration after migrating to version sets, without removing its installed connectors.
+- 35fa703: Show the declared numeric type or bound when a service adapter rejects an option. The refusal still omits the supplied value.
+- 50b7040: When a prepared space's project folder is missing, offer restoring the original folder before forgetting the space. The space list suggests inspecting that entry. If a symbolic link loop prevents checking a prepared space for running processes, `space forget` reports that nothing was forgotten. An unknown `use` selection keeps the local space inventory out of telemetry.
+- 5efbfdc: Self-update restores missing owner read, write, and search permissions on verified owned connector directories before staging, and reports when it restores owner access to the Cotal connector configuration across online and offline updates.
+- 274a820: Offer read-only inspection when a stack-owned service cannot be removed on its own. Keep the link and destination paths in local recovery guidance when a declared service adapter path crosses a symlink.
+- aa7d8a2: Use shared channel address builders for history, credential grants, and backups without changing broker addresses.
+- ec3c29f: A backup restore on a host that cannot list process command lines now starts its first listener. If that listener was spawned but its pid was never published, a later attempt refuses instead of starting a second listener. A published pid whose creation time does not match the recorded listener does not block.
+- Updated dependencies [68fc37d]
+- Updated dependencies [e693bb2]
+- Updated dependencies [56ff3d1]
+- Updated dependencies [6e28100]
+- Updated dependencies [aa7d8a2]
+  - @cotal-ai/core@0.184.0
+
 ## 0.183.1
 
 ### Patch Changes

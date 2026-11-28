@@ -19,12 +19,16 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { UnconfirmedConversation } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
+import type { AgentAppRequest, AgentAppResult } from "./desktop-agent-apps.js";
 
-const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["agent-apps", "agent-app-install", "agent-app-sign-in", "update-settings", "update-check", "name", "daemon-stop", "space-recover", "space-intent", "agent-stop", "agent-terminal", "status", "status-watch", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
 const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readonly optional: readonly string[] }> = {
+  "agent-apps": { required: ["appVersion"], optional: ["refresh"] },
+  "agent-app-install": { required: ["appVersion", "name"], optional: [] },
+  "agent-app-sign-in": { required: ["appVersion", "name"], optional: [] },
   "update-settings": { required: [], optional: ["auto", "notify"] },
   "update-check": { required: [], optional: [] },
   "daemon-stop": { required: [], optional: ["commit"] },
@@ -65,6 +69,7 @@ export type AgentRowRequest = { readonly space: string; readonly lifecycleUid: s
 export const isAgentLifecycleUid = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 
 export type DaemonRequest =
+  | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly appVersion: string } & AgentAppRequest)
   | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string } & AgentRowRequest)
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
@@ -247,10 +252,11 @@ export interface DaemonSpaces {
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | { readonly argv: readonly string[] } })
+  | (Envelope & { readonly ok: true; readonly result: AgentAppResult | HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | { readonly argv: readonly string[] } })
   | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode | import("@cotal-ai/workspace").CommandFailure["code"]; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult })
+  | (Envelope & { readonly ok: true; readonly event: "agent-app-progress"; readonly line: string })
   | (Envelope & { readonly ok: true; readonly event: "status"; readonly result: DaemonStatus });
 
 const ENVELOPE_KEYS = new Set(["v", "id", "op"]);
@@ -291,6 +297,16 @@ export function parseRequest(line: string): ParsedRequest {
   if (id === null) return { ok: false, id: null, code: "BAD_ID", message: "request id must be 1-64 characters of [A-Za-z0-9_-]" };
   if (!op) return { ok: false, id, code: "UNKNOWN_OP", message: `unknown op ${JSON.stringify(obj.op)}` };
   const v = DAEMON_PROTOCOL_VERSION;
+  const appVersion = typeof obj.appVersion === "string" && /^[A-Za-z0-9.+-]{1,80}$/.test(obj.appVersion) ? obj.appVersion : undefined;
+  if (op === "agent-apps") {
+    if (!appVersion) return bad(id, "invalid desktop version");
+    if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
+    return { ok: true, request: { v, id, op, appVersion, ...(obj.refresh ? { refresh: true } : {}) } };
+  }
+  if (op === "agent-app-install" || op === "agent-app-sign-in") {
+    if (!appVersion || typeof obj.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(obj.name)) return bad(id, "invalid desktop version or application name");
+    return { ok: true, request: { v, id, op, appVersion, name: obj.name } };
+  }
   if (op === "update-settings") {
     if ([obj.auto, obj.notify].some(value => value !== undefined && typeof value !== "boolean")) return bad(id, "auto and notify must be booleans");
     return { ok: true, request: { v, id, op, ...(obj.auto !== undefined ? { auto: obj.auto as boolean } : {}), ...(obj.notify !== undefined ? { notify: obj.notify as boolean } : {}) } };

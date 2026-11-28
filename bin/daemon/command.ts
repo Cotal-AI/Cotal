@@ -43,7 +43,7 @@ import { watchDaemonGeneration } from "./generation.js";
 import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { readReceipt } from "./install-receipt.js";
-import { processBirth, readLifetimeRecord } from "./lifetime.js";
+import { processBirth, readLifetimeRecord, type DaemonPeerLifetime } from "./lifetime.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -574,27 +574,28 @@ async function serve(args: ParsedArgs): Promise<void> {
   let ownershipPending = process.env.COTAL_DAEMON_NATIVE_SERVICE === "1";
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
-  const observe = async (): Promise<DaemonOwnershipObservation> => {
+  const observe = async (stopPeer?: DaemonPeerLifetime): Promise<DaemonOwnershipObservation> => {
     const signal = provenance.signal;
-    const result = await observeDaemonOwnedService(paths, home, signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    const result = await observeDaemonOwnedService(paths, home, signal, stopPeer).catch((): DaemonOwnershipObservation => ({ state: "unknown", reason: "worker-failed" }));
     if (!signal.aborted) ownershipPending = false;
-    if (result.state === "owned") owned = true;
+    if (result.state === "owned" && !result.stopPeerOwnsLock) owned = true;
     if (!loggedReasons.has(result.reason)) {
       loggedReasons.add(result.reason);
       process.stderr.write(`daemon: native ownership ${result.state}: ${result.reason}\n`);
     }
     return result;
   };
-  let stopObservation: Promise<DaemonOwnershipObservation> | undefined;
-  const stopAllowed = (): Promise<DaemonOwnershipObservation> => {
+  let stopObservation: { key: string; result: Promise<DaemonOwnershipObservation> } | undefined;
+  const stopAllowed = (peer?: DaemonPeerLifetime): Promise<DaemonOwnershipObservation> => {
     if (owned) return Promise.resolve({ state: "owned", reason: "verified" });
+    const key = peer ? `${peer.pid}:${peer.birth}` : "";
+    if (stopObservation) return stopObservation.key === key ? stopObservation.result : stopObservation.result.then(() => stopAllowed(peer));
     // Replace any unfinished startup check, rather than stacking two 65-second waits.
-    if (!stopObservation) {
-      provenance.abort();
-      provenance = new AbortController();
-      stopObservation = observe().finally(() => { stopObservation = undefined; });
-    }
-    return stopObservation;
+    provenance.abort();
+    provenance = new AbortController();
+    const result = observe(peer).finally(() => { stopObservation = undefined; });
+    stopObservation = { key, result };
+    return result;
   };
   try {
     running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,

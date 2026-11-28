@@ -661,10 +661,10 @@ export async function assertBrokerAddressFree(server: string, command: Parameter
 export function refuseStartOverUserState(open: boolean, userAuth: boolean, space: string): void {
   if (userAuth || !hasUserAuthState(cotalRoot(), space)) return;
   const stateDir = userAuthStateDir(cotalRoot(), space);
-  throw new CommandFailure("refused", "CONFLICT", `space "${space}" has user auth enabled (state under ${stateDir})${open ? ", and --open would serve its streams without auth" : ""}; nothing was started`, {
+  throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `space "${space}" has user auth enabled (state under ${stateDir})${open ? ", and --open would serve its streams without auth" : ""}; nothing was started`, {
     target: { root: cotalRoot(), space },
     remedy: `${open ? "replace --open with --user-auth" : "add --user-auth"} to start it with user auth, or remove ${shellWord(stateDir)} deliberately to disable user auth (existing logins and grants die with it)`,
-  });
+  }));
 }
 
 /** Pin cwd as its own mesh root when the nearest ancestor root already belongs to a DIFFERENT

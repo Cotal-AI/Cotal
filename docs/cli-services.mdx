@@ -49,6 +49,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--follow` | logs: keep reading |
 
 `service list` takes no definition name. If you supply one, the suggested list command keeps your space and output format.
+`service status` and `service logs` need a name. If you omit it or the name is unknown, the CLI suggests a listing in the same space and output format.
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
@@ -82,12 +83,10 @@ adapter's foreground and multi-instance capabilities even before the definition 
 The manager preset does not support `--new-instance`, so `cotal service start manager --help`
 omits it. Generic `cotal service start --help` lists it for services that support it.
 Named start help lists `--idle-exit` only for `manager` or a saved manager definition.
+When a preset option has the wrong numeric type or falls outside its range, the error gives the required type or bound without printing the supplied value.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
-it before adding the missing flags. A default the space cannot fill yet, such as the `web`
-dashboard's `web.creds` on a space
-`cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
-replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
+it before adding the missing flags. If the space lacks a preset file such as the dashboard's `web.creds`, the refusal names the file locally and shows how to inspect the intended project. To supply its file, add the named option to the original command and keep flags such as `--dry-run`. Preset options cannot accompany `--new-instance`; omit it only if you intend to configure a first start. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands.
 A foreground start with `--dry-run --json` writes one preview envelope without launching a process.
@@ -144,7 +143,7 @@ dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spe
 takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
 runs in, and the file need not exist yet. When a preset refuses because required options are missing,
 it names them and any defaults the space cannot fill, such as the broker's `--server <url>` in a
-space with no registered broker. If you supplied other options, add just the missing flags to your
+space with no registered broker. For a broker preview, supply the intended broker address without starting a stack. If you supplied other options, add just the missing flags to your
 original command. Keep your supplied values, the selected `--space`, and flags such as `--json` or
 `--dry-run`. The refusal does not repeat the option values you entered.
 
@@ -224,6 +223,8 @@ before its process exists records the instance as failed. Its refusal names the 
 space that is prepared but not started. `start` can then try again on the same instance, and
 `stop`, `remove` and `cotal down` find nothing to stop.
 
+Changing a running preset service's start options requires stopping it first. If you asked for a dry run, the refusal suggests a read-only preview of the stop. The suggested stop keeps the service's space and your `--plain` or `--json` output format.
+
 A definition starts only in the root it was added in. One a forgotten space of the same name left in
 another folder refuses `start`, `restart` and `install` `CONFLICT` (exit 2) before anything launches.
 The refusal names the root it was added in and `cotal service remove <name> --space <space> --yes`,
@@ -252,7 +253,7 @@ Ctrl-D or closed input at that question leaves the service unchanged and exits 0
 `restart`, `remove` or `uninstall` cannot ask, it refuses and prints the command that confirms it,
 with `--space` and the `--instance` and `--with-agents` you gave, so that command acts on the same
 service. The `remove` confirmation also keeps `--plain` or `--json` when requested. The `stop` and
-`restart` confirmations for a service without an installed unit keep `--json` when requested. Without an
+`restart` confirmations for a service without an installed unit keep `--plain` or `--json` when requested. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
 start or stop that finds nothing to do says so and reports `no-op`. For a saved definition with no
 recorded instances, `stop` and `stop --dry-run` report `no-op` without asking for confirmation or
@@ -303,7 +304,7 @@ to remove the stopped definitions and records with the space.
 removes that unit. A preset is not installed as a unit in this release, the manager included:
 `install` of one refuses `UNSUPPORTED`, allocates nothing, and for a preset that runs in the
 foreground names the `ExecStart=` line, `cotal service start <name> --foreground`, for a unit of
-your own.
+your own. With `--dry-run`, the refusal points to the saved definitions in the requested space and keeps the output format. Following that advice starts nothing.
 
 The sections [Local service definitions](#local-service-definitions),
 [Service presets](#service-presets) and
@@ -348,6 +349,7 @@ saved declaration. Records live under the workstation store's case-safe per-spac
 If no definition has that name, `show` and `remove` refuse with `TARGET_NOT_FOUND` (exit 2) and suggest
 `cotal service --space <space>` for the space each checked. If you asked for JSON or plain text, the suggested command keeps that output format.
 
+Adding a definition with an existing name refuses to overwrite it. The suggested removal command keeps the space and the requested output format.
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.
 Interactive removal defaults to keeping them. Unknown or foreign instance custody makes removal refuse.

@@ -7,8 +7,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, rmdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type Presentation, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
+import { localDiagnostic } from "../telemetry.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
@@ -441,7 +442,8 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
     const remedy = held?.operation === "foreground up"
       ? `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`
       : "run the command again after that operation finishes";
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${holder !== undefined ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(holder !== undefined ? { holderPid: holder } : {}) }, remedy });
+    const refusal = new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${holder !== undefined ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(holder !== undefined ? { holderPid: holder } : {}) }, remedy });
+    throw holder === undefined ? refusal : localDiagnostic(refusal);
   }
   // An exit through process.exit skips the caller's release, so the lock is checked here as well.
   process.once("exit", (code) => {
@@ -1147,10 +1149,14 @@ export const processGone = (state: string) => state === "gone" || state === "pre
  *  address. Bare `down` and `down --preserve-state` both run it; `next` is the command to run once
  *  the named dependants are stopped. The updater can skip address sharing only after it proves
  *  that the broker endpoint has no listener and it will not stop a broker. */
-export function stackScopeRefusals(journal: StackJournal, next: string, { brokerStopped = false } = {}): void {
+export function stackScopeRefusals(journal: StackJournal, next: string, { brokerStopped = false, presentation = "rich" }: { brokerStopped?: boolean; presentation?: Presentation } = {}): void {
   const memberIds = new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]));
   const others = serviceInstances(journal.space).filter((row) => !memberIds.has(row.name) && (!processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state)));
-  if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `\`cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes\``).join("; ")}, then run ${next}` });
+  if (others.length) {
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    const stops = others.map((row) => codeSpan(`cotal svc stop ${shellWord(row.record.value.definition)} --instance ${shellWord(row.name)} --space ${shellWord(journal.space)} --yes${format}`));
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${stops.join("; ")}, then run ${next}` });
+  }
   // A record whose process is gone, or whose pid now runs another start, fronts nothing.
   const legacy = localRecords(journal.root, journal.space).filter((row) => row.state === "live");
   if (legacy.length) {

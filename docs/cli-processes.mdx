@@ -69,14 +69,19 @@ optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cot
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
-(`status` reports `classSpawn: false`). A launch, model catalog or status read checks available and
-unavailable applications again. Finding the first available application enables the class rail
-without a restart, and losing the last available application drops it.
+(`status` reports `classSpawn: false`). A `status` read rechecks every declared connector row,
+while a launch, preserved resume, supervised restart, model lookup or command listing rechecks
+only the requested connector. Once a connector becomes available, its resolved executable paths
+stay pinned and never switch to another copy on `PATH`; if a pinned file disappears or leaves
+`PATH`, the row becomes unavailable (naming any other copy now on `PATH`) until that pinned file
+returns or the manager restarts. Finding the first available application on a read or launch
+enables the class rail without a restart, and losing the last available application drops it when
+that read or launch observes the change.
 `describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
-on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
-inventory keeps the class rail and names `--on` on a harness refusal, because sibling
-inventories are not readable from the serve credential. See [control surface](control-surface.mdx#instance-routing).
+on the class rail, an unpinned spawn is refused and names the agent application to add. Wire
+`spawn` and `launch` refusals for an unavailable harness name `--on`, because sibling inventories
+are not readable from the serve credential. See [control surface](control-surface.mdx#instance-routing).
 The manager prints what its boot inventory found once it is up, so a start that is refused prints
 no boot line.
 
@@ -923,6 +928,13 @@ available connector. Open dashboard is the primary action on that screen and on 
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
 reports, while original diagnostics and exact refusals remain under Details. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
+
+In the desktop app, **Connection**, **Agent apps**, and **Settings** are separate views. You can
+open **Agent apps** before connecting, including while Cotal sign-in is waiting. The app can list,
+install, and start sign-in for supported agent apps on this computer without setting up Cotal first.
+Once the background service runs, it uses the same installed apps and app-owned sign-ins. A service
+owned by another copy of Cotal allows viewing the apps but not changing them from this copy. While
+ownership is uncertain, the app checks again automatically. Checking apps does not restart the service.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` (`NOT_ANSWERING`), includes a
 startup refusal from that launch's `daemon.log` when one was written, and offers Check status in

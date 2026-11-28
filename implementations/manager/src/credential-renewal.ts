@@ -712,6 +712,7 @@ export class CredentialRenewal {
         throw new Error("standing candidate is no longer healthy after broker preflight");
       serving.nc = replacement.nc;
       serving.handle = replacement.handle;
+      this.parts.servePlane.syncClassSpawn();
       replacement = undefined;
       this.remoteSupervisorCreds = candidate.supervisor;
       this.remoteExecutorCreds = candidate.executor;

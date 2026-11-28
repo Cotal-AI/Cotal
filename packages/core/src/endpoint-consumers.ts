@@ -335,7 +335,7 @@ export class EndpointConsumers {
    *  every channel (boot + runtime). For a `durable` channel it is also the low-latency wake-hint
    *  alongside the Plane-3 durable copy, coalesced by the receiver's id-dedup. Drops our own echo +
    *  spoofed senders. */
-  subscribeChat(channel: string): void {
+  subscribeChat(channel: string, onLive?: (id: string) => void): void {
     if (!this.conn.nc || this.delivery.chatSubs.has(channel)) return;
     this.delivery.chatSubDenied.delete(channel);
     const subject = chatSubject(this.identity.space, "*", "*", channel);
@@ -380,6 +380,7 @@ export class EndpointConsumers {
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.identity.card.id) return; // our own echo
+        onLive?.(msg.id);
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,

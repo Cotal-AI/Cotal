@@ -282,7 +282,7 @@ finishes or settles it. `cotal up --space <name>` in a folder
 that is already another local space's root refuses with `CONFLICT`, exit 2. `space add` refuses a
 prepared name and gives the startup command for its recorded project folder. If the project moved,
 restore it to that path before starting it. To register the other broker instead, forget the prepared
-space and repeat the add with the same options. A registration for another broker in the same folder
+space and repeat the add with the same options. Both suggested commands keep `--json` or `--plain` if you used it. A registration for another broker in the same folder
 does not prevent a prepared local space from starting there. A prepared space records its folder by path, and moving the folder
 leaves nothing in it that names the space. A bare `cotal up` in a folder that names no space, while the selected space is
 prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start a
@@ -299,7 +299,7 @@ An explicit empty or whitespace-only `--root` on `space create` or `space add` r
 
 When a broker registered by hand does not answer, commands such as `send` and the delivery daemon
 name `cotal space forget <name>` as the way to unregister it. The refusal keeps the registration
-and does not start a local replacement. Start the broker where it runs to keep using that space.
+and does not start a local replacement. The broker may still be running on its host. Check the registered address and your connection to that host before restarting it.
 When `status` reports a manually registered open or static-auth broker as unreachable, its Next
 section gives the same recovery steps instead of offering the live roster.
 For a discovered space, the next step names removal from the provider's catalog followed by
@@ -524,7 +524,7 @@ it starts nothing and does not check the broker, so a stopped or prepared space 
 the command that targets it reports that. Selecting the explicit selection again is a `no-op`; selecting an adopted selection promotes it to explicit. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
-while a space is selected. Bare `use` reports the selection and whether Cotal adopted it
+while a space is selected. Both the listing and the optional clear command keep the output format you requested. Bare `use` reports the selection and whether Cotal adopted it
 automatically. When the selection differs from the folder's space, `use` names both, even if
 the folder's space is prepared and has not started. With an explicit selection, the hint names
 `--space <name>` and `cotal use --clear`. In `use --json`, `folder` identifies the local folder's
