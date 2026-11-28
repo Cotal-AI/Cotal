@@ -94,7 +94,7 @@ test("one state feeds the window, the pill, the dot and the tray", () => {
     assert.equal(/daemon|generation|Needs attention/.test(`${state.word} ${state.title}`), false, `${item.name} uses no internal word`);
   }
   assert.equal(cases.length, words.length + 3, "every word has a row, plus one refused beside a working space, every row refused, and the case where nothing can run");
-  assert.equal(surfaceState({ rows: [], anyConnected: false, ready: true }).title, "This computer is connected to your account", "signed in with no spaces keeps its title");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account", "signed in with no spaces keeps its title");
   assert.equal(surfaceState({ rows: [{ space: "mine", desired: false, observed: "removed on this computer" }], anyConnected: false }).title, "No space is using this computer", "the last space removed keeps the idle title");
   assert.equal(surfaceState({ rows: [], anyConnected: false, diskFull: true }).description, "Free up space on this computer. Cotal continues by itself once there is room.");
   assert.equal(surfaceState({ rows: [], anyConnected: false, service: "stopped" }).description, "You stopped the background service. Start it to run agents on this computer again.");

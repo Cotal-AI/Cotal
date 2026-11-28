@@ -94,16 +94,18 @@ export interface SurfaceState { word: SurfaceWord; dot: "ok" | "waiting" | "prob
 /** The fields the window reads off one status frame. `diskFull` is the frame's own flag. `generation`
  *  present means an update is in progress. `recovery` is the repair #10913 reports; nothing else is. */
 export interface SurfaceFrame { diskFull?: unknown; generation?: unknown; recovery?: unknown; account?: { mode?: unknown; reason?: unknown; spaces?: readonly ComputerSpace[] } }
-export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean, ready = false): { rows: ComputerSpace[]; anyConnected: boolean; verified: boolean; ready: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
+export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly ComputerSpace[], anyConnected: boolean, accountKnown = false, managerStarting = false, verified = false): { rows: ComputerSpace[]; anyConnected: boolean; verified: boolean; accountKnown: boolean; managerStarting: boolean; signInRequired: boolean; computerRemoved: boolean; service?: "stopped" | "not-set-up"; updating: boolean; diskFull: boolean; repairNeeded: boolean } {
   const account = frame?.account;
   return {
     rows: rows.map(row => ({ ...row })),
     // A row that remembers a refusal is not connected, even when its Manager answers.
     anyConnected: anyConnected && rows.some(row => !row.lastRefusal && row.observed === "connected"),
     // A Manager can be launch-ready with no account rows. Only that verified one is Connected.
-    verified: anyConnected,
-    // The background service answering means this computer was set up. Removing its last space stays Connected.
-    ready,
+    verified,
+    // An account on this computer means it was set up. A daemon that merely answers does not.
+    accountKnown,
+    // A Manager that has begun but is not launch-ready yet.
+    managerStarting,
     signInRequired: account?.mode === "sign-in-required",
     computerRemoved: account?.mode === "sign-in-required" && account?.reason === "computer-removed",
     updating: frame?.generation !== undefined && frame?.generation !== null,
@@ -111,7 +113,7 @@ export function surfaceInputs(frame: SurfaceFrame | undefined, rows: readonly Co
     repairNeeded: frame?.recovery !== undefined && frame?.recovery !== null,
   };
 }
-export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; verified?: boolean; ready?: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
+export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnected: boolean; verified?: boolean; accountKnown?: boolean; managerStarting?: boolean; signInRequired?: boolean; computerRemoved?: boolean; service?: "stopped" | "not-set-up"; updating?: boolean; diskFull?: boolean; repairNeeded?: boolean }): SurfaceState {
   const lost = networkState(computerSummary(input.rows, input.anyConnected));
   if (lost === "offline") return { word: "Offline", dot: "problem", title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description };
   if (lost === "unreachable") return { word: "Can't connect", dot: "problem", title: CONNECTION_COPY.unreachable.title, description: CONNECTION_COPY.unreachable.description };
@@ -127,10 +129,11 @@ export function surfaceState(input: { rows: readonly ComputerSpace[]; anyConnect
   if (input.repairNeeded) return { word: "Repair needed", dot: "problem", title: "This computer needs a repair", description: "Repair it to use it from your spaces again." };
   if (input.anyConnected) return { word: "Connected", dot: "ok", title: "This computer is connected", description: "Your spaces can use the agent applications on this computer." };
   if (desired.some(row => row.observed !== "removed on this computer")) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
-  // No account and no verified Manager is still Starting, even when a Manager has begun.
-  // A ready service already finished setup, so removing its last space stays Connected.
-  if (!input.rows.length && !input.verified && !input.ready) return { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." };
-  return { word: "Connected", dot: "ok", title: input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: "Turn on the spaces that can use it in the dashboard." };
+  // No account and no verified Manager. A Manager that is starting stays Starting. Anything else was never set up.
+  if (!input.verified && !input.accountKnown && !input.rows.length) return input.managerStarting
+    ? { word: "Starting", dot: "waiting", title: "This computer is starting", description: "It connects by itself once the spaces are ready." }
+    : { word: "Not set up", dot: "waiting", title: "This computer is not set up", description: "Set it up to use it from your spaces." };
+  return { word: "Connected", dot: "ok", title: input.verified ? "This computer is connected" : input.rows.length ? "No space is using this computer" : "This computer is connected to your account", description: input.verified ? "Your spaces can use the agent applications on this computer." : "Turn on the spaces that can use it in the dashboard." };
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");

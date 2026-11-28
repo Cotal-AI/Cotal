@@ -829,6 +829,20 @@ export const scenarios = [
     assert.equal(await page.locator("#tray-label").textContent(), "Service stopped");
     assert.equal(await page.locator("#connection-description").textContent(), "You stopped the background service. Start it to run agents on this computer again.");
   } },
+  // A daemon that answers is not an account. A Manager that is still starting stays Starting.
+  { name: "surface-starting-manager", state: { installed: true, managers: [{ space: "acme-team", state: "starting", reason: "Synthetic Manager is still starting." }] }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Starting");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is starting");
+    assert.equal(await page.locator("#tray-indicator").evaluate(el => el.classList.contains("error")), false);
+    assert.notEqual(await page.evaluate(() => window.__renderState.tray?.at(-1)?.label), "Connected");
+  } },
+  // An intentional stop publishes its word and dot before any account frame exists.
+  { name: "surface-stopped-no-account", state: { installed: true, serviceStopped: true, stoppedByYou: true }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Service stopped");
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service is stopped");
+    assert.equal(await page.locator("#tray-indicator").evaluate(el => el.classList.contains("error")), true);
+    assert.equal(await page.evaluate(() => window.__renderState.tray?.at(-1)?.label), "Service stopped");
+  } },
   { name: "surface-not-set-up", state: { signedIn: true, installed: true, missingAfterSignIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
     assert.equal(await page.locator("#tray-label").textContent(), "Not set up");
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is not set up");

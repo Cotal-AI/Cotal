@@ -57,15 +57,20 @@ test("approval guidance refers to this computer", () => {
 
 test("a computer with no account stays Starting until a Manager is verified", () => {
   const none = { rows: [], anyConnected: false };
-  assert.equal(surfaceState(none).word, "Starting");
-  assert.equal(surfaceState(none).title, "This computer is starting");
+  assert.equal(surfaceState(none).word, "Not set up");
+  assert.equal(surfaceState(none).title, "This computer is not set up");
   // A registered account with no assigned spaces is connected to the account, not Starting.
-  assert.equal(surfaceState({ rows: [], anyConnected: false, verified: true }).title, "This computer is connected to your account");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account");
   // A verified Manager with no account rows is Connected.
   assert.equal(surfaceState({ rows: [], anyConnected: true, verified: true }).word, "Connected");
-  // Removing the last space leaves a ready computer with nothing using it. That stays Connected.
-  assert.equal(surfaceState({ rows: [], anyConnected: false, ready: true }).word, "Connected");
-  assert.equal(surfaceState({ rows: [], anyConnected: false, ready: true }).title, "This computer is connected to your account");
+  // Removing the last space leaves an account with nothing using it. That stays Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).word, "Connected");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account");
+  // A daemon that answers, with no account and a Manager still starting, is Starting. Never Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, managerStarting: true }).word, "Starting");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, managerStarting: true }).title, "This computer is starting");
+  // No account and no Manager at all was never set up.
+  assert.equal(surfaceState({ rows: [], anyConnected: false }).word, "Not set up");
 });
 
 test("launch readiness requires an answering registered Manager with an available application", () => {
