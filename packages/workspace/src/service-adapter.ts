@@ -282,7 +282,13 @@ export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclara
   let check: ValidateFunction, valid: boolean;
   try { check = new Ajv2020({ strict: true, ownProperties: true, validateFormats: false }).compile(declaration.optionsSchema); valid = check(options) === true; }
   catch { return invalid("the adapter options could not be validated against its closed declaration"); }
-  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}; option values were not printed`);
+  if (!valid) {
+    const error = check.errors?.at(-1);
+    // For numeric bounds and types Ajv's message contains the declared constraint, never the input.
+    const numeric = error && (["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"].includes(error.keyword)
+      || (error.keyword === "type" && (error.params.type === "integer" || error.params.type === "number")));
+    return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}${numeric && error.message ? ` (${error.message})` : ""}; option values were not printed`);
+  }
 }
 
 /** Public readiness evidence is closed and bound to a creation-pinned process. The installed

@@ -8,7 +8,8 @@
  * before reserving names or capacity, updating class spawn routing and recovering when restored.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
@@ -16,6 +17,7 @@ import { connect } from "@nats-io/transport-node";
 import { MANAGER_CONTRACTS, type ManagerStatus } from "../src/manager-service-contract.js";
 import { connectorMetadataStale, extensionsDir, saveExtensionsManifest, trustProject } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { armManagerServiceObserver } from "../src/service-child.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -434,6 +436,139 @@ try {
       await launchFirst.stop({ withAgents: true });
     }
   }
+
+  {
+    const space = "recheck-load";
+    const loadBin = join(root, "load-bin");
+    const stateDirectory = join(root, "obs-state");
+    mkdirSync(loadBin, { mode: 0o700 });
+    mkdirSync(stateDirectory, { mode: 0o700 });
+    const loadPresent = join(loadBin, executable("present-harness"));
+    const loadSecond = join(loadBin, executable("second-harness"));
+    writeFileSync(loadPresent, script, { mode: 0o700 });
+    writeFileSync(loadSecond, script, { mode: 0o700 });
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "second-probe.md"), "---\nname: second-probe\nagent: boot-second\n---\n");
+    saveExtensionsManifest({
+      extensions: [
+        {
+          pkg: "@fixture/boot-connectors",
+          version: "1.0.0",
+          spec: ".",
+          provides: [
+            { kind: "connector", name: "boot-missing" },
+            { kind: "connector", name: "boot-present" },
+            { kind: "connector", name: "boot-second" },
+          ],
+          commands: [],
+          connectors: [
+            { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
+            { name: "boot-present", requires: ["present-harness"], eventPlane: true },
+            { name: "boot-second", requires: ["second-harness"], eventPlane: true },
+          ],
+        },
+      ],
+    });
+    const secondConnector: Connector = {
+      kind: "connector",
+      name: "boot-second",
+      requires: ["second-harness"],
+      buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["second-harness"] ?? "second-harness", args: [] }),
+    };
+    registry.register(secondConnector);
+    process.env.PATH = loadBin;
+    const observed = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+    const O = instrumentManager(observed, loadPresent);
+    await observed.start();
+    const nc = await connect({ servers });
+    const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+    const observedId = O.view.managerStatusData().instanceId;
+    let rechecks = 0;
+    let byAgent: Record<string, number> = {};
+    for (const row of O.view.connectorInventory.connectorStatuses) {
+      let current = row.binaries;
+      Object.defineProperty(row, "binaries", {
+        enumerable: true,
+        configurable: true,
+        get: () => current,
+        set: (next: Record<string, string>) => {
+          rechecks++;
+          byAgent[row.agent] = (byAgent[row.agent] ?? 0) + 1;
+          current = next;
+        },
+      });
+    }
+    let accessCalls = 0;
+    const origAccessSync = fs.accessSync;
+    fs.accessSync = ((path: fs.PathLike, mode?: number) => {
+      const text = String(path);
+      if (text.startsWith(loadBin) || text.includes("harness-that-does-not-exist-965")) accessCalls++;
+      return origAccessSync(path, mode);
+    }) as typeof fs.accessSync;
+    syncBuiltinESMExports();
+    let observerTicks = 0;
+    let observerSawImpact = false;
+    const origLocalObservation = observed.localServiceObservation.bind(observed);
+    observed.localServiceObservation = () => {
+      observerTicks++;
+      const obs = origLocalObservation();
+      if (obs?.stopImpact) observerSawImpact = true;
+      return obs;
+    };
+    let disposeObserver: (() => void) | undefined;
+    try {
+      rechecks = 0;
+      byAgent = {};
+      accessCalls = 0;
+      disposeObserver = armManagerServiceObserver(observed, {
+        root: workspaceRoot,
+        context: { space, instanceId: "obs_inst", launchRequestId: "obs_req", stateDirectory },
+      });
+      await wait(2200);
+      disposeObserver();
+      disposeObserver = undefined;
+      const observerSnapshot = {
+        ticks: observerTicks,
+        observed: observerSawImpact,
+        rechecks,
+        byAgent: { ...byAgent },
+        accessCalls,
+      };
+
+      rechecks = 0;
+      byAgent = {};
+      accessCalls = 0;
+      const launchReply = await epCall(nc, space, { mode: "inst", instanceId: observedId, epoch: O.view.servePlane.serviceServe?.grant.epoch ?? 0 },
+        { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
+        { deadlineMs: 5000 });
+      const launchSnapshot = {
+        ok: launchReply.reply.ok,
+        spawnCalls: O.stats.spawnCalls,
+        rechecks,
+        byAgent: { ...byAgent },
+        accessCalls,
+      };
+      console.log("recheck load:", JSON.stringify({ observer: observerSnapshot, launch: launchSnapshot }));
+      check(
+        "hosted service observer triggers zero connector rechecks over multiple seconds",
+        observerSnapshot.ticks >= 8 && observerSnapshot.observed &&
+          observerSnapshot.rechecks === 0 && observerSnapshot.accessCalls === 0,
+        observerSnapshot,
+      );
+      check(
+        "launch rechecks only the requested connector once",
+        launchReply.reply.ok === true && O.stats.spawnCalls === 1 &&
+          launchSnapshot.rechecks === 1 && launchSnapshot.byAgent["boot-present"] === 1 &&
+          (launchSnapshot.byAgent["boot-second"] ?? 0) === 0 && (launchSnapshot.byAgent["boot-missing"] ?? 0) === 0,
+        launchSnapshot,
+      );
+    } finally {
+      disposeObserver?.();
+      fs.accessSync = origAccessSync;
+      syncBuiltinESMExports();
+      await nc.close();
+      await observed.stop({ withAgents: true });
+    }
+  }
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
@@ -445,5 +580,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-if (pass !== 41) throw new Error(`expected 41 checks, ran ${pass}`);
+if (pass !== 43) throw new Error(`expected 43 checks, ran ${pass}`);
 console.log(`\n${pass} checks passed`);
