@@ -361,6 +361,13 @@ for (const level of ["regular", "minimal"]) {
   check("a project path with a control character is named only locally", refused.status === 1 && refused.stdout.includes(marker) && refused.stdout.includes("a tab") && !existsSync(odd)
     && reported.length === 1 && reported[0]?.errorCode === "USAGE_INVALID" && reported[0].errorMessage === null && reported[0].errorStack === null && !JSON.stringify(refused.sent).includes(marker), shown(refused));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  const badPersona = join(s.project, `sample ${marker}.md`);
+  writeFileSync(badPersona, "---\nname: [unfinished\n---\n");
+  const preview = await s.run(["spawn", "--foreground", "--dry-run", "--space", space, "--file", badPersona, "--json"]);
+  const invalidPersona = preview.sent.find(body => body.event === "command");
+  check("a malformed foreground persona stays in the local preview diagnostic", prepared.status === 0 && preview.status === 1 &&
+    preview.stdout.includes(badPersona) && invalidPersona?.errorCode === "SCHEMA_INVALID" && invalidPersona.errorMessage === null &&
+    invalidPersona.errorStack === null && !JSON.stringify(preview.sent).includes(marker), shown(preview));
   const other = "fixture-tenant-marker", store = join(s.project, `store ${marker}`), stream = `CHAT_${other}`;
   mkdirSync(join(store, "jetstream", "$G", "streams", stream), { recursive: true, mode: 0o700 });
   const occupied = await s.run(["up", "--space", space, "--store-dir", store, "--server", "nats://127.0.0.1:1", "--open", "--no-manager", "--json"]);
