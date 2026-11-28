@@ -527,7 +527,15 @@ try {
     typeof emptyConfig === "object" && emptyConfig.message === "the service options do not match the installed adapter's closed schema at --config; option values were not printed" && emptyConfig.remedy === next("b2"), emptyConfig);
 
   // ---- A preset name reaches the space's one service built on it, for show and remove too -------
-  const manager = cotal(["service", "add", "m1", "--preset", "manager", "--space", SPACE]);
+  const addManager = ["service", "add", "m1", "--preset", "manager", "--space", SPACE, "--json", "--max-sessions"];
+  for (const [input, rule] of [["0", ">= 1"], ["9007199254740992", "<= 9007199254740991"], ['"private-input-marker"', "integer"]] as const) {
+    const refused = cotal([...addManager, input]);
+    const { error } = JSON.parse(refused.stdout);
+    check(`Manager preset add reports the declared ${rule} constraint without saving a definition`,
+      refused.status === 1 && error?.code === "SCHEMA_INVALID" && error.message.includes(`at --max-sessions (must be ${rule})`)
+        && !out(refused).includes("private-input-marker") && !serviceDefinitionStore(SPACE).read("m1"), out(refused));
+  }
+  const manager = cotal([...addManager, "1"]);
   check("service add m1 --preset manager saves m1", manager.status === 0, out(manager));
   for (const args of [["service", "start", "m1", "--space", SPACE, "--help"], ["help", "--", "service", "start", "m1", "--space", SPACE]]) {
     const m1Help = cotal(args);
