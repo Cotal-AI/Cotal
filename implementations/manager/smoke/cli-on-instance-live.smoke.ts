@@ -119,6 +119,7 @@ const home = join(dir, "home");
 // Private, as cotal creates its own home: the local-record store refuses a group- or world-readable one.
 mkdirSync(home, { recursive: true, mode: 0o700 });
 process.env.COTAL_HOME = home;
+process.env.DO_NOT_TRACK = "1"; // Fixture CLI calls must not create a telemetry identity or send events.
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });

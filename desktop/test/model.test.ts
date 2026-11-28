@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, surfaceState } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -13,8 +13,8 @@ test("a blank space label is the space id and a label with a character stays", (
   assert.equal(shownSpaceKind(""), "Space");
   assert.equal(shownSpaceKind("\n"), "Space");
   assert.equal(shownSpaceKind(undefined), "Space");
-  assert.equal(shownSpaceKind(" ada"), " ada");
-  assert.equal(shownSpaceKind("team"), "team");
+  assert.equal(shownSpaceKind(" ada"), "Ada");
+  assert.equal(shownSpaceKind("team"), "Team");
 });
 
 test("a blank account label is the subject and a label with a character stays", () => {
@@ -53,6 +53,24 @@ test("only verified service connection is presented as connected", () => {
 
 test("approval guidance refers to this computer", () => {
   assert.equal(connectionView("approval-pending").description, "The space owner must approve this computer. No connection is claimed yet.");
+});
+
+test("a computer with no account stays Starting until a Manager is verified", () => {
+  const none = { rows: [], anyConnected: false };
+  assert.equal(surfaceState(none).word, "Not set up");
+  assert.equal(surfaceState(none).title, "This computer is not set up");
+  // A registered account with no assigned spaces is connected to the account, not Starting.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account");
+  // A verified Manager with no account rows is Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: true, verified: true }).word, "Connected");
+  // Removing the last space leaves an account with nothing using it. That stays Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).word, "Connected");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, accountKnown: true }).title, "This computer is connected to your account");
+  // A daemon that answers, with no account and a Manager still starting, is Starting. Never Connected.
+  assert.equal(surfaceState({ rows: [], anyConnected: false, managerStarting: true }).word, "Starting");
+  assert.equal(surfaceState({ rows: [], anyConnected: false, managerStarting: true }).title, "This computer is starting");
+  // No account and no Manager at all was never set up.
+  assert.equal(surfaceState({ rows: [], anyConnected: false }).word, "Not set up");
 });
 
 test("launch readiness requires an answering registered Manager with an available application", () => {
@@ -134,6 +152,18 @@ test("expired credentials and pending approval refusals map to their recovery ac
     description: "Start it again to continue.",
     action: "install",
     label: "Start service",
+  });
+  assert.deepEqual(refusalView("SERVICE_STOPPED"), {
+    title: "The background service is stopped",
+    description: "You stopped the background service. Start it to run agents on this computer again.",
+    action: "start",
+    label: "Start",
+  });
+  assert.deepEqual(refusalView("DISK_FULL"), {
+    title: "Your disk is full",
+    description: "Free up space on this computer. Cotal continues by itself once there is room.",
+    action: "disk",
+    label: "Check again",
   });
   assert.deepEqual(refusalView("NOT_ANSWERING"), {
     title: "The background service has not started",

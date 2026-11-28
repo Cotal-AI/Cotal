@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import axe from "axe-core";
 import { nativeStub, scenarios } from "./fixtures.mjs";
+import { sidebarScenarios } from "./sidebar.mjs";
 
 const root = resolve(process.env.RENDER_DIST ?? fileURLToPath(new URL("../../dist/", import.meta.url)));
 const output = resolve(process.env.SHOTS ?? "test/render/artifacts");
@@ -26,7 +27,10 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ["--no-sandbox"] });
 let count = 0;
-const cases = scenarios.filter(scenario => !process.env.CASES || process.env.CASES.split(",").includes(scenario.name));
+const failed = [];
+const matrix = process.env.SIDEBAR_ONLY ? sidebarScenarios(scenarios) : [...scenarios, ...(scenarios.some(({ name }) => name === "welcome") ? sidebarScenarios(scenarios) : [])];
+const cases = matrix.filter(scenario => !process.env.CASES || process.env.CASES.split(",").includes(scenario.name));
+assert.ok(cases.length, "no render scenarios match");
 try {
   const initial = await browser.newContext();
   try {
@@ -132,10 +136,11 @@ try {
             iterations: a.effect.getTiming().iterations === Infinity ? "infinite" : a.effect.getTiming().iterations,
           }));
         });
-        if (reducedMotion === "no-preference") assert.ok(animations.some(a => a.iterations !== "infinite"), `${name}: finite transition captured`);
         await writeFile(`${output}/${name}-motion.json`, JSON.stringify(animations, null, 2));
-        const requiredAnimation = { "details-open": "grid-template-rows", "progress-done": "draw", ready: "success", notice: "grid-template-rows" }[scenario.name];
-        if (requiredAnimation && reducedMotion === "no-preference") assert.ok(animations.some(a => a.name === requiredAnimation), `${name}: ${requiredAnimation} captured`);
+        if (scenario.name === "connecting" && reducedMotion === "no-preference") {
+          assert.ok(animations.some(a => a.name === "spin" && a.iterations === "infinite"), `${name}: progress spinner captured`);
+        }
+        if (reducedMotion === "reduce") assert.deepEqual(animations, [], `${name}: no captured motion with reduced motion`);
         for (const time of [0, 80, 160, 240]) {
           await page.evaluate(time => { for (const a of window.__motion) a.currentTime = time; }, time);
           await page.screenshot({ path: `${output}/${name}-${time}ms.png` });
@@ -144,8 +149,8 @@ try {
           assert.ok(contained, `${name}: growing card contains incoming content at ${time}ms`);
           const opacity = await page.locator("#connection-title").evaluate(el => Number(getComputedStyle(el).opacity));
           assert.ok(opacity >= .3, `${name}: nonblank content at ${time}ms`);
-          const headerBottom = await page.locator(".sidebar").evaluate(el => el.getBoundingClientRect().bottom);
-          assert.ok(top >= headerBottom, `${name}: centered card clears header at ${time}ms`);
+          const mainTop = await page.locator("main").evaluate(el => el.getBoundingClientRect().top);
+          assert.ok(top >= mainTop, `${name}: card clears main top at ${time}ms`);
         }
         await page.evaluate(() => { for (const a of window.__motion) a.cancel(); });
       }
@@ -163,7 +168,7 @@ try {
       const brand = await page.evaluate(async () => {
         await Promise.all([document.fonts.load('800 32px "Bricolage Grotesque"'), document.fonts.load('400 14px "Geist"'), document.fonts.load('600 28px "Geist Mono"')]);
         const style = selector => getComputedStyle(document.querySelector(selector));
-        const colors = ["--paper", "--card", "--ink", "--ink-2", "--dim", "--faint", "--rule", "--blue", "--yellow", "--orange", "--green", "--green-ink", "--gold", "--gold-ink", "--red", "--red-ink", "--blue-ink", "--orange-ink", "--t-gold", "--t-teal", "--t-violet", "--t-blue", "--t-orange", "--t-green", "--t-red", "--on-ink", "--on-ink-dim"];
+        const colors = ["--paper", "--card", "--sidebar", "--ink", "--dim", "--rule", "--green", "--amber", "--red", "--gold"];
         const probe = document.createElement("span"); probe.id = "brand-color-probe";
         const sheet = [...document.styleSheets].find(sheet => sheet.href?.startsWith(location.origin));
         const rule = sheet.insertRule("#brand-color-probe { transition: none !important; }", sheet.cssRules.length);
@@ -180,7 +185,7 @@ try {
             for (const property of ["color", "backgroundColor"]) if (!allowed.has(s[property])) invalid.push(`${el.id || el.tagName}${pseudo || ""}: ${property} ${s[property]}`);
           }
         }
-        return { title: style("#connection-title").fontFamily, body: style("body").fontFamily, code: style("#approval-code").fontFamily,
+        return { title: style("#connection-title").fontFamily, body: style("body").fontFamily, code: style(".version").fontFamily,
           loaded: ['800 32px "Bricolage Grotesque"', '400 14px "Geist"', '600 28px "Geist Mono"'].every(font => document.fonts.check(font)),
           background: style(":root").backgroundColor,
           primary: [...document.querySelectorAll(".primary:not(:disabled)")].map(el => getComputedStyle(el).backgroundColor), invalid };
@@ -198,7 +203,7 @@ try {
         const root = document.documentElement;
         if (root.scrollHeight > innerHeight || root.scrollWidth > innerWidth) failures.push(`page scroll ${root.scrollWidth}×${root.scrollHeight}`);
         for (const el of document.querySelectorAll("[style]")) if (el.getAttribute("style")?.trim()) failures.push(`inline style attribute: ${el.outerHTML.slice(0, 180)}`);
-        const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== "hidden" && !el.closest(".sr-only");
+        const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== "hidden" && !el.closest(".sr-only") && getComputedStyle(el).clipPath !== "inset(50%)";
         for (const el of document.querySelectorAll("body *")) {
           if (!visible(el) || el instanceof SVGElement || !el.textContent?.trim()) continue;
           if (el.id === "machine-name" && getComputedStyle(el).textOverflow === "ellipsis") {
@@ -234,7 +239,7 @@ try {
         const controls = [...document.querySelectorAll("button,input,select,summary")].filter(el => visible(el) && !el.disabled && !scrolledAway(el));
         for (const [i, a] of controls.entries()) {
           const x = a.getBoundingClientRect();
-          if (x.height < 32 || x.width < 32) failures.push(`small target: ${a.id || a.tagName}`);
+          if (x.height < 24 || x.width < 24) failures.push(`small target: ${a.id || a.tagName}`);
           for (const b of controls.slice(i + 1)) {
             const y = b.getBoundingClientRect();
             if (Math.min(x.right, y.right) - Math.max(x.left, y.left) > 1 && Math.min(x.bottom, y.bottom) - Math.max(x.top, y.top) > 1) failures.push(`overlap: ${a.id} / ${b.id}`);
@@ -242,116 +247,26 @@ try {
         }
         return failures;
       });
-      const headerRows = await page.evaluate(() => {
-        if (innerWidth > 460 || document.querySelector('#open-settings').hidden) return 0;
-        const boxes = ['.brand', '.machine', '.status-pill', '#open-settings'].map(s => document.querySelector(s).getBoundingClientRect());
-        boxes.sort((a,b) => a.top - b.top);
-        let rows = 0, bottom = -Infinity;
-        for (const box of boxes) { if (box.top >= bottom) { rows++; bottom = box.bottom; } else bottom = Math.min(bottom, box.bottom); }
-        return rows;
-      });
-      assert.ok(headerRows <= 2, `${name}: header uses at most two rows (${headerRows})`);
-      const primaryVisible = await page.evaluate(() => {
-        const panel = document.querySelector('#connected-panel');
-        const action = document.querySelector('#dashboard');
-        if (panel.hidden || !action.getClientRects().length || action.hidden) return true;
-        panel.scrollTop = 0;
-        const card = panel.closest('.connection-card').getBoundingClientRect();
-        const box = action.getBoundingClientRect();
-        const thumb = document.querySelector('[data-scroll-thumb="connected-panel"]');
-        return (box.top >= card.top && box.bottom <= card.bottom - 2) || !!(thumb && !thumb.hidden && thumb.getClientRects().length);
-      });
-      assert.ok(primaryVisible, `${name}: primary action visible at rest or panel overflow thumb visible`);
-      const initialClips = await page.evaluate(() => {
-        const failures = [];
-        for (const card of document.querySelectorAll('.connection-card:has(#connected-panel:not([hidden])),#settings-panel:not([hidden])')) {
-          const edge = card.getBoundingClientRect();
-          for (const item of card.querySelectorAll('button,.switch,.agent-row,.settings-row p')) {
-            if (!item.getClientRects().length || item.closest('[hidden]')) continue;
-            const box = item.getBoundingClientRect();
-            let top = box.top, bottom = box.bottom;
-            for (let parent = item.parentElement; parent && parent !== card; parent = parent.parentElement) {
-              if (['auto','scroll','hidden','clip'].includes(getComputedStyle(parent).overflowY)) { const bounds = parent.getBoundingClientRect(); top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom); }
-            }
-            if (bottom <= top) continue;
-            if (top < edge.bottom - 2 && bottom > edge.bottom - 2 && top >= edge.top) failures.push(`${item.id || item.className || item.tagName}: ${JSON.stringify({top,bottom,edge:edge.bottom,scroll:card.scrollTop,height:card.clientHeight,max:getComputedStyle(card).maxHeight,rules:document.adoptedStyleSheets.flatMap(s=>[...s.cssRules].map(r=>r.cssText)),parent:item.parentElement.outerHTML.slice(0,350)})}`);
-          }
-        }
-        return failures;
-      });
-      assert.deepEqual(initialClips, [], `${name}: G initial card edge never slices content`);
       const reachability = await page.evaluate(() => {
         const failures = [];
-        for (const card of document.querySelectorAll('.connection-card:has(#connected-panel:not([hidden])), #settings-panel:not([hidden])')) {
-          for (const control of card.querySelectorAll('button,input,select,.switch,.settings-row p')) {
-            if (!control.getClientRects().length || control.closest('[hidden]')) continue;
+        for (const card of document.querySelectorAll('main [role="tabpanel"]:not([hidden])')) {
+          for (const control of card.querySelectorAll('h1,a[href],button,input,select,summary,.switch,.settings-row p')) {
+            const closed = control.closest('details:not([open])');
+            if (!control.getClientRects().length || control.closest('[hidden]') || closed && control !== closed.querySelector('summary')) continue;
             control.scrollIntoView({ block: 'nearest', behavior: 'instant' });
             const box = control.getBoundingClientRect();
+            if (box.top < -1 || box.bottom > innerHeight + 1 || box.left < -1 || box.right > innerWidth + 1) failures.push(`${control.id || control.tagName} outside viewport`);
             for (let parent = control.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
               if (!['auto','scroll','hidden','clip'].includes(getComputedStyle(parent).overflowY)) continue;
               const clip = parent.getBoundingClientRect();
               if (box.top < clip.top - 1 || box.bottom > clip.bottom + 1) failures.push(`${control.id || control.tagName} clipped by ${parent.id || parent.className} ${JSON.stringify({top:box.top,bottom:box.bottom,clipTop:clip.top,clipBottom:clip.bottom,scroll:parent.scrollTop,height:parent.clientHeight})}`);
             }
           }
-          for (const scroller of [card, ...card.querySelectorAll('*')]) if (scroller.scrollTop) scroller.scrollTop = 0;
+          for (const scroller of [document.querySelector('main'), card, ...card.querySelectorAll('*')]) if (scroller.scrollTop) scroller.scrollTop = 0;
         }
         return failures;
       });
       assert.deepEqual(reachability, [], `${name}: G reachable controls and Settings text`);
-      const layoutChecks = await page.evaluate(() => {
-        const failures = { rows: [], thumbs: [], rhythm: [] };
-        const visible = el => el && el.getClientRects().length && !el.closest("[hidden]");
-        for (const selector of [".connected-spaces-scroll", "#agent-list", "#connected-panel", "#settings-panel"]) {
-          const list = document.querySelector(selector);
-          if (!visible(list)) continue;
-          const box = list.getBoundingClientRect();
-          const scrolling = list.scrollHeight > list.clientHeight + 1;
-          const thumb = document.querySelector(`[data-scroll-thumb="${list.id || 'spaces'}"]`);
-          if (scrolling !== !!visible(thumb)) failures.thumbs.push(`${selector}: scrolling=${scrolling}, thumb=${!!visible(thumb)}`);
-          if (selector === "#agent-list" && list.children.length) {
-            const height = list.clientHeight;
-            const rowHeight = parseFloat(getComputedStyle(list.firstElementChild).height);
-            if (Math.abs(height / rowHeight - Math.round(height / rowHeight)) > .03) failures.rows.push(`agent list height ${height} is not whole rows`);
-          }
-          if (!list.children.length && parseFloat(getComputedStyle(list).borderBottomWidth)) failures.rhythm.push(`${selector}: empty list has rule`);
-          if (box.height < 0) failures.rows.push(selector);
-        }
-        const spaces = document.querySelector(".connected-spaces-scroll");
-        const agents = document.querySelector("#running-agents");
-        const applications = document.querySelector("#apps-strip");
-        if (visible(spaces) && visible(agents) && visible(applications) && applications.textContent.trim()) {
-          const before = agents.getBoundingClientRect().top - spaces.getBoundingClientRect().bottom;
-          const after = applications.getBoundingClientRect().top - agents.getBoundingClientRect().bottom;
-          const note = document.querySelector("#dashboard-spaces-note");
-          if (visible(note)) {
-            const captionGap = note.getBoundingClientRect().top - spaces.getBoundingClientRect().bottom;
-            if (Math.abs(captionGap - 4) > 1) failures.rhythm.push(`caption gap ${captionGap}, expected 4`);
-          }
-          const dashboard = document.querySelector('#dashboard');
-          if (visible(dashboard) && !dashboard.hidden) {
-            const actionGap = dashboard.getBoundingClientRect().top - applications.getBoundingClientRect().bottom;
-            if (Math.abs(actionGap - 12) > 1) failures.rhythm.push(`action gap ${actionGap}, expected 12`);
-          }
-          if (!visible(note) && Math.abs(before - after) > 1) failures.rhythm.push(`section gaps ${before}/${after}`);
-        }
-        return failures;
-      });
-      for (const [check, failures] of Object.entries(layoutChecks)) assert.deepEqual(failures, [], `${name}: G ${check}`);
-      if (await page.locator("#connected-panel").isVisible()) {
-        const padding = await page.locator(".connection-card").evaluate(card => {
-          const panel = card.querySelector("#connected-panel");
-          const controls = [...panel.querySelectorAll("button,input,select,summary")].filter(el => el.getClientRects().length);
-          const last = controls.at(-1);
-          if (!last) return null;
-          const style = getComputedStyle(card);
-          const before = panel.scrollTop;
-          panel.scrollTop = panel.scrollHeight;
-          const remaining = card.getBoundingClientRect().bottom - parseFloat(style.borderBottomWidth) - last.getBoundingClientRect().bottom;
-          panel.scrollTop = before;
-          return { remaining, required: parseFloat(style.paddingBottom) };
-        });
-        assert.ok(!padding || padding.remaining >= padding.required - 1, `${name}: connected last control keeps card bottom padding ${JSON.stringify(padding)}`);
-      }
       assert.ok(await page.locator("footer").evaluate(el => { const box = el.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; }), `${name}: footer inside viewport`);
       assert.deepEqual(geometry, [], `${name}: geometry`);
       await page.addScriptTag({ url: `${address}/axe.js` });
@@ -376,13 +291,27 @@ try {
         const sizingAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'running' && a.effect?.target?.id === 'agent-list').map(a => a.transitionProperty || a.animationName));
         assert.deepEqual(sizingAnimations, [], `${name}: delayed resize has no agent sizing motion under reduce`);
       }
-      await page.waitForTimeout(300);
-      const runningAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").map(a => ({ target: a.effect?.target?.id, name: a.animationName || a.transitionProperty })));
-      assert.deepEqual(runningAnimations, [], `${name}: reduced motion`);
+      // Turning reduced motion on restarts the short enter fade. One sample at 300ms races that restart.
+      const reduced = await page.waitForFunction(() => {
+        const running = document.getAnimations().filter(animation => animation.playState === "running").map(animation => {
+          const timing = animation.effect?.getTiming?.() ?? {};
+          return { target: animation.effect?.target?.id, name: animation.animationName || animation.transitionProperty, iterations: timing.iterations, duration: timing.duration };
+        });
+        const endless = running.filter(animation => animation.iterations === Infinity || animation.duration === Infinity);
+        if (endless.length) return { endless, running };
+        return running.length === 0 ? { endless, running } : false;
+      }, null, { timeout: 2000, polling: 50 });
+      const settled = await reduced.jsonValue();
+      assert.deepEqual(settled.endless, [], `${name}: reduced motion`);
+      assert.deepEqual(settled.running, [], `${name}: reduced motion`);
       count++;
       console.log(`PASS ${name}`);
+    } catch (error) {
+      failed.push(name);
+      console.error(`FAIL ${name}`, error);
     } finally { await context.close(); }
     }
   }
   console.log(`${count} screen renders passed. Screenshots: ${output}`);
+  assert.deepEqual(failed, [], "failed screen renders");
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { localDiagnostic } from "../telemetry.js";
 import {
   closeSync,
   constants,
@@ -135,11 +136,11 @@ export function artifactReadRefusal(error: unknown, directory: string, restoreRo
       remedy: "restore read and search access to this folder for your account, or use an accessible copy of the backup",
     });
   }
-  return new CommandFailure("refused", "PERMISSION_DENIED", restoreRoot === undefined ? error.message : `${error.message}; nothing was restored`, {
+  return localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", restoreRoot === undefined ? error.message : `${error.message}; nothing was restored`, {
     target: { directory, file: error.file, fault: error.fault, ...(restoreRoot === undefined ? {} : { root: restoreRoot }) },
     native: { code: error.code },
     remedy: `restore read access to that file and retry ${restoreRoot === undefined ? "verification" : "the restore"}, or use a readable copy of the backup`,
-  });
+  }));
 }
 
 /** A manifest whose content is not a valid inventory. `reason` names no manifest value beyond a

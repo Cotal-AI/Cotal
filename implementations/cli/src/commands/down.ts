@@ -393,7 +393,7 @@ function noStackHere(target: { root: string; space?: string }, action: "stop" | 
   let elsewhere: boolean;
   try { elsewhere = loadMeshes().some((mesh) => mesh.origin !== "manual" && mesh.origin !== "catalog"); } catch { elsewhere = true; }
   if (!elsewhere) return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to ${action}`, { target, remedy: `run \`${displayCmd()} up\` in a project` });
-  return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, so there is nothing to ${action}`, { target, remedy: `run \`${displayCmd()} down${action === "preview" ? " --dry-run" : ""}\` from the folder where \`${displayCmd()} up\` started the stack` });
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, so there is nothing to ${action}`, { target, remedy: `repeat your original command from the folder where \`${displayCmd()} up\` started the stack, keeping the same options` });
 }
 
 /** Why bare down found no stack of its own at this root, with the one step that moves it on. */

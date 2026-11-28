@@ -3,6 +3,7 @@
  *  cannot be verified. A stopped instance does not block. Neither stops a service: each has its own
  *  controller and stop policy, as on a controller stack, whose `down` stops only its members. */
 import { CommandFailure, isCommandFailure, type Report } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { observeServiceProcess, serviceInstances, type ServiceProcessState } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
@@ -74,10 +75,10 @@ export function planBareDownServices(space: string): BareDownService[] {
 export function liveServicesRefusal(space: string, rows: readonly BareDownService[], command: "down" | "down --preserve-state"): CommandFailure | undefined {
   const live = rows.filter((row) => row.action !== "already-stopped");
   if (!live.length) return undefined;
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `saved services in this space still run or could not be verified and depend on its broker (${live.map((row) => `${row.definition} instance ${row.instanceId}: ${row.action === "stop-first" ? row.process : row.reason}`).join("; ")}); ${command === "down" ? "bare down" : command} stopped nothing`, {
+  return localDiagnostic(new CommandFailure("refused", "LIFECYCLE_BLOCKED", `saved services in this space still run or could not be verified and depend on its broker (${live.map((row) => `${row.definition} instance ${row.instanceId}: ${row.action === "stop-first" ? row.process : row.reason}`).join("; ")}); ${command === "down" ? "bare down" : command} stopped nothing`, {
     target: { space, services: live.map((row) => ({ definition: row.definition, instanceId: row.instanceId, process: row.process, reason: row.reason })) },
-    remedy: `${live.map((row) => row.action === "stop-first" ? `stop ${row.definition} with \`cotal service stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes\`` : row.remedy).join("; ")}, then run \`cotal ${command}\` again`,
-  });
+    remedy: `${live.map((row) => row.action === "stop-first" ? `stop ${row.definition} with \`cotal service stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes\`` : row.remedy).join("; ")}, then repeat your original shutdown command from this project folder with the same options`,
+  }));
 }
 
 /** Refuse before any effect while a saved service in `space` still runs or could not be verified. */

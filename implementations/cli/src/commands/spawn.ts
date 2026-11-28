@@ -304,7 +304,7 @@ function readDirectPersona(target: PersonaSite, path: string, ref: string, from:
   catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (!(implicitDefault && code === "ENOENT")) {
-      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) });
+      if (e instanceof PersonaSourceError) throw localDiagnostic(new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) }));
       if (handoff) stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       else if (code === "ENOENT") throw missingPersonaFailure(target, ref, from, path);
       else if (code === "ELOOP") {

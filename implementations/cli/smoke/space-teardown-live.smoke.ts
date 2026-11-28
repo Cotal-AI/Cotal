@@ -913,17 +913,27 @@ try {
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
     checkStoppedDeliveryLog(root, space, first.find((row) => row.role === "delivery")?.instanceId);
-    const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
+    const brokerLaunchId = () => serviceInstances(space, "stack-broker")[0]?.record.value.launchRequestId;
+    const firstBrokerLaunch = brokerLaunchId();
+    // Change the saved manager definition so this restart retires its instance rather than reusing it.
+    const cycledUp = cli(root, "up", "--max-sessions", "2", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
+    const cycledManager = cycledRows.find((row) => row.role === "manager")?.instanceId;
+    const cycledBrokerLaunch = brokerLaunchId();
     const cycledDown = cli(root, "down", "--yes", "--json");
     const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
     const instanceEntries = existsSync(join(spaceServiceDir, "instances")) ? readdirSync(join(spaceServiceDir, "instances")).sort() : [];
     check("restarting and stopping the stack replaces retired manager logs and prior broker launch scratch without leaking retired files",
       cycledUp.status === 0 && cycledDown.status === 0 && gone(cycledPids)
+        && typeof manager === "string" && typeof cycledManager === "string" && cycledManager !== manager
+        && instanceEntries.includes(`${Buffer.from(cycledManager, "utf8").toString("hex")}.log`)
+        && !instanceEntries.some((f) => f.includes(Buffer.from(manager, "utf8").toString("hex")) || f.includes(manager))
         && instanceEntries.filter((f) => f.endsWith(".log")).length === 3
+        && firstBrokerLaunch !== undefined && cycledBrokerLaunch !== undefined && cycledBrokerLaunch !== firstBrokerLaunch
         && instanceEntries.filter((f) => f.startsWith(".broker-ports-")).length === 1
+        && instanceEntries.includes(`.broker-ports-${cycledBrokerLaunch}`)
         && instanceEntries.filter((f) => f.startsWith(".broker-launch-")).length === 1
-        && !instanceEntries.some((f) => f.includes(Buffer.from(manager!, "utf8").toString("hex"))),
-      { cycledRows, instanceEntries });
+        && instanceEntries.includes(`.broker-launch-${cycledBrokerLaunch}.json`),
+      { manager, cycledRows, firstBrokerLaunch, cycledBrokerLaunch, spaceServiceDir, instanceEntries });
     const forgot = cli(home, "space", "forget", space, "--json");
     check("space forget removes the three stack definitions, the journal names none of their instances, and the space's services directory is gone",
       forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0 && !existsSync(spaceServiceDir), { forget: shown(forgot), journal: journalRows(), exists: existsSync(spaceServiceDir) });

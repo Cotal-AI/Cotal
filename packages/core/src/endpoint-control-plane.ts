@@ -9,7 +9,7 @@ import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { ClosedConnectionError, type Msg, type NatsConnection } from "@nats-io/transport-node";
-import { withDeadline } from "./deadline.js";
+import { CONNECTION_RECOVERY_MS, withDeadline } from "./deadline.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
@@ -448,7 +448,7 @@ export class EndpointControlPlane {
     args?: Record<string, unknown>,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
-    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+    const deadline = Date.now() + (opts.deadlineMs ?? CONNECTION_RECOVERY_MS);
     const rebuilding = this.lifecycle.rebuildPromise;
     if (rebuilding) {
       await this.waitServiceRecovery(rebuilding, deadline, opts.signal,

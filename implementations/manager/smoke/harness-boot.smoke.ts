@@ -8,11 +8,12 @@
  * before reserving names or capacity, updating class spawn routing and recovering when restored.
  */
 import { spawn, spawnSync } from "node:child_process";
-import fs, { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import fs, { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
-import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
+import { DEV_OWNER, epCall, isReachable, mintLifecycleUid, newIdentity, registry, type Connector, type ConnectorSetupProvider, type LaunchOpts } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { MANAGER_CONTRACTS, type ManagerStatus } from "../src/manager-service-contract.js";
 import { connectorMetadataStale, extensionsDir, saveExtensionsManifest, trustProject } from "@cotal-ai/workspace";
@@ -247,7 +248,17 @@ try {
   writeFileSync(join(siblingWorkspaceRoot, ".cotal", "agents", "pin-probe.md"), "---\nname: pin-probe\nagent: boot-present\n---\n");
   const uninstallPresent = join(uninstallBin, executable("present-harness"));
   const siblingPresent = join(siblingBin, executable("present-harness"));
-  const missingReason = "boot-present harness needs present-harness on PATH - not found";
+  const unpinnedReason = (pinnedPath: string) =>
+    `boot-present harness needs pinned present-harness (${pinnedPath}) on PATH - not found (no fallback to another copy on PATH)`;
+  const movedReason = (pinnedPath: string, foundPath: string) =>
+    `boot-present harness needs pinned present-harness (${pinnedPath}) on PATH - found ${foundPath} instead (restart this Manager to use it)`;
+  const instUnavailableError = (reason: string) =>
+    `${reason}. Restore the harness on this host, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+  const instMovedError = (reason: string) =>
+    `${reason}. Restart this Manager to use the copy now on PATH, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+  const classUnavailableError = (reason: string) =>
+    `${reason}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
+  const uninstallReason = unpinnedReason(uninstallPresent);
   writeFileSync(uninstallPresent, script, { mode: 0o700 });
   writeFileSync(siblingPresent, script, { mode: 0o700 });
 
@@ -256,6 +267,7 @@ try {
     agents: Map<string, unknown>;
     managerStatusData(): ManagerStatus;
     connectorInventory: { connectorStatuses: ManagerStatus["connectors"] };
+    seatLaunch: { classSpawnEnabled(): boolean };
     goalWriterComponent: { goalAcceptances: Map<string, unknown> };
     servePlane: { serviceServe?: { grant: { epoch: number } } };
     namesCapacity: {
@@ -296,15 +308,15 @@ try {
     const uninstalled = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
     const U = instrumentManager(uninstalled, uninstallPresent);
     await uninstalled.start();
+    const uninstalledId = U.view.managerStatusData().instanceId;
     process.env.PATH = siblingBin;
     const sibling = new Manager({ space, servers, runtime: "pty", workspaceRoot: siblingWorkspaceRoot, installedExtensions: true });
     const S = instrumentManager(sibling, siblingPresent);
     await sibling.start();
+    const siblingId = S.view.managerStatusData().instanceId;
     process.env.PATH = uninstallBin;
     const nc = await connect({ servers });
     const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
-    const uninstalledId = U.view.managerStatusData().instanceId;
-    const siblingId = S.view.managerStatusData().instanceId;
     const callInst = (instanceId: string, command: "status" | "models" | "spawn", args?: Record<string, unknown>) =>
       epCall(nc, space, { mode: "inst", instanceId, epoch: (instanceId === siblingId ? S : U).view.servePlane.serviceServe?.grant.epoch ?? 0 },
         { endpoint: "manager", command, contract: MANAGER_CONTRACTS[command], caller, ...(args ? { args } : {}) },
@@ -339,14 +351,14 @@ try {
       check(
         "status marks a deleted application unavailable with 0 available rows and disables classSpawn",
         statusReply.reply.ok === true && statusCounts.available === 0 && statusCounts.unavailable === 2 &&
-          presentRow?.state === "unavailable" && presentRow.reason === missingReason &&
+          presentRow?.state === "unavailable" && presentRow.reason === uninstallReason &&
           Object.keys(presentRow.binaries).length === 0 && statusData?.classSpawn === false,
         reproSummary,
       );
       check(
         "pinned launch of a deleted application refuses with not-executed before reserving name or capacity",
         pinnedSpawn.reply.ok === false && pinnedSpawn.reply.error.code === "failed-precondition" &&
-          pinnedSpawn.reply.error.outcome === "not-executed" && pinnedSpawn.reply.error.message === missingReason &&
+          pinnedSpawn.reply.error.outcome === "not-executed" && pinnedSpawn.reply.error.message === instUnavailableError(uninstallReason) &&
           U.stats.spawnCalls === 0 && U.stats.reserveCalls === 0 && U.stats.uniqueNameCalls === 0 &&
           U.view.agents.size === 0 && U.view.namesCapacity.reservedCount === 0 &&
           U.view.namesCapacity.occupancy().used === 0 && U.view.goalWriterComponent.goalAcceptances.size === 0,
@@ -403,11 +415,11 @@ try {
       const afterLaunchRow = LF.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
       check(
         "launch before any status read detects a deleted executable and refuses before reserving name or capacity",
-        directLaunch.ok === false && directLaunch.error === missingReason &&
+        directLaunch.ok === false && directLaunch.error === uninstallReason &&
           LF.stats.spawnCalls === 0 && LF.stats.reserveCalls === 0 && LF.stats.uniqueNameCalls === 0 &&
           LF.view.namesCapacity.occupancy().used === 0 && afterLaunchCounts.available === 0 &&
           afterLaunchCounts.unavailable === 2 && afterLaunchRow?.state === "unavailable" &&
-          afterLaunchRow.reason === missingReason && LF.view.managerStatusData().classSpawn === false,
+          afterLaunchRow.reason === uninstallReason && LF.view.managerStatusData().classSpawn === false,
         { directLaunch, afterLaunchCounts, afterLaunchRow, stats: LF.stats },
       );
 
@@ -425,10 +437,10 @@ try {
       const offPathRow = offPathStatus.connectors.find((r) => r.agent === "boot-present");
       check(
         "an executable that still exists on disk becomes unavailable when it does not resolve on PATH",
-        fileStillExists && offPathLaunch.ok === false && offPathLaunch.error === missingReason &&
+        fileStillExists && offPathLaunch.ok === false && offPathLaunch.error === uninstallReason &&
           LF.stats.spawnCalls === 0 && LF.stats.reserveCalls === 0 && LF.stats.uniqueNameCalls === 0 &&
           offPathCounts.available === 0 && offPathCounts.unavailable === 2 &&
-          offPathRow?.state === "unavailable" && offPathRow.reason === missingReason &&
+          offPathRow?.state === "unavailable" && offPathRow.reason === uninstallReason &&
           Object.keys(offPathRow.binaries).length === 0 && offPathStatus.classSpawn === false,
         { fileStillExists, offPathLaunch, offPathCounts, offPathRow, stats: LF.stats },
       );
@@ -447,7 +459,6 @@ try {
     const loadSecond = join(loadBin, executable("second-harness"));
     writeFileSync(loadPresent, script, { mode: 0o700 });
     writeFileSync(loadSecond, script, { mode: 0o700 });
-    writeFileSync(join(workspaceRoot, ".cotal", "agents", "second-probe.md"), "---\nname: second-probe\nagent: boot-second\n---\n");
     saveExtensionsManifest({
       extensions: [
         {
@@ -557,7 +568,7 @@ try {
       check(
         "launch rechecks only the requested connector once",
         launchReply.reply.ok === true && O.stats.spawnCalls === 1 &&
-          launchSnapshot.rechecks === 1 && launchSnapshot.byAgent["boot-present"] === 1 &&
+          launchSnapshot.rechecks === 1 && launchSnapshot.accessCalls > 0 && launchSnapshot.byAgent["boot-present"] === 1 &&
           (launchSnapshot.byAgent["boot-second"] ?? 0) === 0 && (launchSnapshot.byAgent["boot-missing"] ?? 0) === 0,
         launchSnapshot,
       );
@@ -632,6 +643,758 @@ try {
       await libManager.stop({ withAgents: true }).catch(() => {});
     }
   }
+
+  {
+    saveExtensionsManifest({
+      extensions: [
+        {
+          pkg: "@fixture/boot-connectors",
+          version: "1.0.0",
+          spec: ".",
+          provides: [
+            { kind: "connector", name: "boot-missing" },
+            { kind: "connector", name: "boot-present" },
+          ],
+          commands: [],
+          connectors: [
+            { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
+            { name: "boot-present", requires: ["present-harness"], eventPlane: false },
+          ],
+        },
+      ],
+    });
+    const mutableConnector = connector as { -readonly [K in keyof Connector]: Connector[K] };
+    const prevCommands = mutableConnector.commands;
+    const prevWaitsForOperator = mutableConnector.waitsForOperator;
+    let commandsBinary: string | undefined;
+    let commandsCalled = 0;
+    mutableConnector.commands = {
+      targets: ["command"],
+      list: async (opts) => {
+        commandsCalled++;
+        commandsBinary = opts.resolvedBinaries?.["present-harness"];
+        return { supported: true, commands: [{ name: "probe-cmd", target: "command" }] };
+      },
+    };
+
+    try {
+      // 1. Lost boot pin with a second copy on PATH: refuses without silent switch, names the moved copy and restart remedy, and distinguishes truly missing from moved.
+      {
+        const space = "lost-pin-no-fallback";
+        const firstDir = join(root, "pin-first");
+        const secondDir = join(root, "pin-second");
+        mkdirSync(firstDir, { recursive: true, mode: 0o700 });
+        mkdirSync(secondDir, { recursive: true, mode: 0o700 });
+        const firstBinary = join(firstDir, executable("present-harness"));
+        const secondBinary = join(secondDir, executable("present-harness"));
+        writeFileSync(firstBinary, script, { mode: 0o700 });
+        writeFileSync(secondBinary, process.platform === "win32" ? "@exit /b 42\r\n" : "#!/bin/sh\nexit 42\n", { mode: 0o700 });
+        process.env.PATH = `${firstDir}${process.platform === "win32" ? ";" : ":"}${secondDir}`;
+        const pinned = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+        const P = instrumentManager(pinned, firstBinary);
+        await pinned.start();
+        const pinnedId = P.view.managerStatusData().instanceId;
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        const inst = () => ({ mode: "inst" as const, instanceId: pinnedId, epoch: P.view.servePlane.serviceServe?.grant.epoch ?? 0 });
+        const firstMissingReason = unpinnedReason(firstBinary);
+        const firstMovedReason = movedReason(firstBinary, secondBinary);
+        try {
+          rmSync(firstBinary);
+          const statusMoved = await epCall(nc, space, inst(), { endpoint: "manager", command: "status", contract: MANAGER_CONTRACTS.status, caller }, { deadlineMs: 5000 });
+          const movedData = statusMoved.reply.ok ? statusMoved.reply.data as ManagerStatus : undefined;
+          const movedRow = movedData?.connectors.find((r) => r.agent === "boot-present");
+          const movedModels = await epCall(nc, space, inst(), { endpoint: "manager", command: "models", contract: MANAGER_CONTRACTS.models, caller, args: { agent: "boot-present" } }, { deadlineMs: 5000 });
+          const movedCmds = await epCall(nc, space, inst(), { endpoint: "manager", command: "harness-commands", contract: MANAGER_CONTRACTS["harness-commands"], caller, args: { agent: "boot-present", cwd: workspaceRoot } }, { deadlineMs: 5000 });
+          const refusedSpawn = await epCall(nc, space, inst(), {
+            endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller,
+            args: { name: "pin-probe", agent: "boot-present", events: false },
+          }, { deadlineMs: 5000 });
+          check(
+            "deleting a boot-pinned binary with another copy on PATH refuses, clears binaries, and names the found copy and restart remedy across status, models, harness-commands, and pinned spawn",
+            movedRow?.state === "unavailable" && Object.keys(movedRow.binaries).length === 0 &&
+              movedRow.reason === firstMovedReason && movedData?.classSpawn === false &&
+              movedModels.reply.ok === false && movedModels.reply.error.message === firstMovedReason &&
+              movedCmds.reply.ok === false && movedCmds.reply.error.message === firstMovedReason &&
+              refusedSpawn.reply.ok === false && refusedSpawn.reply.error.outcome === "not-executed" &&
+              refusedSpawn.reply.error.message === instMovedError(firstMovedReason) &&
+              P.stats.spawnCalls === 0 && P.stats.reserveCalls === 0,
+            { movedRow, classSpawn: movedData?.classSpawn, movedModels: movedModels.reply, movedCmds: movedCmds.reply, refusedSpawn: refusedSpawn.reply, stats: { ...P.stats } },
+          );
+
+          process.env.PATH = join(root, "empty-bin");
+          const statusEmpty = await epCall(nc, space, inst(), { endpoint: "manager", command: "status", contract: MANAGER_CONTRACTS.status, caller }, { deadlineMs: 5000 });
+          const emptyData = statusEmpty.reply.ok ? statusEmpty.reply.data as ManagerStatus : undefined;
+          const emptyRow = emptyData?.connectors.find((r) => r.agent === "boot-present");
+          const emptySpawn = await epCall(nc, space, inst(), {
+            endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller,
+            args: { name: "pin-probe", agent: "boot-present", events: false },
+          }, { deadlineMs: 5000 });
+          check(
+            "when no copy remains on PATH, the refusal says not found and pinned spawn tells the operator to restore the harness",
+            emptyRow?.state === "unavailable" && Object.keys(emptyRow.binaries).length === 0 &&
+              emptyRow.reason === firstMissingReason && emptyData?.classSpawn === false &&
+              emptySpawn.reply.ok === false && emptySpawn.reply.error.message === instUnavailableError(firstMissingReason),
+            { emptyRow, emptySpawn: emptySpawn.reply },
+          );
+
+          process.env.PATH = secondDir;
+          const statusFlap = await epCall(nc, space, inst(), { endpoint: "manager", command: "status", contract: MANAGER_CONTRACTS.status, caller }, { deadlineMs: 5000 });
+          const flapData = statusFlap.reply.ok ? statusFlap.reply.data as ManagerStatus : undefined;
+          const flapRow = flapData?.connectors.find((r) => r.agent === "boot-present");
+          const flapSpawn = await epCall(nc, space, inst(), {
+            endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller,
+            args: { name: "pin-probe", agent: "boot-present", events: false },
+          }, { deadlineMs: 5000 });
+          check(
+            "after transitioning through empty PATH back to another directory on PATH, the connector still refuses with the found-copy restart remedy",
+            flapRow?.state === "unavailable" && Object.keys(flapRow.binaries).length === 0 &&
+              flapRow.reason === firstMovedReason && flapData?.classSpawn === false &&
+              flapSpawn.reply.ok === false && flapSpawn.reply.error.message === instMovedError(firstMovedReason) &&
+              P.stats.spawnCalls === 0,
+            { flapRow, classSpawn: flapData?.classSpawn, flapSpawn: flapSpawn.reply, stats: { ...P.stats } },
+          );
+
+          writeFileSync(firstBinary, script, { mode: 0o700 });
+          process.env.PATH = `${firstDir}${process.platform === "win32" ? ";" : ":"}${secondDir}`;
+          const restoredSpawn = await epCall(nc, space, inst(), {
+            endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller,
+            args: { name: "pin-probe", agent: "boot-present", events: false },
+          }, { deadlineMs: 5000 });
+          const restoredStatus = P.view.managerStatusData();
+          const restoredRow = restoredStatus.connectors.find((r) => r.agent === "boot-present");
+          check(
+            "restoring the original pinned binary on PATH recovers the connector without switching files",
+            restoredSpawn.reply.ok === true && P.stats.spawnCalls === 1 && P.stats.lastCommand === firstBinary &&
+              restoredRow?.state === "available" && restoredRow.binaries["present-harness"] === firstBinary &&
+              restoredStatus.classSpawn === true,
+            { restoredSpawn: restoredSpawn.reply, restoredRow, classSpawn: restoredStatus.classSpawn, stats: { ...P.stats } },
+          );
+        } finally {
+          await nc.close();
+          await pinned.stop({ withAgents: true });
+        }
+      }
+
+      // 2. Wire `models`, wire `harness-commands`, wire launch-first `spawn`, and stale-rail window within 40 tries across two Managers.
+      {
+        const space = "wire-surfaces-and-routing";
+        const firstBin = join(root, "wire-first-bin");
+        const secondBin = join(root, "wire-second-bin");
+        mkdirSync(firstBin, { recursive: true, mode: 0o700 });
+        mkdirSync(secondBin, { recursive: true, mode: 0o700 });
+        const firstExec = join(firstBin, executable("present-harness"));
+        const secondExec = join(secondBin, executable("present-harness"));
+        const firstExecReason = unpinnedReason(firstExec);
+        const firstMovedToSecondReason = movedReason(firstExec, secondExec);
+        writeFileSync(firstExec, script, { mode: 0o700 });
+        writeFileSync(secondExec, script, { mode: 0o700 });
+        process.env.PATH = firstBin;
+        const firstMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+        const F = instrumentManager(firstMgr, firstExec);
+        await firstMgr.start();
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        const firstId = F.view.managerStatusData().instanceId;
+        const callFirst = (command: "status" | "models" | "harness-commands" | "spawn", args?: Record<string, unknown>) =>
+          epCall(nc, space, { mode: "inst", instanceId: firstId, epoch: F.view.servePlane.serviceServe?.grant.epoch ?? 0 },
+            { endpoint: "manager", command, contract: MANAGER_CONTRACTS[command], caller, ...(args ? { args } : {}) },
+            { deadlineMs: 5000 });
+        try {
+          // Wire models + harness-commands when available, then after deleting firstExec (before any status read).
+          const okCmds = await callFirst("harness-commands", { agent: "boot-present", cwd: workspaceRoot });
+          commandsCalled = 0;
+          presentCatalogBinary = undefined;
+          rmSync(firstExec);
+          const missingModels = await callFirst("models", { agent: "boot-present" });
+          const modelsStoredRow = F.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
+          check(
+            "wire models rechecks a deleted binary, updates the stored row, refuses with the pinned reason, and disables classSpawn without calling managerStatusData",
+            okCmds.reply.ok === true && commandsBinary === firstExec &&
+              missingModels.reply.ok === false && missingModels.reply.error.message === firstExecReason &&
+              presentCatalogBinary === undefined && F.view.seatLaunch.classSpawnEnabled() === false &&
+              modelsStoredRow?.state === "unavailable" && modelsStoredRow.reason === firstExecReason &&
+              Object.keys(modelsStoredRow.binaries).length === 0,
+            { okCmds: okCmds.reply, missingModels: missingModels.reply, presentCatalogBinary, modelsStoredRow },
+          );
+
+          writeFileSync(firstExec, script, { mode: 0o700 });
+          await callFirst("status");
+          rmSync(firstExec);
+          const missingCmds = await callFirst("harness-commands", { agent: "boot-present", cwd: workspaceRoot });
+          const cmdsStoredRow = F.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
+          check(
+            "wire harness-commands rechecks a deleted binary, updates the stored row, refuses not-executed before connector.commands.list, and disables classSpawn without calling managerStatusData",
+            missingCmds.reply.ok === false && missingCmds.reply.error.code === "failed-precondition" &&
+              missingCmds.reply.error.outcome === "not-executed" && missingCmds.reply.error.message === firstExecReason &&
+              commandsCalled === 0 && F.view.seatLaunch.classSpawnEnabled() === false &&
+              cmdsStoredRow?.state === "unavailable" && cmdsStoredRow.reason === firstExecReason &&
+              Object.keys(cmdsStoredRow.binaries).length === 0,
+            { missingCmds: missingCmds.reply, commandsCalled, cmdsStoredRow },
+          );
+
+          // Wire launch-first spawn (no status read before spawn) + stale-rail window within 40 tries across two Managers.
+          writeFileSync(firstExec, script, { mode: 0o700 });
+          await callFirst("status");
+          saveExtensionsManifest({
+            extensions: [
+              {
+                pkg: "@fixture/boot-connectors",
+                version: "1.0.0",
+                spec: ".",
+                provides: [
+                  { kind: "connector", name: "boot-missing" },
+                  { kind: "connector", name: "boot-present" },
+                  { kind: "connector", name: "boot-second" },
+                ],
+                commands: [],
+                connectors: [
+                  { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
+                  { name: "boot-present", requires: ["present-harness"], eventPlane: false },
+                  { name: "boot-second", requires: ["second-harness"], eventPlane: false },
+                ],
+              },
+            ],
+          });
+          const secondHarness = join(secondBin, executable("second-harness"));
+          writeFileSync(secondHarness, script, { mode: 0o700 });
+          process.env.PATH = secondBin;
+          const secondMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot: siblingWorkspaceRoot, installedExtensions: true });
+          const S2 = instrumentManager(secondMgr, secondExec);
+          await secondMgr.start();
+          const secondId = S2.view.managerStatusData().instanceId;
+          try {
+            process.env.PATH = firstBin;
+            rmSync(firstExec);
+            const wireDirectRefusal = await callFirst("spawn", { name: "pin-probe", agent: "boot-present", events: false });
+            const directStoredRow = F.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
+            check(
+              "wire pinned spawn before any status read refuses not-executed with sibling --on guidance and drops classSpawn without calling managerStatusData",
+              wireDirectRefusal.reply.ok === false && wireDirectRefusal.reply.error.code === "failed-precondition" &&
+                wireDirectRefusal.reply.error.outcome === "not-executed" &&
+                wireDirectRefusal.reply.error.message === instUnavailableError(firstExecReason) &&
+                F.stats.spawnCalls === 0 && F.stats.reserveCalls === 0 &&
+                F.view.seatLaunch.classSpawnEnabled() === false &&
+                directStoredRow?.state === "unavailable" && directStoredRow.reason === firstExecReason &&
+                Object.keys(directStoredRow.binaries).length === 0,
+              { wireDirectRefusal: wireDirectRefusal.reply, stats: { ...F.stats }, directStoredRow },
+            );
+
+            // Re-arm firstMgr on firstExec (boot-present only; boot-second missing on firstBin), while secondMgr holds boot-present + boot-second on secondBin.
+            // When firstExec is deleted and PATH = secondBin, firstMgr has no status call first, so its stale class-rail subscription is still live.
+            // Under lost-pin refusal, firstMgr cannot fall back to secondExec: within bounded unpinned spawns one hits firstMgr (refusing not-executed, naming the found copy, and dropping classSpawn), and every subsequent unpinned spawn routes to secondMgr.
+            writeFileSync(firstExec, script, { mode: 0o700 });
+            await callFirst("status");
+            rmSync(firstExec);
+            process.env.PATH = secondBin;
+            let staleRefusals = 0;
+            let staleRefusalMessage = "";
+            let secondWinsBeforeDrop = 0;
+            for (let i = 0; i < 40 && staleRefusals === 0; i++) {
+              const r = await epCall(nc, space, { mode: "one" },
+                { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
+                { deadlineMs: 5000, currentEpoch: async (id) => ((id === secondId ? S2 : F).view.servePlane.serviceServe?.grant.epoch ?? 0) });
+              if (!r.reply.ok && r.responder.instanceId === firstId && r.reply.error.outcome === "not-executed") {
+                staleRefusals++;
+                staleRefusalMessage = r.reply.error.message;
+              } else if (r.reply.ok && r.responder.instanceId === secondId) {
+                secondWinsBeforeDrop++;
+              }
+            }
+            const firstStoredAfterDrop = F.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
+            const classEnabledAfterDrop = F.view.seatLaunch.classSpawnEnabled();
+            let secondWinsAfterDrop = 0;
+            let firstHitsAfterDrop = 0;
+            for (let i = 0; i < 6; i++) {
+              const r = await epCall(nc, space, { mode: "one" },
+                { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
+                { deadlineMs: 5000, currentEpoch: async (id) => ((id === secondId ? S2 : F).view.servePlane.serviceServe?.grant.epoch ?? 0) });
+              if (r.responder.instanceId === firstId) firstHitsAfterDrop++;
+              if (r.reply.ok && r.responder.instanceId === secondId) secondWinsAfterDrop++;
+            }
+            check(
+              "real stale-rail window hits the stale manager once within 40 tries (not-executed, names found copy, drops classSpawn) and routes all subsequent spawns to the healthy sibling",
+              staleRefusals === 1 && staleRefusalMessage === classUnavailableError(firstMovedToSecondReason) &&
+                classEnabledAfterDrop === false && firstStoredAfterDrop?.state === "unavailable" &&
+                firstStoredAfterDrop.reason === firstMovedToSecondReason && Object.keys(firstStoredAfterDrop.binaries).length === 0 &&
+                firstHitsAfterDrop === 0 && secondWinsAfterDrop === 6 && F.stats.spawnCalls === 0,
+              { staleRefusals, staleRefusalMessage, secondWinsBeforeDrop, classEnabledAfterDrop, firstStoredAfterDrop, firstHitsAfterDrop, secondWinsAfterDrop, firstSpawns: F.stats.spawnCalls },
+            );
+          } finally {
+            await secondMgr.stop({ withAgents: true });
+          }
+        } finally {
+          await nc.close();
+          await firstMgr.stop({ withAgents: true });
+        }
+      }
+
+      // 3. Wire single + batch `resume-preserved`: preflight refusal AND batch mid-flight removal during readiness wait.
+      {
+        const space = "wire-resume-recheck";
+        const resumeBin = join(root, "resume-bin");
+        const movedResumeBin = join(root, "resume-moved-bin");
+        mkdirSync(resumeBin, { recursive: true, mode: 0o700 });
+        mkdirSync(movedResumeBin, { recursive: true, mode: 0o700 });
+        const resumeExec = join(resumeBin, executable("present-harness"));
+        const movedResumeExec = join(movedResumeBin, executable("present-harness"));
+        writeFileSync(resumeExec, script, { mode: 0o700 });
+        writeFileSync(movedResumeExec, script, { mode: 0o700 });
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", "res-a.md"), "---\nname: res-a\nagent: boot-present\n---\n");
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", "res-b.md"), "---\nname: res-b\nagent: boot-present\n---\n");
+        connector.waitsForOperator = () => "fixture input screen";
+        process.env.PATH = `${resumeBin}${process.platform === "win32" ? ";" : ":"}${movedResumeBin}`;
+
+        const makeEntry = (name: string) => {
+          const configPath = join(workspaceRoot, ".cotal", "agents", `${name}.md`);
+          const configSha256 = createHash("sha256").update(readFileSync(configPath)).digest("hex");
+          return {
+            space,
+            name,
+            identity: { mode: "open" as const, id: newIdentity().id, lifecycleUid: mintLifecycleUid() },
+            launch: {
+              connector: "boot-present",
+              runtime: "fake",
+              cwd: workspaceRoot,
+              source: { kind: "persona" as const, ref: name, configPath, configSha256 },
+              allowSubscribe: [],
+              events: false,
+            },
+            dependencies: [configPath],
+            spawner: `${DEV_OWNER}.operator`,
+            startedAt: new Date().toISOString(),
+          };
+        };
+
+        // 3a. Wire single resume-preserved refuses when binary is moved before preflight and names the found copy + restart remedy.
+        const singleMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true, resumeAttemptId: "attempt_single" });
+        const SM = instrumentManager(singleMgr, resumeExec);
+        (SM.view as unknown as { runtimeFor: () => unknown }).runtimeFor = () => SM.view.runtime;
+        await singleMgr.start();
+        const singleId = SM.view.managerStatusData().instanceId;
+        const singleEpoch = SM.view.servePlane.serviceServe?.grant.epoch ?? 0;
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        try {
+          rmSync(resumeExec);
+          const singleInventory = { version: "cotal-manager-resume/v2" as const, space, createdAt: new Date().toISOString(), agents: [makeEntry("res-a")] };
+          const singleReply = await epCall(nc, space,
+            { mode: "inst", instanceId: singleId, epoch: singleEpoch },
+            {
+              endpoint: "manager", command: "resume-preserved", contract: MANAGER_CONTRACTS["resume-preserved"], caller,
+              args: { attemptId: "attempt_single", inventory: singleInventory },
+            },
+            { deadlineMs: 5000 });
+          const singleRow = SM.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present");
+          check(
+            "wire single resume-preserved refuses preflight when binary moved after boot, naming the found copy and restart remedy on the wire without launching or keeping reservations",
+            singleReply.reply.ok === false &&
+              singleReply.reply.error.message === `1 retained agent failed preflight: res-a: ${movedReason(resumeExec, movedResumeExec)}` &&
+              SM.stats.spawnCalls === 0 && SM.view.agents.size === 0 && SM.view.namesCapacity.reservedCount === 0 &&
+              singleRow?.state === "unavailable" && singleRow.reason === movedReason(resumeExec, movedResumeExec),
+            { singleReply: singleReply.reply, stats: { ...SM.stats }, reserved: SM.view.namesCapacity.reservedCount, singleRow },
+          );
+        } finally {
+          await singleMgr.stop({ withAgents: true });
+        }
+
+        // 3b. Wire batch resume-preserved: binary exists during preflight, is deleted while res-a launches, so res-b refuses before runtime.spawn.
+        process.env.PATH = resumeBin;
+        writeFileSync(resumeExec, script, { mode: 0o700 });
+        const batchMgr = new Manager({ space: `${space}-batch`, servers, runtime: "pty", workspaceRoot, installedExtensions: true, resumeAttemptId: "attempt_batch" });
+        const BM = batchMgr as unknown as TrackedManager & { runtimeFor: () => unknown; ep: { getRoster: () => unknown[] } };
+        let batchSpawnCalls = 0;
+        const spawnedNames: string[] = [];
+        const batchRuntime = {
+          kind: "fake",
+          streamsTerminal: false,
+          spawn: (name: string, spec: { command: string; args: string[]; env?: Record<string, string> }, cwd: string) => {
+            batchSpawnCalls++;
+            spawnedNames.push(name);
+            const exec = spawnSync(spec.command, spec.args, { cwd, env: spec.env, encoding: "utf8" });
+            if (name === "res-a") rmSync(resumeExec, { force: true });
+            let state: "running" | "exited" = exec.error ? "exited" : "running";
+            return { name, kind: "fake", status: () => state, stop: () => { state = "exited"; }, waitForExit: async () => {}, interrupt: () => {}, attach: () => fakeSession };
+          },
+        };
+        BM.runtime = batchRuntime;
+        BM.runtimeFor = () => batchRuntime;
+        await batchMgr.start();
+        const batchId = BM.managerStatusData().instanceId;
+        const batchEpoch = BM.servePlane.serviceServe?.grant.epoch ?? 0;
+        const origBatchRoster = BM.ep.getRoster.bind(BM.ep);
+        BM.ep.getRoster = () => [
+          ...origBatchRoster(),
+          ...[...BM.agents.values()].map((a: unknown) => {
+            const seat = a as { id: string; name: string; lifecycleUid: string };
+            return { card: { id: `${DEV_OWNER}.${seat.id}`, name: seat.name }, status: "idle", lifecycleUid: seat.lifecycleUid, ts: Date.now() };
+          }),
+        ];
+        try {
+          const batchEntries = [
+            { ...makeEntry("res-a"), space: `${space}-batch` },
+            { ...makeEntry("res-b"), space: `${space}-batch` },
+          ];
+          const batchReply = await epCall(nc, `${space}-batch`,
+            { mode: "inst", instanceId: batchId, epoch: batchEpoch },
+            {
+              endpoint: "manager", command: "resume-preserved", contract: MANAGER_CONTRACTS["resume-preserved"], caller,
+              args: {
+                attemptId: "attempt_batch",
+                inventory: { version: "cotal-manager-resume/v2", space: `${space}-batch`, createdAt: new Date().toISOString(), agents: batchEntries },
+              },
+            },
+            { deadlineMs: 5000 });
+          check(
+            "wire batch resume-preserved rechecks in the launch pass when the binary disappears during an earlier seat's launch",
+            batchReply.reply.ok === false && batchSpawnCalls === 1 && JSON.stringify(spawnedNames) === JSON.stringify(["res-a"]) &&
+              batchReply.reply.error.message === unpinnedReason(resumeExec) &&
+              BM.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present")?.state === "unavailable",
+            { batchReply: batchReply.reply, batchSpawnCalls, spawnedNames, row: BM.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present") },
+          );
+        } finally {
+          await nc.close();
+          await batchMgr.stop({ withAgents: true });
+        }
+      }
+
+      // 4. Supervised crash restart (`SessionRecovery.recoverManagedSession`) when binary moves after initial launch.
+      {
+        const space = "crash-restart-recheck";
+        const crashBin = join(root, "crash-bin");
+        const movedCrashBin = join(root, "crash-moved-bin");
+        mkdirSync(crashBin, { recursive: true, mode: 0o700 });
+        mkdirSync(movedCrashBin, { recursive: true, mode: 0o700 });
+        const crashExec = join(crashBin, executable("present-harness"));
+        const movedCrashExec = join(movedCrashBin, executable("present-harness"));
+        writeFileSync(crashExec, script, { mode: 0o700 });
+        writeFileSync(movedCrashExec, script, { mode: 0o700 });
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", "sup-seat.md"), "---\nname: sup-seat\nagent: boot-present\n---\n");
+        connector.waitsForOperator = () => "fixture input screen";
+        process.env.PATH = `${crashBin}${process.platform === "win32" ? ";" : ":"}${movedCrashBin}`;
+        const supMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+        const SUP = supMgr as unknown as TrackedManager & { runtimeFor: () => unknown; ep: { getRoster: () => unknown[] } };
+        let supSpawns = 0;
+        let rosterClock = Date.now();
+        const exitListeners = new Map<string, Set<() => void>>();
+        const supRuntime = {
+          kind: "pty",
+          streamsTerminal: false,
+          supportsWorkClosure: true,
+          spawn: (name: string) => {
+            supSpawns++;
+            rosterClock += 10;
+            let state: "running" | "exited" = "running";
+            const listeners = new Set<() => void>();
+            exitListeners.set(name, listeners);
+            const session = {
+              ...fakeSession,
+              onExit: (fn: () => void) => { listeners.add(fn); return () => listeners.delete(fn); },
+            };
+            return {
+              name,
+              kind: "pty",
+              status: () => state,
+              stop: () => { state = "exited"; for (const fn of listeners) fn(); },
+              waitForExit: async () => {},
+              waitForWorkExit: async () => {},
+              interrupt: () => {},
+              attach: () => session,
+              crashNow: () => { state = "exited"; for (const fn of [...listeners]) fn(); },
+            };
+          },
+        };
+        SUP.runtime = supRuntime;
+        SUP.runtimeFor = () => supRuntime;
+        await supMgr.start();
+        const origSupRoster = SUP.ep.getRoster.bind(SUP.ep);
+        SUP.ep.getRoster = () => [
+          ...origSupRoster(),
+          ...[...SUP.agents.values()].map((a: unknown) => {
+            const seat = a as { id: string; name: string; lifecycleUid: string };
+            return { card: { id: `${DEV_OWNER}.${seat.id}`, name: seat.name }, status: "idle", lifecycleUid: seat.lifecycleUid, ts: rosterClock };
+          }),
+        ];
+        const logs: string[] = [];
+        const prevErr = console.error;
+        console.error = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); prevErr(...args); };
+        try {
+          const started = await supMgr.startAgent({
+            name: "sup-seat", agent: "boot-present", events: false,
+            supervise: { restarts: 2, windowMs: 60_000 },
+          });
+          const seat = SUP.agents.get("sup-seat") as { handle: { crashNow(): void } } | undefined;
+          rmSync(crashExec);
+          seat?.handle.crashNow();
+          for (let i = 0; i < 80 && SUP.agents.has("sup-seat"); i++) await wait(25);
+          check(
+            "supervised crash restart rechecks the connector binary, skips runtime.spawn when moved, marks the connector unavailable with the found-copy restart remedy, and retires the seat",
+            started.ok === true && supSpawns === 1 && !SUP.agents.has("sup-seat") &&
+              SUP.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present")?.state === "unavailable" &&
+              logs.some((line) => line.includes(movedReason(crashExec, movedCrashExec))),
+            { started, supSpawns, stillManaged: SUP.agents.has("sup-seat"), row: SUP.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-present"), logs: logs.slice(-6) },
+          );
+        } finally {
+          console.error = prevErr;
+          await supMgr.stop({ withAgents: true });
+        }
+      }
+
+      // 5. Claude wake channel failure on a pinned Manager: binary is present on PATH, refusal has clean punctuation and does not say "Restore the harness on this host".
+      {
+        const space = "claude-wake-refusal";
+        const claudeBin = join(root, "claude-wake-bin");
+        mkdirSync(claudeBin, { recursive: true, mode: 0o700 });
+        const claudeExec = join(claudeBin, executable("claude"));
+        writeFileSync(claudeExec, script, { mode: 0o700 });
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", "claude-probe.md"), "---\nname: claude-probe\nagent: claude\n---\n");
+        const setupCommand = `cotal daemon setup --space ${space}`;
+        const fakeClaude: Connector = {
+          kind: "connector",
+          name: "claude",
+          requires: ["claude"],
+          setup: { kind: "connector-setup", name: "claude-wake-fail-965" },
+          buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["claude"] ?? "claude", args: [] }),
+        };
+        registry.register(fakeClaude);
+        const fakeClaudeSetup: ConnectorSetupProvider = {
+          kind: "connector-setup",
+          name: "claude-wake-fail-965",
+          connector: {
+            name: "claude-wake-fail-965",
+            title: "Fixture failing Claude wake setup",
+            explain: "Fails registration for smoke verification",
+            run: async () => { throw new Error("fixture registration blocked."); },
+          },
+        };
+        registry.register(fakeClaudeSetup);
+        saveExtensionsManifest({
+          extensions: [
+            {
+              pkg: "@cotal-ai/connector-claude-code",
+              version: (manager as unknown as { config: { expectedConnectorGeneration: string } }).config.expectedConnectorGeneration,
+              spec: ".",
+              provides: [
+                { kind: "connector", name: "claude" },
+                { kind: "connector-setup", name: "claude-wake-fail-965" },
+              ],
+              commands: [],
+              connectors: [{ name: "claude", requires: ["claude"], eventPlane: true }],
+            },
+          ],
+        });
+        process.env.PATH = claudeBin;
+        const claudeMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true, machineSetupCommand: setupCommand });
+        const CM = instrumentManager(claudeMgr, claudeExec);
+        await claudeMgr.start();
+        const claudeId = CM.view.managerStatusData().instanceId;
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        try {
+          const claudeRow = CM.view.connectorInventory.connectorStatuses.find((r) => r.agent === "claude");
+          const pinnedClaude = await epCall(nc, space,
+            { mode: "inst", instanceId: claudeId, epoch: CM.view.servePlane.serviceServe?.grant.epoch ?? 0 },
+            { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "claude-probe", agent: "claude", events: false } },
+            { deadlineMs: 5000 });
+          const expectedReason = `Claude wake channel setup failed: fixture registration blocked. Correct the cause and run \`${setupCommand}\` on this computer`;
+          const expectedWireError = `${expectedReason}, or pin another manager in this space with --on <instance> (the whole id, as ps prints it)`;
+          check(
+            "Claude wake setup failure keeps binaries recorded, avoids double periods, and pairs machineSetupCommand with --on instead of saying Restore the harness",
+            claudeRow?.state === "unavailable" && claudeRow.binaries["claude"] === claudeExec &&
+              claudeRow.reason === expectedReason && !claudeRow.reason.includes("..") &&
+              pinnedClaude.reply.ok === false && pinnedClaude.reply.error.outcome === "not-executed" &&
+              pinnedClaude.reply.error.message === expectedWireError &&
+              !pinnedClaude.reply.error.message.includes("..") &&
+              !pinnedClaude.reply.error.message.includes("Restore the harness on this host"),
+            { claudeRow, pinnedClaude: pinnedClaude.reply },
+          );
+        } finally {
+          await nc.close();
+          await claudeMgr.stop({ withAgents: true });
+        }
+      }
+
+      // 6. Multi-binary connector with one moved binary and one missing binary on a pinned Manager: inst suffix checks the moved marker before not found.
+      {
+        const space = "mixed-moved-and-missing";
+        const multiFirstDir = join(root, "multi-first");
+        const multiSecondDir = join(root, "multi-second");
+        mkdirSync(multiFirstDir, { recursive: true, mode: 0o700 });
+        mkdirSync(multiSecondDir, { recursive: true, mode: 0o700 });
+        const firstMultiA = join(multiFirstDir, executable("multi-a"));
+        const secondMultiA = join(multiSecondDir, executable("multi-a"));
+        const firstMultiB = join(multiFirstDir, executable("multi-b"));
+        writeFileSync(firstMultiA, script, { mode: 0o700 });
+        writeFileSync(secondMultiA, script, { mode: 0o700 });
+        writeFileSync(firstMultiB, script, { mode: 0o700 });
+        writeFileSync(join(workspaceRoot, ".cotal", "agents", "multi-probe.md"), "---\nname: multi-probe\nagent: boot-multi\n---\n");
+        const multiConnector: Connector = {
+          kind: "connector",
+          name: "boot-multi",
+          requires: ["multi-a", "multi-b"],
+          buildLaunch: (opts) => ({ command: opts.resolvedBinaries?.["multi-a"] ?? "multi-a", args: [] }),
+        };
+        registry.register(multiConnector);
+        saveExtensionsManifest({
+          extensions: [
+            {
+              pkg: "@fixture/boot-multi",
+              version: "1.0.0",
+              spec: ".",
+              provides: [{ kind: "connector", name: "boot-multi" }],
+              commands: [],
+              connectors: [{ name: "boot-multi", requires: ["multi-a", "multi-b"], eventPlane: false }],
+            },
+          ],
+        });
+        process.env.PATH = `${multiFirstDir}${process.platform === "win32" ? ";" : ":"}${multiSecondDir}`;
+        const multiMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+        const MM = instrumentManager(multiMgr, firstMultiA);
+        await multiMgr.start();
+        const multiId = MM.view.managerStatusData().instanceId;
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        try {
+          rmSync(firstMultiA);
+          rmSync(firstMultiB);
+          const mixedSpawn = await epCall(nc, space,
+            { mode: "inst", instanceId: multiId, epoch: MM.view.servePlane.serviceServe?.grant.epoch ?? 0 },
+            { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "multi-probe", agent: "boot-multi", events: false } },
+            { deadlineMs: 5000 });
+          const expectedMixedReason =
+            `boot-multi harness needs pinned multi-a (${firstMultiA}) on PATH - found ${secondMultiA} instead (restart this Manager to use it); ` +
+            `boot-multi harness needs pinned multi-b (${firstMultiB}) on PATH - not found (no fallback to another copy on PATH)`;
+          const multiRow = MM.view.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-multi");
+          check(
+            "pinned spawn on a multi-binary connector with one moved and one missing binary gives the restart suffix instead of Restore the harness",
+            multiRow?.state === "unavailable" && Object.keys(multiRow.binaries).length === 0 &&
+              multiRow.reason === expectedMixedReason &&
+              mixedSpawn.reply.ok === false && mixedSpawn.reply.error.outcome === "not-executed" &&
+              mixedSpawn.reply.error.message === instMovedError(expectedMixedReason) &&
+              MM.stats.spawnCalls === 0 && MM.stats.reserveCalls === 0,
+            { multiRow, mixedSpawn: mixedSpawn.reply, stats: { ...MM.stats } },
+          );
+        } finally {
+          await nc.close();
+          await multiMgr.stop({ withAgents: true });
+        }
+      }
+
+      // 7. `ServePlane` closed-connection no-op AND redial window resync when availability changes while `dialServeConnection` is in flight.
+      {
+        saveExtensionsManifest({
+          extensions: [
+            {
+              pkg: "@fixture/boot-connectors",
+              version: "1.0.0",
+              spec: ".",
+              provides: [
+                { kind: "connector", name: "boot-missing" },
+                { kind: "connector", name: "boot-present" },
+              ],
+              commands: [],
+              connectors: [
+                { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
+                { name: "boot-present", requires: ["present-harness"], eventPlane: false },
+              ],
+            },
+          ],
+        });
+        const space = "sync-closed-and-redial";
+        const syncBin = join(root, "sync-bin");
+        mkdirSync(syncBin, { recursive: true, mode: 0o700 });
+        const syncExec = join(syncBin, executable("present-harness"));
+        writeFileSync(syncExec, script, { mode: 0o700 });
+        process.env.PATH = syncBin;
+        const syncMgr = new Manager({ space, servers, runtime: "pty", workspaceRoot, installedExtensions: true });
+        const SP = instrumentManager(syncMgr, syncExec);
+        const rawSP = syncMgr as unknown as {
+          servePlane: {
+            serviceServe?: { nc: { close(): Promise<void>; isClosed(): boolean }; grant: { epoch: number } };
+            dialServeConnection: (...args: unknown[]) => Promise<{ nc: unknown; handle: unknown }>;
+            onServeConnectionClosed(err: Error | undefined, closed: unknown): Promise<void>;
+          };
+          credentialRenewal: { boundedReconnect(label: string, attempt: () => Promise<boolean>): Promise<boolean> };
+          connectorInventory: { refreshConnectors(name?: string): Promise<void> | undefined };
+        };
+        rawSP.credentialRenewal.boundedReconnect = async (_label, attempt) => attempt();
+        await syncMgr.start();
+        const nc = await connect({ servers });
+        const caller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+        let threw: unknown;
+        try {
+          const closedNc = rawSP.servePlane.serviceServe!.nc;
+          const origDial = rawSP.servePlane.dialServeConnection.bind(rawSP.servePlane);
+          let markDialed!: () => void;
+          const dialed = new Promise<void>((resolve) => { markDialed = resolve; });
+          let releaseRedial!: () => void;
+          const redialGate = new Promise<void>((resolve) => { releaseRedial = resolve; });
+          let intercepted = false;
+          rawSP.servePlane.dialServeConnection = async (...args: unknown[]) => {
+            const built = await origDial(...args);
+            if (!intercepted) {
+              intercepted = true;
+              markDialed();
+              await redialGate;
+            }
+            return built;
+          };
+
+          // Close the active serve connection; while `dialServeConnection` has already subscribed `rebuilt`
+          // with `classSpawnEnabled() === true` (before `s.nc = nc; s.handle = handle`), delete the last binary
+          // and refresh inventory. `s.nc.isClosed()` is true during this window, so `syncClassSpawn()` is a no-op
+          // unless `onServeConnectionClosed` re-syncs after installing `rebuilt`.
+          const closedPromise = (async () => {
+            await closedNc.close();
+          })();
+          await dialed;
+          rmSync(syncExec);
+          try {
+            rawSP.connectorInventory.refreshConnectors("boot-present");
+          } catch (error) {
+            threw = error instanceof Error ? error.message : String(error);
+          }
+          check(
+            "syncClassSpawn is a clean no-op while the serve NATS connection is closed during redial",
+            closedNc.isClosed() === true && threw === undefined && SP.view.seatLaunch.classSpawnEnabled() === false,
+            { isClosed: closedNc.isClosed(), threw, classSpawnEnabled: SP.view.seatLaunch.classSpawnEnabled() },
+          );
+
+          releaseRedial();
+          await closedPromise;
+          for (let i = 0; i < 60 && rawSP.servePlane.serviceServe?.nc === closedNc; i++) await wait(25);
+
+          let classCallError: { code?: string; outcome?: string; message?: string } | undefined;
+          try {
+            await epCall(nc, space, { mode: "one" },
+              { endpoint: "manager", command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: "pin-probe", agent: "boot-present", events: false } },
+              { deadlineMs: 3000, currentEpoch: async () => rawSP.servePlane.serviceServe?.grant.epoch ?? 0 });
+          } catch (error) {
+            const epErr = error as { code?: string; outcome?: string; message?: string };
+            classCallError = { code: epErr.code, outcome: epErr.outcome, message: epErr.message };
+          }
+          const instAfterRedial = await epCall(nc, space,
+            { mode: "inst", instanceId: SP.view.managerStatusData().instanceId, epoch: rawSP.servePlane.serviceServe?.grant.epoch ?? 0 },
+            { endpoint: "manager", command: "status", contract: MANAGER_CONTRACTS.status, caller },
+            { deadlineMs: 5000 });
+          check(
+            "ServePlane redial re-syncs class spawn subscriptions when availability changed while dialServeConnection was in flight",
+            rawSP.servePlane.serviceServe?.nc !== closedNc &&
+              rawSP.servePlane.serviceServe?.nc.isClosed() === false &&
+              instAfterRedial.reply.ok === true &&
+              classCallError?.code === "unavailable" && classCallError.outcome === "not-executed",
+            { redialed: rawSP.servePlane.serviceServe?.nc !== closedNc, instOk: instAfterRedial.reply.ok, classCallError },
+          );
+        } finally {
+          await nc.close();
+          await syncMgr.stop({ withAgents: true }).catch(() => {});
+        }
+      }
+    } finally {
+      mutableConnector.commands = prevCommands;
+      mutableConnector.waitsForOperator = prevWaitsForOperator;
+    }
+  }
 } finally {
   console.error = oldError;
   if (oldPath === undefined) delete process.env.PATH;
@@ -643,5 +1406,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-if (pass !== 45) throw new Error(`expected 45 checks, ran ${pass}`);
+if (pass !== 60) throw new Error(`expected 60 checks, ran ${pass}`);
 console.log(`\n${pass} checks passed`);

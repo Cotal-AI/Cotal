@@ -401,7 +401,7 @@ removeMesh("catalog-kept");
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
 check("unreachable copy for a registered mesh names `cotal space forget`, not legacy removal or `cotal up`", (() => {
   const m = preflightMessage("unreachable", manualT, false);
-  return m.includes("cotal space forget theirs") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
+  return m.includes("from this machine") && !m.includes("mesh is not up") && m.includes("cotal space forget theirs") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
 })(), preflightMessage("unreachable", manualT, false));
 check("unreachable catalog copy names provider removal and sync, not locally refused forget", (() => {
   const m = preflightMessage("unreachable", { ...manualT, origin: "catalog" }, false);

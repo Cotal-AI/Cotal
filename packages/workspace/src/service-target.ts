@@ -13,8 +13,8 @@ export function resolveNativeServiceTarget(root: string, space: string, server?:
     !allowBrokerOverride && server !== undefined && server !== target.server && `"${space}" is registered at ${target.server}, not ${server}`,
   ].filter((facet): facet is string => Boolean(facet));
   if (differs.length)
-    throw new CommandFailure("refused", "CONFLICT", `${differs.join(", and ")}, so the service root, registered space and broker do not resolve to one target; no different target was substituted`, {
-      remedy: `see the registration with \`cotal space show ${space}\`; a controller stack's broker stops only through the registration \`cotal up\` wrote for it, and refuses one added by hand`,
+    throw new CommandFailure("refused", "CONFLICT", "the service root, registered space and broker do not resolve to one target; no different target was substituted", {
+      remedy: `${differs.join(", and ")}; see the registration with \`cotal space show ${space}\`; a controller stack's broker stops only through the registration \`cotal up\` wrote for it, and refuses one added by hand`,
     });
   let url: URL;
   try { url = new URL(target.server.includes("://") ? target.server : `nats://${target.server}`); }
