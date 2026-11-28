@@ -934,7 +934,7 @@ export class PreservedResume {
       }
       const unavailable = connector.launchUnavailable?.({ cwd: entry.launch.cwd, resume: entry.launch.forkSource });
       if (unavailable !== undefined) return { ok: false, error: unavailable };
-      await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
+      await this.parts.connectorInventory.refreshConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
