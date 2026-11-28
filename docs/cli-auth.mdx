@@ -565,9 +565,9 @@ record prevents a complete healthy verdict. Locally ordered older incarnation fi
 file observations, never proof of a live successor or permission to delete or respawn an agent.
 An unreadable trust record names its file and the restore step without directing removal of another
 account record. A corrupt system credential stays in the per-file table with its rotation guidance,
-so read-only diagnosis still reports the other credentials. An unreadable renewal record names its
-backup restore step and the manager that records the next renewal. It is never replaced with an
-inferred broker acceptance.
+so read-only diagnosis still reports the other credentials. If file permissions prevent reading a renewal record, doctor reports how to restore access.
+For a malformed record, it recommends restoring the backup and names the manager that records the
+next renewal. Neither condition establishes broker acceptance.
 
 
 ### Supported repair
