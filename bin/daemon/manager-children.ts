@@ -10,6 +10,29 @@ import { isConnectRefusal, spaceFromSegment } from "@cotal-ai/workspace";
 import { managerCleanupFile } from "./manager-cleanup.js";
 import type { Live, ProbeSession } from "./manager.js";
 
+export const safeDiagnostic = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
+
+// Each pipe has its own line boundary. Discard oversized lines in full so a split credential cannot be reconstructed.
+export function managerLogLines(accept: (line: string) => void) {
+  let pending = "", dropping = false;
+  return (text: string, end = false) => {
+    for (const part of text.split(/(?<=\n)/)) {
+      if (!dropping) {
+        if (pending.length + part.length > 16_384) { pending = ""; dropping = true; }
+        else pending += part;
+      }
+      if (part.endsWith("\n")) {
+        accept(dropping ? "<oversized Manager log line omitted>\n" : safeDiagnostic(pending));
+        pending = ""; dropping = false;
+      }
+    }
+    if (end && (pending || dropping)) {
+      accept(dropping ? "<oversized Manager log line omitted>\n" : safeDiagnostic(pending));
+      pending = ""; dropping = false;
+    }
+  };
+}
+
 /** What the child-control helpers read from createHostedManagers. Both are bound once before the
  *  helpers are built and never reassigned. */
 export interface HostedManagerChildrenDeps {

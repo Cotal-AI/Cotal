@@ -843,6 +843,15 @@ heartbeat every 60 seconds and polls the account's desired spaces every five sec
 heartbeat lists the answering Managers this computer hosts for the account's spaces, each as the
 catalog space ID and the Manager's instance ID, so the host can show a Manager under this
 computer's name. A change in that list is sent with the next poll.
+The heartbeat's `managerStartFailures` lists observed Manager startup failures for desired spaces.
+Each entry has `spaceId` as in `managers`, a stable `code`, an `action` (`repair`, `sign-in` or
+`none`), and a fixed plain-language `message` when it fits. If the heartbeat exceeds 16 KiB,
+the daemon removes the messages, not the entries. Repair asks the computer to retry and repair
+its local setup. Sign-in is for the space and requires the person at the computer. The report
+contains no local error text, paths, account names or credentials. When the daemon observes
+recovery or the space is turned off, it sends the updated list at the next poll. An empty list
+clears previous failures. Only older daemons omit the field, which means the failure state is
+unknown. Neither an empty nor an absent list means that every Manager is running.
 The heartbeat includes `vitals`: its sampling time, logical CPU count, CPU utilisation over a
 short observation interval, memory bytes, home-volume capacity and free bytes, and system uptime.
 Linux and macOS also include 1, 5 and 15 minute load averages. Windows omits load averages.

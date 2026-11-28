@@ -25,8 +25,9 @@ import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthorit
 import { repairStaleCleanup, type StaleCleanup, type StaleCleanupDeps, type StaleCleanupOutcome } from "./manager-stale-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
-import { hostedManagerChildren } from "./manager-children.js";
 import { plainManagerReason } from "./manager-reason.js";
+import { hostedManagerChildren, managerLogLines, safeDiagnostic } from "./manager-children.js";
+import { isManagerStartFailureCode, ManagerStartupError, managerStartupCode, type ManagerStartFailureCode } from "./manager-start-failure.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -40,8 +41,6 @@ export function forgetHostedManagerIntents(home: string): void {
     for (const name of ["manager-host.json", "manager-refusal.json"]) rmSync(join(home, "daemon", entry, name), { force: true });
   }
 }
-// Redact before truncating so a length bound cannot expose part of a credential.
-const safeDiagnostic = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const controlClient = { versionSkew: (detail: string) => detail, roster: async () => [] };
 export class HostedManagerRefusal extends Error {
@@ -56,6 +55,7 @@ export interface ProbeSession {
 }
 export interface Live {
   view: HostedManager;
+  startupFailure?: ManagerStartFailureCode;
   agents?: HostedAgents;
   child?: ChildProcess;
   exited?: Promise<void>;
@@ -235,10 +235,11 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   const persistRefusal = (l: Live) => {
     mkSecretDir(join(refusalFile(l.view.space), ".."));
-    writeSecretFileAtomic(refusalFile(l.view.space), JSON.stringify(l.view));
+    writeSecretFileAtomic(refusalFile(l.view.space), JSON.stringify({ ...l.view, startupFailure: l.startupFailure }));
   };
-  const refuse = (l: Live, reason: string, next: string) => {
+  const refuse = (l: Live, reason: string, next: string, code?: ManagerStartFailureCode) => {
     reason = safeDiagnostic(reason).slice(0, 1500);
+    l.startupFailure = code;
     l.view = { ...l.view, state: "refused", reason, lastRefusal: reason, next };
     persistRefusal(l);
     notify();
@@ -261,11 +262,22 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       next: `inspect the registration, then run \`cotal endpoint deregister manager ${cleanup.instanceId} --space ${space} --yes\``,
     };
     if (existsSync(refusalFile(space))) {
-      const saved = JSON.parse(readFileSync(refusalFile(space), "utf8")) as HostedManager;
+      const { startupFailure: _, ...saved } = readRefusal(space);
       if (saved.space === space && saved.state === "refused") return { ...saved, pid: undefined };
       throw new Error("invalid hosted Manager refusal record");
     }
     return { space, state: "stopped", restarts: 0 };
+  };
+  const readRefusal = (space: string) => JSON.parse(readFileSync(refusalFile(space), "utf8")) as HostedManager & { startupFailure?: unknown };
+  const startupFailure = (space: string): ManagerStartFailureCode | undefined => {
+    if (recordError(space)) return "local-state-error";
+    const current = live.get(space);
+    if (current) return current.view.state === "answering" || current.stopping ? undefined : current.startupFailure;
+    if (existsSync(refusalFile(space))) {
+      const { startupFailure, registrationCleanup } = readRefusal(space);
+      return isManagerStartFailureCode(startupFailure) ? startupFailure : registrationCleanup ? "local-state-error" : "start-failed";
+    }
+    if (readManagerCleanup(home, space)?.phase === "unknown") return "local-state-error";
   };
   const openProbeSession = async (l: Live, child: ChildProcess, selected: string): Promise<ProbeSession> => {
     if (l.exchangeFailedUntil !== undefined && Date.now() < l.exchangeFailedUntil) {
@@ -351,7 +363,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         // This includes caller issuance, broker admission and contract resolution, not only status.
         const reply = await Promise.race([probe(l, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status observation did not complete within 15000ms")), 15_000); })]);
         if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-        if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
+        if (l.child === child && !l.stopping && !closed && !generationPending) {
+          l.startupFailure = undefined;
+          l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
+        }
       } catch (error) {
         if (l.child === child && !l.stopping && !closed && !generationPending) {
           const reason = plainManagerReason(safeDiagnostic(error instanceof Error ? error.message : String(error)), "the hosted Manager did not answer status").slice(0, 1500);
@@ -493,7 +508,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(l.failures++, 5));
     l.timer = setTimeout(() => {
       l.timer = undefined;
-      l.starting = launch(l).catch((error) => refuse(l, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${l.view.space}\``)).finally(() => { l.starting = undefined; });
+      l.starting = launch(l).catch((error) => refuse(l, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${l.view.space}\``, managerStartupCode(error))).finally(() => { l.starting = undefined; });
       void l.starting.catch(() => {});
     }, delay);
   };
@@ -501,9 +516,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const space = l.view.space;
     if (closed || generationPending || l.stopping) return l.view;
     const entry = findMesh(space);
-    if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`);
-    if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use `cotal manager start` from the folder that hosts the space");
-    if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, then \`cotal daemon setup --space ${space}\``);
+    if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`, "space-unavailable");
+    if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use `cotal manager start` from the folder that hosts the space", "space-unavailable");
+    if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, then \`cotal daemon setup --space ${space}\``, "sign-in-required");
     try { await reconcile(); }
     catch (error) {
       const reason = `hosted connector reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -524,15 +539,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         } else {
           next = `no recorded native service can activate this foreground daemon; explicitly stop the running foreground daemon, then run \`cotal daemon serve\` from the installed CLI`;
         }
-        return refuse(l, reason, next);
+        return refuse(l, reason, next, "update-pending");
       }
-      refuse(l, reason, "correct the connector failure and retry setup; the daemon will also retry automatically");
+      refuse(l, reason, "correct the connector failure and retry setup; the daemon will also retry automatically", managerStartupCode(error, "connector-setup-failed"));
       if (!closed && !l.stopping && !generationPending) {
         const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
         l.timer = setTimeout(() => {
           l.timer = undefined;
           if (closed || l.stopping || generationPending) return;
-          l.starting = launch(l).catch((cause) => refuse(l, String(cause), `correct the cause and run \`cotal daemon setup --space ${space}\``)).finally(() => { l.starting = undefined; });
+          l.starting = launch(l).catch((cause) => refuse(l, String(cause), `correct the cause and run \`cotal daemon setup --space ${space}\``, managerStartupCode(cause))).finally(() => { l.starting = undefined; });
         }, delay);
         l.timer.unref();
       }
@@ -541,11 +556,11 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (closed || generationPending || l.stopping) return l.view;
     const savedCleanup = readManagerCleanup(home, space);
     const storeIdentity = workspaceSecretStore(entry.root).identity;
-    if (storeIdentity.kind !== "fs") throw new Error("hosted Manager cleanup requires the original filesystem store identity");
+    if (storeIdentity.kind !== "fs") throw new ManagerStartupError("local-state-error", "hosted Manager cleanup requires the original filesystem store identity");
     if (savedCleanup) {
       validateManagerCleanupAuthority(savedCleanup);
       if (savedCleanup.root !== entry.root || savedCleanup.provider !== entry.userAuth.provider || JSON.stringify(savedCleanup.storeIdentity) !== JSON.stringify(storeIdentity))
-        throw new Error("the hosted Manager cleanup coordinates do not match this space's authority");
+        throw new ManagerStartupError("local-state-error", "the hosted Manager cleanup coordinates do not match this space's authority");
     } else {
       writeManagerCleanup(home, { version: 1, space, root: entry.root, provider: entry.userAuth.provider, storeIdentity, phase: "hosted" });
     }
@@ -572,31 +587,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     l.exchangeFailedUntil = undefined;
     l.lastExchangeError = undefined;
     l.view = { ...l.view, state: "starting", reason: "waiting for the hosted Manager to initialize and register", next: undefined, observedAt: undefined };
-    let nativeReason: string | undefined;
+    let nativeReason: string | undefined, nativeCode: ManagerStartFailureCode | undefined;
     let authorityTerminal = false;
     let authorityStatus: number | undefined;
     let stderr = "";
-    // Each pipe has its own line boundary. Oversized lines are discarded in full,
-    // never emitted as fragments that could reconstruct a split credential.
-    const lines = (accept: (line: string) => void) => {
-      let pending = "", dropping = false;
-      return (text: string, end = false) => {
-        for (const part of text.split(/(?<=\n)/)) {
-          if (!dropping) {
-            if (pending.length + part.length > 16_384) { pending = ""; dropping = true; }
-            else pending += part;
-          }
-          if (part.endsWith("\n")) {
-            accept(dropping ? "<oversized Manager log line omitted>\n" : safeDiagnostic(pending));
-            pending = ""; dropping = false;
-          }
-        }
-        if (end && (pending || dropping)) {
-          accept(dropping ? "<oversized Manager log line omitted>\n" : safeDiagnostic(pending));
-          pending = ""; dropping = false;
-        }
-      };
-    };
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") || ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED", "COTAL_TELEMETRY"].includes(key)));
     // The native service does not inherit the updater's environment. Delegate only from the
     // verified journal for this generation, so boot can materialize connectors under its closure.
@@ -616,7 +610,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     let ready = false;
     child.on("message", (message: unknown) => {
       if (!message || typeof message !== "object") return;
-      const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown };
+      const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown; code?: unknown };
+      if ((frame.kind === "manager-refusal" || frame.kind === "manager-start-failure") && isManagerStartFailureCode(frame.code)) nativeCode = frame.code;
       if (frame.kind === "manager-refusal" && typeof frame.reason === "string") {
         nativeReason = safeDiagnostic(frame.reason).slice(0, 1500);
         authorityTerminal = frame.terminal === true;
@@ -637,7 +632,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     });
     let ended = false;
     l.exited = new Promise<void>((resolve) => {
-      child.once("error", (error) => { closeProbeSession(l); nativeReason = safeDiagnostic(error.message).slice(0, 1500); ended = true; resolve(); });
+      child.once("error", (error) => { closeProbeSession(l); nativeReason = safeDiagnostic(error.message).slice(0, 1500); nativeCode = managerStartupCode(error); ended = true; resolve(); });
       child.once("exit", (code, signal) => {
         closeProbeSession(l);
         stdoutLine("", true);
@@ -661,8 +656,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     });
     child.stderr?.setEncoding("utf8");
     const logged = (text: string) => { try { append(text); } catch { l.view = { ...l.view, logError: "the hosted Manager log could not be written; inspect its private state directory" }; } };
-    const stdoutLine = lines(logged);
-    const stderrLine = lines((line) => {
+    const stdoutLine = managerLogLines(logged);
+    const stderrLine = managerLogLines((line) => {
       logged(line);
       stderr = (stderr + line).slice(-8192);
       if (!authorityTerminal && /✗|remote supervision.*refused|the manager did not start/.test(line)) nativeReason = line.slice(0, 1500);
@@ -681,12 +676,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           if (reply.ok && !ended && !l.stopping && !closed) {
             const path = daemonManagerIntentFile(space, home);
             const cleanup = readManagerCleanup(home, space);
-            if (!cleanup || cleanup.instanceId !== selected) throw new Error("the answering Manager has no matching durable cleanup identity");
+            if (!cleanup || cleanup.instanceId !== selected) throw new ManagerStartupError("local-state-error", "the answering Manager has no matching durable cleanup identity");
             writeManagerCleanup(home, { ...cleanup, phase: "hosted" });
             writeSecretFileAtomic(path, JSON.stringify({ v: 1, space }));
             rmSync(refusalFile(space), { force: true });
             l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
-            l.failures = 0;
+            l.failures = 0; l.startupFailure = undefined;
             try { l.agents = { space, observedAt: new Date().toISOString(), state: "read", agents: await readHostedAgents(child) }; } catch {}
             notify();
             observe(l);
@@ -706,9 +701,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     await stopChild(l);
     if (closed || l.stopping) return l.view;
     const reason = plainManagerReason(safeDiagnostic(nativeReason ?? (last instanceof Error ? last.message : typeof last === "string" ? last : "the Manager exited before answering status")), "the Manager exited before answering status").slice(0, 1500);
+    l.startupFailure = nativeCode ?? managerStartupCode(last);
     if (authorityTerminal) return refuse(l, reason, authorityStatus === 403
       ? `ask the space owner to grant your cli actor the supervise scope, then run \`cotal daemon setup --space ${space}\``
-      : `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, correct the reported cause, then run \`cotal daemon setup --space ${space}\``);
+      : `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, correct the reported cause, then run \`cotal daemon setup --space ${space}\``, l.startupFailure);
     l.view = { ...l.view, reason, next: `read \`cotal daemon status --space ${space}\`; the daemon will retry` };
     schedule(l);
     return { ...l.view };
@@ -727,7 +723,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       l = { view: { space, state: "starting", restarts: 0,
         ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}),
         ...(previous.registrationCleanup === "unknown" ? { registrationCleanup: previous.registrationCleanup, instanceId: previous.instanceId } : {}),
-      }, stopping: false, failures: 0 };
+      }, stopping: false, failures: 0, startupFailure: startupFailure(space) };
       live.set(space, l);
     }
     if (l.starting) return l.starting;
@@ -739,6 +735,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
         l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
+        l.startupFailure = undefined;
         const retryClaudeSetup = l.view.connectors?.some(connector => connector.agent === "claude" && connector.state === "unavailable" && connector.reason?.startsWith("Claude wake channel setup failed:"));
         if (retryClaudeSetup || !l.view.connectors?.some(connector => connector.state === "available")) {
           const child = l.child;
@@ -757,7 +754,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             generationAttempts.delete(child);
             l.stopping = false;
             l.view = { ...l.view, state: "starting", restarts: l.view.restarts + 1 };
-            l.starting = launch(l).finally(() => { l!.starting = undefined; });
+            l.starting = launch(l).catch((error) => { l!.startupFailure = managerStartupCode(error); throw error; }).finally(() => { l!.starting = undefined; });
             return await l.starting;
           } finally {
             l.stopping = false;
@@ -782,11 +779,11 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (l.healthTask) await l.healthTask;
     l.stopping = false;
     const current = l;
-    current.starting = launch(current).catch((error) => refuse(current, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${space}\``)).finally(() => { current.starting = undefined; });
+    current.starting = launch(current).catch((error) => refuse(current, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${space}\``, managerStartupCode(error))).finally(() => { current.starting = undefined; });
     return current.starting;
   };
   return {
-    start, status, refresh,
+    start, status, refresh, startupFailure,
     ...hostedAgentActions(home, live),
     async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
@@ -1004,20 +1001,20 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         held.view = { ...held.view, registrationCleanup: undefined };
       }
       held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
-      held.agents = undefined;
+      held.agents = undefined; held.startupFailure = undefined;
       rmSync(refusalFile(space), { force: true });
       notify();
     },
     async resume() {
-      const recordRefusal = (space: string, error: unknown) => {
+      const recordRefusal = (space: string, error: unknown, code = managerStartupCode(error)) => {
         const reason = safeDiagnostic(`could not resume hosted Manager: ${error instanceof Error ? error.message : String(error)}`).slice(0, 1500);
         // Keep the original records intact for diagnosis, and trust only the directory's identity.
-        live.set(space, { view: { space, state: "refused", restarts: 0, reason, lastRefusal: reason, next: `inspect the hosted Manager records in ${join(home, "daemon", spaceSegment(space))}, then run \`cotal daemon setup --space ${space}\`` }, stopping: false, failures: 0 });
+        live.set(space, { view: { space, state: "refused", restarts: 0, reason, lastRefusal: reason, next: `inspect the hosted Manager records in ${join(home, "daemon", spaceSegment(space))}, then run \`cotal daemon setup --space ${space}\`` }, stopping: false, failures: 0, startupFailure: code });
       };
       const intended = spaces();
       await Promise.all(intended.map(async (space) => {
         const invalid = recordError(space);
-        if (invalid) { recordRefusal(space, new Error(invalid)); return; }
+        if (invalid) { recordRefusal(space, new Error(invalid), "local-state-error"); return; }
         try { await start(space); } catch (error) { recordRefusal(space, error); }
       }));
       for (const space of spaces(true).filter(space => !intended.includes(space))) {

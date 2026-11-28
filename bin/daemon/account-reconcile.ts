@@ -8,11 +8,13 @@ import { findMesh, readMeshRegistry, recordMeshes } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
 import { knownMachineAccounts } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
+import { managerStartFailure, ManagerStartupError, managerStartupCode, startupPrerequisiteCode, type ManagerStartFailureCode } from "./manager-start-failure.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
 interface Saved { v: 1; spaces: Record<string, ManagedSpace> }
 interface Managers {
   status(space: string): HostedManager;
+  startupFailure(space: string): ManagerStartFailureCode | undefined;
   refresh(space: string): Promise<HostedManager>;
   start(space: string): Promise<HostedManager>;
   disconnect(space: string, options?: { account?: boolean }): Promise<unknown>;
@@ -27,11 +29,46 @@ function readSavedSpaces(file: string): Saved {
   return raw;
 }
 
+type ReportSpace = { id: string; slug: string };
+
+function answeringManagers(managers: Managers, rows: readonly ReportSpace[]) {
+  return rows.flatMap(row => {
+    const manager = managers.status(row.slug);
+    return manager.state === "answering" && manager.instanceId ? [{ spaceId: row.id, instanceId: manager.instanceId }] : [];
+  }).sort((a, b) => a.spaceId.localeCompare(b.spaceId));
+}
+
+function createHostingReport(saved: Saved, managers: Managers) {
+  const failures = new Map<string, Map<string, ManagerStartFailureCode>>();
+  return {
+    desired(owner: string, rows: readonly ReportSpace[]) {
+      const current = failures.get(owner) ?? new Map<string, ManagerStartFailureCode>();
+      failures.set(owner, current);
+      const ids = new Set(rows.map(row => row.id));
+      for (const id of current.keys()) if (!ids.has(id)) current.delete(id);
+      return current;
+    },
+    forget(owner: string) { failures.delete(owner); },
+    managerStartFailures(owner: string, rows: readonly ReportSpace[]) {
+      const byId = new Map<string, ManagerStartFailureCode>();
+      for (const row of rows) {
+        const savedSpace = saved.spaces[row.slug];
+        if (savedSpace?.removedAt !== undefined || managers.status(row.slug).state === "answering") continue;
+        const code = savedSpace && savedSpace.owner !== owner ? "space-unavailable" :
+          failures.get(owner)?.get(row.id) ?? (savedSpace?.id === row.id ? managers.startupFailure(row.slug) : undefined);
+        if (code) byId.set(row.id, code);
+      }
+      return [...byId].sort(([a], [b]) => a.localeCompare(b)).map(([id, code]) => managerStartFailure(id, code));
+    },
+  };
+}
+
 /** Reconcile through the same checked service and Manager operations as local setup. */
 export function createAccountReconciler(home: string, services: ServiceConnections, managers: Managers) {
   const file = join(home, "daemon", "account-spaces.json"), saved = readSavedSpaces(file);
   const persist = () => { mkSecretDir(join(file, "..")); writeSecretFileAtomic(file, JSON.stringify(saved)); };
   const refusals = new Map<string, string>();
+  const report = createHostingReport(saved, managers);
   const retryAt = new Map<string, number>();
   const managerOnly = new Set<string>();
   const conflicts = new Map<string, { owner: string; candidate: string; holder: string }>();
@@ -76,6 +113,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     if (snapshot.spaces.some(row => !Number.isSafeInteger(bindingRevisions[row.id]) || bindingRevisions[row.id]! <= 0 || bindingRevisions[row.id]! > revision)) throw new Error("invalid binding revisions");
     const desired = new Set(snapshot.spaces.map(row => row.slug));
     desiredByOwner.set(account.ownerKey, desired);
+    const failures = report.desired(account.ownerKey, snapshot.spaces);
     for (const [space, state] of Object.entries(saved.spaces)) {
       if (state.owner !== account.ownerKey || desired.has(space) || Date.now() < (retryAt.get(space) ?? 0)) continue;
       if (state.removedAt !== undefined) { if (fresh) { delete saved.spaces[space]; persist(); } continue; }
@@ -102,17 +140,20 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         continue;
       }
       if (Date.now() < (retryAt.get(row.slug) ?? 0)) continue;
+      let awaitingManager = true;
       try {
-        if ("unavailable" in row) throw new Error("account space is currently unavailable");
+        if ("unavailable" in row) throw new ManagerStartupError("space-unavailable", "account space is currently unavailable");
         const legacy = !prior && connectedHere(row.slug);
         importAccountComputerSpace(account, row);
-        if (legacy) continue;
+        if (legacy) { failures.delete(row.id); continue; }
         // Persist custody before the first operation, so restart knows which spaces it may remove.
         saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision: bindingRevisions[row.id]! }; persist();
         const check = await connectCheck(row.slug, home);
-        if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new Error(check.outcome);
+        if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new ManagerStartupError(startupPrerequisiteCode(check.outcome), check.outcome);
+        failures.delete(row.id);
         const manager = await ensureHostedManager(row.slug, managers);
         if (manager.state !== "answering") throw new Error("Manager is not answering");
+        awaitingManager = false;
         if (!manager.connectors?.some(connector => connector.state === "available")) throw new Error("no available application");
         if (check.outcome === "unsupported-by-space") {
           managerOnly.add(row.slug);
@@ -138,6 +179,8 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       } catch (error) {
         const safe = error instanceof Error && /^[a-z -]{1,100}$/i.test(error.message) ? error.message : "space connection refused; inspect daemon status";
         refusals.set(row.slug, safe); retryAt.set(row.slug, Date.now() + 30_000);
+        if (awaitingManager && (error instanceof ManagerStartupError || !managers.startupFailure(row.slug)))
+          failures.set(row.id, managerStartupCode(error));
       }
     }
   });
@@ -165,14 +208,8 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
           recordMeshes([{ ...registered, catalogOwner: account.ownerKey }]);
         prior.owner = account.ownerKey; persist(); conflicts.delete(space); refusals.delete(space); retryAt.delete(space);
     }),
-    /** The answering Managers this computer hosts for the given account spaces, by catalog space id. */
-    hostedManagers(rows: readonly { id: string; slug: string }[]) {
-      return rows.flatMap((row) => {
-        const manager = managers.status(row.slug);
-        return manager.state === "answering" && manager.instanceId ? [{ spaceId: row.id, instanceId: manager.instanceId }] : [];
-      }).sort((a, b) => a.spaceId.localeCompare(b.spaceId));
-    },
-    retainAccounts(owners: string[]) { signedIn = new Set(owners); for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
+    hostedManagers: (rows: readonly ReportSpace[]) => answeringManagers(managers, rows), managerStartFailures: report.managerStartFailures,
+    retainAccounts(owners: string[]) { signedIn = new Set(owners); for (const key of desiredByOwner.keys()) if (!signedIn.has(key)) { desiredByOwner.delete(key); report.forget(key); } },
     view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(machineService(space) ? { machineService: machineService(space)! } : {}), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}), custodyRecovery: recoveryFor(space) })),
     settled: () => queue,
   };
