@@ -1,3 +1,4 @@
+---
 "cotal-ai": patch
 ---
 
