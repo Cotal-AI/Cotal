@@ -350,6 +350,7 @@ saved declaration. Records live under the workstation store's case-safe per-spac
 If no definition has that name, `show` and `remove` refuse with `TARGET_NOT_FOUND` (exit 2) and suggest
 `cotal service --space <space>` for the space each checked. If you asked for JSON or plain text, the suggested command keeps that output format.
 
+Adding a definition with an existing name refuses to overwrite it. The suggested removal command keeps the space and the requested output format.
 `service remove <name> --yes` removes the unchanged definition and its stopped instances' records
 and sidecar receipts, and deletes each removed instance's log file and rotated `<log>.1` file.
 Interactive removal defaults to keeping them. Unknown or foreign instance custody makes removal refuse.
