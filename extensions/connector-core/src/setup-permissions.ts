@@ -1,4 +1,4 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 export function isConfigPermissionError(error: unknown): boolean {
@@ -16,6 +16,22 @@ export function isConfigProtected(path: string): boolean {
     return false;
   } catch (error) {
     if (isConfigPermissionError(error)) return true;
+    throw error;
+  }
+}
+
+/** Whether an existing directory cannot be entered and modified by this account, or is an unresolvable link, ignoring its parent. */
+export function isDirectoryProtected(path: string): boolean {
+  try {
+    const link = lstatSync(path, { throwIfNoEntry: false });
+    if (!link) return false;
+    const info = statSync(path, { throwIfNoEntry: false });
+    if (!info) return true;
+    if (!info.isDirectory()) return false;
+    accessSync(path, constants.W_OK | constants.X_OK);
+    return false;
+  } catch (error) {
+    if (isConfigPermissionError(error) || (error as NodeJS.ErrnoException).code === "ELOOP") return true;
     throw error;
   }
 }

@@ -15,7 +15,7 @@
  *
  * Run: pnpm smoke:renewal-record-honesty
  */
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, inspectCredHealth, mintCreds, newIdentity, mintConnectionEvictorCreds, mintMembershipObserverCreds } from "@cotal-ai/core";
@@ -109,6 +109,19 @@ try {
   const accepted = await runDoctor();
   check("broker-accepted renewal + no cred problems exits healthy (0)", accepted.code === 0 && accepted.out.includes(HEALTHY), `${accepted.code} ${accepted.out.slice(-300)}`);
   check("the accepted record renders as a recorded acceptance", /Broker acceptance at that pass:\s+recorded-acceptance/.test(accepted.out), accepted.out);
+
+  const receipt = renewalRecordPath(root, auth.space);
+  if (process.getuid && process.getuid() !== 0) {
+    chmodSync(receipt, 0o200);
+    try {
+      const denied = await runDoctor();
+      check("an inaccessible renewal stays partial and names the read permission to restore", denied.code === 4 && denied.out.includes("chmod u+r") && denied.out.includes(receipt) && !denied.out.includes("from backup") && denied.out.includes("not-established"));
+    } finally { chmodSync(receipt, 0o600); }
+    check("read access restores the verdict without replacing the receipt", (await runDoctor()).code === 0 && readFileSync(receipt, "utf8") === raw);
+  }
+  writeFileSync(receipt, "{");
+  const malformed = await runDoctor();
+  check("a malformed renewal still needs backup restoration", malformed.code === 4 && malformed.out.includes("from backup") && readFileSync(receipt, "utf8") === "{");
 
   // 2b. broker-REFUSED renewal (same cred files, only the record flips) → exit 5 + a loud line.
   writeRenewalRecord(root, auth.space, {
