@@ -8,7 +8,7 @@ import { PassThrough, Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
-import { homeCotalDir, readMesh, recordMesh, spaceSegment } from "@cotal-ai/workspace";
+import { homeCotalDir, meshFile, readMesh, recordMesh, spaceSegment } from "@cotal-ai/workspace";
 import { importAccountComputerSpace } from "@cotal-ai/cli";
 import { deleteIdpSession, loadIdpSession, saveIdpSession } from "@cotal-ai/auth";
 import { daemonPaths } from "../daemon/endpoint.js";
@@ -74,6 +74,8 @@ let newSpaces = [
 
 const realFetch = globalThis.fetch;
 let migrationPrompts = 0;
+let recoveringAs = sub;
+let abandonRecovery = false;
 let machinePolls = new Map<string, number>();
 let machineEnabled = false;
 globalThis.fetch = async (input, init) => {
@@ -98,9 +100,18 @@ globalThis.fetch = async (input, init) => {
   if (url === `${newOrigin}/.well-known/cotal-mesh`) {
     return json(bundle("personal-home", newIdp));
   }
+  if (url === `${oldIdp}/device/code`) {
+    return json({ device_code: "recover-9926", user_code: "RECOVER-9926", verification_uri: `${oldOrigin}/approve`,
+      verification_uri_complete: `${oldOrigin}/approve?user_code=RECOVER-9926`, expires_in: 60, interval: 1 });
+  }
+  if (url === `${oldIdp}/device/token`) {
+    return abandonRecovery ? new Response(JSON.stringify({ error: "expired_token" }), { status: 400 })
+      : json({ access_token: recoveringAs === sub ? "recovered-old-session" : "different-recovery-session", expires_in: 3600 });
+  }
   if (url === `${oldIdp}/token`) {
     const part = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
-    return json({ token: `${part({ alg: "none" })}.${part({ iss: oldOrigin, sub, aud: audience, exp: expiry() })}.fixture` }, {
+    const subject = new Headers(init?.headers).get("authorization") === "Bearer different-recovery-session" ? recoveringAs : sub;
+    return json({ token: `${part({ alg: "none" })}.${part({ iss: oldOrigin, sub: subject, aud: audience, exp: expiry() })}.fixture` }, {
       link: `<${oldOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`,
     });
   }
@@ -172,6 +183,44 @@ function existingHosting(space: string): () => void {
   };
 }
 
+async function checkAccountRecovery(): Promise<void> {
+  const recovery = { op: "login", idp: oldIdp, recoverSpace: "personal-home" };
+  const snapshot = (names: string[]) => names.map(name => readFileSync(name, "utf8"));
+  const registrations = [meshFile("personal-home"), meshFile("cotal-team"), meshFile("new-only")];
+  const signInFiles = ["idp-sessions.json", "space-catalogs.json"].map(name => join(homeCotalDir(), name));
+  const original = snapshot([...registrations, ...signInFiles]);
+  const currentProviderSession = loadIdpSession(homeCotalDir(), newIdp);
+  const checkHosting = existingHosting("personal-home");
+  recoveringAs = "different-browser-account";
+  const different = await bridge(recovery);
+  assert.ok(different.some(frame => frame.event === "login-prompt"));
+  assert.equal(different.at(-1)!.result.reason, "local-state-error");
+  assert.match(different.at(-1)!.result.message, /A different account signed in.*Nothing was changed/);
+  assert.match(different.at(-1)!.result.remedy, /account that owns the saved space.*keep the existing registration/);
+  assert.deepEqual(snapshot([...registrations, ...signInFiles]), original);
+
+  abandonRecovery = true;
+  const abandoned = await bridge(recovery);
+  assert.ok(abandoned.some(frame => frame.event === "login-prompt"));
+  assert.equal(abandoned.at(-1)!.result.reason, "expired");
+  assert.deepEqual(snapshot([...registrations, ...signInFiles]), original);
+
+  abandonRecovery = false;
+  recoveringAs = sub;
+  const same = await bridge(recovery);
+  assert.ok(same.some(frame => frame.event === "login-prompt"));
+  assert.equal(same.at(-1)!.result.outcome, "signed-in");
+  assert.equal(loadIdpSession(homeCotalDir(), oldIdp)?.token, "recovered-old-session");
+  assert.deepEqual(loadIdpSession(homeCotalDir(), newIdp), currentProviderSession);
+  assert.deepEqual(snapshot(registrations), original.slice(0, registrations.length));
+  checkHosting();
+  const view = (await bridge({ op: "spaces", refresh: false })).at(-1)!;
+  assert.equal(view.result.refresh, "not-requested");
+  assert.equal(view.result.migration.fromIdp, oldIdp);
+  assert.deepEqual(snapshot(registrations), original.slice(0, registrations.length));
+  console.log("PASS: conflict-account recovery preserves registrations on approval, mismatch and expiry");
+}
+
 let daemon: RunningDaemon | undefined;
 try {
   // Seed retained login + catalog spaces at oldIdp, a manual space, and a new login at newIdp.
@@ -227,7 +276,7 @@ try {
   assert.equal(absent.some(frame => frame.event === "login-prompt"), false);
   assert.equal(absent.at(-1)!.result.reason, "local-state-error");
   assert.match(absent.at(-1)!.result.message, /not signed in/);
-  saveIdpSession(homeCotalDir(), oldIdp, { token: "old-session-token", sub, expiresAt: expiry() });
+  await checkAccountRecovery();
 
   // 3. Per-space replacement of a manual registration succeeds and switches it to newIdp's catalog.
   const manualResolved = (await bridge({ op: "space-conflict-resolve", space: "new-only", idp: newIdp })).at(-1)!;

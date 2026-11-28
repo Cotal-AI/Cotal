@@ -63,6 +63,7 @@ el("computer-name-form").addEventListener("submit", event => {
 let initialized = false;
 let retrySignIn = false;
 let activeMove: { provider: string; migrateFrom: string } | undefined;
+let recoveringConflictAccount = false;
 let approvalExpires = 0;
 let countdown: ReturnType<typeof setInterval> | undefined;
 let stage: Stage = "welcome";
@@ -77,7 +78,7 @@ const spaceConflicts = new SpaceConflicts({
   openPanel: () => openConflicts(),
   confirm: message => window.confirm(message),
   moveAccount: migration => runEndorsedMove(migration),
-  signInProvider: idp => action(() => runSignInFlow(canonicalProvider(idp))),
+  signInProvider: item => action(() => recoverConflictAccount(canonicalProvider(item.existingIdp!), item.space)),
   replaceSpace: async item => {
     const result = await request({ op: "space-conflict-resolve", space: item.space, idp: item.catalogIdp });
     applySpacesPayload(result, signedInProvider ?? item.catalogIdp);
@@ -760,7 +761,7 @@ function updateCountdown(): void {
   text("approval-expiry", remaining ? `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}` : "This code has expired.");
   el<HTMLButtonElement>("copy-code").disabled = remaining === 0;
   el<HTMLButtonElement>("open-approval").disabled = remaining === 0;
-  if (!remaining && problem !== "EXPIRED") {
+  if (!remaining && !recoveringConflictAccount && problem !== "EXPIRED") {
     problem = "EXPIRED";
     text("refusal-detail", "The approval code expired before sign-in was confirmed."); el("details").hidden = false;
     showStage("sign-in", true);
@@ -1123,6 +1124,38 @@ async function runSignInFlow(provider: string, migrateFrom?: string): Promise<vo
 function runEndorsedMove(migration: EndorsedMigration): Promise<void> {
   return action(() => runSignInFlow(canonicalProvider(migration.toIdp), canonicalProvider(migration.fromIdp)));
 }
+async function recoverConflictAccount(idp: string, space: string): Promise<void> {
+  const previousStage = stage;
+  conflictsOpen = false;
+  recoveringConflictAccount = loginActive = true;
+  clearDetails(); notice(""); showStage("sign-in", true);
+  try {
+    const result = await request({ op: "login", idp, recoverSpace: space });
+    if (result.outcome === "signed-in") {
+      for (const item of signedOutProviders) if (sameProvider(item, idp)) signedOutProviders.delete(item);
+      if (!signedInProviders.some(item => sameProvider(item, idp))) signedInProviders.push(idp);
+      // A catalog refresh can remove unlisted rows. Read the move offer without applying a catalog.
+      const observed = await request({ op: "spaces", refresh: false }).catch(() => ({}));
+      spaceConflicts.accountRecoveryResult(idp, observed);
+      spaceConflicts.recoveryMessage(`Signed in to ${new URL(idp).host}. The active provider and saved registrations did not change.`, false);
+    } else if (result.outcome === "cancelled" || result.reason === "expired") {
+      spaceConflicts.recoveryMessage("Sign-in was not completed. Nothing was changed. Try signing in again, or keep the existing registration.", true);
+    } else {
+      const message = typeof result.message === "string" ? result.message : "Sign-in was not completed.";
+      const remedy = typeof result.remedy === "string" ? result.remedy : "Try signing in again, or keep the existing registration.";
+      spaceConflicts.recoveryMessage(`${message} ${remedy}`, true);
+    }
+  } catch (error) {
+    spaceConflicts.recoveryMessage(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    recoveringConflictAccount = loginActive = false;
+    approval = undefined;
+    if (countdown) clearInterval(countdown);
+    el("approval").hidden = true;
+    showStage(previousStage);
+    openConflicts();
+  }
+}
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
 el("other-host").addEventListener("click", () => { activeMove = undefined; customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
 el("cloud-host").addEventListener("click", () => { activeMove = undefined; customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
@@ -1306,7 +1339,7 @@ function openConflicts(): void {
   if (loginActive || setupActive) return;
   conflictsOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   appsOpen = false; settingsOpen = false; conflictsOpen = true;
-  renderSettings(); el("conflicts-title").focus();
+  renderSettings(); document.querySelector("main")!.scrollTop = 0; el("conflicts-title").focus({ preventScroll: true });
 }
 function closeConflicts(): void {
   conflictsOpen = false; showStage(stage);

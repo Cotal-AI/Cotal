@@ -126,6 +126,7 @@ export function nativeStub(scenario) {
       }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") {
+        state.spacesRequests = [...(state.spacesRequests ?? []), request.refresh];
         const collisionDetails = request.refresh ? (state.collisionDetails ?? []) : [];
         const migration = request.refresh ? state.migration : (state.signedInMigration ?? undefined);
         return ok({
@@ -191,6 +192,17 @@ export function nativeStub(scenario) {
       }
       if (request.op === "login") {
         state.loginRequests = [...(state.loginRequests ?? []), { ...request }];
+        if (request.recoverSpace && state.accountRecovery) {
+          send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: `${new URL(request.idp).origin}/device?user_code=RECOVERY`, userCode: "RECOVERY", expiresAt: new Date(Date.now() + 1000).toISOString() } });
+          await new Promise(resolve => { window.__finishAccountRecovery = resolve; });
+          if (state.accountRecovery === "same") {
+            state.signedInProviders = [...state.signedInProviders, request.idp];
+            state.signedInMigration = { fromIdp: request.idp, toIdp: "https://cotal.cloud/api/auth", spaces: [request.recoverSpace] };
+            return ok({ outcome: "signed-in", idp: request.idp });
+          }
+          if (state.accountRecovery === "different") return ok({ outcome: "failed", reason: "local-state-error", message: "A different account signed in. Nothing was changed.", remedy: "Try again with the account that owns the saved space, or keep the existing registration." });
+          return ok({ outcome: "failed", reason: "expired", message: "The approval code expired." });
+        }
         if (request.migrateFrom && state.moveRefusal) {
           const refusal = state.moveRefusal;
           delete state.moveRefusal;
@@ -1418,6 +1430,46 @@ export const scenarios = [
 ];
 
 const moveScenario = scenarios.find(item => item.name === "space-conflict-endorsed-moved");
+const recoveryFrom = "https://cloud.cotal.ai/api/auth", recoveryTo = "https://cotal.cloud/api/auth";
+for (const outcome of ["same", "different", "abandoned"]) {
+  scenarios.push({
+    name: `space-conflict-account-recovery-${outcome}`,
+    state: {
+      accountRecovery: outcome,
+      signedInProvidersAfterLogin: [recoveryTo],
+      catalogSpacesAfterLogin: [{ space: "acme-team", label: "Acme team", idp: recoveryTo, mode: "user", catalogId: "sp_acme" }],
+      collisionDetails: [{ space: "personal-home", catalogLabel: "Personal", catalogIdp: recoveryTo, existingOrigin: "catalog", existingIdp: recoveryFrom, existingSignedIn: false }],
+    },
+    prepare: async page => { await page.click("#login"); await page.click("#open-conflicts"); },
+    act: async page => {
+      await page.getByRole("button", { name: "Sign in to cloud.cotal.ai" }).click();
+      await page.locator("#approval:visible").waitFor();
+      if (outcome === "abandoned") await page.getByText("This code has expired.", { exact: true }).waitFor();
+      await page.evaluate(() => window.__finishAccountRecovery());
+      await page.locator("#conflicts-panel:visible").waitFor();
+    },
+    async expect(page) {
+      const message = await page.locator("#conflicts-message").textContent();
+      if (outcome === "same") {
+        assert.match(message, /active provider and saved registrations did not change/);
+        assert.equal(await page.getByRole("button", { name: "Sign out cloud.cotal.ai" }).count(), 1);
+        assert.equal(await page.getByTestId("panel-move-account").count(), 1);
+      } else {
+        assert.match(message, outcome === "different" ? /A different account signed in.*Nothing was changed.*keep the existing registration/ : /Sign-in was not completed.*Nothing was changed.*keep the existing registration/);
+        assert.equal(await page.getByRole("button", { name: "Sign in to cloud.cotal.ai" }).count(), 1);
+      }
+      const { loginRequests, spacesRequests, accountRequests } = await page.evaluate(() => window.__renderState);
+      assert.deepEqual(loginRequests, [{ op: "login", idp: recoveryTo }, { op: "login", idp: recoveryFrom, recoverSpace: "personal-home" }]);
+      assert.equal(spacesRequests.filter(Boolean).length, 1, "recovery never applies a catalog refresh");
+      assert.deepEqual(accountRequests, []);
+      await page.click("#view-settings");
+      assert.equal(await page.locator("#settings-account").textContent(), "Cotal Cloud, cotal.cloud");
+      await page.click("#settings-signout");
+      assert.equal(await page.locator("#account-confirm-title").textContent(), "Sign out of Cotal Cloud, cotal.cloud?");
+      await page.click("#account-cancel");
+    },
+  });
+}
 scenarios.push({
   ...moveScenario,
   name: "space-conflict-expired-move-retry",

@@ -71,7 +71,7 @@ function logoutErrorResponse(id: string, idp: string, error: unknown, onCleared:
 function spacesErrorResponse(id: string, op: "spaces" | "space-conflict-resolve", error: unknown): DaemonResponse {
   if (isCommandFailure(error) && (op === "space-conflict-resolve" || error.code === "DEPENDENCY_UNAVAILABLE"))
     return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } };
-  return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } };
+  return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: op === "spaces" ? "the daemon could not read its spaces" : "the daemon could not confirm that the space registration was replaced" } };
 }
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
@@ -588,6 +588,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         idp: req.idp,
         discoveryPins: req.discoveryPins,
         ...(req.migrateFrom !== undefined ? { migrateFrom: req.migrateFrom } : {}),
+        ...(req.recoverSpace !== undefined ? { recoverSpace: req.recoverSpace } : {}),
         ...(req.clientId !== undefined ? { clientId: req.clientId } : {}),
         onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
         onResult: async (attempt, result) => {

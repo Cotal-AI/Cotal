@@ -51,6 +51,15 @@ for (const invalid of [
   assert.throws(() => parseDesktopRequest(invalid));
   check("daemon protocol rejects invalid migrateFrom", !parseRequest(JSON.stringify({ v: 1, id: "m2", op: "login-start", idp: invalid.idp, migrateFrom: invalid.migrateFrom })).ok);
 }
+const recoverLogin = { op: "login", idp: migrateLogin.migrateFrom, recoverSpace: "team" };
+assert.deepEqual(parseDesktopRequest(recoverLogin), recoverLogin);
+check("both boundaries accept login for a saved catalog registration", recoveryFrame({ ...recoverLogin, op: "login-start" }).ok);
+for (const invalid of [{ ...recoverLogin, recoverSpace: "bad space" }, { ...migrateLogin, recoverSpace: "team" }]) {
+  assert.throws(() => parseDesktopRequest(invalid));
+  check("both boundaries reject invalid saved-account recovery", !recoveryFrame({ ...invalid, op: "login-start" }).ok);
+}
+assert.throws(() => parseDesktopRequest({ ...recoverLogin, op: "logout" }));
+check("recovery cannot be combined with discovery pins or logout", !recoveryFrame({ ...recoverLogin, op: "logout" }).ok && !recoveryFrame({ ...recoverLogin, op: "login-start", discoveryPins: { url: recoverLogin.idp, issuer: recoverLogin.idp, audience: "cotal-cli" } }).ok);
 check("spaces refresh remains a typed field", parseDesktopRequest({ op: "spaces", refresh: true }).op === "spaces");
 assert.equal(parseRequest(JSON.stringify({ v: 1, id: "app", op: "agent-app-install", appVersion: "1.0.0", name: "claude", url: "https://example.test" })).ok, false, "app mutation does not accept a caller URL");
 checks++;

@@ -46,7 +46,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-prepare-restart": { required: [], optional: [] },
   "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
-  "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins", "migrateFrom"] },
+  "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins", "migrateFrom", "recoverSpace"] },
   logout: { required: ["idp"], optional: [] },
   "login-cancel": { required: ["attempt"], optional: [] },
   "connect-check": { required: ["space"], optional: [] },
@@ -88,7 +88,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status-watch" }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string }; readonly migrateFrom?: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string }; readonly migrateFrom?: string; readonly recoverSpace?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-cancel"; readonly attempt: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connect-check"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "register"; readonly space: string }
@@ -398,7 +398,10 @@ export function parseRequest(line: string): ParsedRequest {
       if (!migrateFrom.startsWith("https://") || migrateFrom === idp) throw new Error("invalid migration source");
     } catch { return bad(id, "migrateFrom must be a different HTTPS auth URL"); }
   }
-  return { ok: true, request: { v, id, op, idp, ...(discoveryPins ? { discoveryPins } : {}), ...(migrateFrom ? { migrateFrom } : {}), ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
+  const recoverSpace = obj.recoverSpace;
+  if (recoverSpace !== undefined && (!isDaemonSpaceName(recoverSpace) || migrateFrom !== undefined || discoveryPins !== undefined))
+    return bad(id, "recoverSpace must name a saved space without migrateFrom or discoveryPins");
+  return { ok: true, request: { v, id, op, idp, ...(discoveryPins ? { discoveryPins } : {}), ...(migrateFrom ? { migrateFrom } : {}), ...(recoverSpace ? { recoverSpace } : {}), ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
 }
 
 export function encode(msg: DaemonResponse | DaemonRequest): string {

@@ -741,9 +741,9 @@ supported provider when several sign-in addresses identify the same account. Cat
 replies include an optional `failedProviders` list of provider URLs, optional `collisionDetails`
 naming each colliding space and its existing origin (`manual`, `catalog` or `up`), and optional
 `migration` when an endorsing previous provider address points to the active provider. The desktop
-app reports other providers' failures as a notice when the active provider refreshed successfully,
-offers one-button account migration for endorsed address moves, and resolves individual space
-conflicts in-app without requiring command-line steps.
+app reports other providers' failures as a notice when the active provider refreshed successfully.
+It offers **Move to `<host>`** for endorsed address moves that have a valid previous sign-in, and
+lets you keep existing registrations or replace eligible manual or stopped local registrations.
 Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. The
 heartbeat lists the answering Managers this computer hosts for the account's spaces, each as the
@@ -895,9 +895,10 @@ update, and the listing reports the unreadable count with a partial outcome (exi
 A damaged canonical registration and its usable legacy duplicate stay untouched, including during
 failure reporting and catalog removal. A selection naming that registration stays selected.
 The desktop app uses these same controls. A catalog name collision leaves the existing registration
-intact and does not block desktop sign-in. **Review space conflicts** shows the names and their
-registration sources. You can keep a registration or review what replacing it or signing out will
-remove before confirming. Its source and native build instructions are in the
+intact and does not block desktop sign-in. **Review space conflicts**, or **Review spaces** when a
+move is offered, shows the names and their registration sources. You can keep a registration or
+review what replacing it or signing out will remove before confirming. Signing back in to the
+saved account leaves registrations and the active provider unchanged. The app's source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 If desktop preferences cannot be parsed, the app keeps the original file beside `presence.json`
 with a fresh `.invalid.<number>` suffix, opens with defaults, and reports the saved file's location.

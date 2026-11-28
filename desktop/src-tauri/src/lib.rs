@@ -61,14 +61,22 @@ pub enum DesktopRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         refresh: Option<bool>,
     },
-    #[serde(rename = "login")]
-    Login { idp: String },
+    #[serde(rename = "login", rename_all = "camelCase")]
+    Login {
+        idp: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        migrate_from: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recover_space: Option<String>,
+    },
     #[serde(rename = "logout")]
     Logout { idp: String },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
     #[serde(rename = "space-recover")]
     SpaceRecover { space: String, candidate: String, holder: String },
+    #[serde(rename = "space-conflict-resolve")]
+    SpaceConflictResolve { space: String, idp: String },
     #[serde(rename = "space-intent")]
     SpaceIntent { space: String, enabled: bool },
     #[serde(rename = "agent-stop", rename_all = "camelCase")]
@@ -112,11 +120,22 @@ impl DesktopRequest {
                     return Err("Invalid release version.".into());
                 }
             }
-            Self::Login { idp } | Self::Logout { idp } | Self::Setup { idp, .. } => {
-                let u = browser_url(idp)?;
-                if u.query().is_some() || u.fragment().is_some() {
-                    return Err("A provider URL cannot contain a query or fragment.".into());
+            Self::Login { idp, migrate_from, recover_space } => {
+                let target = provider_url(idp)?;
+                if let Some(space) = recover_space {
+                    Self::ConnectCheck { space: space.clone() }.validate()?;
                 }
+                if let Some(from) = migrate_from {
+                    let source = provider_url(from)?;
+                    if from.len() > 2048 || source.scheme() != "https" || recover_space.is_some()
+                        || (source.origin() == target.origin() && source.path().trim_end_matches('/') == target.path().trim_end_matches('/'))
+                    {
+                        return Err("Use a different HTTPS provider URL for a move, without account recovery.".into());
+                    }
+                }
+            }
+            Self::Logout { idp } | Self::Setup { idp, .. } | Self::SpaceConflictResolve { idp, .. } => {
+                provider_url(idp)?;
             }
             Self::SpaceIntent { space, .. }
             | Self::AgentStop { space, .. }
@@ -137,7 +156,7 @@ impl DesktopRequest {
             }
             _ => {}
         }
-        if let Self::Setup { space, .. } = self {
+        if let Self::Setup { space, .. } | Self::SpaceConflictResolve { space, .. } = self {
             Self::ConnectCheck { space: space.clone() }.validate()?;
         }
         // The webview names an installed connector's application and nothing else; the service
@@ -167,6 +186,14 @@ impl DesktopRequest {
             150
         }
     }
+}
+
+fn provider_url(value: &str) -> Result<Url, String> {
+    let url = browser_url(value)?;
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("A provider URL cannot contain a query or fragment.".into());
+    }
+    Ok(url)
 }
 
 /// Only web URLs reach the operating-system opener. Never file, custom protocol or credentials.
@@ -272,6 +299,10 @@ mod tests {
             r#"{"op":"start","path":"/tmp/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,
+            r#"{"op":"logout","idp":"https://example.com","migrateFrom":"https://old.example.com"}"#,
+            r#"{"op":"logout","idp":"https://example.com","recoverSpace":"team"}"#,
+            r#"{"op":"login","idp":"https://example.com","migrate_from":"https://old.example.com"}"#,
+            r#"{"op":"space-conflict-resolve","space":"team","idp":"https://example.com","command":"sh"}"#,
             r#"{"op":"agent-app-install","name":"claude","script":"https://example.com/x.sh"}"#,
             r#"{"op":"agent-app-install"}"#,
             r#"{"op":"agent-app-sign-in","name":"claude","args":["auth","login"]}"#,
@@ -313,6 +344,30 @@ mod tests {
         assert!(DesktopRequest::UpdateRelease { version: "0.160.5".into() }.validate().is_ok());
         assert!(DesktopRequest::UpdateRelease { version: "../latest".into() }.validate().is_err());
         // Names are stdin JSON values, never concatenated into argv or interpreted by a shell.
+    }
+    #[test]
+    fn conflict_requests_validate_and_keep_their_wire_fields() {
+        for input in [
+            r#"{"op":"login","idp":"https://example.com/api/auth"}"#,
+            r#"{"op":"login","idp":"https://example.com/api/auth","migrateFrom":"https://old.example.com/api/auth"}"#,
+            r#"{"op":"login","idp":"https://old.example.com/api/auth","recoverSpace":"team"}"#,
+            r#"{"op":"space-conflict-resolve","space":"team","idp":"https://example.com/api/auth"}"#,
+        ] {
+            let request: DesktopRequest = serde_json::from_str(input).unwrap();
+            assert!(request.validate().is_ok(), "{input}");
+            assert_eq!(serde_json::to_value(request).unwrap(), serde_json::from_str::<serde_json::Value>(input).unwrap());
+        }
+        for input in [
+            r#"{"op":"login","idp":"https://example.com/api/auth","migrateFrom":"https://EXAMPLE.com:443/api/auth/"}"#,
+            r#"{"op":"login","idp":"https://example.com","migrateFrom":"http://127.0.0.1"}"#,
+            r#"{"op":"login","idp":"https://example.com","migrateFrom":"https://old.example.com#fragment"}"#,
+            r#"{"op":"login","idp":"https://example.com","migrateFrom":"https://old.example.com","recoverSpace":"team"}"#,
+            r#"{"op":"login","idp":"https://example.com","recoverSpace":"../team"}"#,
+            r#"{"op":"space-conflict-resolve","space":"../team","idp":"https://example.com"}"#,
+            r#"{"op":"space-conflict-resolve","space":"team","idp":"https://example.com?token=x"}"#,
+        ] {
+            assert!(serde_json::from_str::<DesktopRequest>(input).unwrap().validate().is_err(), "{input}");
+        }
     }
     #[test]
     fn browser_refuses_non_web_and_credential_urls() {

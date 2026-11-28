@@ -70,6 +70,7 @@ test("conflict actions ask before replacement or provider-wide sign-out", async 
     collisionDetails: [{ space: "home", catalogLabel: "Home", catalogIdp: own, existingOrigin: "catalog", existingIdp: legacy }] });
   await conflicts.replaceWithCatalog(manual); await conflicts.signOutOther(legacy);
   assert.deepEqual(actions, []);
+  assert.match(messages[0]!, /stops this computer's service and Manager for the space and removes their records/);
   assert.match(messages[0]!, /preferences, chat sessions, and any local stack settings/);
   assert.match(messages[1]!, /revokes that sign-in.*another, home/);
   confirmed = true;

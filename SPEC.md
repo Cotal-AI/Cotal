@@ -81,7 +81,10 @@ protocol also accepts `space-conflict-resolve` with `space` and `idp` to replace
 registration in the default Cotal home when no local stack is running it (refusing running stacks
 with `LIFECYCLE_BLOCKED` and catalog-owned entries with `CONFLICT`), and `login-start` accepts
 optional HTTPS `migrateFrom` to stage, verify and commit an endorsed account migration with a
-fresh device approval. The registry commit records the previous and new owner for each moved
+fresh device approval. `login-start` also accepts an optional `recoverSpace` naming a saved
+catalog registration at the requested provider. It cannot be combined with `migrateFrom` or
+`discoveryPins`. Recovery saves a sign-in only if it matches the saved account and leaves
+registrations untouched. The registry commit records the previous and new owner for each moved
 space. The daemon uses that committed record and the stable space identity to finish custody
 reconciliation after a restart. A shared issuer and subject alone do not authorize adoption.
 

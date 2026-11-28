@@ -18,7 +18,7 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { resolveSpaceCatalogConsumer } from "@cotal-ai/core";
-import { commitStagedIdpSession, deleteIdpSpaceCatalog, establishIdpSession, fetchStagedIdpSpaceCatalog, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, signedInMachineAccounts, stageIdpSession } from "@cotal-ai/auth";
+import { catalogAccountOwnerKey, commitStagedIdpSession, deleteIdpSpaceCatalog, establishIdpSession, fetchStagedIdpSpaceCatalog, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, signedInMachineAccounts, stageIdpSession } from "@cotal-ai/auth";
 import { CommandFailure, homeCotalDir, isCommandFailure, loadMeshes, removeCatalogAccount, resolveNativeMigration, withProjectTrustMigration, type KeptCatalogCredential } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
@@ -45,6 +45,7 @@ interface LoginStart {
   readonly clientId?: string;
   readonly discoveryPins?: { url: string; issuer: string; audience: string };
   readonly migrateFrom?: string;
+  readonly recoverSpace?: string;
   readonly onPrompt: (attempt: string, prompt: LoginPrompt) => void;
   /** Deliver the terminal result to the requester. The attempt counts as settled, for a cancel's
    *  answer, only once this resolves, so a cancel ack never overtakes the result it reports. */
@@ -68,6 +69,43 @@ export interface LoginCoordinator {
 
 const localMigrationRefusal = (message: string, remedy: string): CommandFailure =>
   new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, { remedy });
+
+function recoveryRegistration(idp: string, space: string) {
+  const rows = loadMeshes().filter(entry => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === idp);
+  const entry = rows.find(row => row.space === space);
+  if (!entry?.catalogOwner || rows.some(row => row.catalogOwner !== entry.catalogOwner)) return undefined;
+  const { issuer, audience } = entry.userAuth!.idp;
+  return { owner: entry.catalogOwner, issuer, audience, catalogId: entry.catalogId };
+}
+
+async function runAccountRecovery(sessionDir: string, id: string, abort: AbortController, req: LoginStart): Promise<LoginResult> {
+  const idp = normalizeIdpUrl(req.idp);
+  const space = req.recoverSpace!;
+  const changed = () => localMigrationRefusal("The saved account for this space could not be verified. Nothing was changed.", "Refresh spaces and try again, or keep the existing registration.");
+  const registration = () => {
+    try { return recoveryRegistration(idp, space); } catch { throw changed(); }
+  };
+  if (resolve(sessionDir) !== resolve(homeCotalDir())) throw changed();
+  const saved = registration();
+  if (!saved) throw changed();
+  const previous = loadIdpSession(sessionDir, idp);
+  if (previous?.sub && catalogAccountOwnerKey(idp, previous.sub) !== saved.owner) throw changed();
+  const candidate = await stageIdpSession({
+    dir: sessionDir, idpUrl: idp, clientId: req.clientId ?? DEFAULT_CLIENT_ID, signal: abort.signal,
+    onPrompt: p => req.onPrompt(id, {
+      verificationUri: p.verificationUri, verificationUriComplete: p.verificationUriComplete, userCode: p.userCode,
+      expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
+    }),
+  });
+  const audiences = typeof candidate.audience === "string" ? [candidate.audience] : candidate.audience;
+  if (catalogAccountOwnerKey(idp, candidate.sub) !== saved.owner)
+    throw localMigrationRefusal("A different account signed in. Nothing was changed.", "Try again with the account that owns the saved space, or keep the existing registration.");
+  if (candidate.issuer !== saved.issuer || !audiences?.includes(saved.audience)) throw changed();
+  const committed = commitStagedIdpSession(candidate, () => {
+    if (JSON.stringify(registration()) !== JSON.stringify(saved) || JSON.stringify(loadIdpSession(sessionDir, idp)) !== JSON.stringify(previous)) throw changed();
+  });
+  return { outcome: "signed-in", idp, sub: candidate.sub, ...(committed.label ? { label: committed.label } : {}) };
+}
 
 function translateMigrationError(e: unknown): unknown {
   if (e instanceof IdpLoginCancelled || e instanceof IdpUnreachableError || e instanceof IdpDeviceAuthorizationRefusedError || isCommandFailure(e)) return e;
@@ -160,6 +198,7 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
   const run = async (id: string, abort: AbortController, req: LoginStart): Promise<LoginResult> => {
     try {
       if (req.migrateFrom !== undefined) return await runEndorsedMigration(opts.sessionDir, id, abort, req);
+      if (req.recoverSpace !== undefined) return await runAccountRecovery(opts.sessionDir, id, abort, req);
       const r = await establish({
         dir: opts.sessionDir,
         idpUrl: req.idp,

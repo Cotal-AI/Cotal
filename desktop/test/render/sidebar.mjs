@@ -155,7 +155,7 @@ async function assertScrollAndReset(page, name) {
 }
 
 export function sidebarScenarios(fixtures) {
-  return states.flatMap(([state, stage]) => panes.map(([pane, titleSelector]) => {
+  const standard = states.flatMap(([state, stage]) => panes.map(([pane, titleSelector]) => {
     const original = fixtures.find(fixture => fixture.name === state);
     assert.ok(original, `missing Connection fixture: ${state}`);
     const name = `sidebar-${state}-${pane}`;
@@ -196,4 +196,39 @@ export function sidebarScenarios(fixtures) {
       },
     };
   }));
+  const conflict = fixtures.find(fixture => fixture.name === "space-conflict-endorsed-move");
+  assert.ok(conflict, "missing Connection conflict fixture");
+  return [...standard, ...[false, true].map(panel => ({
+    ...conflict, name: `sidebar-${panel ? "conflicts-panel" : "conflict-callout"}`,
+    async act(page) {
+      await conflict.act(page);
+      await page.locator("#space-conflicts-callout:visible").waitFor();
+      if (panel) await page.click("#open-conflicts");
+    },
+    async expect(page) {
+      const name = panel ? "Space conflicts panel" : "Connection with conflicts";
+      const card = page.locator(panel ? "#conflicts-panel" : "#connection-view");
+      const title = card.locator(panel ? "#conflicts-title" : "#connection-title");
+      assert.equal(await page.locator("#view-connection").getAttribute("aria-selected"), "true");
+      const titleY = await assertTopAligned(page, name, title);
+      await paneDescription(page, name, titleY);
+      await assertPaneReachable(page, name);
+      const viewport = page.viewportSize();
+      try {
+        await page.setViewportSize({ ...viewport, height: 200 });
+        const action = card.locator(panel ? "#conflicts-refresh" : "#connect");
+        await action.scrollIntoViewIfNeeded();
+        const reach = await action.evaluate(element => {
+          const main = element.closest("main");
+          const card = element.closest("#conflicts-panel, #connection-view");
+          const bounds = main.getBoundingClientRect(), target = element.getBoundingClientRect();
+          return { mainScrolled: main.scrollTop > 0, cardScroll: card.scrollTop,
+            cardOverflow: getComputedStyle(card).overflowY, visible: target.top >= bounds.top && target.bottom <= bounds.bottom };
+        });
+        assert.ok(reach.mainScrolled && reach.visible, `${name}: main scroll reaches the bottom action (${JSON.stringify(reach)})`);
+        assert.equal(reach.cardScroll, 0, `${name}: card does not scroll`);
+        assert.doesNotMatch(reach.cardOverflow, /^(auto|scroll)$/, `${name}: no nested scroller`);
+      } finally { await page.setViewportSize(viewport); }
+    },
+  }))];
 }

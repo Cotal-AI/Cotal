@@ -69,6 +69,7 @@ export {
   deviceLogin,
   establishIdpSession,
   stageIdpSession,
+  catalogAccountOwnerKey,
   commitStagedIdpSession,
   fetchStagedIdpSpaceCatalog,
   fetchIdpJwt,

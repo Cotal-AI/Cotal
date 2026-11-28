@@ -37,8 +37,10 @@ origin. Existing service sessions and native retirement or renewal records remai
 on their saved authority. Cancellation or failed identity checks do not replace
 registrations. If the approval code expires, retry `cotal login --migrate-from <old auth URL>`.
 Session and registry persistence are separate writes. In the desktop app, signing in at
-the new address when spaces are still registered under an endorsing previous address offers
-**Move to `<host>`** to run this same native migration in-app.
+the new address offers **Move to `<host>`** when the endorsing previous address still has a
+valid sign-in and matching saved registrations. If that sign-in expired, **Sign in to `<host>`**
+in Space conflicts lets you restore it with the saved account without changing the active provider
+or removing registrations.
 
 ## Sign in through a discovery name
 

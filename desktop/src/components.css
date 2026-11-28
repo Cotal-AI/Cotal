@@ -153,7 +153,6 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .conflict-callout { margin: 8px 0; padding: 10px 14px; }
 .conflict-callout h2 { font-size: 14px; margin: 0 0 2px; }
 .conflict-callout p { margin: 0 0 8px; }
-.connection-card:has(#space-conflicts-callout:not([hidden])) { max-height: calc(100vh - 150px); overflow-y: auto; }
 .conflict-callout .actions, .conflict-migration .actions { flex-wrap: wrap; gap: 12px; }
 .conflict-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
 .conflict-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
