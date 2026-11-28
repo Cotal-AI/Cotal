@@ -808,7 +808,10 @@ try {
       check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
       const retry = cli(second, "up", "--no-manager", "--json");
       check("an occupied broker-only background restart keeps --no-manager in its retry",
-        retry.status === 2 && retry.env?.error?.remedy === remedy.replace(` in ${realpathSync(second)};`, ` from ${realpathSync(second)};`), shown(retry));
+        retry.status === 2 && retry.env?.error?.remedy === remedy.replace(`\` in ${realpathSync(second)};`, ` --json\` from ${realpathSync(second)};`), shown(retry));
+      const policy = cli(second, "up", "--no-manager", "--max-payload", "2097152", "--json");
+      check("a blocked payload change calls for the original startup command", policy.status === 2 && policy.env?.error?.code === "CONFLICT" &&
+        policy.env.error.remedy?.includes("repeat your original startup command from the same folder with the same options") === true, shown(policy));
       const journalBefore = readStackJournal(second)?.sha256;
       const foreground = cli(second, "up", "--foreground", "--no-manager");
       const output = foreground.stdout + foreground.stderr;

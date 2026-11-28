@@ -182,6 +182,8 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** A complete, locally printable retry for an occupied recorded address, when available. */
+  retryAtRecordedAddress?(): string | undefined;
   /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
   retryAtAnotherAddress?(bindHost: string): Promise<string | undefined>;
   /** The root of the folder `up --root` was run from, when it is not this stack's root. */
@@ -752,6 +754,11 @@ export function bindReaches(host: string, server: string): boolean {
   }
 }
 
+function recordedAddressRemedy(request: StackUpRequest, freeAddress: string): string {
+  const retry = request.retryAtRecordedAddress?.() ?? "repeat your original startup command from the same folder with the same options";
+  return `${freeAddress}, then ${retry}; this stack keeps its recorded address`;
+}
+
 /** Refuse a busy broker address before launch. Only a recorded address held by TIME-WAIT gets a bounded retry. */
 async function assertStackBrokerAddress(request: StackUpRequest, root: string, space: string, server: string, bindHost: string | undefined, recorded: boolean): Promise<void> {
   const { host: dialHost, port } = brokerListenAddress(server);
@@ -780,7 +787,7 @@ async function assertStackBrokerAddress(request: StackUpRequest, root: string, s
     throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
       target: { root, space, server, bindError: bindError.code },
       remedy: recorded
-        ? `${frees}, then run ${codeSpan(`${displayCmd()} up${request.foreground ? " --foreground" : ""}${request.noManager ? " --no-manager" : ""}`)} from ${root}; this stack keeps its recorded address`
+        ? recordedAddressRemedy(request, frees)
         : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
     });
   }
@@ -1122,7 +1129,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
           ? `${retry !== undefined ? `${retry}, or ` : ""}${stopHolder} and retry this start`
-          : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
+          : recordedAddressRemedy(request, stopHolder),
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
