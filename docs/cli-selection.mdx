@@ -524,7 +524,7 @@ it starts nothing and does not check the broker, so a stopped or prepared space 
 the command that targets it reports that. Selecting the explicit selection again is a `no-op`; selecting an adopted selection promotes it to explicit. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
-while a space is selected. Bare `use` reports the selection and whether Cotal adopted it
+while a space is selected. Both the listing and the optional clear command keep the output format you requested. Bare `use` reports the selection and whether Cotal adopted it
 automatically. When the selection differs from the folder's space, `use` names both, even if
 the folder's space is prepared and has not started. With an explicit selection, the hint names
 `--space <name>` and `cotal use --clear`. In `use --json`, `folder` identifies the local folder's
