@@ -134,11 +134,12 @@ function checkHome(plan: Pick<DarwinSeatHostPlan, "cotalHome">, create = false):
   return join(daemon, "pty-host-launchd");
 }
 
-/** One permanent private inode per installation. Cooperative callers never unlink or replace it. */
+/** One permanent private inode per installation. Callers supply the receipt-verified home and
+ * logical install, not the retained LaunchAgent's ambient HOME. Never unlink or replace the lock. */
 export function holdDarwinSeatInstallationFence(scope: Omit<DarwinSeatHostScope, "space">): { release(): void } {
   const owner = uid(), state = requireDarwinSeatInstallationScope(scope);
   const actual = realpathSync.native(scope.cotalHome);
-  if (actual !== scope.cotalHome || actual !== realpathSync.native(homeCotalDir())) throw refusal();
+  if (actual !== scope.cotalHome) throw refusal();
   checkDir(actual, owner);
   const base = join(actual, "daemon");
   ensureDir(base, owner);

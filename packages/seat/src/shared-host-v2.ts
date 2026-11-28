@@ -16,6 +16,7 @@ interface SharedHostOptions<Claim extends ExactIdentity, Child extends ExactIden
   writer: SharedWriterProof<Claim, Peer>;
   records: HostRecords<Claim>;
   childIdentity?: CustodianIdentity<Child>;
+  holdLaunchLease?(): { release(): void };
   eligiblePayload(payload: SharedLaunchPayload): boolean;
   isolate(id: string, reservation: SeatReservation): SeatIsolation<Child>;
 }
@@ -90,7 +91,16 @@ export async function serveSharedHost<Claim extends ExactIdentity, Child extends
       return refuse();
     }
   };
-  const accept = createHostControl({ host, writer, closing: () => closing, authorized: () => records.readClaim(), acceptSeat: id => sessions.get(id), launch,
+  const launchWithLease: typeof launch = async (id, payload, authorize) => {
+    let lease: ReturnType<NonNullable<typeof options.holdLaunchLease>> | undefined;
+    try { lease = options.holdLaunchLease?.(); }
+    catch { return "unknown"; }
+    // Release after dispatch or rollback. If it was ambiguous, its reservation remains evidence.
+    try { return await launch(id, payload, authorize); }
+    finally { lease?.release(); }
+  };
+  const accept = createHostControl({ host, writer, closing: () => closing, authorized: () => records.readClaim(), acceptSeat: id => sessions.get(id),
+    launch: options.holdLaunchLease ? launchWithLease : launch,
     launchState: id => records.launchState(id),
   });
   process.on("uncaughtException", logFault);

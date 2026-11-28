@@ -2,7 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir } from "./endpoint.js";
-import { admitDarwinSeatHost, darwinSeatHostGenerationRoot, darwinSeatHostSocket, planRetainedDarwinSeatHost, type DarwinSeatHostScope } from "./seat-host-darwin.js";
+import { admitDarwinSeatHost, darwinSeatHostGenerationRoot, darwinSeatHostSocket, holdDarwinSeatInstallationFence, planRetainedDarwinSeatHost, type DarwinSeatHostScope } from "./seat-host-darwin.js";
 
 const entrySuffix = "dist/daemon/seat-host-entry-darwin.js";
 const entryPath = fileURLToPath(import.meta.url);
@@ -41,9 +41,9 @@ async function runHostEntry(): Promise<void> {
   const lineage = dirname(root);
   for (const dir of [dirname(lineage), lineage, root]) ensureDir(dir);
   const { serveDarwinSharedHost } = await import(seatEntry.href) as {
-    serveDarwinSharedHost(root: string, generation: string, scope: string, socket: string): Promise<void>;
+    serveDarwinSharedHost(root: string, generation: string, scope: string, socket: string, holdLaunchLease: () => { release(): void }): Promise<void>;
   };
-  await serveDarwinSharedHost(root, generation, plan.label, socket);
+  await serveDarwinSharedHost(root, generation, plan.label, socket, () => holdDarwinSeatInstallationFence(scope));
 }
 
 if (process.argv[1] === entryPath) void runHostEntry().catch(error => {

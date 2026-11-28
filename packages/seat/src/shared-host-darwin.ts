@@ -39,7 +39,9 @@ function publishHostRecord(path: string, host: unknown): void {
 }
 
 /** The private retained entry verifies the LaunchAgent and creates the private generation directory. */
-export async function serveDarwinSharedHost(root: string, generation: string, scope: string, socket: string): Promise<void> {
+export async function serveDarwinSharedHost(
+  root: string, generation: string, scope: string, socket: string, holdLaunchLease: () => { release(): void },
+): Promise<void> {
   const identity = darwinSharedIdentity.current();
   if (!identity || !validSharedGeneration(generation) || basename(root) !== generation ||
       !/^ai\.cotal\.pty\.[a-f0-9]{32}$/.test(scope) || basename(socket) !== `p-${scope.slice(-32)}.sock`)
@@ -69,7 +71,7 @@ export async function serveDarwinSharedHost(root: string, generation: string, sc
     };
     // Admission stays closed until the explicit stop and removal paths can prove parity.
     await serveSharedHost({ host, generation, socket, address: socket, transport: darwinHostTransport,
-      writer: darwinSharedIdentity, records, childIdentity: darwinCustodianIdentity(identity), eligiblePayload: () => false,
+      writer: darwinSharedIdentity, records, childIdentity: darwinCustodianIdentity(identity), holdLaunchLease, eligiblePayload: () => false,
       isolate: (_id, reservation) => darwinSeatIsolation(root, socket, observation => {
         if (observation.observedDetachedSurvivors !== undefined)
           reservation.appendLog?.(`observed detached PTY survivors: ${observation.observedDetachedSurvivors}\n`);
