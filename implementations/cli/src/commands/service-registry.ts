@@ -44,7 +44,10 @@ export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
 export function validateServiceArguments(args: ParsedArgs): void {
   const presentation = presentationOf(args.values);
   const [mode = "list", name, ...extra] = args.positionals;
-  if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
+  if (mode === "list" && name !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "service list takes no definition name", {
+    remedy: `cotal service list${targetWords({ space: args.values.space })}${presentation === "rich" ? "" : ` --${presentation}`}`, remedyIsCommand: true,
+  });
+  if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode !== "list" && mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
   if (name !== undefined) localRecordName(name);
   if (args.values.preset !== undefined) {
     if (mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--preset belongs to service add");

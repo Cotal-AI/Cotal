@@ -19,6 +19,7 @@ import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 import { openTelemetryIntake } from "./_telemetry-intake.js";
 
@@ -223,6 +224,12 @@ for (const level of ["regular", "minimal"]) {
       && event?.command === "help" && event.outcome === "refused" && event.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null
       && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
   }
+  const channels = ["fixture-news", "fixture-sales", "fixture-finance"];
+  const outside = await s.run(["spawn", "--dry-run", "--json", "--subscribe", channels[0]!, "--allow-subscribe", channels.slice(1).join(",")]);
+  const reported = outside.sent[0];
+  check("a rejected subscription shows the channels locally but sends only the reason",
+    outside.status === 1 && channels.every(name => outside.stdout.includes(name) && !JSON.stringify(outside.sent).includes(name)) &&
+    outside.sent.length === 1 && reported?.errorCode === "USAGE_INVALID" && reported.errorMessage === "subscription is not within allowSubscribe", shown(outside));
   const prompt = "private `prompt` text";
   const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
   await settled();
@@ -242,6 +249,14 @@ for (const level of ["regular", "minimal"]) {
   check(`a refused component target reports refused at ${level}`, r.status === 3 && /target\s+refused/.test(r.stdout) && events.length === 1 && event?.outcome === "refused" && event.exitCode === 3);
   check(`component facts stay local at ${level}`, !JSON.stringify(events).includes("missing-fixture-space") && (level === "regular"
     ? sameKeys(event, REGULAR) && event?.errorCode === null && event.errorMessage === null && event.errorStack === null : sameKeys(event, MINIMAL)));
+}
+
+{
+  const space = "private-project";
+  const failure = membershipConversionRefusal(space);
+  const text = telemetryErrorText("up", failure);
+  check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",
+    JSON.stringify(failure.target) === JSON.stringify({ space }) && text.message?.includes("legacy File-backed membership store") === true && !JSON.stringify(text).includes(space));
 }
 
 // Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.
