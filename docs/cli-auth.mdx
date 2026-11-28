@@ -30,7 +30,9 @@ The old issuer's root discovery document must endorse the new HTTPS origin with
 `nativeMigration: { version: 1, origin: "https://cotal.cloud" }`. The client reads
 complete pins from the new root and requests fresh device approval there. It checks
 the same issuer, subject, audience and catalog space identities before saving the
-new login and replacing registrations. It does not send the old bearer to the new
+new login and replacing registrations. Spaces already imported under the new address
+stay as they are, old-owned spaces move to the new address, and migration refuses
+when an old-owned space ID is missing or renamed. It does not send the old bearer to the new
 origin. Existing service sessions and native retirement or renewal records remain
 on their saved authority. Cancellation or failed identity checks do not replace
 registrations. If the approval code expires, retry `cotal login --migrate-from <old auth URL>`.
