@@ -15,6 +15,7 @@ import { launchUpdatePid } from "./update-launchd.js";
 
 const launchctl = "/bin/launchctl";
 const limit = 64 * 1024;
+export const darwinSeatHostInventoryLimit = 8;
 const digest = (data: string): string => createHash("sha256").update(data).digest("hex");
 const refusal = (): Error => new Error("could not verify the macOS PTY host job");
 
@@ -47,12 +48,16 @@ export interface DarwinSeatHostScope {
   space: string;
 }
 
-function hostLineage(scope: DarwinSeatHostScope): readonly [string, string, string] {
+export function requireDarwinSeatInstallationScope(scope: Omit<DarwinSeatHostScope, "space">): string {
   const state = scope.daemonHome ?? join(scope.cotalHome, "daemon");
   if (![scope.cotalHome, state, scope.installedRoot].every(canonical) ||
-      /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(scope.cotalHome) ||
-      !scope.space || /[\u0000-\u001f\u007f]/u.test(scope.space)) throw refusal();
-  return [state, scope.installedRoot, scope.space];
+      /(?:^|\/)Library\/LaunchAgents(?:\/|$)/i.test(scope.cotalHome)) throw refusal();
+  return state;
+}
+
+function hostLineage(scope: DarwinSeatHostScope): readonly [string, string, string] {
+  if (!scope.space || /[\u0000-\u001f\u007f]/u.test(scope.space)) throw refusal();
+  return [requireDarwinSeatInstallationScope(scope), scope.installedRoot, scope.space];
 }
 
 export function darwinSeatHostLineageRoot(scope: DarwinSeatHostScope): string {
@@ -139,13 +144,29 @@ function checkReceipt(plan: DarwinSeatHostPlan): void {
   assertSystemdSource(plan.source, plan.sha256, true);
 }
 
+export function readRetainedDarwinSeatHostPlan(cotalHome: string, label: string) {
+  if (!/^ai\.cotal\.pty\.[a-f0-9]{32}$/.test(label)) throw refusal();
+  const receipt = join(cotalHome, "daemon", "pty-host-launchd", `${label}.json`);
+  const row: unknown = JSON.parse(readLocalRecordSource(receipt, limit, true)?.toString("utf8") ?? "null");
+  if (!row || typeof row !== "object" || !("argv" in row)) throw refusal();
+  const { argv } = row;
+  if (!Array.isArray(argv) || ![6, 7].includes(argv.length) || argv.some(arg => typeof arg !== "string")) throw refusal();
+  const [, , home, installedRoot, space, generation, daemonHome] = argv as string[];
+  if (home !== cotalHome || !installedRoot || !space || !generation) throw refusal();
+  const scope = { cotalHome, installedRoot, space, ...(daemonHome === undefined ? {} : { daemonHome }) };
+  const plan = planRetainedDarwinSeatHost(scope, generation);
+  if (plan.label !== label) throw refusal();
+  checkReceipt(plan);
+  return { scope, generation, plan };
+}
+
 function observeJob(label: string): number | undefined {
   const list = nativeRun(launchctl, ["list"], undefined, 1500);
   if (list.status !== 0) throw refusal();
   return launchUpdatePid(list.stdout, label);
 }
 
-function requireOwnedDaemon(plan: DarwinSeatHostPlan): void {
+function requireOwnedDaemon(plan: Pick<DarwinSeatHostPlan, "cotalHome" | "daemonHome">): void {
   uid();
   if (plan.cotalHome !== realpathSync.native(homeCotalDir())) throw refusal();
   const home = plan.daemonHome;
@@ -154,6 +175,24 @@ function requireOwnedDaemon(plan: DarwinSeatHostPlan): void {
   if (daemonStartedByOwnedService(paths, home).state !== "owned" || observeJob(label) !== process.pid) throw refusal();
   const observed = darwinLaunchdJob(label);
   if (observed.state !== "loaded" || observed.job.label !== label || observed.job.pid !== process.pid) throw refusal();
+}
+
+/** Enumerate this GUI daemon's PTY jobs without treating a failed lookup as an empty list. */
+export function listOwnedDarwinSeatHostJobs(scope: Pick<DarwinSeatHostScope, "cotalHome" | "daemonHome">): ReadonlyMap<string, number> {
+  requireOwnedDaemon(scope);
+  const list = nativeRun(launchctl, ["list"], undefined, 1500);
+  const rows = list.stdout.trim().split(/\r?\n/);
+  if (list.status !== 0 || !/^PID\s+Status\s+Label$/.test(rows.shift() ?? "")) throw refusal();
+  const jobs = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.includes("ai.cotal.pty.")) continue;
+    const match = /^(\d+|-)\s+(-?\d+)\s+(ai\.cotal\.pty\.[a-f0-9]{32})$/.exec(row.trim());
+    if (!match || jobs.has(match[3]!) || jobs.size >= darwinSeatHostInventoryLimit) throw refusal();
+    const pid = match[1] === "-" ? 0 : Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid === 1 || (pid === 0 && match[1] !== "-")) throw refusal();
+    jobs.set(match[3]!, pid);
+  }
+  return jobs;
 }
 
 /** Only the installed daemon in the GUI domain can publish and bootstrap a new sibling. */
@@ -176,8 +215,7 @@ export function bootstrapDarwinSeatHost(plan: DarwinSeatHostPlan): void {
   if (nativeRun(launchctl, ["bootstrap", domain, plan.source], undefined, 5000).status !== 0) throw refusal();
 }
 
-function verifiedJobPid(plan: DarwinSeatHostPlan): number {
-  const pid = observeJob(plan.label);
+export function verifiedDarwinSeatHostJobPid(plan: DarwinSeatHostPlan, pid = observeJob(plan.label)): number {
   const detected = darwinLaunchdJob(plan.label);
   if (pid === undefined || pid <= 1 || detected.state !== "loaded" || detected.job.label !== plan.label ||
       detected.job.pid !== pid || detected.job.program !== plan.argv[0] ||
@@ -191,14 +229,14 @@ export function admitDarwinSeatHost(plan: DarwinSeatHostPlan): void {
   if (process.ppid !== 1 || process.argv.length !== plan.argv.length ||
       process.argv.some((arg, index) => arg !== plan.argv[index])) throw refusal();
   checkReceipt(plan);
-  if (verifiedJobPid(plan) !== process.pid) throw refusal();
+  if (verifiedDarwinSeatHostJobPid(plan) !== process.pid) throw refusal();
 }
 
 /** Inspect from the verified GUI daemon; the lookup is not an SSH cross-session proof. */
 export function readDarwinSeatHostLifetime(plan: DarwinSeatHostPlan): DarwinSeatHostLifetime {
   requireOwnedDaemon(plan);
   checkReceipt(plan);
-  const pid = verifiedJobPid(plan);
+  const pid = verifiedDarwinSeatHostJobPid(plan);
   const start = processStartTime(pid);
   if (!start) throw refusal();
   return { pid, start, boot: darwinBootSession() };
