@@ -51,7 +51,7 @@ if (process.platform === "linux") {
   const calls = join(root, "calls.jsonl");
   const contextFile = join(root, "context.json");
   for (const leaf of [join(root, "home"), cotal, config, join(root, "rt"), join(root, "native"), join(root, "state"), home, unitDir]) mkdirSync(leaf, { recursive: true, mode: 0o700 });
-  const unitBytes = "[Unit]\nDescription=Cotal daemon smoke\n[Service]\nEnvironment=PATH=\"/usr/bin\"\nExecStart=\"/usr/bin/true\"\n[Install]\nWantedBy=default.target\n";
+  const unitBytes = `[Unit]\nDescription=Cotal daemon smoke\n[Service]\nEnvironment=PATH="/usr/bin"\nExecStart=${[process.execPath, daemon, "daemon", "serve", "--daemon-home", home].map((part) => JSON.stringify(part)).join(" ")}\n[Install]\nWantedBy=default.target\n`;
   writeFileSync(unitPath, unitBytes, { mode: 0o600 });
   const receipt = {
     v: 1,
@@ -62,7 +62,9 @@ if (process.platform === "linux") {
     installedAt: "2026-01-01T00:00:00.000Z",
     daemonHome: home,
   };
-  writeFileSync(join(home, "service-unit.json"), `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+  const receiptPath = join(home, "service-unit.json");
+  const receiptBytes = `${JSON.stringify(receipt)}\n`;
+  writeFileSync(receiptPath, receiptBytes, { mode: 0o600 });
   const context = { home: join(root, "home"), config, calls, units: [unitName], unitFileState: "enabled" };
   writeFileSync(contextFile, `${JSON.stringify(context)}\n`, { mode: 0o600 });
   for (const tool of ["systemctl", "loginctl"]) writeFileSync(join(root, "native", tool), `#!${process.execPath}\n${fixture}`, { mode: 0o700 });
@@ -82,9 +84,12 @@ if (process.platform === "linux") {
     const doc = result.stdout ? JSON.parse(result.stdout) as { result?: { state?: string }; error?: { message?: string; remedy?: string } } : undefined;
     return { status: result.status, doc, stderr: result.stderr, error: result.error?.message };
   };
-  const before = operations().length;
   const dry = run("stop", ["--dry-run"]);
-  check("dry-run stop changes nothing", dry.status === 0 && dry.doc?.result?.state === "would-stop" && operations().length === before && existsSync(unitPath) && existsSync(join(home, "service-unit.json")), dry);
+  const dryReads = operations();
+  check("dry-run stop validates the installation without changing it", dry.status === 0 && dry.doc?.result?.state === "would-stop"
+    && dryReads.join(",") === "directory-read" && readFileSync(unitPath, "utf8") === unitBytes
+    && readFileSync(receiptPath, "utf8") === receiptBytes, { ...dry, dryReads });
+  const before = dryReads.length;
   const stopped = run("stop", ["--yes"]);
   const stoppedOps = operations().slice(before);
   check("stop disables automatic start and then stops", stopped.status === 0 && stopped.doc?.result?.state === "stopped"
