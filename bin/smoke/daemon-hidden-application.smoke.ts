@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { spaceSegment } from "@cotal-ai/workspace";
+import { resolveHarness } from "../../implementations/manager/src/harness-resolution.js";
 import { cachedDaemonStatus } from "../daemon/client.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { refreshedDaemonPath } from "../daemon/install.js";
@@ -65,8 +66,23 @@ try {
     applicationsHiddenByReport(available).length === 0);
   const unit = `[Service]\nEnvironment=PATH="/usr/bin:/bin"\nExecStart="/bin/true"\n`;
   const refreshed = refreshedDaemonPath("systemd-user", unit, `${bin}:/usr/bin:/bin`);
-  check("the unit repair adds this shell's folder and does not itself clear the report",
-    refreshed?.includes(bin) === true && applicationsHiddenByReport(signedIn).join() === "aa");
+  const repaired = /Environment=PATH="((?:\\.|[^"\\])*)"/.exec(refreshed ?? "")?.[1]?.replace(/\\([\\"])/g, "$1");
+  const savedPath = process.env.PATH;
+  process.env.PATH = repaired;
+  const seen = resolveHarness("aa", ["aa-bin"]);
+  process.env.PATH = savedPath;
+  const afterRepair = { ...signedIn, managers: [{ connectors: [{ agent: "aa", state: seen.reason ? "unavailable" : "available", reason: seen.reason }] }] };
+  check("the unit repair adds this shell's folder, and the sentence is gone once the service reports that PATH",
+    repaired?.split(":").includes(bin) === true && seen.reason === undefined && applicationsHiddenByReport(afterRepair).length === 0);
+  const already = `[Service]\nEnvironment=PATH="${bin}:/usr/bin:/bin"\nExecStart="/bin/true"\n`;
+  const kept = refreshedDaemonPath("systemd-user", already, `${bin}:/usr/bin:/bin`);
+  const keptPath = /Environment=PATH="((?:\\.|[^"\\])*)"/.exec(kept ?? "")?.[1]?.replace(/\\([\\"])/g, "$1");
+  process.env.PATH = keptPath;
+  const alreadySeen = resolveHarness("aa", ["aa-bin"]);
+  process.env.PATH = savedPath;
+  const alreadyReported = { ...signedIn, managers: [{ connectors: [{ agent: "aa", state: alreadySeen.reason ? "unavailable" : "available", reason: alreadySeen.reason }] }] };
+  check("a unit that already gives the service the folder is not reported missing",
+    keptPath?.split(":").includes(bin) === true && alreadySeen.reason === undefined && applicationsHiddenByReport(alreadyReported).length === 0);
 } finally {
   await daemon.close();
   process.env.PATH = previousPath;
