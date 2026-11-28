@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
 import type { Socket } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { assertSystemdSource, createSystemdSource } from "@cotal-ai/cli";
 import { writeSecretFileCreateOnly } from "@cotal-ai/core";
-import { darwinBootSession, darwinLaunchdJob, darwinUserCacheDir, localPeerCredentials, processStartTime } from "@cotal-ai/seat";
+import { darwinBootSession, darwinLaunchdJob, darwinUserCacheDir, localPeerCredentials, lockExclusiveNb, processStartTime } from "@cotal-ai/seat";
 import { homeCotalDir, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSocketPathFits, checkDir, daemonPaths, daemonPathsFor, ensureDir } from "./endpoint.js";
 import { launchAgentLabel } from "./install-darwin.js";
@@ -22,6 +22,7 @@ const refusal = (): Error => new Error("could not verify the macOS PTY host job"
 interface DarwinSeatHostPlan {
   readonly cotalHome: string;
   readonly daemonHome?: string;
+  readonly installedRoot: string;
   readonly id: string;
   readonly label: string;
   readonly source: string;
@@ -89,7 +90,7 @@ export function planDarwinSeatHost(input: DarwinSeatHostScope & {
     '</dict></plist>', '',
   ].join("\n");
   if (Buffer.byteLength(bytes) > limit) throw refusal();
-  return { cotalHome, ...(daemonHome === undefined ? {} : { daemonHome }), id, label, source,
+  return { cotalHome, installedRoot: input.installedRoot, ...(daemonHome === undefined ? {} : { daemonHome }), id, label, source,
     receipt: join(directory, `${label}.json`), sha256: digest(bytes), argv: [...argv], bytes };
 }
 
@@ -123,7 +124,7 @@ export function darwinSeatHostSocket(id: string): string {
   return path;
 }
 
-function checkHome(plan: DarwinSeatHostPlan, create = false): string {
+function checkHome(plan: Pick<DarwinSeatHostPlan, "cotalHome">, create = false): string {
   const actual = realpathSync.native(plan.cotalHome);
   if (plan.cotalHome !== actual || (create && actual !== realpathSync.native(homeCotalDir()))) throw refusal();
   checkDir(actual);
@@ -131,6 +132,32 @@ function checkHome(plan: DarwinSeatHostPlan, create = false): string {
   if (create) ensureDir(daemon);
   else checkDir(daemon);
   return join(daemon, "pty-host-launchd");
+}
+
+/** One permanent private inode per installation. Cooperative callers never unlink or replace it. */
+export function holdDarwinSeatInstallationFence(scope: Omit<DarwinSeatHostScope, "space">): { release(): void } {
+  const owner = uid(), state = requireDarwinSeatInstallationScope(scope);
+  const actual = realpathSync.native(scope.cotalHome);
+  if (actual !== scope.cotalHome || actual !== realpathSync.native(homeCotalDir())) throw refusal();
+  checkDir(actual, owner);
+  const base = join(actual, "daemon");
+  ensureDir(base, owner);
+  const directory = join(base, "pty-host-launch-fences");
+  ensureDir(directory, owner);
+  if (realpathSync.native(directory) !== directory) throw refusal();
+  const name = digest(JSON.stringify([state, scope.installedRoot]));
+  const path = join(directory, `${name}.lock`);
+  const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  try {
+    const held = fstatSync(fd, { bigint: true });
+    if (!held.isFile() || held.uid !== BigInt(owner) || (held.mode & 0o777n) !== 0o600n || held.nlink !== 1n ||
+        !lockExclusiveNb(fd)) throw refusal();
+    const current = lstatSync(path, { bigint: true });
+    if (current.dev !== held.dev || current.ino !== held.ino || current.uid !== held.uid || current.mode !== held.mode || current.nlink !== 1n)
+      throw refusal();
+  } catch (error) { closeSync(fd); throw error; }
+  let released = false;
+  return { release() { if (!released) { released = true; closeSync(fd); } } };
 }
 
 function receiptBytes(plan: DarwinSeatHostPlan): string {
@@ -198,6 +225,12 @@ export function listOwnedDarwinSeatHostJobs(scope: Pick<DarwinSeatHostScope, "co
 /** Only the installed daemon in the GUI domain can publish and bootstrap a new sibling. */
 export function bootstrapDarwinSeatHost(plan: DarwinSeatHostPlan): void {
   requireOwnedDaemon(plan);
+  const fence = holdDarwinSeatInstallationFence(plan);
+  try { bootstrapFencedDarwinSeatHost(plan); }
+  finally { fence.release(); }
+}
+
+function bootstrapFencedDarwinSeatHost(plan: DarwinSeatHostPlan): void {
   const domain = `gui/${uid()}`;
   if (nativeRun(launchctl, ["print", `${domain}/${plan.label}`], undefined, 1500).status !== 113 ||
       observeJob(plan.label) !== undefined || darwinLaunchdJob(plan.label).state !== "absent") throw refusal();
