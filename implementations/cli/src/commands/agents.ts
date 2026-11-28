@@ -27,6 +27,7 @@ import {
   projectRootProblem,
   resolveSeatControlTarget,
   targetFlags,
+  windowsShellWord,
   writeResult,
   type Block,
   type ConnectFlags,
@@ -495,13 +496,16 @@ type ResolvedAuthRemedyTarget = AuthRemedyTarget & { resolvedSpace: string };
 /** Keep the bearer reason as data. Only the reader knows the launcher and how it reached the manager. */
 function authRemedy(row: AgentRow, target: ResolvedAuthRemedyTarget | undefined, manager: string | undefined): Block[] {
   if (row.authHealth !== "auth-renewal-failed" || !target || !manager) return [];
-  const diagnosis = /^agent-bearer: exchange refused: agent "([A-Za-z0-9_]+)": spawner "([A-Za-z0-9_]+)\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted\. Renewal requires that spawner's grant in space /.exec(row.authReason ?? "");
+  const diagnosis = /^agent-bearer: exchange refused: agent "([A-Za-z0-9_]+)": spawner "[A-Za-z0-9_]+\.[A-Za-z0-9_]+"(?: \(an ancestor\))? is no longer granted\. Renewal requires that spawner's grant in space /.exec(row.authReason ?? "");
+  const principal = /^[A-Za-z0-9_]+\.([A-Za-z0-9_]+)$/.exec(row.id);
   if (!diagnosis || row.authReason !== `${diagnosis[0]}${JSON.stringify(target.resolvedSpace)}.` ||
-      row.id !== `${diagnosis[2]}.${diagnosis[1]}` || !/^[A-Za-z0-9_]+$/.test(row.name)) return [];
+      principal?.[1] !== diagnosis[1] || !/^[A-Za-z0-9_]+$/.test(row.name)) return [];
   try { assertLifecycleToken(manager, "instanceId"); } catch { return []; }
+  const targetArgs = recoveryTargetWords(target);
+  if (targetArgs === undefined) return [];
   const persona = diagnosis[1]!;
   const launcher = displayCmd();
-  const at = ` --on ${manager}${targetWords(target)}`;
+  const at = ` --on ${manager}${targetArgs}`;
   return [
     { kind: "lines", lines: ["While this refusal persists, the seat retries every two to four minutes and can reconnect if the grant returns.",
       `If the saved persona is named ${persona}, use an unused name in place of NEW_NAME to start a replacement.`] },
@@ -509,6 +513,19 @@ function authRemedy(row: AgentRow, target: ResolvedAuthRemedyTarget | undefined,
     { kind: "lines", lines: ["Once the replacement is up, stop the old seat so it stops retrying."] },
     { kind: "commands", items: [{ command: `${launcher} stop ${row.name}${at}`, description: "" }] },
   ];
+}
+
+function recoveryTargetWords(target: AuthRemedyTarget): string | undefined {
+  if (process.platform !== "win32") return targetWords(target);
+  let args = "";
+  for (const flag of ["space", "server"] as const) {
+    const value = target[flag];
+    if (value === undefined) continue;
+    const word = windowsShellWord(value);
+    if (word === undefined) return undefined;
+    args += ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+  }
+  return args;
 }
 
 /** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. */
@@ -530,7 +547,7 @@ function seatBlocks(rows: readonly AgentRow[], wide: boolean, target?: ResolvedA
       }];
   for (const row of rows) if (row.authHealth && row.authReason) {
     blocks.push({ kind: "lines", lines: [{ text: `${psSeatLabel(row)}: ${row.authReason}`, tone: authTone(row) }] });
-    blocks.push(...authRemedy(row, target, manager));
+    blocks.push(...authRemedy(row, target, manager ?? row.instanceId));
   }
   const joins = rows.filter((r) => r.joinHealth).map((r): Cell => ({ text: `${psSeatLabel(r)}: ${r.joinHealth!.reason}`, tone: "failed" }));
   if (joins.length) blocks.push({ kind: "lines", lines: joins });

@@ -6,7 +6,7 @@
  * Run: pnpm smoke:native-conversation-capabilities   (needs nats-server + node on PATH)
  */
 import assert from "node:assert/strict";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const subcommand = process.argv[2] ?? "";
@@ -83,10 +83,21 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
   const servers = `nats://127.0.0.1:${port}`;
   const stateDir = userAuthStateDir(root, space);
   const store = workspaceSecretStore(root);
-  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
+  const human = "isolated-human-session", subject = "capabilities-fixture-human";
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const jwks = JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "fixture", alg: "EdDSA" }] });
+  const idp = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/auth/jwks") { res.end(jwks); return; }
+    if (req.url !== "/auth/token" || req.headers.authorization !== `Bearer ${human}`) { res.writeHead(401).end("{}"); return; }
+    const now = Math.floor(Date.now() / 1000);
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const claims = `${encode({ alg: "EdDSA", kid: "fixture" })}.${encode({ iss: origin, aud: origin, sub: subject, iat: now, exp: now + 600 })}`;
+    res.end(JSON.stringify({ token: `${claims}.${sign(null, Buffer.from(claims), privateKey).toString("base64url")}` }));
+  });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
-  const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
+  const origin = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}`;
+  const idpUrl = `${origin}/auth`;
   let broker: import("node:child_process").ChildProcess | undefined;
   let authService: import("node:child_process").ChildProcess | undefined;
   let releaseBroker: (() => void) | undefined;
@@ -176,7 +187,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     await until(async () => broker!.exitCode === null && await isReachable(servers), "owned user-auth broker did not bind");
     await setupSpaceStreams({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner") });
     recordMesh({ space, server: servers, root, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
-    saveIdpSession(home, idpUrl, { token: "isolated-human-session", sub: "capabilities-fixture-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
+    saveIdpSession(home, idpUrl, { token: human, sub: subject, expiresAt: Math.floor(Date.now() / 1000) + 600 });
     const owner = await cotalAuthProvider.ownerForLogin({ store, dir: stateDir, space });
     grantActor(stateDir, { owner, actor: "cli", scope: ["spawn", "run", "role:helper"], allowSubscribe: ["team.>"],
       allowPublish: ["team.alpha", `events.${owner}.>`], label: "isolated fixture operator" });
@@ -202,7 +213,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     await manager.start();
     check("a real user-auth broker, auth service, delivery daemon and Manager are live", authService.exitCode === null && broker.exitCode === null);
 
-    authority = await startApprovalAuthority({ home, human: "isolated-human-session" });
+    authority = await startApprovalAuthority({ home, human });
     childEnv.NODE_EXTRA_CA_CERTS = authority.caFile;
     const provisioner = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false,
       registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "approval-provisioner", kind: "endpoint" } });
