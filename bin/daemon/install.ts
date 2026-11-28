@@ -401,11 +401,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined,
   if (process.platform === "linux" && !existsSync(paths.state)) planInstall(paths, daemonHome);
   mkSecretDir(paths.state);
   const lock = acquireLock(join(paths.state, "service-repair.lock"));
-  try {
-    // A stop from before this install must not outlive it. The next outage would otherwise say the person stopped a service they just installed.
-    clearPersonStop(paths);
-    return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries);
-  }
+  try { return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries); }
   finally { lock.release(); }
 }
 
@@ -418,6 +414,7 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
     service.publish(plan);
     writeReceipt(paths, { v: 1, mechanism: plan.mechanism, unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     service.register(plan);
+    clearPersonStop(paths);
     const { mechanism, unit, unitPath, sha256, user, restart, wantedBy } = plan;
     return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted, state: "installed" };
   }
@@ -430,6 +427,7 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
     mkSecretDir(paths.state);
     writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     submitSystemdUnitControl("start", plan.unit);
+    clearPersonStop(paths);
     return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
   }
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
@@ -452,6 +450,7 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);
+  clearPersonStop(paths);
   return { ...plan, lingerEnabled: true, ...omitted, state: "installed" };
 }
 
@@ -576,30 +575,43 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon.
  *  `resume` turns automatic start back on. `cotal daemon start`, setup and the app's Start pass it,
  *  so a service the person stopped starts again and stays set to start on its own. */
-export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void, resume = false): Promise<UninstallPlan> {
+export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void, resume = false, probe?: { service?: NativeService; windowsFailure?: unknown; enabled?: () => boolean }): Promise<UninstallPlan> {
   const lock = process.platform === "darwin" || process.platform === "linux" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
   try {
   assertDesktopSetupComplete();
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || probe?.windowsFailure !== undefined || probe?.enabled) {
     try {
+      if (probe?.windowsFailure !== undefined) throw probe.windowsFailure;
       const started = await restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true, undefined, resume);
       if (resume) clearPersonStop(paths);
       return started;
     } catch (error) {
-      // Only a confirmed enable means automatic start is on. A refusal before that leaves the marker.
+      // The sentence follows the task. An enabled task says automatic start is on. A disabled task does not.
       let automaticOn = false;
+      let readable = false;
       if (resume) {
         try {
-          const current = recordedUnit(paths, daemonHome);
-          const task = scheduledTaskService(nativeRun);
-          automaticOn = task.isEnabled?.(current.receipt) === true;
-        } catch { automaticOn = false; }
+          if (probe?.enabled) automaticOn = probe.enabled();
+          else {
+            const current = recordedUnit(paths, daemonHome);
+            const task = scheduledTaskService(nativeRun);
+            automaticOn = task.isEnabled?.(current.receipt) === true;
+          }
+          readable = true;
+        } catch { readable = false; }
       }
       if (automaticOn) clearPersonStop(paths);
-      throw resumeStartFailed(error, automaticOn);
+      const message = error instanceof CommandFailure ? error.message : error instanceof Error ? error.message : String(error);
+      const outcome = readable
+        ? (automaticOn ? `${message} Automatic start is on again, and the service did not start. Run \`cotal daemon start\` again.` : `${message} Automatic start is still off.`)
+        : message;
+      if (error instanceof CommandFailure) throw new CommandFailure(error.outcome, error.code, outcome, { remedy: error.remedy, native: error.native, cause: error });
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", outcome, { cause: error });
     }
   }
-  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+  const recorded = recordedUnit(paths, daemonHome);
+  const { receipt, plan } = recorded;
+  const service = probe?.service ?? recorded.service;
   let automaticOn = false;
   if (!service && resume && process.platform === "linux") {
     const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
@@ -612,9 +624,13 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   try {
     if (service) service.start(receipt, resume);
     else submitSystemdUnitControl("start", plan.unit);
-    if (service && resume) automaticOn = service.isEnabled?.(receipt) === true;
+    if (service && resume) {
+      try { automaticOn = service.isEnabled?.(receipt) === true; }
+      catch (error) { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the service started, but automatic start could not be read", { cause: error }); }
+    }
     if (service && resume && !automaticOn) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the service started, but automatic start was not confirmed on");
   } catch (error) {
+    if (error instanceof CommandFailure && error.message === "the service started, but automatic start could not be read") throw error;
     if (service && resume && service.isEnabled) {
       try { automaticOn = service.isEnabled(receipt) === true; } catch { automaticOn = false; }
     }
@@ -665,13 +681,13 @@ async function requestDaemonStop(paths: DaemonPaths): Promise<void> {
   }
   socket.on("error", () => {});
   try { await requestInstalledDaemon(socket, "daemon-stop"); }
-  catch (error) { if (processBirth(owner.pid) === owner.start) { socket.destroy(); throw error; } }
+  catch (error) { if (processBirth(owner.pid) === owner.start) { socket.destroy(); throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the background service could not be asked to exit, so it was not stopped", { native: { code: "STOP_NOT_SENT" }, cause: error }); } }
   if (processBirth(owner.pid) === owner.start) {
     try { await requestInstalledDaemon(socket, "daemon-stop", true); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       const ended = error instanceof Error && error.message === "daemon closed the connection without a reply";
-      if (code !== "EPIPE" && code !== "ECONNRESET" && !ended && processBirth(owner.pid) === owner.start) { socket.destroy(); throw error; }
+      if (code !== "EPIPE" && code !== "ECONNRESET" && !ended && processBirth(owner.pid) === owner.start) { socket.destroy(); throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the daemon accepted the stop but the commit failed; automatic start is already off. Run `cotal daemon stop` again.", { cause: error }); }
     }
   }
   socket.destroy();
@@ -690,16 +706,18 @@ async function requestDaemonStop(paths: DaemonPaths): Promise<void> {
  *  and so do the sign-in and the spaces. `cotal daemon start` turns automatic start back on.
  *  `confirm` runs under the stop lock and returns the live list. A live list that differs from
  *  the one the person confirmed is not stopped. */
-export async function stopInstalled(paths: DaemonPaths, daemonHome: string | undefined, expected: readonly string[] = [], confirm?: () => Promise<readonly string[] | undefined>): Promise<UninstallPlan & { readonly agents: readonly string[] }> {
+export async function stopInstalled(paths: DaemonPaths, daemonHome: string | undefined, expected: readonly string[] = [], confirm?: () => Promise<readonly string[] | undefined>, serviceOverride?: NativeService): Promise<UninstallPlan & { readonly agents: readonly string[] }> {
   const lock = await acquireLockAsync(join(paths.state, "service-repair.lock"));
   try {
     const agents = confirm ? await confirm() ?? undefined : expected;
     if (agents === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped");
     const same = agents.length === expected.length && agents.every((name, index) => name === expected[index]);
     if (!same) throw new CommandFailure("refused", "CONFLICT", `the running agents changed to: ${agents.length ? agents.join(", ") : "none"}. Nothing was stopped`, { remedy: "run the stop again so it names the current agents", native: { code: "AGENTS_CHANGED", detail: { agents: [...agents] } } });
-    const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+    const recorded = recordedUnit(paths, daemonHome);
+    const { receipt, plan } = recorded;
+    const service = serviceOverride ?? recorded.service;
     if (service?.prepareStop) await Promise.resolve(service.prepareStop(receipt));
-    if (service && process.platform === "win32") {
+    if (service?.prepareStop && service.finishStop) {
       try { await requestDaemonStop(paths); }
       catch (error) {
         const notSent = error instanceof CommandFailure && error.native?.code === "STOP_NOT_SENT";
