@@ -5,6 +5,7 @@ import { capabilityToken, isSeatId } from "./record.js";
 import { validSharedGeneration } from "./shared-controller-claim.js";
 import { darwinHostTransport } from "./shared-control-darwin.js";
 import { darwinSharedIdentity, type DarwinSharedIdentity } from "./shared-identity-darwin.js";
+import { darwinCustodianIdentity, darwinSeatIsolation } from "./shared-lifetime-darwin.js";
 import { serveSharedHost } from "./shared-host-v2.js";
 import type { HostRecords } from "./shared-platform.js";
 import { readPrivateRecord, sharedControllerClaim, sharedHostRecord, sharedSeatRecord, SHARED_MULTIPLEX_VERSION, writePrivateRecord } from "./shared-record.js";
@@ -66,10 +67,13 @@ export async function serveDarwinSharedHost(root: string, generation: string, sc
         if (JSON.stringify(readPrivateRecord(path, 1024)) === JSON.stringify(host)) unlinkSync(path);
       },
     };
-    // No payload can acquire a reservation until Darwin supplies a prepared child and exact drain proof.
+    // Admission stays closed until the explicit stop and removal paths can prove parity.
     await serveSharedHost({ host, generation, socket, address: socket, transport: darwinHostTransport,
-      writer: darwinSharedIdentity, records, eligiblePayload: () => false,
-      isolate() { throw new Error("Darwin PTY isolation is unavailable"); },
+      writer: darwinSharedIdentity, records, childIdentity: darwinCustodianIdentity(identity), eligiblePayload: () => false,
+      isolate: (_id, reservation) => darwinSeatIsolation(root, socket, observation => {
+        if (observation.observedDetachedSurvivors !== undefined)
+          reservation.appendLog?.(`observed detached PTY survivors: ${observation.observedDetachedSurvivors}\n`);
+      }),
     });
   } finally { closeSync(fd); }
 }
