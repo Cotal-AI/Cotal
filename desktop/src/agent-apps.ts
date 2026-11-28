@@ -3,7 +3,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { DaemonRefusal, requireResult, type Frame } from "./model";
 import { icon } from "./icons";
-import { appManagementMessages, appManagementRefusals, installedMessage, orderedApps, parseApps, refusalDetail, refusalMessage, rowView, signInUrl, unknownAppChange, type Activity, type AgentApp, type AppManagement, type RowView, type ServiceRefresh } from "./agent-apps-model";
+import { appManagementMessages, appManagementRefusals, installedMessage, orderedApps, otherCopyMessage, parseApps, refusalDetail, refusalMessage, rowView, serviceOwnerOf, signInUrl, unknownAppChange, type Activity, type AgentApp, type AppManagement, type RowView, type ServiceOwner, type ServiceRefresh } from "./agent-apps-model";
 import claudeLogo from "../../assets/agents/claude-code.svg";
 import codexLogo from "../../assets/agents/codex.svg";
 import opencodeLogo from "../../assets/agents/opencode.svg";
@@ -28,7 +28,7 @@ function logo(name: string): HTMLElement {
   return box;
 }
 
-export interface AppResult { app?: AgentApp; apps?: AgentApp[]; management?: AppManagement; serviceRefresh?: ServiceRefresh; pathAdded?: string }
+export interface AppResult { app?: AgentApp; apps?: AgentApp[]; management?: AppManagement; serviceOwner?: ServiceOwner; serviceRefresh?: ServiceRefresh; pathAdded?: string }
 
 /** One bridge request; progress lines arrive through `onLine`. */
 export async function appRequest(request: { op: "agent-apps"; refresh?: boolean } | { op: "agent-app-install" | "agent-app-sign-in"; name: string }, onLine?: (line: string) => void): Promise<AppResult> {
@@ -38,7 +38,7 @@ export async function appRequest(request: { op: "agent-apps"; refresh?: boolean 
   if (request.op === "agent-apps" && result.management !== "local" && result.management !== "service" && (typeof result.management !== "string" || !Object.hasOwn(appManagementMessages, result.management))) {
     throw new Error("Cotal could not confirm how this copy can manage agent apps.");
   }
-  return { ...result, ...(Array.isArray(result.apps) ? { apps: parseApps(result) } : {}), ...(result.app ? { app: parseApps({ apps: [result.app] })[0] } : {}) } as AppResult;
+  return { ...result, serviceOwner: serviceOwnerOf(result.serviceOwner), ...(Array.isArray(result.apps) ? { apps: parseApps(result) } : {}), ...(result.app ? { app: parseApps({ apps: [result.app] })[0] } : {}) } as AppResult;
 }
 
 /** Render one row into `row`, reusing its nodes so a progress line does not rebuild it. */
@@ -109,13 +109,17 @@ export interface AgentAppsHost {
 export class AgentApps {
   apps: AgentApp[] | undefined;
   management: AppResult["management"];
+  private serviceOwner: ServiceOwner | undefined;
+  private installedBeforeOwnerChanged: string | undefined;
   get readOnly(): boolean { return this.unknownChange || !!this.error || this.management !== undefined && this.management !== "local" && this.management !== "service"; }
   get showCheckAgain(): boolean { return this.unknownChange || !!this.error || !this.readOnly || this.management === "no-user-services"; }
   get showFixConnection(): boolean { return this.readOnly && !this.showCheckAgain && this.management !== "checking"; }
   get retryOwnerCheck(): boolean { return !this.unknownChange && !this.error && this.management === "checking"; }
   get ownerMessage(): string {
     const management = this.management;
-    return !this.error && !this.unknownChange && management && management !== "local" && management !== "service" ? appManagementMessages[management] : "";
+    if (this.error || this.unknownChange) return "";
+    if (management === "other-copy" && this.serviceOwner) return otherCopyMessage(this.serviceOwner, this.installedBeforeOwnerChanged);
+    return management && management !== "local" && management !== "service" ? appManagementMessages[management] : "";
   }
   private unknownChange = false;
   private error: string | undefined;
@@ -150,6 +154,8 @@ export class AgentApps {
         const result = await appRequest({ op: "agent-apps", ...(!observeOnly && (refresh || this.waitingForAgents) ? { refresh: true } : {}) });
         this.apps = orderedApps(result.apps ?? []); this.error = undefined;
         this.management = result.management;
+        this.serviceOwner = result.serviceOwner;
+        if (this.management !== "other-copy") this.installedBeforeOwnerChanged = undefined;
         if (observeOnly) { this.unknownChange = false; this.message = ""; }
         if (this.readOnly) {
           if (this.servicePending) this.message = "";
@@ -186,7 +192,10 @@ export class AgentApps {
     if (!(error instanceof DaemonRefusal)) return false;
     const management = error.native ? appManagementRefusals[error.native] : undefined;
     if (error.code === "OPERATION_UNKNOWN") this.unknownChange = true;
-    else if (management) this.management = management;
+    else if (management) {
+      this.management = management;
+      this.serviceOwner = management === "other-copy" ? serviceOwnerOf(error.detail?.owner) : undefined;
+    }
     else return false;
     this.activity.delete(name);
     this.message = this.unknownChange ? unknownAppChange : "";
@@ -204,6 +213,14 @@ export class AgentApps {
       const result = await appRequest({ op: "agent-app-install", name }, this.progress(name, "installing"));
       this.activity.delete(name);
       if (result.app) this.replace(result.app);
+      if (result.serviceOwner) {
+        this.management = "other-copy";
+        this.serviceOwner = result.serviceOwner;
+        this.installedBeforeOwnerChanged = title;
+        this.servicePending = this.waitingForAgents = false;
+        this.host.announce(this.ownerMessage);
+        return;
+      }
       this.servicePending = result.serviceRefresh?.state === "pending";
       this.waitingForAgents = result.serviceRefresh?.state === "pending" && result.serviceRefresh.reason === "agents-running";
       this.message = installedMessage(title, result);
@@ -244,6 +261,7 @@ export class AgentApps {
     const text = this.error ?? this.message;
     if (message.textContent !== text) message.textContent = text;
     message.classList.toggle("error", !!this.error);
+    message.classList.toggle("warning", !this.error && this.servicePending && !this.waitingForAgents && !!text);
     refresh.disabled = this.busy || !!this.loading;
     refresh.hidden = !this.showCheckAgain;
     if (!this.apps) { if (!list.children.length) list.replaceChildren(); return; }

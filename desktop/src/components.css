@@ -107,6 +107,7 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 /* Agent apps */
 .apps-message { color: var(--green); }
 .apps-message:empty { display: none; }
+.apps-message.warning { color: var(--amber); }
 .app-list { list-style: none; margin: 0; padding: 0; }
 .app-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: start; gap: 8px; min-height: 44px; padding: 8px 12px; }
 .app-logo { display: grid; place-items: center; flex: none; overflow: hidden; background: var(--card); border: 1px solid var(--rule); font-weight: 700; }

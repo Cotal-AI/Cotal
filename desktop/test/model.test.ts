@@ -58,6 +58,8 @@ test("approval guidance refers to this computer", () => {
 test("launch readiness requires an answering registered Manager with an available application", () => {
   for (const manager of [undefined, {}, { state: "answering" }, { state: "restarting", instanceId: "m", connectors: [{ state: "available" }] }, { state: "answering", instanceId: "m", connectors: [{ state: "unavailable" }] }]) assert.equal(launchReady(manager), false);
   assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }] }), true);
+  // A Manager that lost its connection still answers its daemon, but nothing can launch through it.
+  assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }], connection: { state: "offline", reason: "this computer cannot look up cotal.cloud (ENOTFOUND)" } }), false);
   assert.equal(connectionView("launch-ready").title, "This computer is connected");
   assert.equal(machinesUrl("https://cloud.cotal.ai/api/auth", "sp_636f74616c5f636c6f7564", "manager&exact"), "https://cloud.cotal.ai/machines?space=sp_636f74616c5f636c6f7564&machine=manager%26exact");
 });
@@ -111,6 +113,15 @@ test("onboarding boundaries survive special-scheme normalization", () => {
   ]) assert.throws(() => onboardingLink(value), Error, value);
 });
 
+test("the version mismatch says what happened, what the button does and what it costs", () => {
+  assert.deepEqual(refusalView("VERSION_MISMATCH"), {
+    title: "Cotal was updated",
+    description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.",
+    action: "connect",
+    label: "Restart background service",
+  });
+});
+
 test("expired credentials and pending approval refusals map to their recovery actions", () => {
   assert.deepEqual(refusalView("CREDENTIAL_EXPIRED"), {
     title: "Sign in again",
@@ -132,9 +143,21 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
   assert.deepEqual(refusalView("UNREACHABLE"), {
     title: "We cannot reach your connection",
-    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
     action: "refresh",
     label: "Try again",
+  });
+  assert.deepEqual(refusalView("OFFLINE"), {
+    title: "No internet connection",
+    description: "Cotal reconnects by itself when this computer is back online.",
+    action: "refresh",
+    label: "Check again",
+  });
+  assert.deepEqual(refusalView("SPACE_UNREACHABLE"), {
+    title: "Can't reach your space",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
+    action: "refresh",
+    label: "Check again",
   });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",
@@ -142,6 +165,17 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "refresh",
     label: "Check approval",
   });
+});
+
+test("another installation's service offers no action and keeps a command out of the window", () => {
+  assert.deepEqual(refusalView("CONFLICT"), {
+    title: "Another Cotal installation runs the background service",
+    description: "This copy cannot take it over. Nothing was changed.",
+    action: "none",
+    label: "",
+  });
+  const refused = () => { requireResult({ v: 1, event: "result", ok: false, error: { code: "CONFLICT", message: "the background service was set up by another Cotal installation", remedy: "run setup from /usr/local/lib/node_modules/cotal-ai/bin/cotal.js" } }); };
+  assert.throws(refused, (error: { remedy?: string; message: string }) => error.remedy === undefined && !/\/usr\/local|`/.test(error.message));
 });
 
 test("kept credential notice names each well-formed file and is empty otherwise", () => {

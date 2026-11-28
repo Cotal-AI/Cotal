@@ -32,6 +32,35 @@ interface CellOptions {
   readonly startFails: boolean;
 }
 
+async function setupCli(dir: string, env: NodeJS.ProcessEnv, ...args: string[]) {
+  const child = spawn(process.execPath, [cliEntry, "daemon", "setup", ...args], {
+    cwd: dir, env, stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, killSignal: "SIGKILL",
+  });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", chunk => { stdout += String(chunk); });
+  child.stderr.on("data", chunk => { stderr += String(chunk); });
+  const code = await new Promise<number | null>((resolve, reject) => { child.once("close", resolve); child.once("error", reject); });
+  return { code, stdout, stderr };
+}
+
+async function checkDisabledSetup(dir: string, env: NodeJS.ProcessEnv, unit: string) {
+  const warning = `The service is not enabled at boot and will not start automatically after a restart. Linger is off, so it will not keep running after logout. Ask an administrator to run \`sudo loginctl enable-linger smoke\`, then run \`systemctl --user enable --now ${unit}\` yourself.`;
+  for (const args of [[], ["--space", "alpha"]]) {
+    const label = args.length ? "space setup" : "account setup";
+    const json = await setupCli(dir, env, ...args, "--json");
+    assert.equal(json.code, 0, `${label}: ${json.stdout}\n${json.stderr}`);
+    const doc = JSON.parse(json.stdout);
+    assert.equal(doc.outcome, "ok", label);
+    assert.equal(doc.result.unit, unit, label);
+    assert.deepEqual(doc.warnings, [{ code: "TARGET_UNAVAILABLE", target: args.length ? { space: "alpha" } : { idp }, message: warning }], label);
+    const plain = await setupCli(dir, env, ...args, "--plain");
+    assert.equal(plain.code, 0, `${label}: ${plain.stdout}\n${plain.stderr}`);
+    assert.ok(plain.stderr.includes(warning), `${label}: ${plain.stderr}`);
+    assert.doesNotMatch(plain.stdout, /restarts on its own|reconnects after a restart/, label);
+    if (args.length) assert.match(plain.stdout, /daemon service-status --space alpha/, label);
+  }
+}
+
 async function runCell(opts: CellOptions): Promise<void> {
   const dir = join(root, opts.name);
   const home = join(dir, "home"), cotalHome = join(dir, "cotal"), config = join(dir, "config");
@@ -118,7 +147,7 @@ async function runCell(opts: CellOptions): Promise<void> {
             v: DAEMON_PROTOCOL_VERSION,
             id: req.id,
             ok: true,
-            result: { spaces: [], signedInProviders: [idp], failedProviders: [], refresh: "ok" },
+            result: { spaces: [{ space: "alpha", label: "Alpha", mode: "user", idp }], signedInProviders: [idp], failedProviders: [], refresh: "ok" },
           })}\n`);
           continue;
         }
@@ -126,6 +155,10 @@ async function runCell(opts: CellOptions): Promise<void> {
           ? [{ agent: "claude", state: "unavailable", reason: "claude harness needs claude on PATH" }]
           : [{ agent: "claude", state: "available" }];
         const managers = [{ space: "alpha", state: "answering", instanceId: "mgr_1", connectors }];
+        const spaceResult = req.op === "connect-check" ? { space: "alpha", outcome: "ready-to-register" }
+          : req.op === "manager-status" || req.op === "manager-start" ? managers[0]
+          : req.op === "register" ? { space: "alpha", outcome: "pending", message: "Waiting for approval" }
+          : undefined;
         const account = {
           idpUrl: idp,
           sub: "user_1",
@@ -141,7 +174,7 @@ async function runCell(opts: CellOptions): Promise<void> {
           v: DAEMON_PROTOCOL_VERSION,
           id: req.id,
           ok: true,
-          result: {
+          result: spaceResult ?? {
             state: "ready",
             version,
             protocol: DAEMON_PROTOCOL_VERSION,
@@ -177,25 +210,20 @@ if (args.join(" ") === "--user show-environment") {
   console.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});
   process.exit(0);
 }
+if (args.includes("show") && args.includes("--property=UnitFileState") && args.includes("--value")) {
+  console.log(${JSON.stringify(opts.refreshWanted ? "enabled" : "disabled")});
+  process.exit(0);
+}
 const op = args.includes("daemon-reload") ? "daemon-reload" : args.at(-2);
 if (!["daemon-reload", "stop", "start"].includes(op)) process.exit(99);
 fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r => {
   if (!r.ok) { console.error(await r.text()); process.exit(1); }
 }).catch(() => process.exit(99));
 `, { mode: 0o700 });
+  writeFileSync(join(native, "loginctl"), `#!${process.execPath}\nconsole.log(${JSON.stringify(opts.refreshWanted ? "Linger=yes" : "Linger=no")});\n`, { mode: 0o700 });
 
   try {
-    const child = spawn(process.execPath, [cliEntry, "daemon", "setup", "--json"], {
-      cwd: dir,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-      killSignal: "SIGKILL",
-    });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", chunk => { stdout += String(chunk); });
-    child.stderr.on("data", chunk => { stderr += String(chunk); });
-    const code = await new Promise<number | null>(resolve => child.once("close", resolve));
+    const { code, stdout, stderr } = await setupCli(dir, env, "--json");
     const serviceLines = stderr.trim().split("\n").filter(line => line.startsWith("service: "));
     const diskUnit = readFileSync(unitPath, "utf8");
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as { unitSha256: string };
@@ -216,6 +244,8 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
         doc.result.steps.filter(step => step.step === "install"),
         [{ step: "install", outcome: "already-installed", detail: `${unit} is already installed` }],
       );
+      await checkDisabledSetup(dir, env, unit);
+      assert.deepEqual(nativeCalls, [], `${opts.name}: observing disabled autostart does not change the service`);
       console.log(`  ✓ ${opts.name}: prints '${unit} is already installed' and leaves unit untouched`);
       return;
     }
@@ -230,7 +260,7 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
         `service: restarted ${unit} with the updated PATH`,
       ], `${opts.name}: exact line order when refresh and restart both succeed`);
       assert.deepEqual(nativeCalls, ["/daemon-reload", "/stop", "/start"], `${opts.name}: reload, stop, start ran in order`);
-      assert.ok(diskUnit.includes(`Environment=PATH="${extraBin}:${basePath}"`), `${opts.name}: unit file pins new PATH directory`);
+      assert.ok(diskUnit.includes(`Environment=PATH="${[extraBin, basePath, join(home, ".local/bin"), join(home, ".opencode/bin"), join(home, ".pi/agent/bin")].join(":")}"`), `${opts.name}: unit file pins new PATH directory`);
       assert.equal(receipt.unitSha256, createHash("sha256").update(diskUnit).digest("hex"), `${opts.name}: receipt matches updated unit`);
       const doc = JSON.parse(stdout) as { result: { steps: { step: string; outcome: string; detail: string }[] } };
       assert.deepEqual(
@@ -254,7 +284,7 @@ fetch(${JSON.stringify(`http://127.0.0.1:${controlPort}/`)} + op).then(async r =
     assert.ok(!stderr.includes(`restarted ${unit} with the updated PATH`), `${opts.name}: must not claim unit restarted when start failed`);
     assert.deepEqual(nativeCalls, ["/daemon-reload", "/stop", "/start"], `${opts.name}: reload, stop, start attempted`);
     assert.ok(ops.includes("managers-abort-restart"), `${opts.name}: aborts restart fence after native failure`);
-    assert.ok(diskUnit.includes(`Environment=PATH="${extraBin}:${basePath}"`), `${opts.name}: unit rewrite already occurred after 'updating' line`);
+    assert.ok(diskUnit.includes(`Environment=PATH="${[extraBin, basePath, join(home, ".local/bin"), join(home, ".opencode/bin"), join(home, ".pi/agent/bin")].join(":")}"`), `${opts.name}: unit rewrite already occurred after 'updating' line`);
     assert.equal(receipt.unitSha256, createHash("sha256").update(diskUnit).digest("hex"), `${opts.name}: receipt matches rewritten unit`);
     const doc = JSON.parse(stdout) as { outcome: string; error?: { code: string; message: string } };
     assert.equal(doc.outcome, "unknown");

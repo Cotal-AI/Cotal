@@ -24,6 +24,9 @@ test("computer rows use observed account state and actionable refusal", () => {
   assert.equal(computerSpaceState({ ...row, observed: "ended" }), "Ended by the space");
   assert.equal(computerSpaceState({ ...row, observed: "credential-expired" }), "Credential expired");
   assert.equal(computerSpaceState({ ...row, observed: "disconnected" }), "Disconnected");
+  // A Manager that lost its connection reconnects by itself; the row says why it is not connected.
+  assert.equal(computerSpaceState({ ...row, observed: "offline" }), "No internet connection");
+  assert.equal(computerSpaceState({ ...row, observed: "unreachable" }), "Can't reach this space");
   assert.equal(computerSpaceState({ ...row, lastRefusal: "Ask the owner to approve this computer." }), "Ask the owner to approve this computer.");
   assert.equal(computerSpaceState({ ...row, observed: "refused", lastRefusal: "Ask the owner." }), "Ask the owner.");
 });
@@ -41,6 +44,12 @@ test("window title and tray share one summary of the listed spaces", () => {
   // The row shows the saved refusal, so the title and tray must not say Starting.
   assert.equal(computerSummary([{ ...row, lastRefusal: "Manager is not answering" }], false), "attention");
   assert.equal(computerSummary([{ ...row, observed: "refused" }], true), "connected");
+  // A lost connection names itself before other problems, because it can cause them.
+  assert.equal(computerSummary([{ ...row, observed: "offline" }], false), "offline");
+  assert.equal(computerSummary([{ ...row, observed: "unreachable" }], false), "unreachable");
+  assert.equal(computerSummary([{ ...row, observed: "refused" }, { ...row, space: "other", observed: "unreachable" }, { ...row, space: "third", observed: "offline" }], false), "offline");
+  assert.equal(computerSummary([{ ...row, observed: "refused" }, { ...row, space: "other", observed: "unreachable" }], false), "unreachable");
+  assert.equal(computerSummary([{ ...row, observed: "offline" }], true), "connected");
 });
 
 test("every space state the daemon can report has a decided label", () => {
@@ -48,11 +57,13 @@ test("every space state the daemon can report has a decided label", () => {
   const members = (declaration: RegExp) => [...(declaration.exec(protocol)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(match => match[1]!);
   const service = members(/export type ServiceConnectionState =([^;]+);/);
   const manager = members(/export interface HostedManager \{[\s\S]*?\n  readonly state: ([^;]+);/);
+  const connection = members(/export interface ManagerConnection \{[\s\S]*?\n  readonly state: ([^;]+);/);
   assert.equal(service.length, 16);
   assert.equal(manager.length, 6);
-  // The daemon reports an answering Manager as connected.
-  const reported = [...new Set([...service, ...manager.filter(state => state !== "answering")])];
-  assert.equal(reported.length, 20);
+  assert.deepEqual(connection, ["offline", "unreachable"]);
+  // The daemon reports an answering Manager as connected, and a lost connection by its kind.
+  const reported = [...new Set([...service, ...manager.filter(state => state !== "answering"), ...connection])];
+  assert.equal(reported.length, 22);
   assert.deepEqual(reported.filter(state => !spaceStateKnown(state)), []);
   assert.equal(spaceStateKnown("a state added later"), false);
 });

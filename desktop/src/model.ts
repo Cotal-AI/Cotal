@@ -182,7 +182,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "none"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
@@ -194,10 +194,13 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "DAEMON_LOST": return { title: "The background service stopped", description: "It stopped before this could finish, so nothing was completed. This clears when the service is running again.", action: "refresh", label: "Check status" };
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
-    case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
+    case "OFFLINE": return { title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description, action: "refresh", label: "Check again" };
+    case "SPACE_UNREACHABLE": return { title: CONNECTION_COPY.unreachable.title, description: `${CONNECTION_COPY.unreachable.description} Details shows the reason.`, action: "refresh", label: "Check again" };
+    case "UNREACHABLE": return { title: "We cannot reach your connection", description: `${CONNECTION_COPY.unreachable.description} Details shows the reason.`, action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
-    case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
+    case "VERSION_MISMATCH": return { title: "Cotal was updated", description: "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.", action: "connect", label: "Restart background service" };
+    case "CONFLICT": return { title: "Another Cotal installation runs the background service", description: "This copy cannot take it over. Nothing was changed.", action: "none", label: "" };
     default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
   }
 }
@@ -210,7 +213,10 @@ export function approvalUrl(value: unknown): string {
 }
 
 export function requireResult(frame: Frame): Record<string, unknown> {
-  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", frame.error?.remedy ? `Next: ${frame.error.remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, frame.error?.remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) {
+    const remedy = frame.error?.remedy && !/[`]|\/|\\/.test(frame.error.remedy) ? frame.error.remedy : undefined;
+    throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", remedy ? `Next: ${remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, remedy, frame.error?.native?.detail ?? frame.error?.detail, frame.result);
+  }
   if (!frame.result || typeof frame.result !== "object" || Array.isArray(frame.result)) throw new Error("The daemon returned an unsupported result.");
   return frame.result;
 }

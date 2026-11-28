@@ -65,7 +65,7 @@ export function nativeStub(scenario) {
       if (request.op === "agent-apps") {
         state.appsRequests = [...(state.appsRequests ?? []), request.refresh === true];
         if (state.appsHold) await new Promise(() => {});
-        return ok({ apps: state.agentApps ?? defaultApps, management: state.appManagement ?? (state.installed ? "service" : "local"), ...(request.refresh && state.refreshService ? { serviceRefresh: state.refreshService } : {}) });
+        return ok({ apps: state.agentApps ?? defaultApps, management: state.appManagement ?? (state.installed ? "service" : "local"), ...(state.serviceOwner ? { serviceOwner: state.serviceOwner } : {}), ...(request.refresh && state.refreshService ? { serviceRefresh: state.refreshService } : {}) });
       }
       if (request.op === "agent-app-install" || request.op === "agent-app-sign-in") {
         state.appActions = [...(state.appActions ?? []), `${request.op}:${request.name}`];
@@ -78,6 +78,11 @@ export function nativeStub(scenario) {
         const app = { ...apps.find(item => item.name === request.name), state: installing && request.name === "claude" ? "signed-out" : installing ? "installed" : "signed-in", version: "2.1.332" };
         delete app.missing;
         state.agentApps = apps.map(item => item.name === request.name ? app : item);
+        if (installing && state.ownerChangesOnInstall) {
+          state.appManagement = "other-copy";
+          state.serviceOwner = { kind: "app" };
+          return ok({ app, serviceOwner: state.serviceOwner, serviceRefresh: { state: "pending", reason: "unconfirmed" } });
+        }
         return ok(installing ? { app, ...(state.appService ? { serviceRefresh: state.appService } : {}), ...(state.pathAdded ? { pathAdded: state.pathAdded } : {}) } : { app });
       }
       if (request.op === "install") {
@@ -167,6 +172,7 @@ export function nativeStub(scenario) {
           window.__advanceSetup = () => progress("applications", "available", "connectors: available", { applications: ["Claude Code", "Codex"] });
           await new Promise(() => {});
         }
+        if (state.otherInstallation) return fail("CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it");
         if (state.setupError) return fail("LIFECYCLE_BLOCKED", `Setup could not proceed: ${state.setupError}. Stop active sessions before retrying.`, state.setupError);
         if (state.serviceBehind) {
           // An older background service restarts into the app's version only when no agent runs, as the daemon's idle fence does.
@@ -371,8 +377,36 @@ const appsScenarios = [
     assert.equal(await page.locator("#apps-message").textContent(), reason);
     await page.evaluate(() => { window.__renderState.refreshService = { state: "refreshed" }; });
     await page.click("#apps-refresh");
-    await page.waitForFunction(() => document.querySelector("#apps-message").textContent === "");
+    await page.waitForFunction(() => document.querySelector("#apps-message")?.textContent === "");
     assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).at(-1), true);
+  } },
+  ...[
+    ["agent-apps-install-other-owner", "app", "the Cotal app", "Open that copy and choose Check again in its Agent apps."],
+    ["agent-apps-install-command-line-owner", "cli", "a command-line install of Cotal", "Run setup again from that install."],
+  ].map(([name, kind, owner, step]) => ({ name, state: { ...connectedApps, agentApps: noApps, appManagement: "other-copy", serviceOwner: { kind, location: "/private/fixture" }, trackOwnerTimer: true }, act: openApps, expect: async page => {
+    await expectAppRecovery(page, `Another copy of Cotal runs the background service (${owner}). This copy can show your agent apps but can't change them. ${step}`, "Fix in Connection");
+    assert.equal(await page.locator("#apps-owner.warning").count(), 1);
+    assert.equal(await page.locator("#app-list button:enabled").count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions ?? []), []);
+  } })),
+  { name: "agent-apps-install-other-owner-clears", state: { ...connectedApps, agentApps: noApps, ownerChangesOnInstall: true, trackOwnerTimer: true }, act: async page => {
+    await openApps(page);
+    await appButton(page, "Install: Claude Code").click();
+    await page.locator("#apps-owner.warning").waitFor();
+  }, expect: async page => {
+    const warning = "Claude Code is installed. Another copy of Cotal runs the background service (the Cotal app), so Claude Code can't be used yet. Open that copy and choose Check again in its Agent apps.";
+    const action = await expectAppRecovery(page, warning, "Fix in Connection");
+    assert.equal(await page.locator("#apps-owner.warning").count(), 1);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.appActions), ["agent-app-install:claude"], "no sign-in replay to a new owner");
+    const reads = await page.evaluate(() => window.__renderState.appsRequests.length);
+    await page.evaluate(() => { const now = Date.now; Date.now = () => now() + 45_000; window.__pushStatus(); });
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(() => window.__renderState.appsRequests.length), reads, "a lasting owner does not schedule a read or native refresh");
+    await action.click();
+    await page.evaluate(() => { window.__renderState.appManagement = "service"; delete window.__renderState.serviceOwner; });
+    await openApps(page);
+    await page.waitForFunction(() => document.querySelector("#apps-owner").hidden);
+    assert.deepEqual((await page.evaluate(() => window.__renderState.appsRequests)).slice(reads), [false], "explicit re-entry reads inventory only");
   } },
   { name: "agent-apps-install-failed", state: { ...connectedApps, appInstallFails: true }, act: async page => { await openApps(page); await appButton(page, "Install: Jcode").click(); await page.locator('[data-app="jcode"][data-state="failed"]').waitFor(); }, expect: async page => {
     assert.match(await page.locator('[data-app="jcode"] .app-status').textContent(), /Couldn’t install: The installer stopped with exit code 1/);
@@ -501,6 +535,22 @@ export const scenarios = [
   { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator('[data-space="research"] .space-state').textContent(), "Starting", "a space without a ready Manager must not claim Connected");
   } },
+  ...[
+    ["offline", "No internet connection", "Cotal reconnects by itself when this computer is back online.", "Offline", "this computer cannot look up cotal.cloud (ENOTFOUND)", "No internet connection"],
+    ["unreachable", "Can't reach your space", "Cotal reconnects by itself when the space answers again.", "Can't connect", "cotal.cloud is not answering", "Can't reach this space"],
+  ].map(([kind, title, description, pill, reason, row]) => ({
+    name: `account-connection-${kind}`,
+    state: { installed: true, signedIn: true, connected: true, managers: [{ space: "research", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }], connection: { state: kind, reason } }], account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: kind }] } },
+    expect: async page => {
+      assert.equal(await page.locator("#connection-title").textContent(), title, "a lost connection must not claim Connected or Starting");
+      assert.equal(await page.locator("#connection-description").textContent(), description);
+      assert.equal(await page.locator("#sidebar-status-word").textContent(), pill);
+      assert.equal(await page.locator("#sidebar-status-dot").getAttribute("data-tone"), "problem");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.nativeConnection), { connected: false, label: pill }, "the native command must receive the sidebar's words");
+      assert.equal(await page.locator("#recovery-panel").isHidden(), true, "automatic reconnect must not show a Setup action");
+      assert.equal(await page.locator('[data-space="research"] small').last().textContent(), `${row}: ${reason}`);
+    },
+  })),
 
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
@@ -1006,6 +1056,11 @@ export const scenarios = [
   { name: "personal", state: { multiple: true, personal: true }, act: signIn },
   { name: "add-space", state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); await page.selectOption('#space', 'research'); } },
   { name: "connecting", state: { connecting: true }, act: connect },
+  { name: "other-installation", state: { otherInstallation: true }, act: connect, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Another Cotal installation runs the background service");
+    assert.equal(await page.locator("#recover").isHidden(), true, "no button offers a setup that cannot succeed");
+    assert.equal(/\/|`/.test(await page.locator("#refusal-detail").textContent()), false, "Details shows no command line");
+  } },
   { name: "ready", state: {}, act: connect },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
@@ -1041,7 +1096,7 @@ export const scenarios = [
   { name: "update-waits-for-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, version: "0.155.0", serviceBehind: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: [{ space: "acme-team", state: "read", agents: [{ name: "acp_mx2ngejyr3", application: "claude-code", cwd: "/projects/cotal", startedAt: new Date(Date.now() - 600_000).toISOString(), state: "running" }, { name: "acp_uoeconhmic", application: "codex", cwd: "/projects/site", startedAt: new Date(Date.now() - 120_000).toISOString(), state: "running" }] }] }, expect: async page => {
     await page.locator("#notice:not([hidden])").waitFor();
     assert.equal(await page.locator("#notice").textContent(), "An update for the background service is waiting for 2 agents on this computer to finish: acp_mx2ngejyr3 (Claude Code) and acp_uoeconhmic (Codex). It installs by itself when they end.");
-    assert.notEqual(await page.locator("#connection-title").textContent(), "Your connection needs an update");
+    assert.notEqual(await page.locator("#connection-title").textContent(), "Cotal was updated");
     assert.equal(await page.locator("#recovery-panel").isHidden(), true, "the window stays usable");
     assert.equal(await page.locator("#agent-list .agent-row").count(), 2, "the waiting agents are listed");
     assert.equal(await page.evaluate(() => window.__renderState.serviceUpdates ?? 0), 0, "no update is attempted while agents run");
@@ -1052,7 +1107,7 @@ export const scenarios = [
   } },
   // A refusal with several spaces listed keeps its explanation; the multi-space layout hides it only for the space list.
   { name: "refusal-several-spaces-explained", state: { installed: true, signedIn: true, connected: true, multiple: true, version: "0.155.0", omitAgents: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
-    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Your connection needs an update");
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Cotal was updated");
     assert.ok(await page.evaluate(() => document.querySelectorAll("#connected-spaces li").length) >= 2, "both spaces are listed behind the refusal");
     assert.equal(await page.locator("#connection-description").isVisible(), true, "the refusal explains itself");
     assert.equal(await page.locator("#connection-icon").count(), 0, "no separate pane status icon");
@@ -1076,7 +1131,14 @@ export const scenarios = [
     await page.click("#refresh");
     await page.waitForFunction(() => document.querySelector("#connection-title").textContent === "This computer is connected");
   }, expect: async page => { assert.equal(await page.locator("#refresh").isVisible(), false); assert.equal(await page.locator("#dashboard").isVisible(), true); } },
-  { name: "version-mismatch", state: { installed: true, signedIn: true, version: "old" } },
+  { name: "version-mismatch", state: { installed: true, signedIn: true, version: "old" }, expect: async page => {
+    // The approved words: what happened, what the button does, and that agents are never stopped.
+    assert.equal(await page.locator("#connection-title").textContent(), "Cotal was updated");
+    assert.equal(await page.locator("#connection-description").textContent(), "Restart the background service to finish the update. If agents are running, the restart waits until they finish, then happens by itself.");
+    assert.equal(await page.locator("#recover").textContent(), "Restart background service");
+    assert.match(await page.locator("#refusal-detail").textContent(), /App version 0\.156\.0 · background service old\./);
+    assert.ok(!(await page.locator(".connection-card").textContent()).includes("connection needs"), "the internal word is gone");
+  } },
   { name: "progress-done", state: { connecting: true }, prepare: connect, act: async page => {
     const row = page.getByTestId("progress-3");
     await row.locator('.progress-mark[data-icon="spinner"]').waitFor();

@@ -24,7 +24,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
+import { applyInstall, installationOwner, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled, unitReceiptFile } from "./install.js";
 import { withAppMutation } from "./agent-app-admission.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
@@ -225,8 +225,11 @@ async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: Setu
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
   // A Windows task pins no PATH: restarted unchanged, its daemon reads the current user PATH, whichever
   // installation registered it, and keeps the version it runs. A unit or LaunchAgent is rewritten, which
-  // only its own installation does. The message names no command line; the terminal remedy still does.
-  if (!installation.same && (application || process.platform !== "win32")) throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", { remedy: `run setup from ${installation.installed}` });
+  // only its own installation does. Neither the message nor its remedy names a command line.
+  if (!installation.same && (application || process.platform !== "win32")) throw new CommandFailure("refused", "CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it", {
+    remedy: "use the Cotal installation that set up the background service",
+    native: { code: "ANOTHER_INSTALLATION", detail: { owner: installationOwner(installation.installedEntry) } },
+  });
   const { version: _version, ...unversioned } = opts;
   const expected: InstallOptions = installation.same ? opts : unversioned;
   const unit = process.platform === "win32" ? "" : planUninstall(opts.paths, opts.daemonHome).unit;
