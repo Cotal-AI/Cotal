@@ -447,10 +447,25 @@ jobs:
       - name: Verify macOS window-scoped Dock presence, focus and reopen
         if: runner.os == 'macOS'
         run: bash desktop/scripts/check-presence-macos.sh
+      - name: Verify the cotal command from the macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # The presence check above installed and opened the same app; this check starts from none.
+          rm -rf /Applications/Cotal.app
+          bash desktop/scripts/check-command-line-macos.sh "$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)"
       - name: Verify installed Windows shortcuts and taskbar presence
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./desktop/scripts/check-presence-windows.ps1
+      - name: Verify the cotal command from the Windows installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          $msi = Get-ChildItem desktop/src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
+          powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./desktop/scripts/check-command-line-windows.ps1 -Setup $setup.FullName -Msi $msi.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify Linux launcher packaging
         if: runner.os == 'Linux'
         run: |
@@ -464,12 +479,30 @@ jobs:
             grep -E 'share/applications/.*\.desktop' "$manifest"
             grep -E 'share/icons/.*\.png' "$manifest"
           done
+      - name: Verify the cotal command from the Linux deb
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-command-line"
+          deb=$(realpath "$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)")
+          docker run --rm -v "$PWD/desktop/scripts:/scripts:ro" -v "$(dirname "$deb"):/pkg:ro" ubuntu:24.04 \
+            bash /scripts/check-command-line-linux.sh "/pkg/$(basename "$deb")" | tee "$RUNNER_TEMP/desktop-command-line/deb.txt"
+      - name: Verify the cotal command from the Linux rpm
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-command-line"
+          rpm=$(realpath "$(find desktop/src-tauri/target/release/bundle/rpm -name '*.rpm' -print -quit)")
+          docker run --rm -v "$PWD/desktop/scripts:/scripts:ro" -v "$(dirname "$rpm"):/pkg:ro" fedora:41 \
+            bash /scripts/check-command-line-linux.sh "/pkg/$(basename "$rpm")" | tee "$RUNNER_TEMP/desktop-command-line/rpm.txt"
       - name: Upload native presence evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-presence-${{ runner.os }}-${{ runner.arch }}
-          path: ${{ runner.temp }}/desktop-presence/
+          path: |
+            ${{ runner.temp }}/desktop-presence/
+            ${{ runner.temp }}/desktop-command-line/
           if-no-files-found: warn
           retention-days: 7
       - name: Stage release installers

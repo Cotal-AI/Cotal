@@ -367,7 +367,7 @@ for (const target of [isolated("timeout"), control]) {
   assert.equal(timedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(timedOut.error?.native?.code, "NOT_ANSWERING");
   assert.equal(timedOut.error?.message, "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.");
-  assert.equal(timedOut.error?.remedy, "choose Check status.");
+  assert.equal(timedOut.error?.remedy, "choose Repair.");
   assert.ok(!JSON.stringify(timedOut).includes(target.dir), "fixed app guidance contains no private path or stale launch refusal");
   console.log(`${target === control ? "recorded start (stale log ignored)" : "fresh install"}: readiness timeout passed`);
 }
@@ -387,7 +387,7 @@ try {
     timedOut.error?.message,
     `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${join(refusedStart.dir, "cotal", "daemon", "daemon.lock")} is held by a live process: this daemon is already being served. Nothing was changed`,
   );
-  assert.equal(timedOut.error?.remedy, "choose Check status.");
+  assert.equal(timedOut.error?.remedy, "choose Repair.");
   console.log("refused start: current-attempt daemon.log refusal included");
 } finally {
   heldLock.release();
@@ -417,7 +417,7 @@ try {
     setupTimedOut.error?.message,
     `Cotal asked the background service on this computer to start, and it did not answer within 60 seconds. It refused to start: ${join(setupNonAnswerTarget.dir, "cotal", "daemon", "daemon.lock")} is held by a live process: this daemon is already being served. Nothing was changed`,
   );
-  assert.equal(setupTimedOut.error?.remedy, "choose Check status.");
+  assert.equal(setupTimedOut.error?.remedy, "choose Repair.");
   console.log("setup non-answer: real 60s window, app wording and current-attempt refusal included");
 
   assert.equal(oldVersionReply.ok, false);

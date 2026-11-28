@@ -159,11 +159,12 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
     if (reply.ok) {
       const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
       if (!installation.same) {
-        const remedy = `run setup from ${installation.installed}, or run ${codeSpan(daemonCommandCopy("uninstall", opts.daemonHome))} then setup from ${installation.current}`;
-        if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy });
+        const remedy = `run setup from ${installation.installed}, or move the service to this installation with ${codeSpan(daemonCommandCopy("repair", opts.daemonHome))}`;
+        const native = { code: "ANOTHER_INSTALLATION", detail: { owner: installationOwner(installation.installedEntry) } };
+        if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy, native });
         if (!opts.noManager && opts.space) {
           try { await managerViaDaemon(opts, { op: "manager-status", space: opts.space }); }
-          catch { throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; it does not answer the hosting operations and was not restarted`, { remedy }); }
+          catch { throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; it does not answer the hosting operations and was not restarted`, { remedy, native }); }
         }
         detail = `${unit} at ${installation.installed} runs compatible Cotal ${reply.result.version}; it was left running`;
         steps.push({ step: "install", outcome, detail });
