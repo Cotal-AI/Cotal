@@ -1030,7 +1030,10 @@ export const scenarios = [
       assert.ok(outline, `${id} has a visible outline`);
     }
     assert.equal(await page.getByRole("button", { name: "Sign out", exact: true }).count(), 1);
-    assert.equal(await page.locator('section[aria-labelledby="advanced-heading"] #settings-disconnect').count(), 1);
+    const disconnect = page.locator('section[aria-labelledby="advanced-heading"] .settings-row').filter({ has: page.locator("#settings-disconnect") });
+    assert.equal(await disconnect.getByRole("button", { name: "Disconnect", exact: true }).count(), 1);
+    assert.equal(await disconnect.getByRole("heading").textContent(), "Disconnect this computer");
+    assert.match(await disconnect.textContent(), /Your spaces stop using this computer\. It stays in your account\./);
   } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
   { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {

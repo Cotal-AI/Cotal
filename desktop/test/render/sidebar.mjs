@@ -5,7 +5,6 @@ const panes = [
   ["apps", "#apps-title"],
   ["settings", "#settings-title"],
 ];
-const firstGroups = { connection: "#spaces-heading", apps: "#apps-group-heading", settings: "#computer-heading" };
 const cloud = "https://cotal.cloud/api/auth";
 const readyCloud = {
   signedInProviders: [cloud],
@@ -74,14 +73,39 @@ async function paneDescription(page, name, titleY) {
   return box;
 }
 
-async function firstGroupTop(page, name, pane) {
-  const group = page.getByRole("tabpanel").locator(`${firstGroups[pane]}:visible`);
-  assert.equal(await group.count(), 1, `${name}: first populated group is visible`);
-  const top = await group.evaluate(el => {
-    return el.getBoundingClientRect().top + parseFloat(getComputedStyle(el).paddingTop);
+async function assertFirstContent(page, name, pane, state, description) {
+  const panel = page.getByRole("tabpanel");
+  const selector = pane === "apps" ? "#apps-actions" : pane === "settings" ? "#computer-heading" : state === "ready" ? "#connected-actions" : undefined;
+  const top = selector ? await panel.locator(selector).evaluate(el => {
+    const bounds = el.getBoundingClientRect();
+    return bounds.height ? bounds.top + parseFloat(getComputedStyle(el).paddingTop) : null;
+  }) : await panel.locator(".pane-description").evaluate(el => {
+    for (let next = el.nextElementSibling; next; next = next.nextElementSibling) {
+      const bounds = next.getBoundingClientRect();
+      if (bounds.height > 1 && getComputedStyle(next).visibility === "visible") return bounds.top;
+    }
+    return null;
   });
-  closeTo(top, 146.7, `${name}: first group top`);
-  return top;
+  assert.ok(top !== null, `${name}: first content is visible`);
+  const gap = top - description.y - description.height;
+  assert.ok(gap >= -1 && gap <= 24, `${name}: first content gap ${gap}px must be between 0 and 24px`);
+
+  if (pane === "apps") {
+    const refresh = panel.locator("#apps-actions #apps-refresh:visible");
+    assert.equal(await refresh.count(), 1, `${name}: refresh is in the first action row`);
+    assert.ok(await refresh.evaluate(el => {
+      const style = getComputedStyle(el);
+      return parseFloat(style.borderTopWidth) > 0 && style.borderTopColor !== "rgba(0, 0, 0, 0)";
+    }), `${name}: refresh has an outline`);
+    const [actions, heading, list, footnote] = await Promise.all(["#apps-actions", "#apps-group-heading", "#app-list", ".apps-footer"].map(id => panel.locator(id).boundingBox()));
+    assert.ok(actions.y + actions.height <= heading.y + 1 && list.y + list.height <= footnote.y + 1, `${name}: Apps actions precede the list and the footnote follows it`);
+  }
+  if (pane === "connection" && state === "ready") {
+    const actions = panel.locator("#connected-panel > #connected-actions:first-child");
+    assert.equal(await actions.locator("#dashboard:visible, #another-space:visible").count(), 2, `${name}: both Connection actions follow the description`);
+    const [row, heading] = await Promise.all([actions.boundingBox(), panel.locator("#spaces-heading").boundingBox()]);
+    assert.ok(row.y + row.height <= heading.y + 1, `${name}: Connection actions precede Spaces`);
+  }
 }
 
 async function assertPaneReachable(page, name) {
@@ -135,7 +159,7 @@ export function sidebarScenarios(fixtures) {
     const original = fixtures.find(fixture => fixture.name === state);
     assert.ok(original, `missing Connection fixture: ${state}`);
     const name = `sidebar-${state}-${pane}`;
-    let connectionY, connectionDescriptionY, connectionGroupY;
+    let connectionY, connectionDescriptionY;
     return {
       ...original, name, state: { ...original.state, aboutMachine: "Studio computer", ...(state === "ready" ? readyCloud : {}) },
       async act(page) {
@@ -149,7 +173,6 @@ export function sidebarScenarios(fixtures) {
         }
         connectionY = await assertTopAligned(page, `${name}: initial Connection`, page.locator("#connection-title"));
         connectionDescriptionY = (await paneDescription(page, name, connectionY)).y;
-        if (state === "ready") connectionGroupY = await firstGroupTop(page, name, "connection");
         if (pane !== "connection") await page.click(`#view-${pane}`);
         if (pane === "apps") await page.locator("#app-list .app-row").first().waitFor();
       },
@@ -163,17 +186,7 @@ export function sidebarScenarios(fixtures) {
         closeTo(titleY, connectionY, `${name}: same title y as Connection`);
         const description = await paneDescription(page, name, titleY);
         closeTo(description.y, connectionDescriptionY, `${name}: same description y as Connection`);
-        if (state === "ready") {
-          const groupY = await firstGroupTop(page, name, pane);
-          closeTo(groupY, connectionGroupY, `${name}: same first group y as Connection`);
-          if (pane === "connection") {
-            const actions = page.locator("#connected-panel > #connected-actions:first-child");
-            assert.equal(await actions.locator("#dashboard:visible, #another-space:visible").count(), 2, `${name}: both Connection actions follow the description`);
-            const action = await actions.boundingBox();
-            assert.ok(action && action.y >= description.y + description.height - 1 && action.y + action.height <= groupY + 1,
-              `${name}: Connection actions lie between the description and the Spaces group`);
-          }
-        }
+        await assertFirstContent(page, name, pane, state, description);
         await assertSurface(page, state);
         await assertPaneReachable(page, name);
         if (state === "ready" && pane === "settings") {
