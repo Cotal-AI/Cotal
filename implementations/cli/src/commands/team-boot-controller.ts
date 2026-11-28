@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
 import {
-  CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
+  CommandFailure, acquireMaintenanceLock, brokerAddressForDisplay, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
   shellPath, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
 } from "@cotal-ai/workspace";
 import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -118,9 +118,16 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     // could start everything except the team and leave its intent unsettled, so it refuses here
     // before any effect. A fresh root cannot hold a login grant before its first enable, so its
     // refusal names the whole native preparation path rather than login alone.
-    if (!binding && (await userLoginState(plan.root, plan.space)).state !== "ready")
-      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space }, remedy: `cotal up --user-auth --idp <auth base URL>, then \`cotal login\`, then \`cotal auth grant cli --sub <subject> --full\`, then \`cotal down\`, then \`cotal team boot ${request.file}\`` });
-    await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
+    if (!binding && (await userLoginState(plan.root, plan.space)).state !== "ready") {
+      const space = shellWord(plan.space), root = shellPath(plan.root);
+      const server = brokerAddressForDisplay(plan.server) === plan.server ? shellWord(plan.server) : "<manifest broker address>";
+      const idp = plan.idp ? ` --idp ${shellWord(plan.idp)}` : "";
+      const prepare = `cotal up --root ${root} --space ${space} --server ${server}${plan.host ? ` --host ${shellWord(plan.host)}` : ""} --user-auth${idp} --no-manager`;
+      const login = `cotal login${idp || " --idp <pinned auth base URL>"}`;
+      throw new CommandFailure("refused", "AUTH_REQUIRED", "a user-auth team boot needs a prepared space with your granted login, and this root has none yet; nothing was written", { target: { root: plan.root, space: plan.space },
+        remedy: `prepare with ${codeSpan(prepare)}, then ${codeSpan(login)}. Have the space owner run ${codeSpan(`cotal auth grant cli --sub <subject> --full --space ${space}`)}. Stop the prepared stack with ${codeSpan(`cd ${root} && cotal down --space ${space}`)}, then retry from the original folder with ${request.retry()}` });
+    }
+    await assertManagerLogin(plan.root, plan.space, request.retry, "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
   const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });

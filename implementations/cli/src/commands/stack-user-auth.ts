@@ -105,7 +105,8 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
  *  Any other failure of that check, such as an IdP that does not answer, is left to the launch,
  *  which reports it as before. Runs before a definition is saved, a running manager stopped or a
  *  child launched. `undone` is what a refusal says was not done, as {@link userLoginRequired} takes it. */
-export async function assertManagerLogin(root: string, space: string, then: string, undone = MANAGER_NOT_ATTEMPTED): Promise<void> {
+export async function assertManagerLogin(root: string, space: string, then: string | (() => string), undone = MANAGER_NOT_ATTEMPTED): Promise<void> {
+  const retry = () => typeof then === "string" ? then : then();
   const registered = findMesh(space)?.userAuth;
   // The IdP the remedy names. A stopped stack, such as one a team boot resumes, has no registration,
   // so the hosting folder's own pin comes first.
@@ -113,7 +114,7 @@ export async function assertManagerLogin(root: string, space: string, then: stri
   if (registered?.remote !== true) {
     if (!hasUserAuthState(root, space, { readOnly: true })) return;
     const login = await userLoginState(root, space);
-    if (login.state !== "ready") throw userLoginRequired(space, login, then, undone);
+    if (login.state !== "ready") throw userLoginRequired(space, login, retry(), undone);
     idpUrl = login.idpUrl ?? idpUrl;
   }
   const provider = resolveAuthProvider();
@@ -121,7 +122,7 @@ export async function assertManagerLogin(root: string, space: string, then: stri
   let answer: "confirmed" | "signed-out" | "rejected";
   try { answer = await provider.confirmLogin({ dir: userAuthStateDir(root, space, { readOnly: true }), space }); }
   catch { return; }
-  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl }, then, undone);
+  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl }, retry(), undone);
 }
 
 /** The provisional registry metadata: the prepared trust pins only. No endpoint is copied from a

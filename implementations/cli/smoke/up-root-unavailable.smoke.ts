@@ -84,6 +84,17 @@ if (process.getuid?.() !== 0) {
       denied.envelope.error.remedy?.includes(`restore this account's access to ${locked}`) === true && !denied.envelope.error.remedy.includes(prepareAdvice), shown(denied));
 }
 
+const blocked = join(home, "blocked project");
+mkdirSync(blocked);
+const marker = join(blocked, ".cotal");
+writeFileSync(marker, replacement);
+const blockedMarker = up(blocked);
+check("a file occupying .cotal is not told to prepare over that file",
+  blockedMarker.status === 2 && blockedMarker.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    blockedMarker.envelope.error.message?.includes(`the .cotal entry in ${blocked} is not a project directory`) === true &&
+    blockedMarker.envelope.error.remedy?.includes("another prepared project") === true && !blockedMarker.envelope.error.remedy.includes(prepareAdvice) &&
+    readFileSync(marker, "utf8") === replacement && readFileSync(record).equals(preparedBefore), shown(blockedMarker));
+
 const unprepared = up(elsewhere);
 check("an unprepared directory keeps the prepare-and-retry step",
   unprepared.status === 2 && unprepared.envelope?.error?.code === "TARGET_UNAVAILABLE" &&

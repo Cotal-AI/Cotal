@@ -738,9 +738,13 @@ try {
   // An agent's credential reads one channel at a time through its own history consumer, and a
   // channel its grant leaves out is refused with the grant it holds.
   const agentCreds = join(home, "agent.creds");
-  writeFileSync(agentCreds, await provisionAgent(provisioner, auth, newIdentity(), { lifecycleUid: mintLifecycleUid(), subscribe: [], allowSubscribe: ["general"], allowPublish: ["general"] }), { mode: 0o600 });
+  const historyAgent = newIdentity(), agentUid = mintLifecycleUid();
+  const agentCredential = await provisionAgent(provisioner, auth, historyAgent, { lifecycleUid: agentUid, subscribe: [], allowSubscribe: ["general"], allowPublish: ["general"] });
+  writeFileSync(agentCreds, agentCredential, { mode: 0o600 });
+  const historyGrant = `$JS.API.CONSUMER.CREATE.CHAT_${space}.chathist_local-${historyAgent.id}-${agentUid}.cotal.${space}.chat.*.*.general`;
   const byAgent = await run(["history", "general", "--json", "--creds", agentCreds]);
-  check("an agent credential whose grant names #general reads it", byAgent.status === 0 && JSON.stringify(texts(byAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]), shown(byAgent));
+  check("an agent credential reads #general through its exact stored history grant",
+    credsClaims(agentCredential).nats?.pub?.allow?.includes(historyGrant) === true && byAgent.status === 0 && JSON.stringify(texts(byAgent)) === JSON.stringify(["deploy started", "looks good", "deploy finished"]), shown(byAgent));
   const outside = await run(["history", "ops", "--json", "--creds", agentCreds]);
   check("a channel its grant leaves out is PERMISSION_DENIED, quoting the grant it holds",
     outside.status === 2 && outside.envelope?.error?.code === "PERMISSION_DENIED" && outside.envelope.error.message === `this credential may not read #ops in ${space}: its history grant is #general`, shown(outside));
@@ -878,9 +882,10 @@ try {
   const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
   try {
     const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));
-    const records = refusedFollow.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; remedy?: string; reason?: string } });
-    check("a broker denial of the live wildcard ends the follow and says to name a channel",
-      ended && await refusedFollow.exited === 2 && records.map((r) => r.type).join() === "error,end" && records[0]?.data.code === "PERMISSION_DENIED" && records[0]?.data.remedy?.includes("name a channel") === true && records[1]?.data.reason === "setup-failed", refusedFollow.lines);
+    const records = refusedFollow.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; message?: string; remedy?: string; reason?: string } });
+    check("a broker denial names the exact live wildcard, ends the follow and says to name a channel",
+      ended && await refusedFollow.exited === 2 && records.map((r) => r.type).join() === "error,end" && records[0]?.data.code === "PERMISSION_DENIED" &&
+      records[0]?.data.message?.includes(`"cotal.${space}.chat.>"`) === true && records[0]?.data.remedy?.includes("name a channel") === true && records[1]?.data.reason === "setup-failed", refusedFollow.lines);
   } finally { await killAndAwaitExit(refusedFollow.child, "SIGTERM"); }
 
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.

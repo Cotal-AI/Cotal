@@ -9,7 +9,7 @@ import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
 import { ClosedConnectionError, type Msg, type NatsConnection } from "@nats-io/transport-node";
-import { withDeadline } from "./deadline.js";
+import { CONNECTION_RECOVERY_MS, withDeadline } from "./deadline.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
@@ -21,7 +21,7 @@ import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
 import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
-import { CONTROL_DELIVERY, controlServiceSubject, parseSubject } from "./subjects.js";
+import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, controlServiceSubject, parseSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, ControlRequestInit, EndpointRef } from "./types.js";
 
 /** What the control plane reads from its endpoint. State is read when it is used, never copied, and
@@ -218,6 +218,15 @@ export class EndpointControlPlane {
     // reply subject (not a standing `.reply.>` wildcard), so a predictable suffix would let a peer target
     // an in-flight reply subscription — randomUUID brings it to parity with the nuid-protected `_INBOX`
     // model. Keep both; don't regress to a counter. (Confirmed by the review panel's fact-check.)
+    const reply = `${reqSubject}.reply.${randomUUID()}`;
+    const body: ControlRequest = { op, args, from: this.ref() };
+    const m = await this.requestBoundReply(this.conn.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
+    return m.json<ControlReply>();
+  }
+
+  async requestDeliveryAdmin(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const reqSubject = controlServiceSubject(this.identity.space, CONTROL_DELIVERY_ADMIN, this.identity.owner, this.identity.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { op, args, from: this.ref() };
     const m = await this.requestBoundReply(this.conn.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
@@ -439,7 +448,7 @@ export class EndpointControlPlane {
     args?: Record<string, unknown>,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
-    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+    const deadline = Date.now() + (opts.deadlineMs ?? CONNECTION_RECOVERY_MS);
     const rebuilding = this.lifecycle.rebuildPromise;
     if (rebuilding) {
       await this.waitServiceRecovery(rebuilding, deadline, opts.signal,

@@ -1,12 +1,20 @@
 import type { ParsedArgs } from "@cotal-ai/core";
-import { brokerAddressForDisplay, codeSpan, isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget, type ResolveFlags } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, codeSpan, isWorkspaceTargetError, presentationOf, pruneStaleMeshes, resolveMeshTarget, type Presentation, type ResolveFlags } from "@cotal-ai/workspace";
 import { canPrompt } from "../commands/meshes-wizard.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 
-/** Give the command again with each exact registered space, without confirming a removal. */
+/** Inventory is machine-wide: carry only its output mode, never the refused target. */
+export function spaceInventoryCommand(presentation: Presentation): string {
+  return codeSpan(`cotal space${presentation === "rich" ? "" : ` --${presentation}`}`);
+}
+
+/** List spaces for an unknown explicit target, or offer each registered choice for an ambiguous one. */
 export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedArgs, rest: readonly string[]): string | undefined {
-  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
+  if (!isWorkspaceTargetError(error)) return undefined;
+  if (error.code === "unknown-space" && !error.details.selected && typeof args.values.space === "string" && args.values.space === error.details.requested)
+    return `see ${spaceInventoryCommand(presentationOf(args.values))}`;
+  if (error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
   const show = command === "space" && args.positionals[0] === "show";
   const remove = command === "endpoint" && args.positionals[0] === "remove";
   const describe = command === "describe" || command === "endpoint" && args.positionals[0] === "describe";

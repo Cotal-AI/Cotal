@@ -282,7 +282,13 @@ export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclara
   let check: ValidateFunction, valid: boolean;
   try { check = new Ajv2020({ strict: true, ownProperties: true, validateFormats: false }).compile(declaration.optionsSchema); valid = check(options) === true; }
   catch { return invalid("the adapter options could not be validated against its closed declaration"); }
-  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}; option values were not printed`);
+  if (!valid) {
+    const error = check.errors?.at(-1);
+    // For numeric bounds and types Ajv's message contains the declared constraint, never the input.
+    const numeric = error && (["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"].includes(error.keyword)
+      || (error.keyword === "type" && (error.params.type === "integer" || error.params.type === "number")));
+    return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}${numeric && error.message ? ` (${error.message})` : ""}; option values were not printed`);
+  }
 }
 
 /** Public readiness evidence is closed and bound to a creation-pinned process. The installed
@@ -343,8 +349,9 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
     const linked = (link: string): never => {
       let physical: string | undefined;
       try { physical = realpathSync(path); } catch { physical = undefined; }
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${label(name)} crosses a symlink, which could be repointed after this check: ${pathFacts(link)}`, {
-        target: { option: name, path, refused: link }, remedy: physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`,
+      const next = physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${physical}`;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${label(name)} crosses a symlink, which could be repointed after this check`, {
+        target: { option: name, path, refused: link }, remedy: `${pathFacts(link)}; ${next}`,
       });
     };
     try {

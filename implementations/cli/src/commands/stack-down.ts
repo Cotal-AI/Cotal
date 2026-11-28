@@ -19,11 +19,12 @@ import {
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { cotalRoot } from "../lib/paths.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { localDiagnostic } from "../telemetry.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
@@ -62,6 +63,14 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
   [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+
+/** A preview can keep its output format at either a legacy or controller stack's root. */
+export function downInOwningRoot(root: string | undefined, values: ParsedArgs["values"]): string {
+  const mode = values["dry-run"] === true ? presentationOf(values) : "rich";
+  const retry = sameDown(values) + (mode === "rich" ? "" : ` --${mode}`);
+  if (root === undefined) return `run ${codeSpan(retry)} in the project that started the stack`;
+  return blockedDownRootRemedy(root, retry) ?? `run ${codeSpan(retry)} from ${root}`;
+}
 
 /** A stop records each member's stop under the space's service instance records, so a folder there this
  *  account cannot write refuses before the plan, naming it, rather than leaving every member running
@@ -142,8 +151,8 @@ function readMembers(journal: StackJournal): Member[] {
  *  stack's broker is gone that read cannot succeed, so the refusal names the command that brings
  *  the broker back while keeping the live manager. A broker whose process runs but sends no
  *  greeting is named with its pid; the broker stops last, so no stop signal is sent here. */
-async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
-  try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
+async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, values: ParsedArgs["values"]): Promise<ServiceAdapterStopPlan | undefined> {
+  try { return await prepareNativeServiceStop(manager.definition, manager.instance, values["with-agents"] === true); }
   catch (caught) {
     if (storeRefusedWrite(caught)) {
       let store: { path: string; cap?: number } | undefined;
@@ -168,16 +177,16 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker runs as pid ${pid} but does not answer at ${journal.server}, so the live manager's agent impact cannot be read; no member was stopped`, { target: { root: journal.root, space: journal.space, broker: broker!.instance.name, pid, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `if pid ${pid} is suspended, resume it with kill -CONT ${pid} and run \`cotal down\` again; if it stays unresponsive, end it with kill -KILL ${pid}, then run \`cotal up --space ${journal.space}\` to restart the broker while the manager keeps running, then run \`cotal down\`` });
     }
     if (broker || !isCommandFailure(error)) throw caught;
-    throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `run \`cotal up --space ${journal.space}\` to restart the broker from its recorded inputs while the manager keeps running, then run \`cotal down\`` });
+    throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `from this stack's project folder, run ${scopedStackCommand(`${displayCmd()} up`, journal.space, values)} to restart the broker from its recorded inputs while the manager keeps running, then run ${scopedStackCommand(sameDown(values), journal.space, values)}` });
   }
 }
 
 /** A stop queued during startup waits for native launch work and cleanup, not other stop blockers. */
-async function waitForLaunchImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
+async function waitForLaunchImpact(journal: StackJournal, members: readonly Member[], manager: Member, values: ParsedArgs["values"]): Promise<ServiceAdapterStopPlan | undefined> {
   const deadline = performance.now() + 40_000;
   let waiting = false;
   for (;;) {
-    try { return await managerImpact(journal, members, manager, withAgents); }
+    try { return await managerImpact(journal, members, manager, values); }
     catch (error) {
       if (!isCommandFailure(error) || error.outcome !== "refused" || error.code !== "LIFECYCLE_BLOCKED") throw error;
       const detail = error.native?.detail as { phase?: string; blockers?: unknown } | undefined;
@@ -213,12 +222,17 @@ function disabledJetStreamStop(journal: StackJournal, manager: Member, write: No
     { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
 }
 
+function scopedStackCommand(command: string, space: string, values: ParsedArgs["values"]): string {
+  const mode = presentationOf(values);
+  return codeSpan(command + targetWords({ space }) + (mode === "rich" ? "" : ` --${mode}`));
+}
+
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
  *  Returns a settled active restore of this stack that was admitted, for the result to name. */
-function scopeRefusals(journal: StackJournal): string | undefined {
+function scopeRefusals(journal: StackJournal, values: ParsedArgs["values"]): string | undefined {
   const maintenance = stackMaintenanceFence(journal.root, journal);
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance attempt; the controller stack was not stopped under it", { target: { root: journal.root } });
-  stackScopeRefusals(journal, "bare `cotal down`");
+  stackScopeRefusals(journal, `${scopedStackCommand(sameDown(values), journal.space, values)} from this stack's project folder`, { presentation: presentationOf(values) });
   return maintenance.admittedRestore;
 }
 
@@ -473,10 +487,10 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
     const space = String(values.space), elsewhere = stackRootElsewhere(space, root);
     recordOperationSpace(space);
     if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere, space);
-    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
       target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
-      remedy: elsewhere ? blockedDownRootRemedy(elsewhere, sameDown(values)) ?? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
-    });
+      remedy: elsewhere ? downInOwningRoot(elsewhere, values) : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
+    }));
   }
   recordOperationSpace(journal0.space);
   if (stackOperationUnsettled(journal0) && journal0.operation.kind !== "up" && journal0.operation.kind !== "down")
@@ -500,7 +514,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
   const manager = members.find((member) => member.role === "manager" && member.live);
   try {
-    restore = scopeRefusals(journal0);
+    restore = scopeRefusals(journal0, values);
     assertJournalWritable(root, values);
     assertServiceRecordsWritable(root, journal0.space, values);
     if (withAgents && !manager) throw missingStopManager(journal0, target);
@@ -577,7 +591,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   }
   const broker = members.find((member) => member.role === "broker" && member.live);
   const brokerPid = broker?.instance.record.value.process?.pid;
-  const admittedRestore = scopeRefusals(journal0);
+  const admittedRestore = scopeRefusals(journal0, values);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
   const manager = members.find((member) => member.role === "manager" && member.live);
@@ -619,7 +633,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the suspended broker could not be resumed; no member was stopped", { target: instanceProjection(broker.instance) }); }
     }
     if (manager) {
-      manager.native = await (waitForLaunch ? waitForLaunchImpact : managerImpact)(journal0, members, manager, withAgents);
+      manager.native = await (waitForLaunch ? waitForLaunchImpact : managerImpact)(journal0, members, manager, values);
       if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
     }
     if (!values.yes) {
@@ -679,7 +693,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       let kernel: ServiceAdapterKernelStopPlan | undefined;
       if (role === "broker") {
         // Recheck the whole scope now that earlier members are confirmed stopped.
-        scopeRefusals(journal);
+        scopeRefusals(journal, values);
         kernel = await prepareKernelServiceStop(member.definition, current);
       }
       const stopped = await stopProcessService(member.definition, current, holds, { plan: role === "manager" ? member.native : undefined, withAgents: role === "manager" && withAgents }, { plan: kernel });

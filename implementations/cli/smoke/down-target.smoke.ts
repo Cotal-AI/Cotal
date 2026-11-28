@@ -359,9 +359,10 @@ try {
     bareSpace?.code === "TARGET_NOT_FOUND" && (bareSpace.message ?? "").includes(`recorded at ${meshA.root}, not at this folder's root`) &&
       (bareSpace.remedy ?? "").includes(`run \`cotal down\` in ${meshA.root}`) && /`cotal service stop <service-name> --space teamA`/.test(bareSpace.remedy ?? ""),
     bareSpace && { code: bareSpace.code, message: bareSpace.message, remedy: bareSpace.remedy });
-  const previewSpace = await rejection(run([], { space: "teamA", "dry-run": true }));
-  check("...and its preview refuses the same way, naming the preview to run there",
-    previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
+  const previewSpace = await rejection(run([], { space: "teamA", "dry-run": true, json: true }));
+  const previewRoot = meshA.root;
+  check("...and its JSON preview names only a JSON preview to run there",
+    previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && ["cotal", "pnpm cotal"].some(cli => previewSpace.remedy === `run \`${cli} down --dry-run --json\` from ${previewRoot}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     chmodSync(meshA.root, 0o000);
@@ -374,10 +375,10 @@ try {
   }
   recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
   for (const preview of [false, true]) {
-    const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));
+    const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true, plain: true } : { yes: true }) }));
     check(`a connection in another folder does not supply the hosting project for a ${preview ? "preview" : "stop"}`,
       remote?.code === "TARGET_NOT_FOUND" && remote.message?.includes(`connection to space "remote" is registered at ${meshB.root}`) === true &&
-        ["cotal", "pnpm cotal"].some(cli => remote.remedy === `run \`${cli} down ${preview ? "--dry-run" : "--yes"}\` in the project that started the stack`), remote);
+        ["cotal", "pnpm cotal"].some(cli => remote.remedy === `run \`${cli} down ${preview ? "--dry-run --plain" : "--yes"}\` in the project that started the stack`), remote);
   }
   removeMesh("remote");
   const unknown = await rejection(run(["web"], { space: "nosuch" }));
@@ -965,6 +966,8 @@ try {
       { label: "a bare down", again: "cotal down --yes", values: { yes: true } },
       { label: "a bare down --json", again: "cotal down --yes", values: { yes: true, json: true } },
       { label: "a bare down --dry-run", again: "cotal down --dry-run", values: { "dry-run": true } },
+      { label: "a JSON preview", again: "cotal down --dry-run --json", values: { "dry-run": true, json: true } },
+      { label: "a plain preview", again: "cotal down --dry-run --plain", values: { "dry-run": true, plain: true } },
     ];
     for (const { label, again, values } of bareCases) {
       const r = await bareDownIn(empty, values);

@@ -52,6 +52,7 @@ import {
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
+import { spaceInventoryCommand } from "../lib/choose-target.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { registryFailure } from "../lib/registry-errors.js";
@@ -250,7 +251,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current, moved?.recordedRoot === p.root && moved.journal.space === p.space ? project : undefined));
     const folder = folderSpaceOverSelection(process.cwd(), current, offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: !selectionWarning && (current === null || items.some((s) => s.current)), folder, items, prepared };
-    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarning ? [selectionWarning] : selectionWarnings(result) }, (rows) => spacesView(rows, project, moved));
+    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarning ? [selectionWarning] : selectionWarnings(result) }, (rows) => spacesView(rows, project, moved, presentation));
     return;
   }
   if (sub === "show") {
@@ -294,7 +295,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     if (!m) {
       const p = findPreparedSpace(name);
       // No space has the name, so the refusal is not headed with it.
-      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { requested: name }, remedy: "see the registered spaces with `cotal space`" });
+      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { requested: name }, remedy: `see the registered spaces with ${spaceInventoryCommand(presentation)}` });
       const matching = moved?.recordedRoot === p.root && moved.journal.space === p.space ? moved : undefined;
       const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current, matching && project) };
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, (row) => preparedView(row, project, matching));
@@ -407,7 +408,7 @@ function preparedRootCell(p: PreparedRow, problem: ProjectRootProblem | undefine
   return { text: `${root} (${reason})`, tone: "waiting" };
 }
 
-function spacesView(result: SpacesResult, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
+function spacesView(result: SpacesResult, project: string, moved: ReturnType<typeof journalRecordedElsewhere>, presentation: Presentation): Report {
   const cmd = displayCmd();
   const addBroker = checkRoot(undefined, process.cwd()).ok
     ? { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }
@@ -431,9 +432,7 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
           const problem = problems.get(p.space);
           if (!problem || p === movedRow) return [];
           const name = shellWord(p.space);
-          return problem === "missing"
-            ? [{ command: `${cmd} space forget ${name}`, description: `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${name} --root <dir>`)}` }]
-            : [{ command: `${cmd} space show ${name}`, description: displayRemedy(preparedRootRemedy(p.space, problem), cmd) }];
+          return [{ command: `${cmd} space show ${presentation === "plain" ? "--plain " : ""}${p.space.startsWith("-") ? "-- " : ""}${name}`, description: displayRemedy(preparedRootRemedy(p.space, problem), cmd) }];
         }),
       ] },
       ...(movedRow && moved ? [{ kind: "lines" as const, lines: [{ text: movedPreparedRemedy(project, moved), tone: "hint" as const }] }] : []),

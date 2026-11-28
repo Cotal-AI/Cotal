@@ -45,6 +45,7 @@ const inventory = spaceBackupInventory(space);
 assert.equal(inventory.full.length, 12);
 assert.ok(inventory.backedUp.some((stream) => stream.name === eventPayloadStream(space) && stream.class === "messages"));
 assert.ok(!inventory.registry.includes(eventPayloadStream(space)));
+assert.deepEqual(canonicalBackupStreamConfig(space, chatStream(space)).subjects, ["cotal.backup_smoke.chat.>"]);
 assert.deepEqual(canonicalBackupStreamConfig(space, eventPayloadStream(space)), {
   ...canonicalBackupStreamConfig(space, chatStream(space)),
   name: eventPayloadStream(space),

@@ -2,6 +2,7 @@ import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, writeF
 import { basename, join, parse, resolve, sep } from "node:path";
 import { oneLine, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, endpointContractTemplate, MAX_ENDPOINT_CONTRACT_BYTES, parseEndpointContract, presentationOf, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readLocalRecordSource } from "../lib/protected-records.js";
 
@@ -97,12 +98,12 @@ function refuseContractDirectory(path: string, presentation: Presentation): void
     remedyIsCommand: command ? true : undefined,
   });
 }
-function missing(path: string, name: string): void {
+function missing(path: string, name: string, presentation: Presentation): void {
   try { lstatSync(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the scaffold target cannot be inspected", { target: { path } }); }
   throw new CommandFailure("refused", "CONFLICT", "a scaffold target already exists; it was not overwritten", {
     target: { path },
-    remedy: `run ${codeSpan(`cotal endpoint init ${shellWord(name)} --dir <new-directory>`)} with an unused directory`,
+    remedy: `run ${codeSpan(`cotal endpoint init ${shellWord(name)} --dir <new-directory>${presentation === "rich" ? "" : ` --${presentation}`}`)} with an unused directory`,
   });
 }
 
@@ -113,7 +114,12 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   if (mode === "check") {
     const file = resolve(name);
     refuseContractDirectory(file, presentation);
-    const bytes = readLocalRecordSource(file, MAX_ENDPOINT_CONTRACT_BYTES);
+    let bytes: Buffer | undefined;
+    try { bytes = readLocalRecordSource(file, MAX_ENDPOINT_CONTRACT_BYTES); }
+    catch (error) {
+      if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw localDiagnostic(error);
+      throw error;
+    }
     if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the endpoint contract file was not found at ${codeSpan(shellWord(file))}`, {
       target: { path: file },
       remedy: RETRY_WITH_CONTRACT,
@@ -135,7 +141,7 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   parseEndpointContract(JSON.stringify(source));
   const existing = directory(destination);
   const files = [{ path: join(destination, CONTRACT_FILE), bytes: JSON.stringify(source, null, 2) + "\n", mode: 0o600 }, { path: join(destination, "handler.mjs"), bytes: HANDLER, mode: 0o700 }];
-  if (existing) for (const file of files) missing(file.path, name);
+  if (existing) for (const file of files) missing(file.path, name, presentation);
   const changed: ScaffoldChange[] = [];
   try {
     if (!existing) createDirectories(destination, changed);

@@ -24,6 +24,7 @@ import type { AddressInfo } from "node:net";
 import {
   CotalEndpoint,
   createSpaceAuth,
+  credsClaims,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -36,7 +37,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
+import { agentGrants, authDir, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -438,7 +439,14 @@ try {
   // ── whoami --creds: what a credential file's own claims permit, with no broker contacted ─────────
   const agentId = newIdentity(), agentUid = mintLifecycleUid();
   const agentFile = join(home, "whoami-agent.creds");
-  writeFileSync(agentFile, await mintCreds(auth, agentId, "agent", { lifecycleUid: agentUid, allowSubscribe: ["general", "team.>"], allowPublish: ["general"] }), { mode: 0o600 });
+  const agentCredential = await mintCreds(auth, agentId, "agent", { lifecycleUid: agentUid, allowSubscribe: ["general", "team.>"], allowPublish: ["general"] });
+  writeFileSync(agentFile, agentCredential, { mode: 0o600 });
+  const agentRows = credsClaims(agentCredential).nats;
+  const decodedGrants = agentGrants(agentRows ?? {}, space);
+  check("workspace agent grants decode the exact read and post subject rows",
+    agentRows?.sub?.allow?.includes(`cotal.${space}.chat.*.*.general`) === true && agentRows.sub.allow.includes(`cotal.${space}.chat.*.*.team.>`) &&
+      agentRows.pub?.allow?.includes(`cotal.${space}.chat.local.${agentId.id}.general`) === true &&
+      JSON.stringify(decodedGrants) === JSON.stringify({ read: ["general", "team.>"], post: ["general"], role: null }), decodedGrants);
   const asAgent = await run(["whoami", "--creds", agentFile, "--json"]);
   const agentResult = asAgent.envelope?.result;
   check("whoami --creds reports an agent credential's space, profile, principal, lifecycle and channel grants",
@@ -447,7 +455,11 @@ try {
       JSON.stringify(agentResult.post) === JSON.stringify(["general"]) && agentResult.dms === "own" && agentResult.expired === false, shown(asAgent));
   for (const [profile, dms] of [["observer", "none"], ["admin", "all"]] as const) {
     const file = join(home, `whoami-${profile}.creds`);
-    writeFileSync(file, await mintCreds(auth, newIdentity(), profile), { mode: 0o600 });
+    const credential = await mintCreds(auth, newIdentity(), profile);
+    writeFileSync(file, credential, { mode: 0o600 });
+    const rows = credsClaims(credential).nats?.sub?.allow ?? [];
+    check(`${profile} provisioning grants the exact chat wildcard`,
+      JSON.stringify(rows.filter((row) => row.includes(".chat."))) === JSON.stringify([`cotal.${space}.chat.>`]), rows);
     const r = await run(["whoami", "--creds", file, "--json"]);
     const result = r.envelope?.result;
     check(`whoami --creds on an ${profile} credential reads every channel, posts to none, has no lifecycle and DM history ${dms}`,

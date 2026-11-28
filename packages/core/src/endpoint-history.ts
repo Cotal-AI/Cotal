@@ -1,23 +1,29 @@
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { EndpointParts } from "./endpoint-parts.js";
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldToLoop, setTimeout as delay } from "node:timers/promises";
 import { nanos, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
-import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, type ParsedSubject } from "./subjects.js";
-import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
+import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, patternCovers, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, parsePrincipalKey, unicastRecvFilter, unicastSubject, type ParsedSubject } from "./subjects.js";
+import { isConsumerAlreadyExists, isConsumerNotFound, isStreamNotFound } from "./jetstream-missing.js";
 import { effectiveReplay, effectiveReplayWindowMs, readChannelConfig, readChannelDefaults } from "./channels.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { hasStoredOrigin } from "./endpoint-provenance.js";
-import type { CotalMessage, HistoryMessage, Delivery, MessageMeta } from "./types.js";
+import type { CotalMessage, DmHistoryRead, HistoryMessage, Delivery, MessageMeta } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
+
+type ChatHistoryRead = { untilSeq?: number; limit?: number; visitPage?: (page: readonly JsMsg[]) => Promise<void>; active?: () => boolean };
+type ReplayFilter = { channel: string; subject: string; frontier: number; since: number };
+export type RuntimeReplay = { through: number; beganAt: number; seq: number; liveIds: Set<string> };
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
   emit: (event: string, ...args: unknown[]) => boolean;
+  emitReplayError: (error: Error) => void;
   decodeHistory: (message: { subject: string; headers?: MsgHdrs; json: <T>() => T }) => HistoryMessage | undefined;
   isRecord: (value: unknown) => value is Record<string, unknown>;
   isUsableMessageId: (value: unknown) => value is string;
@@ -128,7 +134,7 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "consumers" | "controlPlane">) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointHistoryDeps, private readonly parts: Pick<EndpointParts, "controlPlane">) {}
 
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
@@ -891,13 +897,14 @@ export class EndpointHistory {
    * 10131) — so an agent can only ever replay a channel its `allowSubscribe` grants. Single filter
    * only (plural isn't ACL-constrainable); `AckPolicy.None` + `mem_storage` so it leaves no durable
    * state, and it is deleted right after. Returns raw messages in stream order from `start`,
-   * stopping once past `untilSeq` (exclusive of it) or after `limit`. The per-instance name means
+   * or hands off each page without retaining it. Stops after `untilSeq` (inclusive) or `limit`.
+   * The per-instance name means
    * calls must be serial — every reader here awaits to completion, so they are.
    */
   async collectHistory(
     subject: string,
     start: { seq: number } | { time: Date },
-    opts: { untilSeq?: number; limit?: number } = {},
+    opts: ChatHistoryRead = {},
   ): Promise<JsMsg[]> {
     // Serialize on the per-instance lock: the fixed `chathist_<id>` name means two concurrent reads
     // (recall + join-backfill + drop-marker can race in-process) would delete/recreate the consumer
@@ -908,19 +915,25 @@ export class EndpointHistory {
   }
 
 
-  async collectHistoryInner(
+  private async collectHistoryInner(
     subject: string,
     start: { seq: number } | { time: Date },
-    opts: { untilSeq?: number; limit?: number } = {},
+    opts: ChatHistoryRead = {},
   ): Promise<JsMsg[]> {
-    if (!this.conn.jsm || !this.conn.js) throw new Error(this.deps.notLiveMsg());
+    const { nc, js, jsm } = this.conn;
+    if (!nc || !jsm || !js) throw new Error(this.deps.notLiveMsg());
     const stream = chatStream(this.identity.space);
     const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("chat history reads"));
     const out: JsMsg[] = [];
+    let matched = 0;
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
-    await this.parts.consumers.deleteConsumerIfPresent(stream, name);
-    await this.conn.jsm.consumers.add(stream, {
+    const remove = async () => {
+      try { await jsm.consumers.delete(stream, name); }
+      catch (error) { if (!isConsumerNotFound(error) && !isStreamNotFound(error)) throw error; }
+    };
+    await remove();
+    await jsm.consumers.add(stream, {
       name,
       filter_subject: subject,
       ack_policy: AckPolicy.None,
@@ -931,77 +944,120 @@ export class EndpointHistory {
         : { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: start.seq }),
     });
     try {
-      const consumer = await this.conn.js.consumers.get(stream, name);
+      const consumer = await js.consumers.get(stream, name);
       let pending = (await consumer.info()).num_pending;
-      while (pending > 0) {
+      while (pending > 0 && (opts.active?.() ?? true)) {
         const want = Math.min(pending, 256);
         const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
         let got = 0;
-        for await (const m of iter) {
-          got++;
-          if (opts.untilSeq !== undefined && m.seq > opts.untilSeq) return out; // crossed the frontier
-          // Belt-and-suspenders over the lock: only keep messages on the requested channel subject
-          // (the consumer's filter already bounds this; guards against any stale-consumer edge).
-          if (!subjectMatches(subject, m.subject)) continue;
-          out.push(m);
-          if (opts.limit !== undefined && out.length >= opts.limit) return out;
+        const page: JsMsg[] = opts.visitPage ? [] : out;
+        try {
+          for await (const m of iter) {
+            got++;
+            if (opts.untilSeq !== undefined && m.seq > opts.untilSeq) return out;
+            // Recheck the subject even when the broker's filter holds the same boundary.
+            if (!subjectMatches(subject, m.subject)) continue;
+            page.push(m);
+            if (opts.limit !== undefined && ++matched >= opts.limit) return out;
+          }
+        } finally {
+          if (page.length && opts.visitPage) await opts.visitPage(page);
         }
-        if (got < want) break; // drained early
+        if (got < want) {
+          if (opts.visitPage) {
+            if (nc.isClosed() || this.conn.nc !== nc) throw new Error(this.deps.notLiveMsg());
+            // Retention can remove rows from the pending snapshot. A short page alone does not
+            // establish this, since a pull can also time out while the connection recovers.
+            if ((await consumer.info()).num_pending > 0) throw new Error("channel history pull ended with pending messages");
+          }
+          break; // retention may have removed pending rows
+        }
         pending -= got;
       }
     } finally {
-      await this.parts.consumers.deleteConsumerIfPresent(stream, name);
+      if (!nc.isClosed() && this.conn.nc === nc) await remove();
     }
     return out;
   }
 
 
-  /** Read a channel's retained history up to `upToSeq` (the join frontier) and emit each message
-   *  as a `historical` "message" event. `sinceMs` bounds how far back via a native consumer
-   *  `start_time` (now − window); unset ⇒ the full retained window. `floorSeq`, when set, is a
-   *  tighter lower bound than the window: this incarnation had already consumed everything up to
-   *  and including it before a preservation cut, so the read starts at `floorSeq + 1` and the
-   *  `sinceMs` window is not consulted (the floor is the tighter bound by construction — the seat
-   *  was live for the window's tail). `floorSeq >= upToSeq` means there is nothing new to read at
-   *  all; return 0 without creating a consumer. A floor below the stream's oldest retained sequence
-   *  is fine: JetStream's `DeliverPolicy.StartSequence` begins at the first retained message at or
-   *  after it, which is exactly the catch-up. New messages (`seq > upToSeq`) are skipped — the live
-   *  tail owns them. Reads through the contained {@link collectHistory}. */
-  async backfillChannel(channel: string, upToSeq: number, sinceMs?: number, floorSeq?: number): Promise<number> {
-    if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
-    const subject = chatSubject(this.identity.space, "*", "*", channel);
-    // A window that reaches back before 1970 covers the whole retained window (#7323). Its start time
-    // would be a date JetStream does not read, or not a valid date at all, and the read replayed nothing.
-    const since = sinceMs === undefined ? undefined : Date.now() - sinceMs;
+  /** Replay the union of the group's policy windows through its broadest broker-authorized filter.
+   *  A preservation floor replaces the time windows. The live tail owns posts beyond the join frontier. */
+  private async backfillChannel(
+    group: ReplayFilter[], previous: ReplayFilter[], floorSeq?: number,
+    runtime?: { checkpoint: RuntimeReplay; active: () => boolean },
+  ): Promise<number> {
+    const filter = group[0]!;
+    const { subject } = filter;
+    const covered = group.slice(1);
+    const upToSeq = group.reduce((max, entry) => Math.max(max, entry.frontier), 0);
+    const since = group.reduce((min, entry) => Math.min(min, entry.since), filter.since);
+    const resumeSeq = runtime?.checkpoint.seq || floorSeq;
+    if (resumeSeq !== undefined && resumeSeq >= upToSeq) return 0;
     const start =
-      floorSeq !== undefined ? { seq: floorSeq + 1 } : since === undefined || !(since > 0) ? { seq: 1 } : { time: new Date(since) };
-    let msgs: JsMsg[];
-    try {
-      msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });
-    } catch (e) {
-      this.deps.emit("error", e as Error);
-      if (isPermissionDenied(e)) throw e;
-      return 0;
-    }
+      resumeSeq !== undefined ? { seq: resumeSeq + 1 } : since === 0 ? { seq: 1 } : { time: new Date(since) };
+    const joined = (entry: ReplayFilter) => runtime ? runtime.active() : this.identity.channels.includes(entry.channel);
+    const active = () => !this.lifecycle.stopped && group.some(joined);
     const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
+    const nc = this.conn.nc;
     let n = 0;
-    for (const sm of msgs) {
-      if (hasStoredOrigin(sm.headers)) continue;
-      let msg: CotalMessage;
-      try {
-        msg = sm.json<CotalMessage>();
-      } catch {
-        continue; // skip undecodable
+    let examined = 0;
+    const visitPage = async (page: readonly JsMsg[]) => {
+      for (const sm of page) {
+        if (!active()) break;
+        examined = sm.seq;
+        if (runtime) runtime.checkpoint.seq = sm.seq;
+        const inWindow = (entry: ReplayFilter) => sm.seq <= entry.frontier &&
+          (entry.since === 0 || sm.time.getTime() >= entry.since);
+        if (!(joined(filter) && inWindow(filter)) && !covered.some(entry =>
+          joined(entry) && inWindow(entry) && subjectMatches(entry.subject, sm.subject))) continue;
+        // Incomparable patterns can overlap without either authorizing the union as a broker filter.
+        if (previous.some(entry => joined(entry) && inWindow(entry) && subjectMatches(entry.subject, sm.subject))) continue;
+        if (this.emitReplay(sm, noop, runtime?.checkpoint.liveIds)) n++;
       }
-      // Same authenticity guard as the tail; skip our own echoes in history.
-      if (!this.deps.isRecord(msg) || !this.deps.isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
-      const parsed = parseSubject(sm.subject);
-      if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.identity.card.id) continue;
-      // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
-      this.deps.emit("message", this.deps.authenticatedMessage(msg, parsed), noop, { historical: true, kind: "channel" } satisfies MessageMeta);
-      n++;
+      // Yield even when all the frames on this page were skipped.
+      await yieldToLoop();
+    };
+    try {
+      await this.collectHistory(subject, start, { untilSeq: upToSeq, active, visitPage });
+    } catch (error) {
+      if (!active()) return n;
+      this.deps.emitReplayError(error as Error);
+      if (isPermissionDenied(error)) throw error;
+      // An interrupted boot must retry, but an ordinary read failure does not prevent binding.
+      if (!runtime && this.conn.nc === nc && !nc?.isClosed()) {
+        for (const entry of group) entry.frontier = Math.min(entry.frontier, examined);
+        return n;
+      }
+      throw new Error(`channel history replay did not complete. Delivered ${n} messages before the read ended.`, { cause: error });
     }
     return n;
+  }
+
+  /** Resume from the original replay window and checkpoint through this attempt's frontier. */
+  async backfillRuntimeJoin(channel: string, checkpoint: RuntimeReplay, active: () => boolean): Promise<number> {
+    const policy = await this.joinPolicyFresh(channel);
+    if (!policy.replay || !active()) return 0;
+    const since = policy.windowMs === undefined ? 0 : Math.max(0, checkpoint.beganAt - policy.windowMs);
+    const filter = { channel, subject: chatSubject(this.identity.space, "*", "*", channel), frontier: checkpoint.through, since };
+    return this.backfillChannel([filter], [], undefined, { checkpoint, active });
+  }
+
+  private emitReplay(sm: JsMsg, noop: Delivery, liveIds?: Set<string>): boolean {
+    if (hasStoredOrigin(sm.headers)) return false;
+    let msg: CotalMessage;
+    try {
+      msg = sm.json<CotalMessage>();
+    } catch {
+      return false; // skip undecodable
+    }
+    // Same authenticity guard as the tail; skip our own echoes in history.
+    if (!this.deps.isRecord(msg) || !this.deps.isUsableMessageId(msg.id)) return false;
+    const parsed = parseSubject(sm.subject);
+    if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.identity.card.id) return false;
+    if (liveIds?.delete(msg.id)) return false;
+    this.deps.emit("message", this.deps.authenticatedMessage(msg, parsed), noop, { historical: true, kind: "channel" } satisfies MessageMeta);
+    return true;
   }
 
 
@@ -1071,6 +1127,31 @@ export class EndpointHistory {
     return { messages: collected, seqs, dropped, unanswered: false };
   }
 
+  async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
+    const keys = [...new Set(principals)].map((p) => {
+      const key = parsePrincipalKey(p);
+      if (!key) throw new Error(`dmHistoryOf: "${p}" is not a principal <owner>.<actor>`);
+      return key;
+    });
+    if (!keys.length) return { state: "read", items: [] };
+    const limit = opts?.limit ?? 100;
+    const read = (subjects: string[]) => this.streamHistory(dmStream(this.identity.space), subjects, limit, undefined, opts?.signal);
+    let rows: { seq: number; msg: HistoryMessage }[];
+    try {
+      // A consumer refuses overlapping filters, and a DM between two of these principals matches a
+      // recipient filter and a sender filter, so each direction is its own read.
+      rows = (await Promise.all([
+        read(keys.map((k) => unicastRecvFilter(this.identity.space, k.owner, k.actor))),
+        read(keys.map((k) => unicastSubject(this.identity.space, "*", "*", k.owner, k.actor))),
+      ])).flat();
+    } catch (e) {
+      if (isPermissionDenied(e)) return { state: "denied", reason: (e as Error).message };
+      throw e;
+    }
+    const bySeq = new Map(rows.map((r) => [r.seq, r.msg]));
+    return { state: "read", items: [...bySeq].sort(([a], [b]) => a - b).slice(-limit).map(([, msg]) => msg) };
+  }
+
   /** Phase 2 of a join — backfill each armed channel's history up to its frontier (replay-gated),
    *  AFTER the filter flip. `floorSeq`, when set, is this incarnation's last-consumed CHAT stream
    *  sequence before a preservation cut (SPEC-external, manager-recorded) — it bounds the read from
@@ -1079,10 +1160,22 @@ export class EndpointHistory {
    *  after the cut was never read by this incarnation, so its replay window is the join contract).
    *  Returns the total backfilled. */
   async backfillArmed(frontiers: Map<string, number>, floorSeq?: number): Promise<number> {
+    const filters: ReplayFilter[] = [];
+    const now = Date.now();
+    for (const [channel, frontier] of frontiers) {
+      const policy = await this.joinPolicyFresh(channel);
+      if (!policy.replay || !this.identity.channels.includes(channel)) continue;
+      const since = floorSeq === undefined && policy.windowMs !== undefined ? Math.max(0, now - policy.windowMs) : 0;
+      filters.push({ channel, subject: chatSubject(this.identity.space, "*", "*", channel), frontier, since });
+    }
+    const covers = (a: ReplayFilter, b: ReplayFilter) => patternCovers(a.channel, b.channel);
+    const outer = filters.filter(b => !filters.some(a => a !== b && covers(a, b)));
     let total = 0;
-    for (const [ch, frontier] of frontiers) {
-      const policy = await this.joinPolicyFresh(ch);
-      if (policy.replay) total += await this.backfillChannel(ch, frontier, policy.windowMs, floorSeq);
+    const previous: ReplayFilter[] = [];
+    for (const filter of outer) {
+      const group = [filter, ...filters.filter(b => b !== filter && outer.find(a => covers(a, b)) === filter)];
+      total += await this.backfillChannel(group, previous, floorSeq);
+      previous.push(...group);
     }
     return total;
   }

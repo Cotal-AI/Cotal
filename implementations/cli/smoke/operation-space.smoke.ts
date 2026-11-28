@@ -267,9 +267,10 @@ for (const [verb, ...args] of [["stop", "target"], ["attach", "target"], ["statu
       refused.status === 1 && refused.stderr.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !refused.stderr.includes("`cotal ps`"), shown(refused));
   }
 }
-const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
+const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--server", "nats://127.0.0.1:39200", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
+  (createPin.envelope.error.remedy ?? "").includes("`cotal ps --space opsp --server nats://127.0.0.1:39200 --json`") &&
   (createPin.envelope.error.remedy ?? "").includes("replace only the --on value in the original command") &&
   !createPin.stdout.includes("cotal persona create h1 --on") && !createPin.stdout.includes("keep this definition private"), shown(createPin));
 // #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the
@@ -436,7 +437,7 @@ const catalog = dirname(agentFilePath(root, "default"));
 const noName = cotal("spawn", "nosuch", "--dry-run", "--json");
 check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog and --file",
   noName.status === 2 && noName.envelope?.error?.code === "TARGET_NOT_FOUND" && noName.envelope.error.message === `no persona "nosuch" in ${catalog} (mesh "opsp")`
-    && noName.envelope.error.remedy === "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`", shown(noName));
+    && noName.envelope.error.remedy === "list the catalog with `cotal persona --space opsp --json`, then pass a name from it, or a persona file with `--file <persona.md>`", shown(noName));
 const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
 check("spawn --dry-run of a missing --file names the file it checked",
   noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));

@@ -64,6 +64,7 @@ export class EndpointConnection {
   private bearerRefusalSurfaced = false;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
+  private reestablishFlight?: Promise<void>;
   /** The observer feeds {@link tap} was asked for. This is INTENT, re-subscribed by {@link bindTap}
    *  on every (re)connect: a rebuild after an outage the library could not ride out closes the old
    *  connection and every subscription on it, so a tap bound once went silent while the endpoint
@@ -442,6 +443,33 @@ export class EndpointConnection {
     return true;
   }
 
+  start(): Promise<void> {
+    if (this.lifecycle.startPromise) return this.lifecycle.startPromise;
+    const flight = this.startOnce().finally(() => {
+      if (this.lifecycle.startPromise === flight) this.lifecycle.startPromise = undefined;
+    });
+    this.lifecycle.startPromise = flight;
+    return flight;
+  }
+
+  private async startOnce(): Promise<void> {
+    // A stopped dial is not a teardown failure. The stopped fence still closes any late epoch.
+    try {
+      await this.connectAndBind();
+    } catch (error) {
+      if (!this.lifecycle.stopped) throw error;
+    }
+    // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
+    // rebuild path already closes that race; initial start needs the same fence or the late bind
+    // leaves a fresh nc, heartbeat, consumers, and presence live on an endpoint already stopped.
+    // superviseConnection below: nats.js auto-reconnects transient drops, and when it exhausts its
+    // attempts and the connection closes for good we rebuild from scratch, so an in-process agent
+    // (e.g. the OpenCode plugin) recovers without a host respawn. Armed only after a successful
+    // first connect; a first-connect failure throws to the caller's connect-retry loop instead.
+    if (await this.tearDownIfStopped()) return;
+    this.superviseConnection();
+  }
+
   /** Open the connection and bind everything that hangs off it: status watch, presence
    *  watch + heartbeat, channel registry, and the durable consumers. Re-runnable — a
    *  reconnect calls it again after {@link EndpointConnection.clearConnectionScoped}; every binding is
@@ -481,10 +509,13 @@ export class EndpointConnection {
 
   /** Rebuild with backoff until it sticks or we're stopped. Interruptible: a manual
    *  {@link reconnect} kicks the backoff so the next attempt runs immediately instead of
-   *  awaiting the full delay. One loop at a time ({@link reestablishing}); concurrent
-   *  triggers coalesce via {@link EndpointReconnect.rebuild}. */
-  async reestablishLoop(): Promise<void> {
-    if (this.lifecycle.reestablishing) return;
+   *  awaiting the full delay. Concurrent callers share the recovery flight and its final bind. */
+  reestablishLoop(): Promise<void> {
+    return this.reestablishFlight ??= Promise.resolve().then(() => this.reestablish())
+      .finally(() => { this.reestablishFlight = undefined; });
+  }
+
+  private async reestablish(): Promise<void> {
     this.lifecycle.reestablishing = true;
     try {
       while (!this.lifecycle.stopped) {

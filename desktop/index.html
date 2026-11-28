@@ -5,41 +5,89 @@
   <div class="app loading">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
-      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><button id="connection-status" class="status-pill" type="button"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></button><button id="open-settings" class="header-control" type="button" hidden>Settings</button></div>
+      <div class="sidebar-status">
+        <button id="connection-status" class="status-pill" type="button"><span id="sidebar-status-dot" class="dot" data-tone="waiting" aria-hidden="true"></span><span id="sidebar-status-word">Starting</span></button>
+        <p id="machine-name" title="This computer">This computer</p>
+        <p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span>
+      </div>
+      <div id="desktop-views" role="tablist" aria-label="Cotal views" aria-orientation="vertical">
+        <button id="view-connection" type="button" role="tab" aria-selected="true" aria-controls="connection-view" aria-label="Connection" title="Connection">
+          <svg class="view-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 9.5l3-3M6 11l-1 1a2.1 2.1 0 0 1-3-3l2.5-2.5a2.1 2.1 0 0 1 3 0m1 3a2.1 2.1 0 0 0 3 0L14 7a2.1 2.1 0 0 0-3-3l-1 1"/></svg>
+          <span class="view-label">Connection</span>
+        </button>
+        <button id="view-apps" type="button" role="tab" aria-selected="false" aria-controls="apps-panel" tabindex="-1" aria-label="Agent apps" title="Agent apps">
+          <svg class="view-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2" width="4" height="4" rx=".75"/><rect x="10" y="2" width="4" height="4" rx=".75"/><rect x="2" y="10" width="4" height="4" rx=".75"/><rect x="10" y="10" width="4" height="4" rx=".75"/></svg>
+          <span class="view-label">Agent apps</span>
+        </button>
+        <button id="view-settings" type="button" role="tab" aria-selected="false" aria-controls="settings-panel" tabindex="-1" aria-label="Settings" title="Settings">
+          <svg class="view-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 4h3m3 0h6M2 8h7m3 0h2M2 12h2m3 0h7"/><circle cx="6.5" cy="4" r="1.5"/><circle cx="10.5" cy="8" r="1.5"/><circle cx="5.5" cy="12" r="1.5"/></svg>
+          <span class="view-label">Settings</span>
+        </button>
+      </div>
+      <footer class="sidebar-footer"><span id="footer-note" title="Closing this window keeps your agents running.">Closing this window keeps your agents running.</span><span class="version" id="version"></span></footer>
     </aside>
-    <main>
-      <ol id="journey" aria-label="Connection steps">
-        <li data-stage="welcome"><span class="step-marker">1</span><span>Welcome</span></li>
-        <li data-stage="sign-in"><span class="step-marker">2</span><span>Sign in</span></li>
-        <li data-stage="connect"><span class="step-marker">3</span><span>Connect</span></li>
-        <li data-stage="finished"><span class="step-marker">4</span><span>Ready</span></li>
-      </ol>
-      <section id="update-banner" class="update-banner" aria-label="Desktop update" hidden><span id="update-banner-copy"></span><button id="update-download" class="text-button" type="button">Open release page</button><button id="update-later" class="text-button" type="button">Later</button></section>
-      <section id="settings-panel" class="settings-card" aria-labelledby="settings-title" hidden>
-        <div class="settings-heading"><h1 id="settings-title" tabindex="-1">Settings</h1><button id="settings-back" class="text-button" type="button" hidden>Back</button></div>
-        <section class="settings-row"><div><h2>This computer</h2><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="text-button" type="button">Edit name</button></section>
-        <section class="settings-row"><div><h2>Updates</h2><p id="settings-update-summary" role="status">Update information is unavailable.</p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="text-button" type="button">Check now</button><button id="restart-update" class="text-button" type="button" hidden>Restart to update</button></section>
-        <div id="settings-download-row" class="settings-row" hidden><p id="settings-download-copy"></p><button id="settings-download" class="text-button" type="button">Open release page</button></div>
-        <section id="update-preference-row" class="settings-row"><div><p id="update-preference-label">Notify me about updates</p><p id="update-policy" class="muted"></p></div><label class="switch"><input id="update-preference" type="checkbox" aria-labelledby="update-preference-label"><span></span></label></section>
-        <div id="settings-startup"><h2>Startup</h2></div>
-        <section class="settings-row"><div><h2>Account</h2><p id="settings-account">No account information available</p><p id="settings-spaces" class="muted" tabindex="0"></p><div class="account-actions"><button id="settings-signout" class="text-button" type="button">Sign out selected provider</button><button id="settings-disconnect" class="text-button" type="button">Disconnect this computer</button></div><div id="account-confirmation" class="account-confirmation" role="region" aria-labelledby="account-confirm-title" hidden><h3 id="account-confirm-title" tabindex="-1"></h3><p id="account-confirm-copy"></p><ul id="account-confirm-spaces" tabindex="0" aria-label="Spaces to disconnect"></ul><div class="account-actions"><button id="account-confirm" class="text-button" type="button">Confirm</button><button id="account-cancel" class="text-button" type="button">Cancel</button></div></div><p id="account-outcome" class="muted" role="status" tabindex="-1"></p><button id="account-outcome-back" class="text-button" type="button" hidden>Back to Settings</button></div></section>
-        <section class="settings-row"><div><h2>About</h2><p id="settings-versions"></p></div><button id="release-notes" class="text-button" type="button">Release notes</button></section>
-        <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
+    <main tabindex="0" aria-label="Cotal workspace">
+      <section id="settings-panel" class="settings-card" role="tabpanel" aria-labelledby="view-settings" hidden>
+        <h1 id="settings-title" class="pane-title" tabindex="-1">Settings</h1>
+        <p class="pane-description">Manage this computer, updates, and your account.</p>
+        <section aria-labelledby="computer-heading">
+          <h2 id="computer-heading" class="group-heading">This computer</h2>
+          <div class="row-group">
+            <div class="settings-row"><div><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="button secondary" type="button">Rename</button></div>
+            <form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form>
+            <div id="settings-startup">
+              <div id="preferences" class="preferences settings-row"><div><h3>Open at login</h3><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></div>
+            </div>
+          </div>
+        </section>
+        <section aria-labelledby="updates-heading">
+          <h2 id="updates-heading" class="group-heading">Updates</h2>
+          <div class="row-group">
+            <div class="settings-row"><div><p id="settings-update-summary" role="status"></p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="button secondary" type="button">Check now</button><button id="restart-update" class="text-button" type="button" hidden>Restart to update</button></div>
+            <div id="settings-download-row" class="settings-row" hidden><p id="settings-download-copy"></p><button id="settings-download" class="text-button" type="button">Open release page</button></div>
+            <div id="update-preference-row" class="settings-row"><div><p id="update-preference-label">Notify me about updates</p><p id="update-policy" class="muted"></p></div><label class="switch"><input id="update-preference" type="checkbox" aria-labelledby="update-preference-label"><span></span></label></div>
+          </div>
+        </section>
+        <section aria-labelledby="account-heading">
+          <h2 id="account-heading" class="group-heading">Account</h2>
+          <div class="row-group">
+            <div class="settings-row"><div><p id="settings-account">No account information available</p><p id="settings-spaces" class="muted" hidden></p><div id="account-confirmation" class="account-confirmation" role="region" aria-labelledby="account-confirm-title" hidden><h3 id="account-confirm-title" tabindex="-1"></h3><p id="account-confirm-copy"></p><ul id="account-confirm-spaces" tabindex="0" aria-label="Spaces to disconnect"></ul><div class="account-actions"><button id="account-confirm" class="text-button" type="button">Confirm</button><button id="account-cancel" class="text-button" type="button">Cancel</button></div></div><p id="account-outcome" class="muted" role="status" tabindex="-1"></p><button id="account-outcome-back" class="text-button" type="button" hidden>Back to Settings</button></div><div class="account-actions"><button id="settings-signout" class="button secondary" type="button">Sign out</button></div></div>
+          </div>
+        </section>
+        <section aria-labelledby="advanced-heading">
+          <h2 id="advanced-heading" class="group-heading">Advanced</h2>
+          <div class="row-group">
+            <div class="settings-row"><div><h3>About</h3><p id="settings-versions"></p></div><button id="release-notes" class="button secondary" type="button">Release notes</button></div>
+            <div class="settings-row"><div><h3>Disconnect this computer</h3><p class="muted">Your spaces stop using this computer. It stays in your account.</p></div><button id="settings-disconnect" class="button secondary" type="button">Disconnect</button></div>
+            <details id="service-log"><summary>Background service log</summary><p class="muted">Recent output from this computer. Review it before sharing.</p><button id="refresh-log" class="text-button" type="button">Refresh log</button><p id="service-log-status" class="muted" role="status"></p><pre id="service-log-text" role="region" tabindex="0" aria-label="Recent background service log"></pre></details>
+          </div>
+        </section>
         <p id="settings-message" class="muted" role="status"></p>
       </section>
-      <section id="apps-panel" class="settings-card apps-card" aria-labelledby="apps-title" hidden>
-        <div class="settings-heading"><h1 id="apps-title" tabindex="-1">Agent apps</h1><button id="apps-back" class="text-button" type="button">Back</button></div>
-        <p class="apps-lead">Your spaces start agents on this computer in these apps. Install the ones you use; each one signs in with its own account.</p>
+      <section id="apps-panel" class="settings-card apps-card" role="tabpanel" aria-labelledby="view-apps" hidden>
+        <h1 id="apps-title" class="pane-title" tabindex="-1">Agent apps</h1>
+        <p class="pane-description">Manage the apps you use to run agents.</p>
+        <div id="apps-actions" class="actions"><button id="apps-refresh" class="button secondary" type="button">Check again</button></div>
+        <h2 id="apps-group-heading" class="group-heading">Apps on this computer</h2>
+        <p id="apps-local" class="muted" hidden>You can manage apps on this computer now. Connect it when you’re ready to use them from your spaces.</p>
+        <p id="apps-owner" class="apps-message" role="status" hidden></p>
+        <button id="apps-fix-connection" class="text-button" type="button" hidden>Fix in Connection</button>
         <p id="apps-message" class="apps-message" role="status"></p>
-        <ul id="app-list" class="app-list" data-testid="app-list" aria-label="Agent apps"></ul>
-        <div class="apps-footer"><p>Each app installs for your user only, from its maker’s own installer.</p><button id="apps-refresh" class="text-button" type="button">Check again</button></div>
+        <ul id="app-list" class="app-list row-group" data-testid="app-list" aria-labelledby="apps-group-heading"></ul>
+        <p class="apps-footer footnote">Each app installs for your user only, from its maker’s own installer.</p>
       </section>
-      <section class="connection-card" aria-labelledby="connection-title">
-        <h1 id="loading-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
-        <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>
+      <section id="connection-view" class="connection-card" role="tabpanel" aria-labelledby="view-connection">
+        <h1 id="loading-title" class="pane-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
+        <h1 id="connection-title" class="pane-title" tabindex="-1">Welcome to Cotal</h1>
+        <p id="connection-description" class="pane-description">Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.</p>
+        <ol id="journey" aria-label="Connection steps">
+          <li data-stage="welcome"><span class="step-marker">1</span><span>Welcome</span></li>
+          <li data-stage="sign-in"><span class="step-marker">2</span><span>Sign in</span></li>
+          <li data-stage="connect"><span class="step-marker">3</span><span>Connect</span></li>
+          <li data-stage="finished"><span class="step-marker">4</span><span>Ready</span></li>
+        </ol>
+        <section id="update-banner" class="update-banner" aria-label="Desktop update" hidden><span id="update-banner-copy"></span><button id="update-download" class="text-button" type="button">Open release page</button><button id="update-later" class="text-button" type="button">Later</button></section>
         <p id="step-caption" class="eyebrow">Let's get started</p>
-        <h1 id="connection-title" tabindex="-1">Welcome to Cotal</h1>
-        <p id="connection-description">Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.</p>
         <p id="applied-update" class="muted" role="status" hidden></p>
         <p id="link-context" class="context" hidden></p>
         <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
@@ -48,21 +96,50 @@
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
             <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button><button id="cloud-host" class="text-button" type="button" hidden>Use Cotal Cloud</button></div>
           </form>
-          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot in-flight" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button>
+            <div id="approval-browser-help" hidden>
+              <p id="approval-browser-message" class="muted">Your browser didn't open. Open this link on any device to approve:</p>
+              <p id="approval-link"></p>
+              <button id="copy-link" class="text-button" type="button">Copy link</button>
+              <p id="copy-link-status" class="muted" role="status"></p>
+            </div>
+            <p class="muted">Do not share the approval link or code.</p>
+          </div>
           <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
         </div>
         <div id="space-panel" hidden><p id="no-other-spaces" class="muted" role="status"></p><label for="space">Space to connect</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="text-button" type="button">Use this space</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>
         <div id="connect-panel" hidden><p class="context" id="selected-space"></p><div class="actions"><button id="connect" class="button primary" type="button">Connect this computer</button><button id="change-space" class="text-button" type="button">Cancel</button><button id="retry-login" class="text-button" type="button">Sign in again</button></div></div>
         <ol id="setup-progress" class="progress" aria-label="Connection progress" hidden></ol>
         <p id="connected-space" class="connected-space" hidden></p>
-        <div id="connected-panel" hidden><h2 id="spaces-heading">Spaces using this computer</h2><div role="region" aria-label="Connected space list" tabindex="-1" class="connected-spaces-scroll"><ul id="connected-spaces" data-testid="connected-spaces" aria-labelledby="spaces-heading"></ul></div><p id="dashboard-spaces-note" class="muted" hidden>Spaces can also be managed in the dashboard.</p><div id="add-space-panel" data-testid="add-space-panel"></div><section id="running-agents" aria-labelledby="agents-heading"><h2 id="agents-heading">Running on this computer</h2><p id="agents-empty" class="muted">Agents are started from the dashboard.</p><p id="agents-unavailable" class="muted" hidden></p><ul id="agent-list" data-testid="agent-list" aria-labelledby="agents-heading"></ul></section><div id="apps-strip-wrap"><section id="apps-strip" class="apps-callout" data-testid="apps-strip" aria-label="Agent apps" hidden></section></div><div class="dashboard-row"><button id="dashboard" class="button primary" type="button">Open dashboard</button><button id="apps-chip" class="button apps-chip" type="button" hidden></button></div><div class="actions secondary-actions"><button id="disconnect" class="text-button" type="button" hidden>Remove</button><button id="another-space" class="text-button" type="button">Add to another space</button><button id="sign-in-again" class="button primary" type="button">Sign in</button></div></div>
-        <section id="preferences" class="preferences" hidden><div><h2>Open at login</h2><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></section>
+        <div id="connected-panel" hidden>
+          <div id="connected-actions" class="actions">
+            <button id="dashboard" class="button primary" type="button">Open dashboard</button>
+            <button id="disconnect" class="text-button" type="button" hidden>Remove</button>
+            <button id="another-space" class="button secondary" type="button">Add to another space</button>
+            <button id="sign-in-again" class="button primary" type="button">Sign in</button>
+          </div>
+          <section aria-labelledby="spaces-heading">
+            <h2 id="spaces-heading" class="group-heading">Spaces using this computer</h2>
+            <div class="row-group">
+              <div role="region" aria-label="Connected space list" tabindex="-1" class="connected-spaces-scroll"><ul id="connected-spaces" data-testid="connected-spaces" aria-labelledby="spaces-heading"></ul></div>
+              <p id="dashboard-spaces-note" class="muted" hidden>Spaces can also be managed in the dashboard.</p>
+              <div id="add-space-panel" data-testid="add-space-panel"></div>
+            </div>
+          </section>
+          <section id="running-agents" aria-labelledby="agents-heading">
+            <h2 id="agents-heading" class="group-heading">Running on this computer</h2>
+            <div class="row-group">
+              <p id="agents-empty" class="muted">Agents are started from the dashboard.</p>
+              <p id="agents-unavailable" class="muted" hidden></p>
+              <ul id="agent-list" data-testid="agent-list" aria-labelledby="agents-heading"></ul>
+            </div>
+          </section>
+        </div>
         <div id="recovery-panel" data-testid="recovery-panel" class="actions" hidden><button id="recover" data-testid="recover" class="button primary" type="button">Try again</button><button id="recover-apps" class="text-button" type="button" hidden>Set up agent apps</button><a id="setup-installer" class="text-button" href="https://github.com/Cotal-AI/Cotal/releases/latest" hidden>Download installer</a></div>
         <details id="details" hidden><summary>Details</summary><div class="details-content"><div><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></div></div></details>
         <button id="refresh" class="text-button" type="button" hidden>Refresh status</button>
       </section>
       <div id="announcer" data-testid="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
-      <footer><span id="footer-note">You choose when to connect this computer.</span><span class="version" id="version"></span></footer>
     </main>
   </div>
   <script type="module" src="/src/main.ts"></script>
