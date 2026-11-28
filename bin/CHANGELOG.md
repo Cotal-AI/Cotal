@@ -1,5 +1,44 @@
 # cotal-ai
 
+## 0.184.1
+
+### Patch Changes
+
+- ab998d2: Going back to Cotal Cloud after choosing another host no longer stops Continue with Cotal Cloud from working.
+- 3cd5fc9: Fix `cotal daemon uninstall` failing to verify an owned daemon when its startup ownership check has not succeeded yet.
+- Updated dependencies [bc13966]
+- Updated dependencies [c3e56b3]
+- Updated dependencies [c3e56b3]
+- Updated dependencies [75fd5c4]
+- Updated dependencies [23e7342]
+- Updated dependencies [69ca033]
+- Updated dependencies [37bb95a]
+- Updated dependencies [31f19df]
+- Updated dependencies [0a2d3dd]
+- Updated dependencies [004966b]
+- Updated dependencies [c3e56b3]
+- Updated dependencies [c3e56b3]
+- Updated dependencies [1392fa1]
+- Updated dependencies [ea9e9b6]
+- Updated dependencies [000e0f2]
+- Updated dependencies [7c5c7ff]
+- Updated dependencies [eb29bf2]
+- Updated dependencies [e3f3310]
+- Updated dependencies [2a49228]
+- Updated dependencies [5395c59]
+- Updated dependencies [48f3312]
+- Updated dependencies [ac5096d]
+  - @cotal-ai/cli@0.184.1
+  - @cotal-ai/workspace@0.184.1
+  - @cotal-ai/core@0.184.1
+  - @cotal-ai/runtime@0.184.1
+  - @cotal-ai/auth@0.184.1
+  - @cotal-ai/delivery@0.184.1
+  - @cotal-ai/manager@0.184.1
+  - @cotal-ai/connector-core@0.184.1
+  - @cotal-ai/registry@0.184.1
+  - @cotal-ai/seat@0.184.1
+
 ## 0.184.0
 
 ### Patch Changes

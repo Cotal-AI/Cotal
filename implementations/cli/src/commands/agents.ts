@@ -116,12 +116,16 @@ export function managedAgentComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
+function checkAgentNameCount(args: ParsedArgs, operation: "stop" | "attach"): void {
+  if (args.positionals.length > 1 || (args.positionals.length && typeof args.values.name === "string"))
+    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent to ${operation}`, { remedy: "in the original command, keep one positional name or one --name <name>, leaving the other options unchanged", selfContained: true });
+}
+
 /** The named target grammar, checked before any command preparation. */
 export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", allowPicker = false): string | undefined {
+  checkAgentNameCount(args, operation);
   const v = args.values;
   const named = typeof v.name === "string" ? v.name : undefined;
-  if (args.positionals.length > 1 || (args.positionals.length && named !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: \`cotal ${operation} <name>\``);
   const name = args.positionals[0] ?? named;
   const { server, on } = v;
   if (typeof server === "string" && (typeof on === "string" || !name?.trim())) {
@@ -1231,8 +1235,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
 
 export async function attach(args: ParsedArgs): Promise<void> {
   if (args.values.creds !== undefined) {
-    if (args.positionals.length > 1 || (args.positionals.length && typeof args.values.name === "string"))
-      throw new CommandFailure("refused", "USAGE_INVALID", "choose one agent: `cotal attach <name>`");
+    checkAgentNameCount(args, "attach");
     refuseControlCreds(args.values.creds, args.values.space);
   }
   const name = managedTarget(args, "attach", true);

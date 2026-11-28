@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.184.1
+
+### Patch Changes
+
+- 7c5c7ff: Keep channel joins responsive by streaming retained history in bounded pages and let interrupted joins resume without repeating posts already replayed.
+
 ## 0.184.0
 
 ### Minor Changes

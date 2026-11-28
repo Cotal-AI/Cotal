@@ -66,7 +66,7 @@ removed its credential. Duplicate names and `--instance` with multiple names are
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
 `TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Its next step is the folder
-where `cotal up` started a stack, or, when this machine has no stack started or registered at all,
+where `cotal up` started the intended stack. Repeat your original command there with its options unchanged. When this machine has no stack started or registered at all, the next step is
 `cotal up` in a project, as `cotal status` says. A bare `down` in such a folder refuses the same
 way, including with `--json` or `--plain`. Its JSON target names the current root rather than
 replacing the missing-stack diagnosis with an unsupported-output refusal. A root whose stack is
@@ -145,8 +145,7 @@ they wait on, in the stack journal, where `reset store` lists them. A read that 
 with its reason and does not stop the `down`; the JSON receipt carries the record as
 `operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
-stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
-manager keeps running, then run `cotal down`. On Linux, when the owned broker is suspended by a
+stop, from a managed seat's shell too. From the stack's project folder, run the suggested startup command to restart the broker from its recorded inputs while the manager keeps running. Then run the suggested stop. It names the same space and keeps `--yes`, `--with-agents` and the requested output format. On Linux, when the owned broker is suspended by a
 signal such as SIGSTOP, `down --yes` rechecks its exact launch and process creation pin, sends
 SIGCONT, then continues the guarded stop. On an interactive terminal, `down` first asks permission
 to resume that broker so it can read the manager's impact, then asks for the usual stop confirmation.
