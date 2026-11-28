@@ -156,9 +156,10 @@ export function shownSpaceLabel(label: string | undefined, space: string): strin
   return label && label.trim() ? label : space;
 }
 
-/** The kind chip beside a space. A missing or whitespace-only kind is not one, so the chip says Space. */
+/** Human-readable kind beside the space name. */
 export function shownSpaceKind(kind: string | undefined): string {
-  return kind && kind.trim() ? kind : "Space";
+  const value = kind?.trim();
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Space";
 }
 
 /** Discovery selects a target, but never grants consent to connect. */

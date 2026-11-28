@@ -662,7 +662,7 @@ test("a blank space label shows the space id", async () => {
   } finally { chip.dom.window.close(); }
   const named = await app({ installed: true, connected: true, kind: " ada" });
   try {
-    assert.equal(named.doc.querySelector('[data-testid="connected-space-row"] .space-kind')?.textContent, " ada");
+    assert.equal(named.doc.querySelector('[data-testid="connected-space-row"] .space-kind')?.textContent, "Ada");
   } finally { named.dom.window.close(); }
 });
 
@@ -735,7 +735,7 @@ test("connected and pending spaces retain the connected view and waiting row", a
   const a = await app({ installed: true, connected: true, count: 2, serviceState: "approval-pending" });
   try {
     assert.equal(a.node("connection-title").textContent, "This computer is connected");
-    assert.equal(a.node("connection-icon").dataset.icon, "check");
+    assert.equal(a.node("sidebar-status-dot").dataset.tone, "ok");
     assert.equal(a.node("dashboard").hidden, false);
     assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 2);
     assert.match(a.node("connected-spaces").textContent!, /Other team.*Waiting for owner approval/);
@@ -840,8 +840,7 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
       if (options.count === 0) { await a.click("login"); await a.login(); }
       if (options.serviceState === "approval-pending") {
         assert.equal(a.node("connection-title").textContent, "Waiting for owner approval");
-        assert.equal(a.node("connection-icon").dataset.icon, "clock");
-        assert.equal(a.node("connection-icon").dataset.tone, "waiting");
+        assert.ok(a.doc.querySelector('[data-testid="approval-pending"]'));
         assert.equal(a.node("apps-panel").hidden, true);
         assert.equal(a.node("dashboard").hidden, true);
         assert.equal(a.node("recovery-panel").hidden, true);

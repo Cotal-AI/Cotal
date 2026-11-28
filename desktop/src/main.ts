@@ -199,10 +199,12 @@ function renderSettings(): void {
   el("restart-update").hidden = !canRestart;
   el<HTMLButtonElement>("restart-update").disabled = busy || loginActive || setupActive || appApplyRunning;
   if (appUpdaterConfigured()) renderAppUpdate(el("settings-update-summary"), appUpdate!, autoUpdates !== false);
-  else { text("settings-update-summary", updateSummary(updateStatus, appVersion ?? "")); delete el("settings-update-summary").dataset.updateState; }
+  else {
+    text("settings-update-summary", updateStatus ? updateSummary(updateStatus, appVersion ?? "") : appVersion ? `Version ${appVersion}` : "");
+    delete el("settings-update-summary").dataset.updateState;
+  }
   const checkedAt = appUpdaterConfigured() ? appUpdate?.checkedAt === undefined ? undefined : new Date(appUpdate.checkedAt).toISOString() : updateStatus?.lastCheck;
   text("settings-last-check", installerMessage ?? lastChecked(checkedAt));
-  text("settings-spaces", disconnectSpaces(accountProvider()).map(space => shownSpaceLabel(accountSpaces.get(space)?.label, space)).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform, appUpdaterConfigured());
   text("update-preference-label", policy.label);
   text("update-policy", appUpdate?.phase === "unconfigured" ? updateStatus?.channel === "npm" ? `${policy.description} This build updates through the installer.` : "Cotal tells you here when a new version is out. This build updates through the installer." : policy.description);
@@ -252,8 +254,12 @@ function signedInAccountProvider(): string | undefined {
 }
 function renderAccountActions(): void {
   const blocked = busy || loginActive || !!pendingAccountAction;
-  el<HTMLButtonElement>("settings-signout").disabled = blocked || !signedInAccountProvider();
-  el<HTMLButtonElement>("settings-disconnect").disabled = blocked || !disconnectSpaces(accountProvider()).length;
+  const signedIn = !!signedInAccountProvider();
+  const spaceCount = disconnectSpaces(accountProvider()).length;
+  text("settings-spaces", signedIn ? (spaceCount ? `Signed in · ${spaceCount} ${spaceCount === 1 ? "space" : "spaces"}` : "Signed in") : "");
+  el("settings-spaces").hidden = !signedIn;
+  el<HTMLButtonElement>("settings-signout").disabled = blocked || !signedIn;
+  el<HTMLButtonElement>("settings-disconnect").disabled = blocked || !spaceCount;
   for (const id of ["account-confirm", "account-cancel"]) el<HTMLButtonElement>(id).disabled = busy || loginActive;
   el("account-confirmation").hidden = !pendingAccountAction;
   el("account-confirmation").setAttribute("aria-busy", String(busy));
@@ -546,9 +552,7 @@ function showStage(next: Stage, focus = false): void {
     }
   }
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
-  el("connection-icon").dataset.tone = recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
-  renderConnectionTitle(title, surface); text("connection-description", description);
-  setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : setupActive ? "spinner" : "connect");
+  renderConnectionTitle(title, surface);
   const target = accountSpaces.get(selectedSpace());
   if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
   text("connection-description", description);
@@ -563,7 +567,6 @@ function showStage(next: Stage, focus = false): void {
   const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
   el("running-agents").hidden = !inventoryVisible;
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
-  if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
   text("another-space", connections.size ? "Add to another space" : "Add a space");
   el("sign-in-again").hidden = addingSpace || computerAccount?.mode !== "sign-in-required";
@@ -580,14 +583,9 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
-    if (!anyConnected) {
-      el("connection-icon").dataset.tone = surface.dot === "problem" ? "error" : surface.dot === "waiting" ? "waiting" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : surface.dot === "problem" ? "warning" : surface.dot === "waiting" ? "clock" : "computer");
-    }
   } else el("spaces-heading").hidden = connections.size === 0;
   document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
-  el("connection-icon").hidden = addingSpace;
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
   renderConnections();
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
@@ -624,7 +622,7 @@ function renderConnections(): void {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");
     const name = document.createElement("strong"); name.textContent = shownSpaceLabel(accountSpaces.get(space)?.label, space);
-    const kind = document.createElement("small"); kind.className = "space-kind"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
+    const kind = document.createElement("span"); kind.className = "space-kind"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
     const detail = document.createElement("small"); detail.className = "space-state";

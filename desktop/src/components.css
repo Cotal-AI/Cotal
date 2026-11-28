@@ -11,11 +11,8 @@
 #journey [data-state=done] .step-marker { color: var(--green); }
 .later-open #journey, #step-caption { display: none; }
 .status-highlight { background: linear-gradient(transparent 64%, var(--gold) 64%); }
-.connection-icon { display: inline-grid; place-items: center; width: 28px; height: 28px; margin-bottom: 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--card); }
-#connection-icon[data-tone=waiting] { color: var(--amber); }
-#connection-icon[data-tone=error] { color: var(--red); }
-#connection-icon[data-tone=success] { color: var(--green); }
-#connection-description { color: var(--dim); }
+#connected-actions { margin-top: 0; }
+#connected-actions:not(:has(button:not([hidden]))) { display: none; }
 .context { overflow-wrap: anywhere; }
 .footnote { margin-top: 12px; }
 #host-help { margin: 6px 0 0; }
@@ -33,7 +30,7 @@
 #connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 #connected-spaces strong, .space-kind, .space-state { overflow-wrap: anywhere; }
 .application-chip { color: var(--dim); font-size: 11px; }
-.space-kind { font-size: 11px; color: var(--dim); }
+.space-kind { font-size: 12px; color: var(--dim); }
 .space-state { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 12px; color: var(--dim); }
 .space-state:has(.connected) { color: var(--green); }
 .space-state:has(.error) { color: var(--red); }
@@ -108,7 +105,6 @@ details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 #computer-name-error { flex-basis: 100%; color: var(--red); font-size: 12px; }
 
 /* Agent apps */
-.apps-lead { color: var(--dim); }
 .apps-message { color: var(--green); }
 .apps-message:empty { display: none; }
 .app-list { list-style: none; margin: 0; padding: 0; }
