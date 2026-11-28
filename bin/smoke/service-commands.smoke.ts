@@ -131,13 +131,15 @@ check("a start missing an option with no default refuses naming its flag, and ea
 const added = refusal(() => servicePresetDefinition(preset, SPACE, {}, root));
 check("  and the add form repeats its own command line", added?.remedy?.startsWith("cotal service add <name> --preset fixture --token ") === true, added);
 const unregistered = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
-check("a broker default with no registered space refuses and names the flag", unregistered?.code === "DEPENDENCY_UNAVAILABLE" && unregistered.message.includes("--server") && unregistered.remedy?.includes("pass --server <url>") === true, unregistered);
+check("a broker default with no registered space refuses and names the flag", unregistered?.code === "DEPENDENCY_UNAVAILABLE" && unregistered.message.includes("--server") && unregistered.remedy?.includes("pass --server <url>") === true && unregistered.remedy.includes("original command") && !unregistered.remedy.includes("cotal up"), unregistered);
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 recordMesh({ space: SPACE, server: SERVER, root, mode: "open", ts: new Date().toISOString() });
 const absent = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t" }, false));
 const creds = presetMaterialPath("fixture.creds", SPACE, root, false);
 check("a file default the space does not keep refuses, naming the file and the flag, and invents none",
-  absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true, absent);
+  absent?.code === "DEPENDENCY_UNAVAILABLE" && absent.message.includes(creds) && absent.message.includes("does not exist yet") && absent.remedy?.includes("pass --creds <file>") === true && absent.remedy.includes(`space show ${SPACE}`) && !absent.remedy.includes("cotal up"), absent);
+const extra = refusal(() => presetDefaultOptions(preset, SPACE, root, { token: "t", "new-instance": true }, false));
+check("an additional instance cannot take file flags, so the remedy identifies the first-start alternative", extra?.remedy?.includes("to configure a first start instead, remove `--new-instance` and pass --creds <file>") === true, extra);
 mkdirSync(dirname(creds), { recursive: true, mode: 0o700 });
 writeFileSync(creds, "fixture\n", { mode: 0o600 });
 const filledMissing = refusal(() => servicePresetDefinition(preset, SPACE, {}, root, "start"));
@@ -263,7 +265,7 @@ try {
   for (const flags of [[], ["--dry-run"]]) {
     const install = cotal(["manager", "install", "--space", SPACE, ...flags]);
     const text = out(install);
-    const next = process.platform === "win32"
+    const next = flags.length ? text.includes(`\`cotal service --space ${SPACE}\``) && !/ExecStart=|KillMode=mixed/.test(text) : process.platform === "win32"
       ? ["cotal", "pnpm cotal"].some(cli => text.includes(`\`${cli} up --space ${SPACE}\``)) && !/ExecStart=|KillMode=mixed/.test(text)
       : text.includes(`manager start --foreground --space ${SPACE}`) && text.includes("KillMode=mixed");
     check(`cotal manager install ${flags.join(" ")} refuses before any effect and names a platform-appropriate next step`,
@@ -372,13 +374,16 @@ try {
   const selected = cotal(["use", SPACE, "--json"]);
   check("the calling project has selected the other space", selected.status === 0, out(selected));
   for (const verb of ["logs", "status"]) {
-    const missing = cotal(["service", verb, "absent-worker", "--space", PREPARED, "--json"]);
-    const { error, target } = JSON.parse(missing.stdout);
-    const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
-    const listed = inventory ? cotal([...inventory.split(" "), "--json"]) : undefined;
-    check(`a missing custom service ${verb} offers a read of the requested space's definitions`,
-      missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
-        && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+    for (const operand of [[], ["absent-worker"]]) {
+      const missing = cotal(["service", verb, ...operand, "--space", PREPARED, "--json"]);
+      const { error, target } = JSON.parse(missing.stdout);
+      const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
+      const listed = inventory === `service --space ${PREPARED} --json` ? cotal(inventory.split(" ")) : undefined;
+      check(`service ${verb} with ${operand.length ? "an unknown" : "no"} name offers a JSON listing of the requested space`,
+        (operand.length ? missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
+          : missing.status === 1 && error?.code === "USAGE_INVALID" && error.message === `service ${verb} needs a definition name`)
+          && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+    }
   }
   const missingLog = cotal(["service", "logs", "stack-manager", "--space", PREPARED, "--tail", "30", "--json"]);
   const logError = JSON.parse(missingLog.stdout).error;
@@ -512,6 +517,11 @@ try {
   const next = (name: string) => `see what each option takes with \`cotal service add ${name} --preset broker --help\``;
   // The binary runs in `root`, so a relative --log-file is made absolute there, as `cotal up --log-file` makes it.
   const relativeLog = brokerAdd("b1", ["--log-file", "logs/broker.log"]);
+  const installPreview = cotal(["service", "install", "b1", "--space", PREPARED, "--dry-run", "--json"]);
+  const installError = JSON.parse(installPreview.stdout).error;
+  const read = /`cotal (service [^`]+)`/.exec(installError?.remedy ?? "")?.[1];
+  const inventory = read === `service --space ${PREPARED} --json` ? cotal(read.split(" ")) : undefined;
+  check("a broker install preview offers a read that lists the saved broker in its own space", installPreview.status === 2 && installError?.code === "UNSUPPORTED" && inventory?.status === 0 && JSON.parse(inventory.stdout).result.services.some((row: { name: string }) => row.name === "b1"), out(installPreview));
   const savedLog = (() => { const launch = serviceDefinitionStore(PREPARED).read("b1")?.record.value.launch; return launch?.type === "adapter" ? launch.options.logFile : undefined; })();
   const absolute = join(realpathSync(root), "logs", "broker.log");
   check("a relative --log-file is saved absolute against the folder add runs in, and its file need not exist yet",
@@ -524,7 +534,15 @@ try {
     typeof emptyConfig === "object" && emptyConfig.message === "the service options do not match the installed adapter's closed schema at --config; option values were not printed" && emptyConfig.remedy === next("b2"), emptyConfig);
 
   // ---- A preset name reaches the space's one service built on it, for show and remove too -------
-  const manager = cotal(["service", "add", "m1", "--preset", "manager", "--space", SPACE]);
+  const addManager = ["service", "add", "m1", "--preset", "manager", "--space", SPACE, "--json", "--max-sessions"];
+  for (const [input, rule] of [["0", ">= 1"], ["9007199254740992", "<= 9007199254740991"], ['"private-input-marker"', "integer"]] as const) {
+    const refused = cotal([...addManager, input]);
+    const { error } = JSON.parse(refused.stdout);
+    check(`Manager preset add reports the declared ${rule} constraint without saving a definition`,
+      refused.status === 1 && error?.code === "SCHEMA_INVALID" && error.message.includes(`at --max-sessions (must be ${rule})`)
+        && !out(refused).includes("private-input-marker") && !serviceDefinitionStore(SPACE).read("m1"), out(refused));
+  }
+  const manager = cotal([...addManager, "1"]);
   check("service add m1 --preset manager saves m1", manager.status === 0, out(manager));
   for (const args of [["service", "start", "m1", "--space", SPACE, "--help"], ["help", "--", "service", "start", "m1", "--space", SPACE]]) {
     const m1Help = cotal(args);

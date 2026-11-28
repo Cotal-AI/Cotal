@@ -9,15 +9,17 @@ import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSet
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
-import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, installationOwner, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
 import { nativeDaemonLog, previousNativeDaemonLog } from "./native-log.js";
 import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
 import { applyRepair, planRepair, REPAIR_CONSENTS, type RepairConsent } from "./repair.js";
-import { serviceOwner, type ServiceOwner } from "./service-owner.js";
+import type { ServiceOwner } from "./repair.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
-import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
+import type { AgentAppRequest } from "./desktop-agent-apps.js";
+import { desktopAppRequest } from "./desktop-app-routing.js";
+import { withAppMutation } from "./agent-app-admission.js";
 
 export type DesktopRequest =
   | AgentRowRequest
@@ -204,7 +206,7 @@ function ownershipRecovery(paths: QueryOptions["paths"], home: string | undefine
   try {
     if (!preflightInstalledDaemon(paths, home)) return {};
     const identity = installedDaemonIdentity(paths, home);
-    return identity.same ? {} : { recovery: { reason: "another-installation", owner: serviceOwner(identity.installedEntry) } };
+    return identity.same ? {} : { recovery: { reason: "another-installation", owner: installationOwner(identity.installedEntry) } };
   } catch { return {}; }
 }
 
@@ -263,8 +265,17 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     target = opts.resolveTarget();
     const { paths, home } = target;
     if (req.op === "log") { emit({ v: 1, event: "result", ok: true, result: readServiceLogTail(paths.state) }); return; }
-    if (req.op === "agent-apps" || req.op === "agent-app-install" || req.op === "agent-app-sign-in") { emit({ v: 1, event: "result", ok: true, result: await agentAppRequest(req, { paths, daemonHome: home, peerUid: opts.peerUid, peerPid: opts.peerPid, version: opts.version }, emit) }); return; }
-    if (req.op === "remove-service") { emit({ v: 1, event: "result", ok: true, result: await removeDesktopService(paths, home) }); return; }
+    if (req.op === "agent-apps" || req.op === "agent-app-install" || req.op === "agent-app-sign-in") {
+      const result = await desktopAppRequest({ paths, home, version: opts.version, peerUid: opts.peerUid, peerPid: opts.peerPid }, req,
+        line => emit({ v: 1, event: "agent-app-progress", ...(req.op === "agent-apps" ? {} : { name: req.name }), line }));
+      emit({ v: 1, event: "result", ok: true, result });
+      return;
+    }
+    if (req.op === "remove-service") {
+      const result = await withAppMutation(paths, () => removeDesktopService(paths, home));
+      emit({ v: 1, event: "result", ok: true, result });
+      return;
+    }
     if (req.op === "repair-plan" || req.op === "repair-apply") {
       const repair = { paths, daemonHome: home, version: opts.version, peerUid: opts.peerUid, peerPid: opts.peerPid, report: (line: string) => emit({ v: 1, event: "repair-progress", line }) };
       emit({ v: 1, event: "result", ok: true, result: req.op === "repair-plan" ? await planRepair(repair) : await applyRepair({ ...repair, digest: req.digest, consent: req.consent }) });
@@ -290,7 +301,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result: { ...result, ...omittedResult } });
       return;
     }
-    if (req.op === "install") {
+    if (req.op === "install") return await withAppMutation(paths, async () => {
       let existing = false;
       try { planUninstall(paths, home); existing = true; }
       catch (e) { if (!(e instanceof CommandFailure) || e.code !== "TARGET_NOT_FOUND") throw e; }
@@ -320,7 +331,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-    }
+    });
     if (req.op === "status-watch") {
       const sock = await openVerified({ ...client, timeoutMs: 5000 });
       type WatchOutcome =

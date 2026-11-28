@@ -62,8 +62,8 @@ function otherInstallation(): string {
   return join(other, "dist/cotal.js");
 }
 
-type Mode = "moved" | "rolled-back" | "declined" | "uninstall-erases" | "app-change-running";
-for (const mode of ["uninstall-erases", "declined", "app-change-running", "moved", "rolled-back"] as const satisfies readonly Mode[]) {
+type Mode = "moved" | "rolled-back" | "declined" | "uninstall-erases" | "app-change-running" | "ejected";
+for (const mode of ["uninstall-erases", "declined", "app-change-running", "moved", "rolled-back", "ejected"] as const satisfies readonly Mode[]) {
   const root = mkdtempSync(join(tmpdir(), "drt-"));
   const home = join(root, "home"), config = join(root, "config"), rt = join(root, "rt"), native = join(root, "native");
   for (const path of [home, config, rt, native]) mkdirSync(path, { mode: 0o700 });
@@ -124,6 +124,32 @@ process.exit(0)
     const before = files(home);
     const records = SEEDED.map(([path]) => path as string);
     assert.equal(records.filter(path => before.has(path)).length, 7, `seven seeded records survive the other daemon's startup: ${[...before.keys()].join(", ")}`);
+    if (mode === "ejected") {
+      // The disk image that held the other copy was ejected: its program is gone and nothing answers.
+      try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGTERM"); } catch { /* already gone */ }
+      await killAndAwaitExit(daemon, "SIGTERM").catch(() => undefined);
+      rmSync(dirname(dirname(otherEntry)), { recursive: true, force: true });
+      for (let i = 0; ; i++) {
+        try { await queryDaemon({ paths }); } catch { break; }
+        assert.ok(i < 2400, "the other copy's service is gone");
+        await delay(25);
+      }
+      const plan = await run(["daemon", "repair", "--json"]);
+      assert.equal(plan.code, 0, plan.output);
+      const owner = plan.json.result.steps.find((step: { step: string }) => step.step === "service-owner");
+      assert.equal(owner.outcome, "fix", "a copy that can't run is moved, not refused for its unknown version");
+      assert.equal(owner.consent, "takeover");
+      assert.equal(owner.found, "The background service points at a copy of Cotal that can't run from where it is now.");
+      const applied = await run(["daemon", "repair", "--apply", plan.json.result.digest, "--yes", "--json"]);
+      assert.equal(applied.code, 0, applied.output);
+      const reply = await queryDaemon({ paths });
+      assert.ok(reply.ok && reply.result.version === version, "this app's service answers at this version");
+      assert.ok(readFileSync(unitPath, "utf8").includes(`"${entry}"`), "the unit now names this installation");
+      const after = files(home);
+      assert.equal(records.filter(path => after.get(path) === before.get(path)).length, 7, "every record kept byte for byte");
+      console.log("PASS a service whose copy was ejected moves to this app, answers at this version, and keeps 7/7 records");
+      continue;
+    }
     if (mode === "uninstall-erases") {
       const removed = await run(["daemon", "uninstall", "--yes", "--json"]);
       assert.equal(removed.code, 0, removed.output);
@@ -178,6 +204,7 @@ process.exit(0)
     } else {
       assert.equal(applied.code, 2, applied.output);
       assert.equal(applied.json.error.cause.code, "MOVE_ROLLED_BACK");
+      assert.match(applied.json.error.message, /the previous service was restored and started again, and the agents it ran were stopped and do not start again by themselves/, "the rollback says what stopped");
       assert.equal(readFileSync(unitPath, "utf8"), source, "the previous unit was restored byte for byte");
       assert.ok(readFileSync(unitPath, "utf8").includes("other-install"), "the other installation runs the service again");
       console.log(`PASS a failed start restored the other installation's service and kept ${kept.length}/7 records`);

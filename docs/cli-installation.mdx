@@ -55,9 +55,7 @@ and waits for your approval, as `cotal login` does. With several spaces it asks 
 that no project uses yet asks for the project folder your agents work in. A space already set up in
 a project keeps that project.
 
-Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
-is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. For local setup, use the example for
+Without a terminal, or with `--yes`, `--no-input`, `--plain` or `--json`, every input is a flag. A missing input refuses with `USAGE_INVALID` before anything is written. Add the missing flags to your original command so its project, destination and other options stay the same. For local setup, use the example for
 your shell. Each creates the project folder first. The example uses Claude Code, which must be installed
 for its setup to complete.
 
@@ -102,7 +100,9 @@ when it can. For an unknown `--harness`, setup lists the known ones and points t
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
 registered with `cotal space add` or a signed-in catalog, or one `--connection-file` registers. A
-hand-added registration keeps its recorded root. On the first setup of a signed-in catalog space,
+hand-added registration keeps its recorded root. If a connection file names a different broker, inspect the named registration. If it points to the broker you intend, repeat setup without the connection file. Otherwise confirm the address with the space operator before changing the registration.
+
+On the first setup of a signed-in catalog space,
 `--project` binds its project root while its provider-owned sentinel credential stays under the
 machine-home catalog directory. A later setup must name the same project. Setup then seeds the
 `default` persona into `<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space,
@@ -238,7 +238,7 @@ request the manifest again on **Check now** rather than using the automatic dail
 They download and replace the installation only before a window appears, with all windows hidden,
 or after **Restart to update**. Sign-in, setup and connection operations hold that work back.
 The app relaunches after replacement, then waits for the target background service and ready
-inventories before reporting success. Linux deb/rpm builds still use the installer.
+inventories before reporting success. Linux deb/rpm builds still use the [package installer](installation.mdx#install-the-desktop-app-on-linux).
 There is no automatic rollback.
 The app does not change a separately installed command line.
 

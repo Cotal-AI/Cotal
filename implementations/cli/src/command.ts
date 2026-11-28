@@ -85,7 +85,7 @@ import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS, T
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
-import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
+import { armTelemetry, localDiagnostic, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
 // The service surfaces, the manager choice and the gone-stack refusal are imported where a command
 // or a failure needs them, so a process that runs one daemon command never loads them.
@@ -285,7 +285,7 @@ type ConfigFolderProblem = NonNullable<ReturnType<typeof globalConfigDirProblem>
 
 /** The refusal of a command that would read or write a config folder that is a file. */
 function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
-  return new CommandFailure("refused", "SCHEMA_INVALID", `${problem.message}; Cotal keeps your preferences, config and extensions there, so the command did not run`, { remedy: problem.remedy });
+  return localDiagnostic(new CommandFailure("refused", "SCHEMA_INVALID", `${problem.message}; Cotal keeps your preferences, config and extensions there, so the command did not run`, { remedy: problem.remedy }));
 }
 
 /**
@@ -896,7 +896,7 @@ function serverFlagFailure(cmd: Command, parsed: ParsedArgs): CommandFailure | u
 function storeDirRefusal(value: string): CommandFailure {
   if (!value.trim()) return new CommandFailure("refused", "USAGE_INVALID", "--store-dir is empty; the command did not run", { remedy: "name the store directory, or omit --store-dir to use the default store", selfContained: true });
   const home = value === "~" || value.startsWith("~/") ? join(homedir(), value.slice(2)) : undefined;
-  return new CommandFailure("refused", "USAGE_INVALID", `--store-dir ${JSON.stringify(value)} starts with ~, which no shell expanded, so it names a folder called ${value.split("/")[0]} in ${process.cwd()}; the command did not run`, { target: { storeDir: value }, remedy: home ? `name the absolute path: --store-dir ${shellWord(home)}` : "name the store directory by its absolute path", selfContained: true });
+  return localDiagnostic(new CommandFailure("refused", "USAGE_INVALID", `--store-dir ${JSON.stringify(value)} starts with ~, which no shell expanded, so it names a folder called ${value.split("/")[0]} in ${process.cwd()}; the command did not run`, { target: { storeDir: value }, remedy: home ? `name the absolute path: --store-dir ${shellWord(home)}` : "name the store directory by its absolute path", selfContained: true }));
 }
 
 /** The commands that never read the working folder, so they run from one that was removed. */
@@ -1179,7 +1179,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) deferStartupSeed(parsed);
-      else await reconcileSeededConnectors(cmd?.name === "setup");
+      else await reconcileSeededConnectors(cmd?.name === "setup", ["manager", "supervise", "__daemon-manager"].includes(cmd?.name ?? ""));
     } catch (e) {
       dispatchSeedRefusal(e, cmd, parsed, rest);
     }
@@ -1336,6 +1336,7 @@ async function executeDispatchedCommand(
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
+      if (scope.reportedFailure) recordTelemetryFailure(scope.reportedFailure.outcome, scope.reportedFailure.code);
     });
   });
   if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);

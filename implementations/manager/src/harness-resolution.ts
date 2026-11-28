@@ -25,23 +25,45 @@ function recordedOnPath(bin: string, recorded: string | undefined, env: NodeJS.P
   return pathValue.split(delimiter).some((dir) => Boolean(dir) && resolveOnPath(resolve(dir, bin), env) === recorded);
 }
 
-/** One connector's declared harness binaries resolved on PATH now, keeping any recorded paths that
- *  still exist and still resolve on PATH. The refusal sentence is built only here, so boot, status
+/** One connector's declared harness binaries resolved on PATH now, keeping any pinned paths while
+ *  they still exist and resolve on PATH, and refusing rather than silently switching executables if a
+ *  pinned path disappears or leaves PATH. When a pinned binary is gone, one fresh PATH lookup checks
+ *  whether another copy is now on PATH so the refusal can tell the operator to restart this manager
+ *  instead of restoring a missing program. The refusal sentence is built only here, so boot, status
  *  and launch checks never word it apart. */
 export function resolveHarness(
   name: string,
   requires: readonly string[],
   recorded?: Readonly<Record<string, string>>,
+  env: NodeJS.ProcessEnv = process.env,
 ): { binaries: Record<string, string>; reason?: string } {
   const binaries: Record<string, string> = {};
   const missing: string[] = [];
+  const unpinned: string[] = [];
+  const moved: string[] = [];
   for (const bin of requires) {
     const pinned = recorded?.[bin];
-    const path = recordedOnPath(bin, pinned) ? pinned : resolveOnPath(bin);
+    if (pinned !== undefined) {
+      if (recordedOnPath(bin, pinned, env)) {
+        binaries[bin] = pinned;
+      } else {
+        const current = resolveOnPath(bin, env);
+        if (current)
+          moved.push(`${name} harness needs pinned ${bin} (${pinned}) on PATH - found ${current} instead (restart this Manager to use it)`);
+        else unpinned.push(`${bin} (${pinned})`);
+      }
+      continue;
+    }
+    const path = resolveOnPath(bin, env);
     if (path) binaries[bin] = path;
     else missing.push(bin);
   }
-  return missing.length ? { binaries, reason: `${name} harness needs ${missing.join(", ")} on PATH - not found` } : { binaries };
+  const reasons = [
+    ...moved,
+    ...(unpinned.length ? [`${name} harness needs pinned ${unpinned.join(", ")} on PATH - not found (no fallback to another copy on PATH)`] : []),
+    ...(missing.length ? [`${name} harness needs ${missing.join(", ")} on PATH - not found`] : []),
+  ];
+  return reasons.length ? { binaries: {}, reason: reasons.join("; ") } : { binaries };
 }
 
 /** What {@link HarnessResolution} reads from the Manager. Every entry is read at use, so a field the Manager
@@ -87,11 +109,10 @@ export class HarnessResolution {
   }
 
   /** The harness binaries a managed launch runs, or the refusal naming what is missing. Spawn, resume,
-   *  command listing and the model catalog all take it, and an available row is verified here too so
-   *  no caller can launch a missing file. A connector registered after boot has no inventory row and
-   *  is checked on PATH now. */
+   *  command listing and the model catalog refresh the named connector row first and read its outcome
+   *  here, so each path checks once. A connector registered after boot has no inventory row and is
+   *  checked on PATH now. */
   launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
-    this.parts.connectorInventory.recheckAvailableConnectors(connector.name);
     const row = this.parts.connectorInventory.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };

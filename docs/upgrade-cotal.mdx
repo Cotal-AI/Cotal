@@ -122,7 +122,10 @@ The package manifest and original dependencies stay as npm or pnpm installed the
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
 On Linux and macOS, self-update refreshes an existing npm launcher when it can safely preserve its recorded Node path. If that recorded Node is no longer on disk, the refresh records the supported Node that ran the update. If the launcher cannot be refreshed, the update keeps it unchanged.
-Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
+Self-update uses the npm selected on `PATH` when that file exists, including when its engine range cannot be read.
+If that npm states that it does not support the running Node, or PATH has no npm, Linux and macOS use the npm package shipped beside the running Node when its own range accepts that Node.
+One notice names that Node. If that package is also missing, self-update keeps the npm it found on `PATH`, or reports that npm is not on `PATH`.
+This lookup is not used on Windows.
 If that npm requires a different Node version, Cotal tries the Node recorded by its installation
 launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
 Cotal checks whether the Node it chooses for Corepack can also run the npm that Corepack selects.
@@ -375,6 +378,9 @@ If it refuses, follow the reported remedy instead of removing credentials or rei
 `cotal update --check` reports registry availability, recorded extension versions and whether an
 interrupted connector seed needs manual repair.
 It installs and restarts nothing, so it does not replace this reconciliation step.
+A newer release retries a connector seed that an older release recorded as failed.
+The machine daemon and Manager also retry a failure from the current release once per start.
+If that attempt fails, they report the new failure.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
 A machine service restarted during an update answers local status while the updater still owns
 its installation transaction. It matches the updater's process ID, start token and lock nonce

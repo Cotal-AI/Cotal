@@ -40,12 +40,12 @@ import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, processStartToken, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, daemonUserServiceEnv, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
-import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
+import { excludeLifetime, processBirth, readLifetimeRecord, type DaemonPeerLifetime } from "./lifetime.js";
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
@@ -213,6 +213,7 @@ export interface NativeService {
   publish(plan: NativePlan): void;
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
+  stopped(receipt: UnitReceipt): boolean;
   isEnabled?(receipt: UnitReceipt): boolean;
   start(receipt: UnitReceipt): void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
@@ -323,10 +324,16 @@ function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): vo
   });
 }
 
-function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">): void {
-  if (process.platform !== "darwin" && process.platform !== "linux") return;
+function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">, stopPeer?: DaemonPeerLifetime): boolean {
+  if (process.platform !== "darwin" && process.platform !== "linux") return false;
   const held = inspectLock(join(paths.state, "service-repair.lock"));
-  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state) || (process.platform === "linux" && readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)))) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
+  const otherOwner = held.state === "active" && held.owner.pid !== process.pid;
+  // Darwin's advisory lock uses a different start-token format from the kernel peer lifetime.
+  const peerOwnsLock = otherOwner && stopPeer?.pid === held.owner.pid && Boolean(held.owner.start)
+    && (process.platform === "linux" ? held.owner.start === stopPeer.birth
+      : held.owner.start === processStartToken(stopPeer.pid) && processBirth(stopPeer.pid) === stopPeer.birth);
+  if ((otherOwner && !peerOwnsLock) || readServiceRepair(paths.state) || (process.platform === "linux" && readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)))) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
+  return peerOwnsLock;
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
@@ -518,14 +525,6 @@ function pinnedPathMatch(mechanism: Exclude<ServiceMechanism, "scheduled-task">,
   return { pattern, match, old };
 }
 
-/** The PATH a recorded systemd or launchd service runs with. Undefined for the Windows task, which
- *  reads the account's PATH each time it starts. */
-export function installedServicePath(paths: DaemonPaths, daemonHome?: string): string | undefined {
-  const { receipt, plan } = recordedUnit(paths, daemonHome);
-  if (plan.mechanism === "scheduled-task") return undefined;
-  return pinnedPathMatch(plan.mechanism, readFileSync(receipt.unitPath, "utf8")).old;
-}
-
 export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
   if (mechanism === "scheduled-task") return undefined;
   const { pattern, match, old } = pinnedPathMatch(mechanism, source);
@@ -536,20 +535,21 @@ export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string,
 
 /** Prepare without changing disk or service state. The caller must hold the hosted seat fence
  *  before applying this installer-owned rewrite and restarting the service. */
-export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string): (() => void) | undefined {
+export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string, accountPath = process.env.PATH ?? ""): ((assertOwner?: () => void) => void) | undefined {
   const { receipt, plan } = recordedUnit(paths, daemonHome);
   if (plan.mechanism === "scheduled-task") return undefined;
   const source = readFileSync(receipt.unitPath, "utf8");
   const os = plan.mechanism === "launchd-agent" ? "darwin" : "linux";
   const merged = [...new Set([
-    ...pinnedPath(process.env.PATH ?? "", posix).split(posix.delimiter),
+    ...pinnedPath(accountPath, posix).split(posix.delimiter),
     ...pinnedPath(pinnedPathMatch(plan.mechanism, source).old, posix).split(posix.delimiter),
   ])].join(posix.delimiter);
   const next = refreshedDaemonPath(plan.mechanism, source, serviceApplicationPath(merged, os))!;
   const sha256 = createHash("sha256").update(next).digest("hex");
-  return () => {
+  return (assertOwner) => {
     const lock = process.platform === "darwin" || process.platform === "linux" ? acquireLock(join(paths.state, "service-repair.lock")) : undefined;
     try {
+    assertOwner?.();
     const current = recordedUnit(paths, daemonHome).receipt;
     if (current.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during setup; run setup again");
     writeSecretFileAtomic(receipt.unitPath, next);
@@ -609,6 +609,37 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
   return true;
 }
 
+/** Read the native registration without creating a unit, including when its receipt was lost. */
+export function nativeDaemonPresence(paths: DaemonPaths, daemonHome?: string): "absent" | "present" | "unavailable" {
+  if (process.platform !== "linux") {
+    const plan = planInstall(paths, daemonHome);
+    return plan.alreadyInstalled || plan.recovered ? "present" : "absent";
+  }
+  assertNoServiceRepair(paths);
+  const name = daemonUnitName(daemonHome);
+  const path = join(systemdUserUnitDirectory(daemonUserServiceEnv()), name);
+  try { lstatSync(path); return "present"; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const observed = nativeRun("systemctl", ["--user", "show", "--no-pager", "--property=LoadState", "--value", name], daemonUserServiceEnv(), 3000);
+  if (observed.status !== 0) return "unavailable";
+  const load = observed.stdout.trim();
+  return load === "not-found" ? "absent" : load ? "present" : "unavailable";
+}
+
+/** The caller still needs lifetime exclusion. In particular, an installed service whose
+ * supervisor reports activation or a restart must not be replaced by the Desktop sidecar. */
+export function installedDaemonActivity(paths: DaemonPaths, daemonHome?: string): "stopped" | "transition" | "unverified" | "unavailable" {
+  const recorded = recordedUnit(paths, daemonHome);
+  if (!recordedDaemonIdentity(recorded).same) return "unverified";
+  if (recorded.service) return recorded.service.stopped(recorded.receipt) ? "stopped" : "unverified";
+  const observed = nativeRun("systemctl", ["--user", "show", "--no-pager", "--property=ActiveState", "--value", recorded.receipt.unit], daemonUserServiceEnv(), 3000);
+  if (observed.status !== 0) return "unavailable";
+  const active = observed.stdout.trim();
+  if (active === "inactive") return "stopped";
+  if (["activating", "deactivating", "reloading", "refreshing"].includes(active)) return "transition";
+  return "unverified";
+}
+
 /** Recreate a shell installation's missing runtime binding without adopting another CLI's service. */
 export function reconcileMissingShellRuntime(paths: Pick<DaemonPaths, "state">): void {
   if (process.platform !== "linux" || process.env.COTAL_LAUNCHER !== "1" || process.env.COTAL_INSTALL_RECONCILE !== "1") return;
@@ -647,9 +678,15 @@ export function reconcileInstalledSystemdOomPolicy(paths: Pick<DaemonPaths, "sta
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string } {
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string; receiptKey: string } {
   const recorded = recordedUnit(paths, daemonHome);
-  return expectedArgv ? recordedSourceIdentity(recorded.receipt, recorded.plan.mechanism, () => [...expectedArgv]) : recordedDaemonIdentity(recorded);
+  const identity = expectedArgv ? recordedSourceIdentity(recorded.receipt, recorded.plan.mechanism, () => [...expectedArgv]) : recordedDaemonIdentity(recorded);
+  return { ...identity, receiptKey: `${recorded.receipt.installedAt}:${recorded.receipt.unitSha256}` };
+}
+
+/** Only the owner's installation kind is public. Never project its entry path. */
+export function installationOwner(installedEntry: string): { kind: "app" | "cli" } {
+  return { kind: existsSync(join(dirname(dirname(installedEntry)), "desktop-runtime.json")) ? "app" : "cli" };
 }
 
 /** Detect a candidate without asking the user manager about healthy or absent services. */
@@ -868,19 +905,21 @@ function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUni
 export interface DaemonOwnershipObservation {
   readonly state: "owned" | "not-owned" | "unknown";
   readonly reason: "verified" | "marker-absent" | "identity-differs" | "source-marker-absent" | "observation-failed" | "observation-timeout" | "observation-aborted" | "worker-failed";
+  readonly stopPeerOwnsLock?: true;
 }
 
 /** A native launch marker is trusted only with this installation's verified recorded source. */
-export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
+export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string, stopPeer?: DaemonPeerLifetime): DaemonOwnershipObservation {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
     const intent = process.platform === "darwin" || process.platform === "linux" ? (readServiceRepair(paths.state) ?? (process.platform === "linux" ? readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)) : undefined)) : undefined;
-    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
+    const stopPeerOwnsLock = !intent && assertNoServiceRepair(paths, stopPeer);
+    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, true);
     if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
     const marked = recordedSourceMarked(receipt, plan.mechanism);
-    return marked ? { state: "owned", reason: "verified" } : { state: "not-owned", reason: "source-marker-absent" };
+    return marked ? { state: "owned", reason: "verified", ...(stopPeerOwnsLock ? { stopPeerOwnsLock: true } : {}) } : { state: "not-owned", reason: "source-marker-absent" };
   } catch { return { state: "unknown", reason: "observation-failed" }; }
 }
 
@@ -900,7 +939,7 @@ export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string
 }
 
 /** Observe native provenance without running supervisor tools on the serving event loop. */
-export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal): Promise<DaemonOwnershipObservation> {
+export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal, stopPeer?: DaemonPeerLifetime): Promise<DaemonOwnershipObservation> {
   if (signal?.aborted) return Promise.resolve({ state: "unknown", reason: "observation-aborted" });
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return Promise.resolve({ state: "not-owned", reason: "marker-absent" });
   return new Promise(resolve => {
@@ -916,8 +955,8 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
       if (workerData.execution) Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze(workerData.execution) });
-      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
-    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
+      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home, workerData.stopPeer))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
+    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, stopPeer, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
     const finish = (observation: DaemonOwnershipObservation) => {
@@ -1258,10 +1297,11 @@ async function stopAndDeregister<T>(paths: DaemonPaths, daemonHome: string | und
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        // Reset or a Darwin peer closed before identification proves neither a live
-        // endpoint nor absence. Reobserve under the same shutdown deadline.
+        // A Linux probe can connect just before unlink and read the lifetime after release.
+        // Reobserve a vanished path, but still require endpoint absence and process exit.
         else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET"
           && !(process.platform === "darwin" && error instanceof ClosedPeerRefusal)
+          && !(process.platform === "linux" && socket && error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER" && !existsSync(paths.socket))
           && !(process.platform === "win32" && stopCommitted && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
@@ -1285,7 +1325,9 @@ async function stopAndDeregister<T>(paths: DaemonPaths, daemonHome: string | und
  * service through the same verified path as uninstall, but keeps every record in the daemon home:
  * sign-in sessions, this computer's identity and every space's service records. Then it installs
  * this installation's unit and waits for it to answer at `version`. If this installation's service
- * cannot be published or does not answer, the previous unit is restored and started again.
+ * cannot be published or does not answer, the previous unit is restored and started again, and the
+ * move refuses `MOVE_ROLLED_BACK`. If that restore fails too, it refuses `MOVE_RESTORE_FAILED`: no
+ * service may run, and the next Repair finds the service not set up or not running and offers to fix it.
  *
  * The restore covers a failure this process sees. A process that dies after the previous unit is
  * removed and before this one is published leaves no unit; the next Repair finds the service not
@@ -1317,7 +1359,11 @@ export async function applyMove(paths: DaemonPaths, daemonHome: string | undefin
       await answeringAt(paths, expected.version, 60_000);
     } catch (error) {
       report?.("this installation's service did not start; restoring the previous one");
-      await restoreMovedUnit(paths, daemonHome, previous);
+      try { await restoreMovedUnit(paths, daemonHome, previous); }
+      catch (restore) {
+        // The restore itself failed: no service may run now. Say what is left, never the rollback sentence.
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}), and restoring the previous service failed (${(restore as Error).message}); no background service may be running, and the agents the previous service ran were stopped`, { native: { code: "MOVE_RESTORE_FAILED" } });
+      }
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `this installation's background service did not start (${(error as Error).message}); the previous service was restored and started again, and the agents it ran were stopped and do not start again by themselves`, { native: { code: "MOVE_ROLLED_BACK" } });
     }
     return { state: "moved", unit, from: identity.installed, spaces };

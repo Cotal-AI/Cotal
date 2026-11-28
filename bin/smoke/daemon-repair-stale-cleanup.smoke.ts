@@ -72,6 +72,23 @@ for (const [name, answer] of [["permission-denied", refused("permission-denied")
   console.log("PASS an answer for another instance changes nothing");
 }
 
+// W9: a removal that succeeded is reported as removed, even when the step after it fails.
+{
+  const failing = (what: "start" | "disconnect") => repairStaleCleanup({
+    intended: () => what === "start", read: () => stale, verifyAuthority: () => {},
+    deregister: async request => removed(request), rebind: () => {},
+    start: async () => { throw new Error("the manager did not start"); },
+    finishDisconnect: async () => { throw new Error("Manager registration removal is unconfirmed"); },
+  });
+  const disconnect = await failing("disconnect");
+  assert.equal(disconnect.state, "removed-unfinished");
+  assert.equal(disconnect.message, "The old registration in team was removed, but disconnecting the space from this computer didn't finish. Choose Repair again to finish it.");
+  const start = await failing("start");
+  assert.equal(start.state, "removed-unfinished");
+  assert.equal(start.message, "The old registration in team was removed, but the agent host didn't start again. Choose Repair again to start it.");
+  console.log("PASS removed then a failed finish: says it was removed and names what is left");
+}
+
 // The account step: only a sign-in the person must give appears; a Cloud read that is retrying does not.
 {
   const { accountSteps } = await import("../daemon/repair.js");

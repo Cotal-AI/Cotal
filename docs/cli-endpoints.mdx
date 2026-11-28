@@ -268,8 +268,10 @@ the supplied name. Use `--dir` to choose another one. `init` creates missing dir
 mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
 Retry with `--dir` set to a real directory path. If a scaffold file already exists, `init` leaves it
 unchanged. Its retry keeps the endpoint name and output format. Replace `<new-directory>` with
-an unused directory. The receipt lists the
-paths created. A partial write leaves those paths in place for review.
+an unused directory. If the filesystem rejects a path as too long before anything is created,
+`init` refuses with `USAGE_INVALID` (exit 1). Shorten the path or its directory names.
+If creation has already begun, `init` reports `OPERATION_PARTIAL` (exit 4) and lists the paths
+it created for you to inspect. It leaves those paths in place.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
 is kept. Choose a namespace you control before requesting serving authority. Scaffolding creates

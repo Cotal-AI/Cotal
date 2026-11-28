@@ -33,8 +33,8 @@ export const ADDRESS_TEXT = /https?:\/\/|\/(?:Users|Applications|usr|opt|home)\/
 export type SurfaceWord = "Connected" | "Starting" | "Offline" | "Can't connect" | "Sign in required" | "Service stopped" | "Updating" | "Not set up" | "Disk full" | "Repair needed";
 
 /** A state that reaches the window as a status field rather than a refusal code. `state` is a render
- *  stub state (render/fixtures.mjs nativeStub): `statusExtra` adds fields to every status frame and
- *  `stoppedDetail` replaces the stopped service's refusal detail. `action` is the label of the one
+ *  stub state (render/fixtures.mjs nativeStub): `statusFields` adds fields to every status frame and
+ *  `stoppedByYou` marks the stopped service as stopped by the person. `action` is the label of the one
  *  enabled button; absent means the state offers none. */
 export interface StatusFieldCase { name: string; state: Record<string, unknown>; word: SurfaceWord; title: string; action?: string }
 
@@ -48,9 +48,9 @@ const ready = { installed: true, signedIn: true, connected: true, readyAccountSp
 export const STATUS_FIELD_CASES: readonly StatusFieldCase[] = [
   { name: "every-space-refused", state: { ...ready, account: account([held("acme-team"), held("research")]) }, word: "Can't connect", title: "Can't connect to your spaces" },
   { name: "one-refused-one-connected", state: { ...ready, account: account([held("acme-team"), connected("research")]) }, word: "Connected", title: "This computer is connected" },
-  { name: "disk-full", state: { ...ready, account: account([connected("acme-team")]), statusExtra: { diskFull: true } }, word: "Disk full", title: "Your disk is full", action: "Check again" },
-  { name: "service-stopped-by-you", state: { installed: true, signedIn: true, serviceStopped: true, stoppedDetail: { installed: true, stopped: "by-you" } }, word: "Service stopped", title: "The background service is stopped", action: "Start" },
-  { name: "update-waiting", state: { ...ready, account: account([connected("acme-team")]), statusExtra: { generation: { installed: "0.184.0", running: "0.183.0", waiting: "preparing activation" } } }, word: "Updating", title: "Cotal is updating" },
+  { name: "disk-full", state: { ...ready, account: account([connected("acme-team")]), statusFields: { diskFull: true } }, word: "Disk full", title: "Your disk is full", action: "Check again" },
+  { name: "service-stopped-by-you", state: { installed: true, signedIn: true, serviceStopped: true, stoppedByYou: true }, word: "Service stopped", title: "The background service is stopped", action: "Start" },
+  { name: "update-waiting", state: { ...ready, account: account([connected("acme-team")]), statusFields: { generation: { installed: "0.184.0", running: "0.183.0", waiting: "preparing activation" } } }, word: "Updating", title: "Cotal is updating" },
   // Only a computer without an account writes a Manager's next into Details; an account computer
   // returns before that line, so this case must use the single-space path.
   { name: "manager-next-names-a-command", state: { installed: true, signedIn: true, managers: [{ space: "acme-team", state: "starting", reason: "the hosted Manager parent IPC probe did not answer", next: "inspect `cotal daemon status --space acme-team`" }] }, word: "Starting", title: "This computer is starting" },

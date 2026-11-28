@@ -280,7 +280,7 @@ setCurrent("keep");
   const beforeSend = registryFiles();
   const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
   check("send to an unreachable registration refuses with space forget in its JSON remedy",
-    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "check the address and connection to the host; start the broker there if it is stopped. To unregister this space, run `cotal space forget open1`", shown(offline));
   const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
   check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
     offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
@@ -1516,7 +1516,10 @@ if (process.platform === "linux") {
   removePreparedSpace("y".repeat(100));
   rmSync(earlier, { recursive: true, force: true });
   const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
-  check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
+  const addPlain = await run(["space", "add", "demo", "--server", LIVE, "--root", root, "--plain"]);
+  for (const [format, advice] of [["--json", add.env?.error?.remedy ?? ""], ["--plain", addPlain.stderr]] as const) {
+    check(`adding a prepared name preserves ${format} on both recovery commands`, refused(add, 2, "CONFLICT") && addPlain.status === 2 && advice.includes(`--space demo ${format}\``) && advice.includes(`space forget demo ${format}\``) && findMesh("demo") === undefined, advice);
+  }
 
   const list = await json(["space"]);
   check("space lists it apart from the registrations", list.env?.result.prepared.some((p: { space: string; root: string }) => p.space === "demo" && p.root === fresh) && !list.env.result.items.some((s: { space: string }) => s.space === "demo"), list.env?.result);
@@ -1885,13 +1888,13 @@ if (process.platform === "linux") {
     { status: repairedComponents.status, health: repairedHealth, stderr: repairedComponents.stderr });
   unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and effective broker inputs. A different --server
-  // or --host refuses before anything is written, naming the recorded value and the bare up
-  // that starts the stack there.
+  // or --host refuses before anything is written and names how to start at the recorded value.
   const recordedRoot = realpathSync(fresh), journalBefore = readFileSync(stackJournalPath(fresh), "utf8");
   const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
-  check("up --server naming another address is CONFLICT, exit 2, naming the recorded address and bare cotal up from the root",
+  const retryAtRecorded = `repeat your original startup command from the same folder with \`--server ${server}\` and all other options unchanged`;
+  check("up --server naming another address is CONFLICT, exit 2, changing only the address in the retry",
     refused(moved, 2, "CONFLICT") && (moved.env?.error?.message ?? "").includes(`recorded at ${server}`) &&
-      moved.env?.error?.remedy === `run bare \`cotal up\` from ${recordedRoot} to start it at ${server}`, shown(moved));
+      moved.env?.error?.remedy === retryAtRecorded, shown(moved));
   // While another program holds the recorded address, bare up refuses too, so this refusal names that
   // address and the process of this account that listens there, and says no command moves the stack.
   const occupier = createServer();
@@ -1900,7 +1903,7 @@ if (process.platform === "linux") {
     const held = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("...and while another program holds that address, it names the address and that process, and says no command moves the stack",
       refused(held, 2, "CONFLICT") && new RegExp(`a recorded stack is not moved to another address, and another process holds that address 127\\.0\\.0\\.1:${port}, where process ${process.pid} \\(\\S+\\) of this account listens$`).test(held.env?.error?.message ?? "") &&
-        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then run bare \`cotal up\` from ${recordedRoot}; no command moves a stack that ran to another address, so it starts only at ${server}`, shown(held));
+        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then ${retryAtRecorded}`, shown(held));
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   // Omit --server to use the recorded address and reach the recorded-input comparison.
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);

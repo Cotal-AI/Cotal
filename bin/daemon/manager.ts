@@ -26,6 +26,7 @@ import { repairStaleCleanup, type StaleCleanup, type StaleCleanupDeps, type Stal
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
 import { hostedManagerChildren } from "./manager-children.js";
+import { plainManagerReason } from "./manager-reason.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -245,7 +246,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   const status = (space: string): HostedManager => {
     const view = rawStatus(space);
-    return { ...view, ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
+    return { ...view, hostingIntent: existsSync(daemonManagerIntentFile(space, home)), ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
   };
   const rawStatus = (space: string): HostedManager => {
     const current = live.get(space);
@@ -353,7 +354,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
       } catch (error) {
         if (l.child === child && !l.stopping && !closed && !generationPending) {
-          const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
+          const reason = plainManagerReason(safeDiagnostic(error instanceof Error ? error.message : String(error)), "the hosted Manager did not answer status").slice(0, 1500);
           if (!isRateLimited(error)) {
             l.view = { ...l.view, state: "starting", reason, observedAt: new Date().toISOString(), next: `inspect \`cotal daemon status --space ${space}\`; restore its connection, then run \`cotal daemon setup --space ${space}\`` };
           } else if (l.view.observedAt === undefined) {
@@ -525,7 +526,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
         return refuse(l, reason, next);
       }
-      refuse(l, reason, "correct the connector cause, run \`cotal ext seed --repair\` with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
+      refuse(l, reason, "correct the connector failure and retry setup; the daemon will also retry automatically");
       if (!closed && !l.stopping && !generationPending) {
         const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
         l.timer = setTimeout(() => {
@@ -648,9 +649,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (l.child === child) l.child = undefined;
         resolve();
         const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
-        const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
+        const exitReason = `Manager exited (${signal ?? `code ${code}`})`;
         l.unboundSamples = 0;
-        l.view = { ...l.view, pid: undefined, connection: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
+        l.view = { ...l.view, pid: undefined, connection: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : `${exitReason}${lastLine ? `: ${lastLine}` : ""}` };
         if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
           l.view = { ...l.view, reason: exitReason };
@@ -695,7 +696,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
       } catch (error) {
         last = error;
-        const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
+        const reason = plainManagerReason(safeDiagnostic(error instanceof Error ? error.message : String(error)), "the hosted Manager did not answer status").slice(0, 1500);
         l.view = isRateLimited(error)
           ? { ...l.view, state: "starting", reason, next: `wait for the CLI connect limit to refill, then run \`cotal daemon status --space ${space}\` again` }
           : { ...l.view, reason, observedAt: new Date().toISOString() };
@@ -704,7 +705,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     }
     await stopChild(l);
     if (closed || l.stopping) return l.view;
-    const reason = safeDiagnostic(nativeReason ?? (last instanceof Error ? last.message : typeof last === "string" ? last : "the Manager exited before answering status")).replaceAll("`cotal login --idp ", "`cotal daemon login --idp ").slice(0, 1500);
+    const reason = plainManagerReason(safeDiagnostic(nativeReason ?? (last instanceof Error ? last.message : typeof last === "string" ? last : "the Manager exited before answering status")), "the Manager exited before answering status").slice(0, 1500);
     if (authorityTerminal) return refuse(l, reason, authorityStatus === 403
       ? `ask the space owner to grant your cli actor the supervise scope, then run \`cotal daemon setup --space ${space}\``
       : `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, correct the reported cause, then run \`cotal daemon setup --space ${space}\``);

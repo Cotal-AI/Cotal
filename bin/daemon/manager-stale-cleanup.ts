@@ -39,6 +39,8 @@ export interface StaleCleanupDeps {
 
 export type StaleCleanupOutcome =
   | { readonly state: "removed"; readonly message: string }
+  /** The old registration was removed, but starting the host or finishing the disconnect did not. */
+  | { readonly state: "removed-unfinished"; readonly message: string; readonly detail: string }
   | { readonly state: "still-answers"; readonly message: string }
   | { readonly state: "kept"; readonly message: string };
 
@@ -53,12 +55,16 @@ export async function repairStaleCleanup(deps: StaleCleanupDeps): Promise<StaleC
   if (result.instanceId !== stale.recorded) throw new Error("the space answered for another instance; nothing was changed");
   if (result.state === "removed" || (result.state === "refused" && result.condition === "not-registered")) {
     deps.rebind(stale.current);
+    const unfinished = (what: string, error: unknown): StaleCleanupOutcome => ({ state: "removed-unfinished", detail: error instanceof Error ? error.message : String(error),
+      message: `The old registration in ${stale.space} was removed, but ${what}. Choose Repair again to ${what.startsWith("the agent host") ? "start it" : "finish it"}.` });
     // A disconnect that ran during the request withdrew the intent too.
     if (!intended || !deps.intended()) {
-      await deps.finishDisconnect();
+      try { await deps.finishDisconnect(); }
+      catch (error) { return unfinished("disconnecting the space from this computer didn't finish", error); }
       return { state: "removed", message: `The old registration in ${stale.space} was removed and the space stays disconnected from this computer.` };
     }
-    await deps.start();
+    try { await deps.start(); }
+    catch (error) { return unfinished("the agent host didn't start again", error); }
     return { state: "removed", message: `The old registration in ${stale.space} was removed and the agent host started again.` };
   }
   if (result.state === "refused" && (result.condition === "instance-answered" || result.condition === "instance-not-affirmed-gone"))

@@ -44,7 +44,7 @@ import { watchDaemonGeneration } from "./generation.js";
 import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { readReceipt } from "./install-receipt.js";
-import { processBirth, readLifetimeRecord } from "./lifetime.js";
+import { processBirth, readLifetimeRecord, type DaemonPeerLifetime } from "./lifetime.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -169,7 +169,7 @@ function statusView(s: DaemonStatus): Report {
     ...(s.vitals ? [{ title: "Computer vitals", blocks: [{ kind: "fields" as const, rows: [["Sampled", s.vitals.sampledAt], ["CPU", `${s.vitals.cpu.logicalCount} logical, ${s.vitals.cpu.utilisationPercent.toFixed(1)}% over ${s.vitals.cpu.intervalMs}ms`], ...(s.vitals.cpu.load1 !== undefined ? [["Load (1/5/15m)", `${s.vitals.cpu.load1} / ${s.vitals.cpu.load5} / ${s.vitals.cpu.load15}`]] : []), ["Memory", capacityText(s.vitals.memory.totalBytes, s.vitals.memory.availableBytes)], ["System uptime", uptimeText(s.vitals.uptimeSeconds)], ...s.vitals.filesystems.map(fs => [fs.mount, capacityText(fs.totalBytes, fs.freeBytes)])] as [string, string][] }] }] : []),
     ...(s.vitalsError ? [{ title: "Computer vitals error", blocks: [{ kind: "lines" as const, lines: [s.vitalsError] }] }] : []),
     ...(s.update ? [{ title: "Updates", blocks: [{ kind: "fields" as const, rows: [["Current", s.update.current], ["Latest seen", s.update.latest ?? "unknown"], ["Last check", s.update.lastCheck ?? "not checked"], ["Automatic updates", s.update.automatic ? "on" : "off"], ["Last result", s.update.lastResult], ["Failures", String(s.update.failures)], ["Next attempt", s.update.nextAttempt ?? "none"]] as [string, string][] }] }] : []),
-    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.custodyRecovery ? "; open the app and choose Use signed-in account to confirm moving this connection" : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
+    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run \`cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""}\` again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}${space.custodyRecovery ? "; open the app and choose Move to this account to confirm moving this connection" : ""}${space.machineService === "approval-pending" ? "; machine status service waits for the space owner's approval" : space.machineService ? `; machine status service ${space.machineService}` : ""}`])] as [string, string][] }] })) : []),
     ...(s.agents ?? []).map(inventory => ({ title: `Agents: ${inventory.space}`, blocks: inventory.state === "unreadable"
       ? [{ kind: "lines" as const, lines: [inventory.message] }]
       : inventory.agents.length ? inventory.agents.map(agent => ({ kind: "fields" as const, rows: [["Name", agent.name], ["Application", agent.application], ["Model", agent.model ?? "not pinned"], ["Space", inventory.space], ["Folder", agent.cwd], ["Started", agent.startedAt], ["State", agent.state]] as [string, string][] }))
@@ -597,27 +597,28 @@ async function serve(args: ParsedArgs): Promise<void> {
   let ownershipPending = process.env.COTAL_DAEMON_NATIVE_SERVICE === "1";
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
-  const observe = async (): Promise<DaemonOwnershipObservation> => {
+  const observe = async (stopPeer?: DaemonPeerLifetime): Promise<DaemonOwnershipObservation> => {
     const signal = provenance.signal;
-    const result = await observeDaemonOwnedService(paths, home, signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    const result = await observeDaemonOwnedService(paths, home, signal, stopPeer).catch((): DaemonOwnershipObservation => ({ state: "unknown", reason: "worker-failed" }));
     if (!signal.aborted) ownershipPending = false;
-    if (result.state === "owned") owned = true;
+    if (result.state === "owned" && !result.stopPeerOwnsLock) owned = true;
     if (!loggedReasons.has(result.reason)) {
       loggedReasons.add(result.reason);
       process.stderr.write(`daemon: native ownership ${result.state}: ${result.reason}\n`);
     }
     return result;
   };
-  let stopObservation: Promise<DaemonOwnershipObservation> | undefined;
-  const stopAllowed = (): Promise<DaemonOwnershipObservation> => {
+  let stopObservation: { key: string; result: Promise<DaemonOwnershipObservation> } | undefined;
+  const stopAllowed = (peer?: DaemonPeerLifetime): Promise<DaemonOwnershipObservation> => {
     if (owned) return Promise.resolve({ state: "owned", reason: "verified" });
+    const key = peer ? `${peer.pid}:${peer.birth}` : "";
+    if (stopObservation) return stopObservation.key === key ? stopObservation.result : stopObservation.result.then(() => stopAllowed(peer));
     // Replace any unfinished startup check, rather than stacking two 65-second waits.
-    if (!stopObservation) {
-      provenance.abort();
-      provenance = new AbortController();
-      stopObservation = observe().finally(() => { stopObservation = undefined; });
-    }
-    return stopObservation;
+    provenance.abort();
+    provenance = new AbortController();
+    const result = observe(peer).finally(() => { stopObservation = undefined; });
+    stopObservation = { key, result };
+    return result;
   };
   try {
     running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,

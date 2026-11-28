@@ -16,6 +16,8 @@ use tokio::sync::Semaphore;
 const MAX_FRAME: usize = 64 * 1024;
 pub(crate) struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
+struct SurfaceWord(std::sync::Mutex<String>);
+struct AgentCount(std::sync::Mutex<String>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
 struct ActiveWatch(std::sync::Mutex<Option<(u32, tauri_plugin_shell::process::CommandChild)>>);
@@ -133,8 +135,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                         Some("status") if is_watch => {
                             if agent_terminal.is_none() { agent_terminal = Some(terminal_available().await); }
                             frame["result"]["agentTerminal"] = Value::Bool(agent_terminal.unwrap_or(false));
-                            let status = crate::presence::tray_status(&frame);
-                            app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+                            write_tray(app, &frame)?;
                             if let Err(message) = native_presence::observe(app, "status", &frame) {
                                 app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
                             }
@@ -205,8 +206,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     if (!is_watch && matches!(operation, "status" | "setup"))
         || (is_watch && frame.get("ok").and_then(Value::as_bool) == Some(false))
     {
-        let status = crate::presence::tray_status(&frame);
-        app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+        write_tray(app, &frame)?;
     }
     // An OS integration refusal does not conceal the completed daemon operation.
     if !is_watch {
@@ -244,20 +244,27 @@ fn set_update_notice(app: AppHandle, version: Option<String>) -> Result<(), Stri
     item.set_enabled(version.is_some()).map_err(|e| e.to_string())
 }
 
+fn write_tray(app: &AppHandle, frame: &Value) -> Result<(), String> {
+    let agents = crate::presence::agent_count(frame);
+    *app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")? = agents.clone();
+    let word = app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
+    let menu = crate::presence::tray_menu(&word, &agents);
+    app.state::<TrayStatus>().0.set_text(&menu).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
-fn set_connection_state(app: AppHandle, connected: bool, lost: Option<String>, label: Option<String>) -> Result<(), String> {
+fn set_connection_state(app: AppHandle, connected: bool, label: String) -> Result<(), String> {
+    // Keep the connection argument in the command contract. The label alone drives the tray copy.
+    let _ = connected;
+    let word = crate::presence::tray_word(&label);
+    *app.state::<SurfaceWord>().0.lock().map_err(|_| "The tray state was poisoned.")? = word.to_string();
+    let agents = app.state::<AgentCount>().0.lock().map_err(|_| "The tray state was poisoned.")?.clone();
+    let menu = crate::presence::tray_menu(word, &agents);
+    app.state::<TrayStatus>().0.set_text(&menu).map_err(|error| error.to_string())?;
     let tray = app
         .tray_by_id("machine")
         .ok_or("The system tray is unavailable.")?;
-    let known = ["Connected", "Offline", "Can't connect", "Sign in required", "Needs attention", "Starting", "Ready", "Not connected", "Checking connection"];
-    let status = match (label.as_deref().filter(|value| known.contains(value)), lost.as_deref()) {
-        (Some(text), _) => text,
-        (_, Some("offline")) => "offline",
-        (_, Some("unreachable")) => "can't connect",
-        (_, _) if connected => "connected",
-        _ => "not connected",
-    };
-    tray.set_tooltip(Some(format!("Cotal: {status}")))
+    tray.set_tooltip(Some(format!("Cotal: {word}")))
     .map_err(|_| "The tray status could not be updated.".into())
 }
 
@@ -364,8 +371,14 @@ pub fn run() {
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
-            app.manage(native_presence::load(app.handle())?);
-            let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
+            #[allow(unused_mut)]
+            let mut presence = native_presence::load(app.handle())?;
+            #[cfg(target_os = "macos")]
+            if let Err(reason) = crate::command_line::ensure_on_shell_path(app.handle()) {
+                presence.1 = Some(match presence.1.take() { Some(notice) => format!("{notice}\n{reason}"), None => reason });
+            }
+            app.manage(presence);
+            let status = MenuItem::with_id(app, "status", "Starting", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let repair = MenuItem::with_id(app, "repair", "Repair…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
@@ -380,6 +393,8 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&status, &update, &settings, &repair, &dashboard, &quit])?;
             app.manage(TrayUpdate(update));
             app.manage(TrayStatus(status));
+            app.manage(SurfaceWord(std::sync::Mutex::new(String::new())));
+            app.manage(AgentCount(std::sync::Mutex::new(String::new())));
             let icon = app
                 .default_window_icon()
                 .ok_or("The packaged application icon is missing.")?
@@ -387,7 +402,7 @@ pub fn run() {
             TrayIconBuilder::with_id("machine")
                 .icon(icon)
                 .menu(&menu)
-                .tooltip("Cotal: not connected")
+                .tooltip("Cotal: Starting")
                 .show_menu_on_left_click(true)
                 .on_tray_icon_event(|tray, event| {
                     if matches!(

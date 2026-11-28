@@ -12,7 +12,7 @@ import { ADDRESS_TEXT, COMMAND_TEXT, REFUSAL_CODES, STATUS_FIELD_CASES } from ".
 const visibleText = page => page.evaluate(() => {
   const read = id => document.getElementById(id)?.textContent ?? "";
   const rows = [...document.querySelectorAll('[data-testid="connected-space-row"]')].map(row => row.textContent ?? "").join("\n");
-  return { title: read("connection-title"), description: read("connection-description"), details: read("refusal-detail"), rows, pill: read("tray-label") };
+  return { title: read("connection-title"), description: read("connection-description"), details: read("refusal-detail"), rows, pill: read("sidebar-status-word") };
 });
 const enabledActions = page => page.evaluate(() => {
   const panel = document.getElementById("recovery-panel");
