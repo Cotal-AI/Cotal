@@ -1307,7 +1307,7 @@ if (args.includes("show") && args.includes("cotal-daemon.service")) {
 
     async function runSetupRecoveryScenario(opts: {
       name: string;
-      mode: "path-refresh-32s" | "version-mismatch" | "desktop-app-refresh";
+      mode: "path-refresh-32s" | "version-mismatch" | "version-mismatch-then-path-refresh" | "desktop-app-refresh";
     }): Promise<void> {
       const dir = join(root, opts.name);
       const home = join(dir, "home");
@@ -1495,12 +1495,14 @@ process.once("SIGINT", stop);
       }
 
       // For PATH-refresh and desktop-app-refresh: initial daemon runs `version` (so ensureInstalled does not restart it; refreshApplications restarts it!).
-      // For version-mismatch: initial daemon runs `"0.181.0"` (so ensureInstalledUnderClosure restarts it!).
-      const initialVer = opts.mode === "version-mismatch" ? "0.181.0" : version;
+      // For version-mismatch modes: initial daemon runs `"0.181.0"` (so ensureInstalledUnderClosure restarts it!).
+      const initialVer =
+        opts.mode === "version-mismatch" || opts.mode === "version-mismatch-then-path-refresh" ? "0.181.0" : version;
       let activeDaemon: ReturnType<typeof spawn> | undefined = await spawnFakeDaemon(initialVer, opts.mode === "path-refresh-32s");
       let mainPid = activeDaemon.pid!;
       let closureFreeDuringStart = false;
       let serviceLockFreeDuringStart = false;
+      let startCalls = 0;
 
       const control = createServer(async (req, res) => {
         if (req.url === "/stop") {
@@ -1513,20 +1515,29 @@ process.once("SIGINT", stop);
           return;
         }
         if (req.url === "/start") {
-          closureFreeDuringStart = inspectLock(join(cotalHome, ".update-closure.lock")).state === "absent";
-          serviceLockFreeDuringStart = inspectLock(join(paths.state, "service-repair.lock")).state === "absent";
-          if (opts.mode === "path-refresh-32s") {
-            // Exceeds main's old 30_000 ms nativeRun timeout, proving restartInstalled uses 65_000 ms!
-            await delay(31_500);
+          startCalls++;
+          if (startCalls === 1) {
+            closureFreeDuringStart = inspectLock(join(cotalHome, ".update-closure.lock")).state === "absent";
+            serviceLockFreeDuringStart = inspectLock(join(paths.state, "service-repair.lock")).state === "absent";
+            if (opts.mode === "path-refresh-32s") {
+              // Exceeds main's old 30_000 ms nativeRun timeout, proving restartInstalled uses 65_000 ms!
+              await delay(31_500);
+            }
+            writeFileSync(join(cotalHome, "update-recovery.json"), "null\n", { mode: 0o600 });
+            const needsPathRefresh = opts.mode === "version-mismatch-then-path-refresh";
+            setTimeout(() => {
+              void spawnFakeDaemon("0.182.1", needsPathRefresh).then((d) => {
+                activeDaemon = d;
+                mainPid = d.pid!;
+              });
+            }, 80);
+            res.writeHead(500).end("Job for cotal-daemon.service failed because the control process exited with error code.");
+            return;
           }
-          writeFileSync(join(cotalHome, "update-recovery.json"), "null\n", { mode: 0o600 });
-          setTimeout(() => {
-            void spawnFakeDaemon("0.182.1", false).then((d) => {
-              activeDaemon = d;
-              mainPid = d.pid!;
-            });
-          }, 80);
-          res.writeHead(500).end("Job for cotal-daemon.service failed because the control process exited with error code.");
+          // Subsequent normal start after update-recovery.json is already cleared (e.g. follow-on PATH refresh in the same setup run)
+          activeDaemon = await spawnFakeDaemon("0.182.1", false);
+          mainPid = activeDaemon.pid!;
+          res.end("ok");
           return;
         }
         if (req.url === "/show") {
@@ -1644,7 +1655,18 @@ console.log(JSON.stringify({ result, lines }));
               stderr.includes(`service: updating ${unit} pinned PATH`) &&
               stderr.includes(`service: restarted ${unit} with the updated PATH`) &&
               readFileSync(unitPath, "utf8").includes(`Environment=PATH="${extraBin}:${basePath}:`),
-            { code, stdout, stderr, closureFreeDuringStart, serviceLockFreeDuringStart },
+            { code, stdout, stderr, closureFreeDuringStart, serviceLockFreeStart: serviceLockFreeDuringStart },
+          );
+        } else if (opts.mode === "version-mismatch-then-path-refresh") {
+          check(
+            "version-mismatch recovery followed by PATH-refresh restart in the same setup run waits for restored 0.182.1 and exits 0",
+            code === 0 &&
+              startCalls === 2 &&
+              stderr.includes(`service: ${unit} restarted through its recorded service to load Cotal 0.182.1`) &&
+              stderr.includes(`service: updating ${unit} pinned PATH`) &&
+              stderr.includes(`service: restarted ${unit} with the updated PATH`) &&
+              readFileSync(unitPath, "utf8").includes(`Environment=PATH="${extraBin}:${basePath}:`),
+            { code, startCalls, stderr },
           );
         } else {
           const doc = JSON.parse(stdout) as { result: { steps: Array<{ step: string; outcome: string; detail: string }> } };
@@ -1673,6 +1695,10 @@ console.log(JSON.stringify({ result, lines }));
     try {
       await runSetupRecoveryScenario({ name: "cell10a-path-refresh-32s", mode: "path-refresh-32s" });
       await runSetupRecoveryScenario({ name: "cell10b-version-mismatch", mode: "version-mismatch" });
+      await runSetupRecoveryScenario({
+        name: "cell10d-version-mismatch-then-path-refresh",
+        mode: "version-mismatch-then-path-refresh",
+      });
       await runSetupRecoveryScenario({ name: "cell10c-desktop-app-refresh", mode: "desktop-app-refresh" });
     } finally {
       await new Promise<void>((resolve) => idpServer.close(() => resolve()));

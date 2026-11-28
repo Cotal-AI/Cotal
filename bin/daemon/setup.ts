@@ -114,7 +114,7 @@ function restartProgress(opts: InstallOptions): (detail: string) => void {
 }
 
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
-async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
+async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<{ unit?: string; activeVersion?: string }> {
   const closure = claimSuspendableDaemonClosure();
   try { return await withAppMutation(opts.paths, () => ensureInstalledUnderClosure(opts, steps)); }
   finally { closure.release(); }
@@ -129,7 +129,7 @@ export function installedUnitForSetup(paths: DaemonPaths, home?: string): string
   }
 }
 
-async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
+async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<{ unit?: string; activeVersion?: string }> {
   let unit = installedUnitForSetup(opts.paths, opts.daemonHome);
   let outcome: string, detail: string;
   if (unit !== undefined) {
@@ -171,7 +171,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
         detail = `${unit} at ${installation.installed} runs compatible Cotal ${reply.result.version}; it was left running`;
         steps.push({ step: "install", outcome, detail });
         opts.report(`service: ${detail}`, steps.at(-1));
-        return unit;
+        return { unit, activeVersion: reply.result.version };
       }
       if (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) {
         const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
@@ -194,7 +194,7 @@ async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupSte
   opts.report(`service: ${detail}`, steps.at(-1));
   await waitForDaemon(waitVersion === opts.version ? opts : { ...opts, version: waitVersion }, 60);
   opts.report(`service: the daemon answers at ${opts.paths.socket}`, { step: "install", outcome: "ready", detail: `the daemon answers at ${opts.paths.socket}` });
-  return unit;
+  return { unit, activeVersion: waitVersion };
 }
 
 function hasNewApplications(manager: HostedManager): boolean {
@@ -281,10 +281,11 @@ function credentialsRemoved(r: LoginResult): void {
 /** Connect this computer to an account without changing any space intent. */
 export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string; existingSignInOnly?: boolean }) {
   const steps: SetupStep[] = [];
-  const unit = await ensureInstalled(opts, steps);
-  const beforeRefresh = await queryDaemon(opts);
+  const { unit, activeVersion } = await ensureInstalled(opts, steps);
+  const effectiveOpts = activeVersion === opts.version ? opts : { ...opts, version: activeVersion };
+  const beforeRefresh = await queryDaemon(effectiveOpts);
   if (!beforeRefresh.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", beforeRefresh.error.message);
-  if (beforeRefresh.result.managers?.some(hasNewApplications)) await refreshApplications(opts, steps);
+  if (beforeRefresh.result.managers?.some(hasNewApplications)) await refreshApplications(effectiveOpts, steps);
   const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
@@ -446,7 +447,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   }
   const steps: SetupStep[] = [];
   let discoveredSignIn = false;
-  const unit = await ensureInstalled(opts, steps);
+  const { unit, activeVersion } = await ensureInstalled(opts, steps);
+  const effectiveOpts = activeVersion === opts.version ? opts : { ...opts, version: activeVersion };
   if (opts.discoveryPins) {
     const listed = await exchangeDesktopRequest(opts, { op: "spaces" });
     const provider = listed.ok && !("event" in listed) && "spaces" in listed.result
@@ -514,7 +516,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     const inspectedExisting = manager.state === "answering";
     let refreshed = false;
     const newlyResolvable = hasNewApplications(manager);
-    if (newlyResolvable) refreshed = await refreshApplications(opts, steps);
+    if (newlyResolvable) refreshed = await refreshApplications(effectiveOpts, steps);
     if (inspectedExisting || refreshed) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
     opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`, steps.at(-1));
