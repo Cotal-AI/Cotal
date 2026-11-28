@@ -247,6 +247,12 @@ for (const level of ["regular", "minimal"]) {
 
 {
   const s = sandbox(), space = "private-preset-fixture";
+  const marker = "private-root-fixture", file = join(s.project, `regular file ${marker}`);
+  writeFileSync(file, "original");
+  const invalid = await s.run(["space", "create", space, "--root", file, "--json"]);
+  const commands = invalid.sent.filter(body => body.event === "command");
+  check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
+    && commands.length === 1 && commands[0]?.errorCode === "USAGE_INVALID" && commands[0]?.errorMessage === "the project root is not a directory" && !JSON.stringify(invalid.sent).includes(marker), shown(invalid));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
   for (const mode of ["status", "logs"]) {
     const r = await s.run(["manager", mode, "--space", space, "--json"], { COTAL_TELEMETRY: "regular" });
