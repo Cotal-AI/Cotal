@@ -239,11 +239,16 @@ export class DependencyCheckNoSpace extends Error {}
 
 const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
 
+/** npm's HTTP layer reports a response that never arrives as FETCH_ERROR, not a socket code. */
+function registryFetchTimeout(code: unknown, text: unknown): boolean {
+  return code === "FETCH_ERROR" && typeof text === "string" && /(?:^|\n)(?:npm (?:error|ERR!) )?network timeout at: \S/.test(text);
+}
+
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
   const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
   const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
-  return code !== undefined && NETWORK_ERROR_CODE.test(code);
+  return code !== undefined && (NETWORK_ERROR_CODE.test(code) || !detail.startsWith("target staging failed: ") && registryFetchTimeout(code, detail));
 }
 
 export function offlineUpdateMessage(repaired: boolean): string {
@@ -253,7 +258,7 @@ export function offlineUpdateMessage(repaired: boolean): string {
 export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
   const detail = message(error);
   const fetchTimedOut = /^target staging failed: npm (?:error|ERR!) code FETCH_ERROR\r?\n/.test(detail) &&
-    /^npm (?:error|ERR!) network timeout at: \S/m.test(detail);
+    registryFetchTimeout("FETCH_ERROR", detail);
   if (fetchTimedOut || (error instanceof RegistryUnavailable || error instanceof StagingTimeout || detail.startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
     recordUpdateDeferral(version, "waiting for registry access", true);
     rt.out(fetchTimedOut
@@ -272,8 +277,10 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
-      // A first-party scoped read can fail while the public registry still answers.
-      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
+      // A timeout means the registry accepted the connection and never answered, including a
+      // first-party scoped read. A refusal, a 4xx, or a TLS or authentication error on a scoped
+      // read can still happen while the public registry answers, so those keep the scoped remedy.
+      if (registryFetchTimeout(error?.code, error?.summary) || (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code))) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
         if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
           const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;

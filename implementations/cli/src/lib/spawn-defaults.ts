@@ -1,7 +1,8 @@
 import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { agentFilePath, oneLine, personaDir, personaLinkTarget } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, loadLaunchPersonaFile, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolveOnPath, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, codeSpan, CommandFailure, describeLayer, isWorkspaceTargetError, loadLaunchPersonaFile, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolveOnPath, resolvePreference, resolveReadsLiveness, shellPath, type MeshTarget, type PreferenceContext, type Presentation } from "@cotal-ai/workspace";
+import { localDiagnostic } from "../telemetry.js";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -135,11 +136,11 @@ export async function launchSpace(cwd: string): Promise<{ space: string; source:
 /** The mesh a persona was looked for in. A preview of a space that is not started has no broker. */
 export type PersonaSite = Pick<MeshTarget, "space" | "root" | "personaRoot"> & Partial<Pick<MeshTarget, "server" | "source" | "origin">>;
 
-export function missingPersonaFailure(site: PersonaSite, ref: string, from: string | undefined, path: string, target = { space: site.space, path }): CommandFailure {
+export function missingPersonaFailure(site: PersonaSite, ref: string, from: string | undefined, path: string, target = { space: site.space, path }, presentation: Presentation = "rich"): CommandFailure {
   const broken = brokenPersonaLink(path, target);
   if (broken) return broken;
-  const { message, remedy } = missingPersona(site, ref, from, path);
-  return new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy });
+  const { message, remedy } = missingPersona(site, ref, from, path, presentation);
+  return localDiagnostic(new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy }));
 }
 
 /** The refusal for a launch persona that is not there, which the launch and its preview both give. A
@@ -147,7 +148,7 @@ export function missingPersonaFailure(site: PersonaSite, ref: string, from: stri
  *  name names the directory checked and the mesh that root came from, so a launch that read a
  *  different root than the one set up shows it in one read. A missing default also names the command
  *  that writes one. */
-export function missingPersona(site: PersonaSite, ref: string, from: string | undefined, path: string): { message: string; remedy: string } {
+export function missingPersona(site: PersonaSite, ref: string, from: string | undefined, path: string, presentation: Presentation = "rich"): { message: string; remedy: string } {
   const fromText = from === undefined ? "" : ` from ${from}`;
   if (path !== join(site.personaRoot, `${ref}.md`)) return { message: `no persona "${ref}"${fromText}: ${path} was not found`, remedy: "check the path, or name a persona from the catalog" };
   const where = `${site.personaRoot} (mesh "${site.space}"${site.server ? ` at ${site.server}` : ""}${site.source === "current" ? ", your current mesh" : site.source === "registry" ? ", the only mesh running" : ""})`;
@@ -156,5 +157,10 @@ export function missingPersona(site: PersonaSite, ref: string, from: string | un
     const write = fix.cwd ? `run \`${fix.command}\` in ${fix.cwd} to write one` : `create one with \`${fix.command}\``;
     return { message: `no default persona in ${where}`, remedy: `${write}, name a persona with \`cotal spawn <name>\`, or pass a persona file with \`cotal spawn --file <persona.md>\`` };
   }
-  return { message: `no persona "${ref}"${fromText} in ${where}`, remedy: "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`" };
+  const message = `no persona "${ref}"${fromText} in ${where}`;
+  // An unregistered raw address or unnamed folder need not have a catalog reachable by --space.
+  if (!site.origin && (!site.source || site.source === "flag-server" || site.source === "local-space"))
+    return { message, remedy: "pass a catalog name, or a persona file elsewhere with `--file <persona.md>`" };
+  const inspect = codeSpan(`cotal persona --space${site.space.startsWith("-") ? "=" : " "}${shellPath(site.space)}${presentation === "rich" ? "" : ` --${presentation}`}`);
+  return { message, remedy: `list the catalog with ${inspect}, then pass a name from it, or a persona file with \`--file <persona.md>\`` };
 }
