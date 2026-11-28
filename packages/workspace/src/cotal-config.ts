@@ -21,7 +21,7 @@ export function globalConfigDirProblem(): { readonly message: string; readonly r
       const what = `${path} is ${stat.isFile() ? "a file, not a folder" : "not a folder"}`;
       return {
         message: path === dir ? `the Cotal config folder ${what}` : `the Cotal config folder ${dir} cannot be made: ${what}`,
-        remedy: `move ${path} aside, for example \`mv ${path} ${path}.old\`; Cotal makes the folder when it next saves there`,
+        remedy: `move ${path} aside to an unused name, then repeat the original command; Cotal makes the folder when it next saves there`,
       };
     }
     if (dirname(path) === path) return undefined;
