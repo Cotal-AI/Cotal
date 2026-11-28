@@ -16,7 +16,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
-import { assertSmokeSandboxDown, createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, killAndAwaitExit, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
 import { recordedProcessRefusal } from "../src/commands/service-registry.js";
@@ -424,11 +424,41 @@ for (const level of ["regular", "minimal"]) {
     ["DEPENDENCY_UNAVAILABLE", "UNAVAILABLE"],
   ] as const) {
     const failure = new CommandFailure("refused", code, message, { native: { code: cause } });
-    const text = telemetryErrorText("daemon", failure);
+    const text = telemetryErrorText("daemon", failure, [], "status");
     check(`daemon status ${cause} keeps the diagnostic local`, failure.message === message && text.message === null && text.stack === null);
   }
   const usage = telemetryErrorText("daemon", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
   check("daemon usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
+}
+
+if (process.platform === "linux") {
+  const s = sandbox();
+  const runtime = join(s.home, "rt");
+  mkdirSync(runtime, { mode: 0o700 });
+  const env = { ...s.env, XDG_RUNTIME_DIR: runtime, COTAL_NO_UPDATE_CHECK: "1" };
+  const daemon = spawn(process.execPath, [BIN, "daemon", "serve"], {
+    cwd: s.project, env: { ...env, DO_NOT_TRACK: "1" }, stdio: ["ignore", "ignore", "ignore"],
+  });
+  try {
+    const deadline = Date.now() + 15_000;
+    while (!existsSync(join(runtime, "cotal", "daemon.sock")) && daemon.exitCode === null && Date.now() < deadline) await wait(25);
+    const space = "private-telemetry-space";
+    for (const subcommand of ["status", "service-status"]) {
+      const r = await s.run(["daemon", subcommand, "--space", space, "--json"], env);
+      const error = r.envelope?.error as { code?: string; message?: string; cause?: { code?: string } } | undefined;
+      const events = r.sent.filter(body => body.event === "command");
+      const event = events[0];
+      const diagnostic = subcommand === "status"
+        ? error?.message?.includes(space) === true && event?.errorMessage === null && event.errorStack === null && !JSON.stringify(events).includes(space)
+        : event?.errorMessage === "this space is not registered on this machine; add it with `cotal meshes add`; Manager stopped" && typeof event.errorStack === "string";
+      check(`daemon ${subcommand} sends only its intended NOT_REGISTERED diagnostics`, r.status === 2
+        && error?.code === "TARGET_NOT_FOUND" && error.cause?.code === "NOT_REGISTERED"
+        && events.length === 1 && event?.command === "daemon" && event.subcommand === subcommand
+        && event.errorCode === "TARGET_NOT_FOUND" && diagnostic, { ...shown(r), event });
+    }
+  } finally {
+    await killAndAwaitExit(daemon);
+  }
 }
 
 {

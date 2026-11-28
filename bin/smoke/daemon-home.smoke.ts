@@ -65,7 +65,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import type { AddressInfo } from "node:net";
+import { createServer as createSocketServer, type AddressInfo } from "node:net";
 import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -75,7 +75,8 @@ import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, recordPreparedSpace, removePreparedSpace, setCurrent, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
-import { daemonPaths } from "../daemon/endpoint.js";
+import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
+import { generationOf, holdLifetime } from "../daemon/lifetime.js";
 import { managerCleanupFile, writeManagerCleanup } from "../daemon/manager-cleanup.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
@@ -158,9 +159,9 @@ function track(child: ChildProcess): ChildProcess {
 
 type Doc = { command?: string; target?: { space?: string; requested?: string; idp?: string; file?: string } | null; outcome?: string; result?: Record<string, any> | null; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
-async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv, built = false): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
+async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv, built = false, shellJson = true): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(typeof args === "string"
-    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...env, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: builtBin }, stdio: ["ignore", "pipe", "pipe"] })
+    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args}${shellJson ? " --json" : ""}`], { cwd: root, env: { ...env, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: builtBin }, stdio: ["ignore", "pipe", "pipe"] })
     : spawn(process.execPath, built ? [builtBin, "daemon", ...args] : daemonArgv(args), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] }));
   let out = "", err = "";
   child.stdout!.on("data", (b) => { out += String(b); });
@@ -559,7 +560,7 @@ try {
     const localStoppedRoot = join(root, "local-stopped-root");
     mkdirSync(localRunningRoot, { mode: 0o700 });
     mkdirSync(localStoppedRoot, { mode: 0o700 });
-    const hostedSpace = "hosted-stopped", knownUser = "-known-user", knownOpen = "known-open", localPrepared = "local-prepared", damagedSpace = "damaged-record", damagedPrepared = "damaged-prepared", unknownSpace = "no-such-space";
+    const hostedSpace = "hosted-stopped", knownUser = "-known-user", knownOpen = "known-open", manualOpen = "manual-open", localPrepared = "local-prepared", damagedSpace = "-damaged-record", damagedPrepared = "damaged-prepared", unknownSpace = "no-such-space";
     try {
       for (const flags of [["--idp", "not-a-url"], ["--wait", "not-a-number"], ["--refresh"], ["--dry-run"], ["--yes"], ["--client-id", ""]]) {
         const result = await builtCli(["status", "--daemon-home", g1Home, "--json", ...flags]);
@@ -569,7 +570,8 @@ try {
       check("G1 status refuses an unhosted unknown space with TARGET_NOT_FOUND", filtered.status === 2 && filtered.doc.outcome === "refused" && filtered.doc.result === null && filtered.doc.target?.requested === "nonexistent" && filtered.doc.target?.space === undefined && filtered.doc.error?.code === "TARGET_NOT_FOUND" && filtered.doc.error.cause?.code === "NOT_REGISTERED" && filtered.doc.error.remedy === "Run `cotal space` to list the spaces registered on this computer.", filtered);
       recordMesh(userMesh(hostedSpace));
       recordMesh(userMesh(knownUser));
-      recordMesh({ space: knownOpen, mode: "open", root: localRunningRoot, server: "nats://127.0.0.1:1", ts: new Date().toISOString() });
+      recordMesh({ space: knownOpen, mode: "open", origin: "up", root: localRunningRoot, server: "nats://127.0.0.1:1", ts: new Date().toISOString() });
+      recordMesh({ space: manualOpen, mode: "open", origin: "manual", root: localRunningRoot, server: "nats://remote.example.invalid:4222", ts: new Date().toISOString() });
       recordPreparedSpace({ space: localPrepared, root: localStoppedRoot, ts: new Date().toISOString() });
       const damagedFile = meshFile(damagedSpace);
       writeFileSync(damagedFile, "{not-valid-json", { mode: 0o600 });
@@ -579,9 +581,13 @@ try {
       check("G1 signed-out unknown space with 0 hosted Managers refuses without Mesh header or Manager section and points to cotal space", emptyUnknownPlain.status === 2 && emptyUnknownPlain.out === "" && emptyUnknownPlain.err.startsWith("Request refused\n") && !emptyUnknownPlain.err.includes(`Mesh: ${unknownSpace}`) && !emptyUnknownPlain.err.includes("Manager:") && emptyUnknownPlain.err.includes(`Space ${unknownSpace} is not registered on this computer. The background service is not hosting any spaces.`) && emptyUnknownPlain.err.includes("Run `cotal space` to list the spaces registered on this computer."), emptyUnknownPlain);
       const emptyKnownPlain = await builtCli(["status", "--daemon-home", g1Home, `--space=${knownUser}`, "--plain"]);
       check("G1 known unhosted user space with 0 hosted Managers refuses NOT_REQUESTED and names the background service and setup", emptyKnownPlain.status === 2 && emptyKnownPlain.out === "" && emptyKnownPlain.err.startsWith(`Mesh: ${knownUser}\n`) && !emptyKnownPlain.err.includes("Manager:") && emptyKnownPlain.err.includes(`The background service does not host a Manager for ${knownUser}. It is not hosting any spaces.`) && emptyKnownPlain.err.includes(`Run \`cotal daemon setup --space=${knownUser} --daemon-home ${quotedHome}\` to host its Manager here.`), emptyKnownPlain);
-      const damagedJson = await builtCli(["status", "--daemon-home", g1Home, "--space", damagedSpace, "--json"]);
-      const damagedPlain = await builtCli(["status", "--daemon-home", g1Home, "--space", damagedSpace, "--plain"]);
-      check("G1 unreadable space registration refuses DEPENDENCY_UNAVAILABLE naming the file and cotal space forget", damagedJson.status === 2 && damagedJson.doc.outcome === "refused" && damagedJson.doc.target?.space === damagedSpace && damagedJson.doc.target?.file === damagedFile && damagedJson.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && damagedJson.doc.error.cause?.code === "UNAVAILABLE" && damagedJson.doc.error.message?.includes(damagedFile) === true && !damagedJson.doc.error.message.includes("mesh registry") && damagedJson.doc.error.remedy?.includes(`\`cotal space forget ${damagedSpace}\``) === true && damagedPlain.status === 2 && damagedPlain.err.includes(damagedFile) && damagedPlain.err.includes(`\`cotal space forget ${damagedSpace}\``), { damagedJson, damagedPlain });
+      const damagedJson = await builtCli(["status", "--daemon-home", g1Home, `--space=${damagedSpace}`, "--json"]);
+      const damagedPlain = await builtCli(["status", "--daemon-home", g1Home, `--space=${damagedSpace}`, "--plain"]);
+      const forget = `cotal space forget -- ${damagedSpace}`;
+      check("G1 unreadable space registration refuses DEPENDENCY_UNAVAILABLE naming the file and cotal space forget", damagedJson.status === 2 && damagedJson.doc.outcome === "refused" && damagedJson.doc.target?.space === damagedSpace && damagedJson.doc.target?.file === damagedFile && damagedJson.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && damagedJson.doc.error.cause?.code === "UNAVAILABLE" && damagedJson.doc.error.message?.includes(damagedFile) === true && !damagedJson.doc.error.message.includes("mesh registry") && damagedJson.doc.error.remedy?.includes(`\`${forget}\``) === true && damagedPlain.status === 2 && damagedPlain.err.includes(damagedFile) && damagedPlain.err.includes(`\`${forget}\``), { damagedJson, damagedPlain });
+      const forgotten = await cli(forget, 30_000, childEnv, false, false);
+      check("G1 the printed forget command accepts a leading-hyphen name and removes only its damaged record", forgotten.status === 0 && !existsSync(damagedFile) && existsSync(meshFile(knownUser)), forgotten);
+      console.log(`  $ ${forget} (exit ${forgotten.status})\n${forgotten.out.trim()}`);
       const damagedPreparedFile = recordPreparedSpace({ space: damagedPrepared, root: localStoppedRoot, ts: new Date().toISOString() });
       writeFileSync(damagedPreparedFile, "{not-valid-prepared-json", { mode: 0o600 });
       const damagedPreparedJson = await builtCli(["status", "--daemon-home", g1Home, "--space", damagedPrepared, "--json"]);
@@ -589,15 +595,20 @@ try {
       rmSync(damagedPreparedFile);
       const registrations = dirname(damagedFile);
       const heldRegistrations = `${registrations}.held`;
+      const otherClientHome = join(root, "healthy-client-registry");
+      mkdirSync(join(otherClientHome, "meshes"), { recursive: true, mode: 0o700 });
       renameSync(registrations, heldRegistrations);
       try {
         writeFileSync(registrations, "not a folder", { mode: 0o600 });
-        const unreadable = await builtCli(["status", "--daemon-home", g1Home, `--space=${knownUser}`, "--json"]);
-        check("G1 unusable registrations folder preserves the scoped dependency refusal", unreadable.status === 2
-          && unreadable.doc.target?.space === knownUser && unreadable.doc.target.file === registrations
-          && unreadable.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && unreadable.doc.error.cause?.code === "UNAVAILABLE"
-          && unreadable.doc.error.message === `The space registrations folder ${registrations} could not be read.`
-          && unreadable.doc.error.remedy?.includes(registrations) === true, unreadable);
+        const env = { ...childEnv, COTAL_HOME: otherClientHome };
+        const unfiltered = await builtCli(["status", "--daemon-home", g1Home, "--json"], 30_000, env);
+        const scoped = await builtCli(["status", "--daemon-home", g1Home, `--space=${knownUser}`, "--json"], 30_000, env);
+        check("G1 both status forms report the daemon's unreadable folder, even with a healthy CLI registry", unfiltered.status === 2 && scoped.status === 2
+          && JSON.stringify(scoped.doc) === JSON.stringify(unfiltered.doc) && scoped.doc.outcome === "refused" && scoped.doc.result === null
+          && JSON.stringify(scoped.doc.target) === JSON.stringify({ file: registrations })
+          && scoped.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && scoped.doc.error.cause?.code === "UNAVAILABLE"
+          && scoped.doc.error.message === `The space registrations folder ${registrations} could not be read.`
+          && scoped.doc.error.remedy?.includes(registrations) === true, { unfiltered, scoped });
       } finally {
         rmSync(registrations, { force: true });
         renameSync(heldRegistrations, registrations);
@@ -615,6 +626,11 @@ try {
       const knownOpenJson = await builtCli(["status", "--daemon-home", g1Home, "--space", knownOpen, "--json"]);
       check("G1 running local space names the background service, recorded root, and cotal status --space", knownOpenJson.status === 2 && knownOpenJson.doc.outcome === "refused" && knownOpenJson.doc.result === null && knownOpenJson.doc.target?.space === knownOpen && knownOpenJson.doc.error?.code === "TARGET_NOT_FOUND" && knownOpenJson.doc.error.cause?.code === "NOT_REQUESTED" && knownOpenJson.doc.error.message === `The background service does not run local spaces, so it does not host a Manager for ${knownOpen} (${localRunningRoot}). Spaces hosted by the background service: ${hostedSpace}.` && knownOpenJson.doc.error.remedy === `Run \`cotal status --space ${knownOpen}\` to inspect its local stack in ${localRunningRoot}.`, knownOpenJson);
       const preparedLocalJson = await builtCli(["status", "--daemon-home", g1Home, "--space", localPrepared, "--json"]);
+      const manualOpenJson = await builtCli(["status", "--daemon-home", g1Home, "--space", manualOpen, "--json"]);
+      check("G1 a manual open registration points to the broker's Manager, not a local stack", manualOpenJson.status === 2 && manualOpenJson.doc.target?.space === manualOpen
+        && manualOpenJson.doc.error?.code === "TARGET_NOT_FOUND" && manualOpenJson.doc.error.cause?.code === "NOT_REQUESTED"
+        && manualOpenJson.doc.error.message === `The background service hosts Managers only for spaces that sign in through a provider. The Manager for ${manualOpen} runs where its broker runs. Spaces hosted by the background service: ${hostedSpace}.`
+        && manualOpenJson.doc.error.remedy === `Run \`cotal status --space ${manualOpen}\` to inspect the space.`, manualOpenJson);
       check("G1 stopped prepared local space names the background service, recorded root, and cotal up", preparedLocalJson.status === 2 && preparedLocalJson.doc.outcome === "refused" && preparedLocalJson.doc.result === null && preparedLocalJson.doc.target?.space === localPrepared && preparedLocalJson.doc.error?.code === "TARGET_NOT_FOUND" && preparedLocalJson.doc.error.cause?.code === "NOT_REQUESTED" && preparedLocalJson.doc.error.message === `The background service does not run local spaces, so it does not host a Manager for ${localPrepared} (${localStoppedRoot}). Spaces hosted by the background service: ${hostedSpace}.` && preparedLocalJson.doc.error.remedy === `Run \`cotal up\` in ${localStoppedRoot} to start its local stack.`, preparedLocalJson);
       const unknownSignedOutJson = await builtCli(["status", "--daemon-home", g1Home, "--space", unknownSpace, "--json"]);
       check("G1 signed-out unknown space lists the 1 hosted space and gives one pasteable cotal space command", unknownSignedOutJson.status === 2 && unknownSignedOutJson.doc.outcome === "refused" && unknownSignedOutJson.doc.result === null && unknownSignedOutJson.doc.target?.requested === unknownSpace && unknownSignedOutJson.doc.target?.space === undefined && unknownSignedOutJson.doc.error?.code === "TARGET_NOT_FOUND" && unknownSignedOutJson.doc.error.cause?.code === "NOT_REGISTERED" && unknownSignedOutJson.doc.error.message === `Space ${unknownSpace} is not registered on this computer. Spaces hosted by the background service: ${hostedSpace}.` && unknownSignedOutJson.doc.error.remedy === "Run `cotal space` to list the spaces registered on this computer.", unknownSignedOutJson);
@@ -646,7 +662,7 @@ try {
       rmSync(join(g1Home, "daemon", spaceSegment(hostedSpace)), { recursive: true, force: true });
       removePreparedSpace(localPrepared);
       removePreparedSpace(damagedPrepared);
-      for (const space of [hostedSpace, knownUser, knownOpen, damagedSpace]) rmSync(meshFile(space), { force: true });
+      for (const space of [hostedSpace, knownUser, knownOpen, manualOpen, damagedSpace]) rmSync(meshFile(space), { force: true });
     }
     const unused = join(root, "unused"); mkdirSync(unused, { mode: 0o700 });
     const before = runtimeEntries();
@@ -655,6 +671,45 @@ try {
     check("G1 refused serve creates no socket or lifetime lock", JSON.stringify(runtimeEntries()) === JSON.stringify(before) && !existsSync(lockFile(unused)));
     const st = await builtCli(["status", "--daemon-home", managed, "--json"]);
     check("G1 valid status still reaches the same daemon", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, { status: st.status, doc: st.doc });
+  });
+
+  await cell("G2 a status refusal without a file does not guess from the CLI's registrations", async () => {
+    const daemonHome = join(root, "status-reply-fixture");
+    const clientHome = join(root, "broken-client-registry");
+    const paths = daemonPathsFor(daemonHome, childEnv);
+    mkdirSync(daemonHome, { mode: 0o700 });
+    mkdirSync(clientHome, { mode: 0o700 });
+    mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
+    writeFileSync(join(clientHome, "meshes"), "not a folder", { mode: 0o600 });
+    const lifetime = holdLifetime(paths.lock);
+    const requests: string[] = [];
+    const peer = createSocketServer(socket => {
+      let line = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        line += chunk;
+        if (!line.includes("\n")) return;
+        const request = JSON.parse(line) as { v: number; id: string; op: string };
+        requests.push(request.op);
+        socket.end(JSON.stringify({ v: request.v, id: request.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "opaque legacy refusal" } }) + "\n");
+      });
+    });
+    try {
+      await new Promise<void>((resolve, reject) => { peer.once("error", reject); peer.listen(paths.socket, resolve); });
+      chmodSync(paths.socket, 0o600);
+      lifetime.publishing(generationOf(paths.socket));
+      const env = { ...childEnv, COTAL_HOME: clientHome };
+      const unfiltered = await builtCli(["status", "--daemon-home", daemonHome, "--json"], 30_000, env);
+      const scoped = await builtCli(["status", "--daemon-home", daemonHome, "--space", "missing", "--json"], 30_000, env);
+      check("G2 both status forms give the same cause-less failure without registry details", JSON.stringify(requests) === '["status","status"]'
+        && unfiltered.status === 5 && scoped.status === 5 && JSON.stringify(scoped.doc) === JSON.stringify(unfiltered.doc)
+        && scoped.doc.outcome === "failed" && scoped.doc.target === null && scoped.doc.result === null
+        && scoped.doc.error?.code === "OPERATION_FAILED" && scoped.doc.error.message === "The background service did not answer the status request."
+        && scoped.doc.error.remedy === undefined && scoped.doc.error.cause === undefined, { requests, unfiltered, scoped });
+    } finally {
+      try { if (peer.listening) await new Promise<void>(resolve => peer.close(() => resolve())); }
+      finally { lifetime.release(); }
+    }
   });
 
   await cell("H6 managed catalog refresh never applies to the shared registry", async () => {

@@ -1274,9 +1274,14 @@ hosted Manager that is stopped or refused. When the background service does not 
 `status` refuses with exit 2 instead of reporting a stopped Manager. The refusal lists the spaces
 the background service hosts, or says it hosts none, unless it could not read a local record.
 
-- For an unreadable registration or prepared-space file or folder, or unreadable user-auth state,
+- For an unreadable named registration, prepared-space file or folder, or user-auth state,
   `DEPENDENCY_UNAVAILABLE` (`UNAVAILABLE`) sets `target: { space, file }` and names the path and how to
   restore access, recover from backup, or forget a damaged record with `cotal space forget <s>`.
+- If the background service cannot read its space registrations while assembling status,
+  both forms of `status` refuse with exit 2, `DEPENDENCY_UNAVAILABLE` (`UNAVAILABLE`) and
+  `target: { file }`. The path and recovery advice come from the service's reply, even with
+  `--daemon-home <dir>`. If the service returns a failure without a registry cause, both forms
+  report `OPERATION_FAILED` with exit 5 and no registration details.
 - For a space turned on for this computer, `LIFECYCLE_BLOCKED` (`ACCOUNT_DESIRED`) sets
   `target: { space }`. If the Manager has not started yet, there is nothing to run. If starting it is
   blocked, status gives the reason and the next step.
@@ -1285,6 +1290,8 @@ the background service hosts, or says it hosts none, unless it could not read a 
   For a local space the same code names the recorded folder and explains that the background service
   does not run local spaces. Read the registered stack with `cotal status --space <s>`, or run
   `cotal up` in the recorded folder if the space is prepared but not running.
+  For a manually registered open or static-auth space, the Manager runs where the broker runs.
+  Use `cotal status --space <s>` to inspect the space.
 - For an unregistered name, `TARGET_NOT_FOUND` (`NOT_REGISTERED`) sets `target: { requested }` and
   gives one command: `cotal daemon setup --space <s>` when signed in, setup with the provider's URL
   when sign-in is required and the provider is known, or `cotal space` when signed out.

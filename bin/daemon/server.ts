@@ -26,7 +26,7 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, meshesDir, oneLine, readMeshRegistry, readUpdateSettings, setUpdateSetting, shellPath } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
@@ -41,6 +41,21 @@ function managerResultError(op: string, error: unknown, log: (message: string) =
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
   log(`daemon: ${op} refused: ${cause}`);
+  if (op === "status") {
+    if (!isMeshRegistryError(error)) return { code: "OPERATION_FAILED" as const, message: "The background service did not answer the status request." };
+    const file = oneLine(error.file);
+    const folder = error.file === meshesDir();
+    const notDirectory = (error.cause as NodeJS.ErrnoException | undefined)?.code === "ENOTDIR";
+    const path = shellPath(error.file);
+    return {
+      code: "DEPENDENCY_UNAVAILABLE" as const,
+      file: error.file,
+      message: error.summary ? `${oneLine(error.summary)}.` : folder
+        ? `The space registrations folder ${file} could not be read.` : `The space registration file ${file} could not be read.`,
+      remedy: error.remedy ?? (folder && notDirectory
+        ? `Restore the space registrations folder at ${path}, then try again.` : `Restore read access to ${path}, then try again.`),
+    };
+  }
   if (error instanceof HostedManagerRefusal) return { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) };
   if (op !== "agent-stop" && op !== "agent-terminal") return managerUnavailable(op, cause);
   const failure = isConnectRefusal(error) ? error.failure() : error;

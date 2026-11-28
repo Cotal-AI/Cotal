@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { authDir, codeSpan, CommandFailure, findPreparedSpace, hasUserAuthState, homeCotalDir, isMeshRegistryError, meshFile, meshesDir, MeshRegistryError, oneLine, preparedSpacesDir, readMeshRegistry, resolveOnPath, shellPath, windowsShellWord, type MeshEntry, type PreparedSpace } from "@cotal-ai/workspace";
 import type { AccountComputerStatus } from "./account-state.js";
 
@@ -77,23 +77,6 @@ function unreadableSpaceRecordRefusal(space: string, error: MeshRegistryError, s
   });
 }
 
-/** The daemon also reads the shared registrations folder while assembling status. */
-export function unreadableStatusRegistrations(space: string): CommandFailure | undefined {
-  const dir = meshesDir();
-  try {
-    readdirSync(dir);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      return unreadableSpaceRecordRefusal(space, new MeshRegistryError(dir, "Space registrations could not be read", {
-        cause: error,
-        ...(code === "ENOTDIR" ? { remedy: `Restore the space registrations folder at ${shellArg(dir)}, then try again.` } : {}),
-      }), "mesh-dir");
-    }
-  }
-  return undefined;
-}
-
 function accountDesiredRefusal(space: string, summary: string, account: AccountComputerStatus | undefined, idpUrl: string | undefined, home?: string): CommandFailure | undefined {
   const accounts = account?.accounts?.length ? account.accounts : (account ? [account] : []);
   const desired = account?.spaces.find(row => row.space === space && row.desired);
@@ -161,6 +144,7 @@ function unregisteredSpaceRemedy(space: string, account: AccountComputerStatus |
 export function unhostedManagerStatusRefusal(space: string, hostedSpaces: readonly string[], home?: string, account?: AccountComputerStatus): CommandFailure {
   const hosted = [...new Set(hostedSpaces)].sort();
   const hostedList = hosted.length ? `Spaces hosted by the background service: ${hosted.join(", ")}.` : undefined;
+  const noHostedSpaces = "The background service is not hosting any spaces.";
   let entry: MeshEntry | undefined;
   let prepared: PreparedSpace | undefined;
   let readingPrepared = false;
@@ -191,11 +175,10 @@ export function unhostedManagerStatusRefusal(space: string, hostedSpaces: readon
     const source: UnreadableRecordSource = readingPrepared ? "prepared" : error.file === meshesDir() ? "mesh-dir" : "mesh-record";
     return unreadableSpaceRecordRefusal(space, error, source);
   }
-  const desiredSummary = hostedList ?? "It is not hosting any spaces yet.";
-  const desired = accountDesiredRefusal(space, desiredSummary, account, entry?.userAuth?.idp.url, home);
+  const desired = accountDesiredRefusal(space, hostedList ?? noHostedSpaces, account, entry?.userAuth?.idp.url, home);
   if (desired) return desired;
   if (!entry && !prepared) {
-    const summary = hostedList ?? "The background service is not hosting any spaces.";
+    const summary = hostedList ?? noHostedSpaces;
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `Space ${space} is not registered on this computer. ${summary}`, {
       target: { requested: space },
       remedy: unregisteredSpaceRemedy(space, account, home),
@@ -211,8 +194,15 @@ export function unhostedManagerStatusRefusal(space: string, hostedSpaces: readon
       native: { code: "NOT_REQUESTED" },
     });
   }
-  const localRoot = entry?.root ?? prepared!.root;
   const statusCommand = codeSpan(cotalCommandCopy("status", [["--space", space]]));
+  if (entry?.origin === "manual" && (entry.mode === "open" || entry.mode === "auth")) {
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `The background service hosts Managers only for spaces that sign in through a provider. The Manager for ${space} runs where its broker runs. ${hostedList ?? noHostedSpaces}`, {
+      target: { space },
+      remedy: `Run ${statusCommand} to inspect the space.`,
+      native: { code: "NOT_REQUESTED" },
+    });
+  }
+  const localRoot = entry?.root ?? prepared!.root;
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `The background service does not run local spaces, so it does not host a Manager for ${space} (${oneLine(localRoot)}). ${summary}`, {
     target: { space },
     remedy: entry

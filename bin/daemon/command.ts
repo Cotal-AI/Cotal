@@ -36,7 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, linuxAutostartUnverified, linuxAutostartWarning, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { installedUnitForSetup, runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy, daemonServiceRequirement, unhostedManagerStatusRefusal, unreadableStatusRegistrations, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
+import { daemonCommandCopy, daemonServiceRequirement, unhostedManagerStatusRefusal, windowsDaemonFirstStart, windowsDaemonHomeAccess, windowsDaemonRemedy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -207,8 +207,13 @@ async function status(args: ParsedArgs): Promise<void> {
     }
     throw asFailure(e, home);
   }
-  if (!reply.ok) throw (space === undefined ? undefined : unreadableStatusRegistrations(space))
-    ?? new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
+  if (!reply.ok) {
+    const { code, file, message, remedy } = reply.error;
+    if (code === "DEPENDENCY_UNAVAILABLE" && typeof file === "string" && file.length > 0) {
+      throw new CommandFailure("refused", code, message, { target: { file }, remedy, native: { code: "UNAVAILABLE" } });
+    }
+    throw new CommandFailure("failed", "OPERATION_FAILED", "The background service did not answer the status request.");
+  }
   if (space !== undefined && !(reply.result.managers ?? []).some(manager => manager.space === space)) {
     throw unhostedManagerStatusRefusal(space, (reply.result.managers ?? []).map(manager => manager.space), home, reply.result.account);
   }

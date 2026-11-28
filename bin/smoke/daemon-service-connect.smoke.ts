@@ -1855,7 +1855,7 @@ try {
         const localState = join(home, "daemon", spaceSegment(localSpace));
         const refusal = join(localState, "manager-refusal.json");
         const localGuidance = (text: unknown) => /cotal up/.test(String(text)) && !/cotal daemon (setup|register)|cotal manager start/.test(String(text));
-        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", ts: new Date().toISOString() });
+        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", origin: "up", ts: new Date().toISOString() });
         try {
           const setup = await cli("setup", "--space", localSpace);
           check("H2 static setup refuses at the connection check without writing per-space state", setup.code === 2
@@ -5024,6 +5024,7 @@ process.exit(result.status ?? 93);
           && failingJson.doc!.error?.code === "LIFECYCLE_BLOCKED"
           && failingJson.doc!.error?.cause?.code === "ACCOUNT_DESIRED"
           && String(failingJson.doc!.error?.message).includes(`Space ${failingSpace} is turned on for this computer, but its Manager could not start. Reason: account space is currently unavailable.`)
+          && String(failingJson.doc!.error?.message).endsWith("The background service is not hosting any spaces.")
           && String(failingJson.doc!.error?.remedy).includes("cotal daemon status --daemon-home")
           && !String(failingJson.doc!.error?.remedy).includes("cotal daemon setup")
           && failingPlain.status === 2
@@ -5045,6 +5046,7 @@ process.exit(result.status ?? 93);
             && onItsWayJson.doc!.error?.code === "LIFECYCLE_BLOCKED"
             && onItsWayJson.doc!.error?.cause?.code === "ACCOUNT_DESIRED"
             && String(onItsWayJson.doc!.error?.message).includes(`Space ${startingNowSpace} is turned on for this computer, and the background service hasn't started its Manager yet.`)
+            && String(onItsWayJson.doc!.error?.message).endsWith("The background service is not hosting any spaces.")
             && String(onItsWayJson.doc!.error?.remedy).startsWith("Nothing needs to be run. Check `cotal daemon status")
             && !String(onItsWayJson.doc!.error?.remedy).includes("cotal daemon setup")
             && onItsWayPlain.status === 2

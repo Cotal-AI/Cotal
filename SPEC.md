@@ -54,6 +54,14 @@ when retirement is complete, including an exact retry. HTTP 202 with the same co
 the current `phase` and `"complete": false` means cleanup is still pending. Retirement MUST
 prevent later resume. Sign-out reports unconfirmed retirements rather than claiming they succeeded.
 
+## Local daemon status refusals
+
+If a local daemon cannot read the space registrations while assembling a `status` reply, it returns
+`ok: false` with `error.code: "DEPENDENCY_UNAVAILABLE"`, the absolute `error.file`, a human-readable
+`error.message` and recovery advice in `error.remedy`. This is a daemon-wide failure, not a refusal
+for a particular space. A status failure with no registry cause uses `OPERATION_FAILED` without a
+file. These fields use the existing local envelope version and do not change the mesh wire protocol.
+
 ## Local daemon custody recovery
 
 The local daemon protocol additionally accepts `space-recover` with `space`, `candidate`
