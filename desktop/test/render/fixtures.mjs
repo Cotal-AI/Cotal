@@ -981,6 +981,16 @@ export const scenarios = [
     assert.equal(/\/|`/.test(await page.locator("#refusal-detail").textContent()), false, "Details shows no command line");
   } },
   { name: "ready", state: {}, act: connect },
+  // A Manager that starts while a space is being chosen updates the words and stays on that step.
+  { name: "surface-starting-during-connect", state: { installed: true, multiple: true }, act: async page => {
+    await signIn(page);
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Ready to connect");
+    await page.evaluate(() => { window.__renderState.managers = [{ space: "acme-team", state: "starting", reason: "Synthetic Manager is still starting." }]; window.__pushStatus(); });
+  }, expect: async page => {
+    assert.equal(await page.locator("#space-panel").isVisible(), true, "the space step stays open");
+    assert.equal(await page.locator("#connected-panel").isHidden(), true, "the finished stage is not shown");
+    assert.equal(await page.locator("#tray-label").textContent(), "Starting");
+  } },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },
   { name: "sessions-active", state: { setupError: "SEATS_ACTIVE" }, act: connect },
