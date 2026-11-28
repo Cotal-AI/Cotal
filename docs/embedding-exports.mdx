@@ -5,6 +5,25 @@ kind: Reference
 audience: integrators
 ---
 
+## Data-account resource ceilings
+
+`@cotal-ai/core` exports `AccountLimits` as a type and `assertAccountLimits(value, where?)`
+for validation. Optional fields are `conn`, `subs`, `payload`, `mem_storage`, `disk_storage`
+and `consumer`. Each accepts `-1` or a positive safe integer. The first three are capped at
+`2147483647` to fit the broker's signed 32-bit limits.
+
+`createSpaceAuth(space, limits?)` and `createSpaceAccountAuth(broker, space, limits?)`
+apply these limits to a new data account. `applyAccountLimits(auth, limits?)` returns a
+re-signed `SpaceAuth` only when a configured field changes. It retains the account identity,
+signing keys, revocations and omitted limits. An absent setting returns the original object.
+Persist the returned account and stop the owned broker before loading its changed claim.
+The system and dedicated auth-callout accounts are not changed.
+
+`loadAccountLimits(root)` reads just this startup policy from the operator config and refuses
+`accountLimits` in the project's config, naming the file and key. It does not validate unrelated
+connector, spawn or model sections. `loadCotalConfig(root)` still validates those sections and
+also refuses project account limits. See [Account limits](config.mdx#account-limits).
+
 ## Workspace registry liveness
 
 `@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every

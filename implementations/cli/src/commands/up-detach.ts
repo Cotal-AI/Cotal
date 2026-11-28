@@ -18,6 +18,7 @@ import {
   writeSecretFile,
   type AuthPrepared,
   type ChannelRegistryFile,
+  loadAccountLimits,
 } from "@cotal-ai/core";
 import {
   type SeatCap,
@@ -539,6 +540,8 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
   const root = cotalRoot();
+  if (!useAuth && loadAccountLimits(root) !== undefined)
+    throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
   if (opts.existingStore) {

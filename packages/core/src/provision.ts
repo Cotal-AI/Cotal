@@ -16,7 +16,7 @@
  */
 export { capabilityRole, taskRoles, permissionsFor, listingGrantRows } from "./provision-permissions.js";
 export type { Profile } from "./provision-permissions.js";
-export { MAX_CONTROL_LINE_BYTES, CONNECT_ENVELOPE_OVERHEAD_BYTES, MAX_MINTED_JWT_BYTES, STANDING_RENEWABLE_TTL_SEC, ROTATION_RENEWED_TTL_SEC, CREDENTIAL_LIFETIMES, credentialLifetime, inspectCredHealth, composeSpaceAuth, assertAccountSignedByBroker, stripSpaceAuth, accountRevocations, revokeAccountUser, retireAccountClaim, rotateSystemAccount, createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, mintCreds, mintPublicUserJwt, mintServiceCalloutJwt, mintMembershipObserverCreds, mintAccountCensusCreds, mintConnectionEvictorCreds } from "./provision-jwt.js";
+export { MAX_CONTROL_LINE_BYTES, CONNECT_ENVELOPE_OVERHEAD_BYTES, MAX_MINTED_JWT_BYTES, STANDING_RENEWABLE_TTL_SEC, ROTATION_RENEWED_TTL_SEC, CREDENTIAL_LIFETIMES, credentialLifetime, inspectCredHealth, composeSpaceAuth, assertAccountSignedByBroker, stripSpaceAuth, accountRevocations, revokeAccountUser, retireAccountClaim, rotateSystemAccount, createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, applyAccountLimits, mintCreds, mintPublicUserJwt, mintServiceCalloutJwt, mintMembershipObserverCreds, mintAccountCensusCreds, mintConnectionEvictorCreds } from "./provision-jwt.js";
 export type { CredentialLifetimeClass, CredentialKind, CredentialLifetimePolicy, CredHealthState, CredHealth, BrokerAuth, SpaceAccountAuth, SpaceAuth, IssuedBinding, MintOpts, MintPrincipal } from "./provision-jwt.js";
 export { provisionAgent, provisionAgentDurables } from "./provision-resources.js";
 export type { ProvisionOpts, DurableProvisioner } from "./provision-resources.js";

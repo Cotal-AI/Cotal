@@ -16,7 +16,7 @@ defines the protocol.
 
 ## The config file
 
-The config file has two layers. The space-local file takes precedence over the operator-level file.
+The config file has two layers. The space-local file takes precedence for connector, spawn and model settings. Account limits are operator-only and are refused in a space-local file.
 
 | Layer | Path | Scope |
 |---|---|---|
@@ -74,6 +74,7 @@ account owns or may write trusts nothing.
 | `connectors.<name>.mcpServers` | Named MCP servers available to a connector's spawned agents | Per connector and server name |
 | `spawn.env` | Extra environment names available to spawned agents | The space-local `spawn` object replaces the operator-level object |
 | `modelPolicy` | Allowed models and variants for each role | Per role |
+| `accountLimits` | Native NATS data-account resource ceilings | Operator file only |
 
 The [launcher environment](#launcher-variables) describes `spawn.env`. [Model policy](#model-policy)
 describes model restrictions.
@@ -187,6 +188,55 @@ with an error naming the file.
 Each spawn reads one config snapshot for its policy, shared servers, and `spawn.env`. Edits apply to
 the next spawn without a restart. Running seats, supervised restarts, and preserved seats resumed
 after maintenance are not re-checked.
+
+### Account limits
+
+`accountLimits` sets native NATS ceilings when `cotal up` creates or starts an authenticated
+space's broker. Put it only in the operator-level file, `$XDG_CONFIG_HOME/cotal/config.json`
+(or the platform fallback listed above). A project `.cotal/config.json` carrying this key is
+refused, even if it only lowers a ceiling. Invalid values name the file and specific key.
+Startup reads this policy without validating unrelated connector, spawn or model sections.
+`cotal up` reads both operator and project config files at startup and refuses an unparseable file in either location, including in open mode.
+An operator-wide `accountLimits` setting makes every `--open` start on that machine refuse because an open mesh has no account claims.
+A project file declaring `accountLimits` is refused by `cotal up`, spawns and manager resume alike.
+Cotal enforces no minimum account limit, so a ceiling below what the mesh needs fails later as a broker error.
+
+```json
+{
+  "accountLimits": {
+    "conn": 256,
+    "subs": 4096,
+    "payload": 4194304,
+    "mem_storage": 268435456,
+    "disk_storage": 1073741824,
+    "consumer": 4096
+  }
+}
+```
+
+| Field | Native ceiling |
+|---|---|
+| `conn` | Connections across the data account, including trusted services |
+| `subs` | Subscriptions per connection |
+| `payload` | Message payload bytes, also bounded by the broker-wide limit |
+| `mem_storage` | Total memory-backed JetStream storage bytes |
+| `disk_storage` | Total file-backed JetStream storage bytes |
+| `consumer` | JetStream consumers across the data account |
+
+Every field is optional and accepts a positive safe integer or `-1` for unlimited.
+`conn`, `subs` and `payload` must not exceed `2147483647`, the broker's signed 32-bit range.
+The JetStream fields retain the positive safe-integer range. Unknown fields,
+zero, other negative numbers, fractions, strings and null are refused. With no setting, a new
+account has unlimited ceilings. An existing account keeps its saved limits for omitted fields,
+including when the whole setting is absent. To remove a saved ceiling, set that field to `-1`
+and start the broker again.
+
+Stop the stack with `cotal down --yes` before changing these ceilings, then run `cotal up`.
+A running broker does not reload config edits. Changing limits while its owned broker runs is
+refused. Low limits can prevent services, subscriptions or provisioning from starting, or refuse
+new stored messages. Choose enough capacity for the whole space. Account limits do not add a
+per-agent rate limit or set any stream's `max_bytes`. The system and auth-callout accounts are
+unchanged. Open brokers have no data-account JWT and refuse this setting.
 
 ## Preferences
 

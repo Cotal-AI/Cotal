@@ -19,6 +19,8 @@ import {
   MANAGER_START_PAYLOAD_FLOOR,
   mintCreds,
   newIdentity,
+  applyAccountLimits,
+  loadAccountLimits,
   reconcileSpaceMemoryBuckets,
   LEASE_TTL_MS,
   type AuthPrepared,
@@ -168,7 +170,7 @@ import {
   membershipConversionRefusal,
   fileMembershipStore,
 } from "./up-stores.js";
-import { brokerVersion, writeOpenBrokerConf, authSetup, provisionWebCreds } from "./up-broker-auth.js";
+import { brokerVersion, writeOpenBrokerConf, authSetup, assertRootBrokerStopped, provisionWebCreds } from "./up-broker-auth.js";
 import {
   validateUpArguments,
   freshFolderRoot,
@@ -529,6 +531,12 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
+  const accountLimits = loadAccountLimits(cotalRoot());
+  if (accountLimits !== undefined) {
+    if (values.open) throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
+    const stored = await getSpaceAuth(workspaceSecretStore(cotalRoot()), values.space ?? folderSpace());
+    if (stored && await applyAccountLimits(stored, accountLimits) !== stored) await assertRootBrokerStopped(cotalRoot(), "accountLimits");
+  }
   if (values.restore !== undefined) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");

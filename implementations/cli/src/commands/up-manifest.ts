@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { isReachable, DEFAULT_SERVER, type BrokerTransport } from "@cotal-ai/core";
+import { isReachable, DEFAULT_SERVER, loadAccountLimits, type BrokerTransport } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, brokerAddressForDisplay, canonicalRoot, getCurrent, loadMeshes, oneLine, writeResult, type Report, workspaceSecretStore } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveAuthProvider } from "../lib/auth-proc.js";
@@ -265,6 +265,8 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
       remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
     });
   const open = m.broker?.auth === false; // default is auth
+  if (open && loadAccountLimits(cotalRoot()) !== undefined)
+    throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
   const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
