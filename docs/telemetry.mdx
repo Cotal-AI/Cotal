@@ -80,6 +80,7 @@ When `space create` refuses a project root that is not a directory, the event re
 If a project path contains a control character or bidirectional formatting mark, the refusal identifies it locally. The event carries the error code without the diagnostic text or stack.
 When `use` cannot find a space, the requested name and the list of known spaces stay local. The event reports `TARGET_NOT_FOUND` without the message or stack.
 When the answering managers report that none hosts a requested agent, the local refusal lists their instance IDs. The event omits the message and stack.
+If `down` refuses because another project owns the stack, space names and paths stay in the local diagnostic. If `space add` refuses an explicit registration root, its path stays in the local remedy.
 Use `minimal` to exclude all error text or `off` to send nothing.
 
 The install id is a persistent identifier for the settings file. The `account` field at

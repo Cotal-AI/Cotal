@@ -24,6 +24,7 @@ import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { cotalRoot } from "../lib/paths.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { localDiagnostic } from "../telemetry.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
@@ -62,6 +63,13 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
   [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+
+/** A preview can keep its output format at either a legacy or controller stack's root. */
+export function downInOwningRoot(root: string, values: ParsedArgs["values"]): string {
+  const mode = values["dry-run"] === true ? presentationOf(values) : "rich";
+  const retry = sameDown(values) + (mode === "rich" ? "" : ` --${mode}`);
+  return blockedDownRootRemedy(root, retry) ?? `run ${codeSpan(retry)} from ${root}`;
+}
 
 /** A stop records each member's stop under the space's service instance records, so a folder there this
  *  account cannot write refuses before the plan, naming it, rather than leaving every member running
@@ -473,10 +481,10 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
     const space = String(values.space), elsewhere = stackRootElsewhere(space, root);
     recordOperationSpace(space);
     if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere, space);
-    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
+    throw localDiagnostic(new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
       target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
-      remedy: elsewhere ? blockedDownRootRemedy(elsewhere, sameDown(values)) ?? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
-    });
+      remedy: elsewhere ? downInOwningRoot(elsewhere, values) : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
+    }));
   }
   recordOperationSpace(journal0.space);
   if (stackOperationUnsettled(journal0) && journal0.operation.kind !== "up" && journal0.operation.kind !== "down")

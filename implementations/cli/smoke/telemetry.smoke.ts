@@ -253,6 +253,9 @@ for (const level of ["regular", "minimal"]) {
   const commands = invalid.sent.filter(body => body.event === "command");
   check("a non-directory project root stays in the local remedy", invalid.status === 1 && invalid.stdout.includes(marker) && readFileSync(file, "utf8") === "original"
     && commands.length === 1 && commands[0]?.errorCode === "USAGE_INVALID" && commands[0]?.errorMessage === "the project root is not a directory" && !JSON.stringify(invalid.sent).includes(marker), shown(invalid));
+  const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
+  const addEvent = add.sent.find(body => body.event === "command");
+  check("a refused registration root stays local", add.status === 1 && add.stdout.includes(marker) && addEvent?.errorCode === "USAGE_INVALID" && addEvent.errorMessage === "--root must name an existing directory" && !JSON.stringify(add.sent).includes(marker), shown(add));
   const odd = join(s.project, `tab\tfolder ${marker}`);
   const refused = await s.run(["space", "create", space, "--root", odd, "--json"]);
   const reported = refused.sent.filter(body => body.event === "command");
