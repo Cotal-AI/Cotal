@@ -2,7 +2,7 @@
 
 Status: design, no code. Refs #10952 (step one of #10943).
 
-Every claim about what exists today names a file and line on `main` at `345d6f8b5d`. What is
+Every claim about what exists today names a file and line on `main` at `aa1038dad1`. What is
 proposed is written as "will" or as a MUST in SPEC text.
 
 ## 0. New public surface, in one list
@@ -14,7 +14,7 @@ wire shape, with one exception that the SPEC change allows: a presence reader th
 Commands and flags
 
 - `cotal sleep <name> [--on <instance>] [--json|--plain]`, with the same target flags as
-  `cotal stop` (`implementations/cli/src/commands/agents.ts:89`).
+  `cotal stop` (`implementations/cli/src/commands/agents.ts:90`).
 - `cotal wake <name> [--on <instance>] [--json|--plain]`, with the same flags.
 - No new flags on any existing command.
 
@@ -30,7 +30,8 @@ Exit statuses (all from the existing table, `docs/cli-usage.mdx:468-476`)
 JSON fields
 
 - `cotal sleep --json`: `result: { name, lifecycleUid, sessionId, asleepAt, wakeBy? }`.
-- `cotal wake --json`: `result: { name, lifecycleUid, sessionId, asleepForMs, storedCopiesFull?: { limit } }`.
+- `cotal wake --json`: `result: { name, lifecycleUid, sessionId, asleepForMs, conversation,
+  interrupted?, storedCopiesFull?: { limit } }`. `conversation` is `"same" | "fresh" | "copy"`.
 - `ps` row: `status` already takes any string (`packages/core/src/manager-contract.ts:29`). A
   sleeping row reads `status: "asleep"`, `mesh: "asleep"`. No new row field.
 
@@ -43,8 +44,12 @@ Wire
 - One new credential profile, the presence keeper, whose only publish row is one sleeping agent's
   presence key (section 2). No row is added to any existing profile.
 - The seat record `cotal-seat-record/v2`. It is shared with the permanent agent ID design (draft
-  #10893), and both designs use the same shape (section 5).
-- One new connector control op, `quiesce`, sent only to a connector that declares it.
+  #10893), and both designs use the same shape (section 5). Its `sleep` object carries `at`,
+  `sessionId`, `reopen`, `sessionDigest?`, `wakeBy?`, `keptUntil?` and `reason?`.
+- One new connector control op, `quiesce`, sent only to a connector that declares it. It answers
+  `{ ok: true, sessionId, sessionFile? }` or `{ ok: false, reason }`.
+- Two Manager config values, `wake.conversationGone` (`refuse` | `fresh`) and
+  `wake.conversationMoved` (`refuse` | `copy`), both open for the project owner (section 1).
 - An optional `rootExpiresAt` (epoch ms) on the agent bearer exchange answer, which the auth
   service fills in and an older one omits (section 6).
 
@@ -54,10 +59,12 @@ Exported names
   `supportsSessionContinuation` at `:461`).
 - `Runtime.sleepPolicy?: "stop" | "pause"`, the runtime's declaration of how it sleeps
   (`packages/core/src/runtime.ts`, beside `supportsWorkClosure` at `:135`).
+- `Runtime.pause?`, `Runtime.resume?`, `Runtime.watchSleep?` and the type `RuntimeSleepEvent`
+  (section 7).
 - `presenceAsleepKeySubject(space, owner, actor)`, which builds the grant row (section 2).
 - `SleepRecord`, the `sleep` object of the v2 seat record.
 
-Sentences (each is placed in sections 1, 4 and 6)
+Sentences (each is placed in sections 1, 4, 6 and 7)
 
 - "`<name>` is not running, so there is nothing to put to sleep"
 - "`<connector>` cannot continue the same conversation after a restart, so `<name>` cannot sleep;
@@ -79,14 +86,30 @@ Sentences (each is placed in sections 1, 4 and 6)
   stop it and start a new agent. Its waiting messages stay with the old agent and are not carried
   over"
 - the existing capacity sentence, then "`<name>` stays asleep and its messages stay kept"
-- "the conversation `<sessionId>` that `<name>` slept in is gone, so it did not wake; stop it and
-  start a new agent"
 - "`<name>` woke into conversation `<got>`, not `<want>`; it was stopped and stays asleep"
 - "the Manager `<instance>` runs a release without `sleep`; nothing was sent. Update that Manager
   to put agents to sleep"
 - the first-turn notice: "While you were asleep, your stored copies reached their limit of
   `<limit>`, so older channel posts may have been dropped. Channel history may still hold them:
   `cotal history <channel>` reads it."
+- "`<name>` cannot sleep: this Manager could not get the right to keep its `asleep` record
+  (`<error>`); it is still running"
+- the first-turn notice: "You were asleep from `<UTC>` to `<UTC>`."
+- `wake.conversationGone: refuse`: "the conversation `<sessionId>` that `<name>` slept in is
+  gone, so it did not wake; stop it and start a new agent"
+- `wake.conversationGone: fresh`, first turn: "Your earlier conversation `<sessionId>` was gone
+  when you woke, so this is a new one."
+- `wake.conversationMoved: refuse`: "the conversation `<sessionId>` that `<name>` slept in changed
+  while it slept, so it did not wake; stop it and start a new agent"
+- `wake.conversationMoved: copy`, first turn: "Your conversation was changed while you slept, so
+  you continue in a copy of it as it was when you fell asleep."
+- "`<name>` could not be paused (`<error>`); it is still running"
+- "`<name>` could not be resumed (`<error>`); it stays asleep"
+- "`<name>` was paused by its runtime (`<reason>`); it is asleep"
+- the first-turn notice: "Your runtime paused you during a turn at `<UTC>`; that turn did not
+  finish."
+- "`<name>` ended while asleep (`<reason>`); its runtime no longer holds it"
+- "`<name>` ended while asleep at `<UTC>` (`<reason>`)"
 
 ## 1. The state machine
 
@@ -151,9 +174,14 @@ its alias.
    `continueSession` and `reopenSession` (`packages/core/src/connector.ts:134-145`). The write is
    atomic (`implementations/manager/src/resume.ts:233-238`). If the write fails, the sleep stops
    here and the seat stays live.
-5. **Presence.** The Manager writes the `asleep` record for the seat (section 2) and keeps it
-   alive.
-6. **Stop the process, keep the lifecycle.** The sleep path does not call `freeSlot`. Each step
+5. **Open the keeper.** The Manager obtains the keeper credential for the seat (section 2), but
+   does not write with it yet. If it cannot obtain one, the sleep stops here, the seat record
+   goes back to `live`, and the error reads "`<name>` cannot sleep: this Manager could not get the
+   right to keep its `asleep` record (`<error>`); it is still running".
+6. **Put the process to sleep, keep the lifecycle.** This step depends on the runtime's
+   `sleepPolicy` (section 7). For `stop`, the steps below apply. For `pause`, the runtime's `pause`
+   freezes the same process, and none of the stop steps run. The sleep path does not call
+   `freeSlot`. Each step
    of `freeSlot` would end something the sleep keeps. It removes the session-state file
    (`implementations/manager/src/names-capacity.ts:200`) and drops the seat record (`:204`). It
    fails the seat's turns (`:219`) and takes the retirement hold (`:234-243`). It also starts the
@@ -162,15 +190,20 @@ its alias.
    does not restart the seat (`implementations/manager/src/seat-stop.ts:446`). Sleep also moves the
    seat from `agents` to the `asleep` table before the stop, so the watcher's `freeSlot` call
    (`implementations/manager/src/seat-stop.ts:460`) returns at its guard
-   (`implementations/manager/src/names-capacity.ts:194`). Sleep then stops the handle gracefully. The connector's graceful stop publishes a final `offline` record
-   (`packages/core/src/endpoint-connection.ts:923-926`). For that reason step 5 runs again after
-   the exit, so the last write on the key is `asleep`. The runtime's `waitForExit` must prove the
+   (`implementations/manager/src/names-capacity.ts:194`). Sleep then stops the handle gracefully.
+   The connector's graceful stop publishes a final `offline` record
+   (`packages/core/src/endpoint-connection.ts:923-926`). The runtime's `waitForExit` must prove the
    exit (`packages/core/src/runtime.ts:61`), as the preservation stop does today
    (`implementations/manager/src/preservation.ts:474-484`). An exit the runtime cannot prove
    leaves the seat `live`, with the error "`<name>` did not stop within `<ms>`; it is still
    running and is not asleep".
-7. **Hold the name.** The `asleep` table reserves the alias against a spawn under the same name
-   (section 5). If the exit could not be proved, the seat goes back into `agents` as live, with both flags cleared.
+7. **Presence.** Only after the exit is proved (for `stop`) or `pause` resolves (for `pause`) does
+   the keeper write `asleep` and start its heartbeat. Before that point the agent's own process may
+   still write, so writing earlier could let a late heartbeat of the agent land after `asleep`.
+   What a peer sees in that gap is in section 2, "Before the record is written".
+8. **Hold the name.** The `asleep` table reserves the alias against a spawn under the same name
+   (section 5). If the exit could not be proved, the seat goes back into `agents` as live, with
+   both flags cleared, and the keeper is closed without writing.
 
 The reply is `{ name, lifecycleUid, sessionId, asleepAt, wakeBy? }`.
 
@@ -188,10 +221,10 @@ The reply is `{ name, lifecycleUid, sessionId, asleepAt, wakeBy? }`.
      (`implementations/manager/src/names-capacity.ts:300-307`), followed by "`<name>` stays asleep
      and its messages stay kept". The CLI maps this to `CONFLICT`, as it does for spawn
      (`implementations/cli/src/commands/spawn-managed-launch.ts:321-326`).
-   - In Pi, the conversation file is gone when `reopen` is true: "the conversation `<sessionId>` that `<name>`
-     slept in is gone, so it did not wake; stop it and start a new agent". Waking into a fresh
-     conversation is a separate decision for the project owner. Until it is made, wake refuses, which
-     never loses a conversation and never pretends to keep one.
+   - The conversation is gone (Pi: `reopen` is true and the session file is missing) or moved
+     (it no longer ends where it ended at sleep). The Manager does not decide these alone: the two
+     wake policies below decide them, and nothing else in this design depends on which value is
+     set.
 3. **Relaunch through the existing resume launch.** That launch is `resumePreservedAgent`
    (`implementations/manager/src/preserved-resume.ts:877-1043`), and it already does every check a
    wake needs. It validates retained authority (`:667`), resolves the connector and refuses one
@@ -207,6 +240,35 @@ The reply is `{ name, lifecycleUid, sessionId, asleepAt, wakeBy? }`.
 5. **Record the seat as live.** Rewrite the seat record with `state: "live"` and no `sleep`
    object. The agent's own connection then takes over its presence key, and the Manager stops
    writing it.
+
+For a `pause` runtime, steps 3 and 4 are the runtime's `resume`, which thaws the same process,
+with no relaunch and no session proof. The thawed agent finds its broker connection gone and
+rebuilds it under the same lifecycle (`packages/core/src/endpoint-connection.ts:485-533`), and
+each reconnect re-reads its bearer (`:155-158`). The Manager tells it that it slept: the first
+turn after wake starts with "You were asleep from `<UTC>` to `<UTC>`." The same sentence goes to a
+seat that `stop` put to sleep.
+
+### The two wake policies (open for the project owner)
+
+Each is one value in the Manager's config. The `wake` result reports which one applied.
+
+| Policy | Values | Default built on |
+|---|---|---|
+| `wake.conversationGone` | `refuse`: "the conversation `<sessionId>` that `<name>` slept in is gone, so it did not wake; stop it and start a new agent". `fresh`: wake under the same lifecycle in a new conversation, with `conversation: "fresh"` in the result and "Your earlier conversation `<sessionId>` was gone when you woke, so this is a new one." in the first turn | `fresh` |
+| `wake.conversationMoved` | `refuse`: "the conversation `<sessionId>` that `<name>` slept in changed while it slept, so it did not wake; stop it and start a new agent". `copy`: wake in a copy of the conversation as it ended at sleep, with `conversation: "copy"` in the result and "Your conversation was changed while you slept, so you continue in a copy of it as it was when you fell asleep." in the first turn | `copy` |
+
+The `wake` result gains `conversation: "same" | "fresh" | "copy"`. `reopen` stays what it is: a
+recorded fact, namely that the harness had persisted the conversation at sleep. It is not a
+policy.
+
+"Moved" can happen in Pi. By default Pi keeps its sessions in the person's own Pi store (#10943),
+so a person can open the session by hand while the seat sleeps. To detect that, `quiesce` also
+answers the session file's path, from Pi's `getSessionFile()`
+(`extensions/pi/src/extension.ts:258`). Sleep records `sessionDigest`, the sha256 of that file,
+the same digest the fork record already uses (`implementations/manager/src/session-recovery.ts:148`).
+Wake compares the file with that digest before it relaunches. A copy is a Pi fork of the recorded
+bytes, which the connector already supports (`extensions/pi/src/connector.ts:194`). A `pause`
+runtime keeps the same process, so neither policy applies to it.
 
 The reply is `{ name, lifecycleUid, sessionId, asleepForMs, storedCopiesFull?: { limit } }`.
 
@@ -277,6 +339,20 @@ be dropped by every reader, because `card.id` must equal the key
 
 On wake, the keeper is closed and its credential revoked before the agent's process starts. That
 way two writers never share the key.
+
+### Before the record is written
+
+The keeper writes only once the agent's own process can no longer write (section 1, step 7). In
+each case, a peer sees the following:
+
+| Case | Who writes `asleep` | What a peer sees before it |
+|---|---|---|
+| Stopped seat (`stop`) | the keeper, after the exit is proved | the agent's last live record, then its graceful `offline` (`packages/core/src/endpoint-connection.ts:923-926`), for under one heartbeat (2 s) |
+| Frozen seat the Manager paused (`pause`) | the keeper, once `pause` resolves | the agent's last live record, still inside the 6 s window, so no `offline` |
+| Frozen seat the runtime paused by itself | the keeper, once the runtime reports it (section 7) | `offline` from 6 s after the last heartbeat (`packages/core/src/endpoint-presence.ts:891`) until the report arrives |
+
+A frozen process cannot write its own record, the same as a stopped one. The keeper is the only
+writer in every case.
 
 ## 3. Older readers, and the SPEC text
 
@@ -407,15 +483,19 @@ it too.
   instanceId, supervise?, crashes, agent,        // v1 fields, unchanged
   state: "live" | "asleep" | "ended",            // required
   agentUid?: string,                             // permanent ID, server-acknowledged; absent when unlinked
-  sleep?: { at: number, sessionId: string, reopen: boolean, wakeBy?: number },
+  sleep?: { at: number, sessionId: string, reopen: boolean, sessionDigest?: string,
+           wakeBy?: number, keptUntil?: number, reason?: string },
 }
 ```
 
 - `sleep` is required when `state` is `asleep` and absent otherwise.
-- `wakeBy` is set only on a user-auth mesh (section 6).
+- `wakeBy` is the earlier of the root credential's limit (user-auth mesh only) and the runtime's
+  `keptUntil` (a `pause` runtime only, section 7). It is absent when neither applies.
+- `sessionDigest` is set for a `stop` sleep whose conversation was persisted (`reopen` true).
+- `reason` is set when the runtime put the seat to sleep without the Manager asking (section 7).
 - A v1 record reads as `state: "live"`, unlinked.
-- This step writes only `live` and `asleep`, never `ended`. `ended` belongs to the permanent-ID
-  steps.
+- This step writes `live` and `asleep`, and writes `ended` only from a runtime's `ended` report
+  (section 7). The rest of `ended` belongs to the permanent-ID steps.
 - `asleep` keeps the exact resume entry and lifecycle and wakes the same run. It does not count
   against the seat cap or the Manager ceiling, and it holds its alias the way a reservation does
   (`implementations/manager/src/names-capacity.ts:118`).
@@ -482,8 +562,10 @@ because no broker read proves one.
 ### The 90-day limit
 
 A user-auth root credential lives 90 days and is not renewed
-(`implementations/auth/src/root-credential.ts:54-59`, applied at `:120`). An expired root refuses
-the exchange (`:106`). Until #10836 lands:
+(`implementations/auth/src/root-credential.ts:56-61`, applied at `:140`). An expired root refuses
+the exchange with the expiry in UTC and a repair that depends on the seat's custody (`:125`,
+repair text at `:65-74`, both from #10853). For a Manager seat that repair is to stop the seat and
+spawn it again, so a new lifecycle starts. Until #10836 lands:
 
 - `sleep` reads the root's expiry and records `wakeBy` = expiry minus one hour. The Manager has no
   read of the root's expiry today (the exchange answer is `{ bearer, sentinelCreds, authority? }`,
@@ -503,7 +585,7 @@ A static-auth seat's credential is renewed by the Manager from its seed
 
 Section 2.
 
-## 7. Pi
+## 7. Pi, and the runtime
 
 Pi continues the exact session today. After a crash, it relaunches with `--session-id <id>`
 (`extensions/pi/src/connector.ts:196`). For a manifest `continuity: exact` launch, it reopens an
@@ -523,11 +605,75 @@ The Manager never sends `quiesce` to a connector that does not declare `supports
 connector's control server passes any op other than `shutdown` and `session` to its hook handler
 (`extensions/connector-core/src/control.ts:270-279`), so sending it would be meaningless.
 
-The runtime: the built-in `pty` runtime declares `sleepPolicy: "stop"`
-(`implementations/manager/src/runtime/pty.ts:25-26`). A runtime that pauses a sandbox and keeps its
-disk would declare `pause`. A runtime that declares neither refuses `sleep`. How a seat sleeps is
-therefore a property of the Runtime contract, not of the connector. The connector only says
-whether it can continue the conversation.
+### The Runtime decides how a seat sleeps
+
+How a seat sleeps is a property of the Runtime contract, not of the connector. The connector only
+says whether it can continue a conversation, and only the `stop` path asks that. The Runtime
+contract has no pause or resume today (`packages/core/src/runtime.ts:115-196`). It gains:
+
+```ts
+interface Runtime {
+  /** How this runtime sleeps a seat. Absent: `sleep` refuses by name for this runtime. */
+  readonly sleepPolicy?: "stop" | "pause";
+  /** `pause` only. Freeze the seat's processes, keeping memory and disk. Resolves when the
+   *  provider confirms the pause, with how long the provider keeps a paused seat. */
+  pause?(handle: AgentHandle): Promise<{ keptUntil?: number }>;
+  /** `pause` only. Thaw the same processes. Rejects with no side effect when it cannot;
+   *  never starts the seat anywhere else. */
+  resume?(handle: AgentHandle): Promise<void>;
+  /** Report a change the Manager did not ask for. The Manager watches every live seat on a
+   *  `pause` runtime, since the provider can pause a running seat by itself. */
+  watchSleep?(handle: AgentHandle, report: (event: RuntimeSleepEvent) => void): () => void;
+}
+type RuntimeSleepEvent =
+  | { kind: "paused"; at: number; reason: string; keptUntil?: number }
+  | { kind: "ended"; at: number; reason: string };
+```
+
+- `stop`: the built-in `pty` runtime (`implementations/manager/src/runtime/pty.ts:25-26`). It
+  stops the process and relaunches with session continuation (section 1), which is the computer
+  path. The connector must declare `supportsSleep`.
+- `pause`: freeze and thaw the same process. No connector continuation is needed, and the
+  connector need not declare `supportsSleep`. `quiesce` is still sent when the connector serves
+  it, so no turn starts across the pause. A `pause` runtime without `pause`, `resume` or
+  `watchSleep` is refused when the Manager is built, as `supportsWorkClosure` is
+  (`implementations/manager/src/seat-start.ts:274`).
+- `pause` rejects: the seat stays `live`, the keeper is closed without writing, and the error is
+  "`<name>` could not be paused (`<error>`); it is still running".
+- `resume` rejects: the seat stays `asleep`, and the error is "`<name>` could not be resumed
+  (`<error>`); it stays asleep". The Manager never falls back to a stop and a relaunch for a seat
+  it froze, because the frozen process and a relaunched one would both hold the lifecycle.
+- **A failed wake never moves the agent.** No runtime starts a sleeping seat anywhere else. That
+  is the rule `spawnDelegated` already states for a create (`packages/core/src/runtime.ts:170-192`).
+
+### The limit a runtime states
+
+`pause` answers `keptUntil`, for example seven days after the pause for a provider that keeps a
+paused sandbox that long. `sleep` stores `wakeBy` as the earlier of `keptUntil` and the root
+credential's limit (section 6), and reports it: "`<name>` can stay asleep until `<UTC>`". A `stop`
+runtime states no limit, because a stopped seat's files and session stay on disk.
+
+### Reports from the runtime
+
+- **`paused`, for a seat the Manager holds as live.** The Manager records the seat as asleep with
+  `sleep.reason`, writes `asleep` through the keeper, and moves the seat to the asleep table. It
+  logs "`<name>` was paused by its runtime (`<reason>`); it is asleep". If the seat was in a turn
+  or held a workflow turn, the pause has already happened and cannot be refused. The turn relay
+  stamps the turn as it does for a seat that died (`implementations/manager/src/turn-relay.ts:693-699`),
+  so the turn ends at its deadline, and the next `wake` result carries `interrupted: true`. The
+  first turn after wake says: "Your runtime paused you during a turn at `<UTC>`; that turn did not
+  finish." The Manager never resumes such a seat by itself.
+- **`ended`, for a sleeping seat whose runtime no longer holds it** (the provider's limit passed,
+  or the sandbox is gone). The Manager runs the ordinary terminal for the lifecycle, as `stop`
+  does. The seat record becomes `ended`, the presence record is deleted, and the alias frees after
+  retirement. It logs "`<name>` ended while asleep (`<reason>`); its runtime no longer holds it".
+  A later `wake` answers "`<name>` ended while asleep at `<UTC>` (`<reason>`)".
+- A report the Manager cannot place (an unknown seat, or a lifecycle it does not hold) is logged
+  and ignored. It never starts, stops or retires anything.
+
+The `stop` path built first (section 9) uses none of these methods, and the `pty` runtime
+implements none of them. They are defined now, so the `pause` path is a runtime change and not a
+change to the state machine.
 
 ## 8. Cells
 
@@ -553,7 +699,10 @@ installed or started outside the cell.
 | 10 | Keeper credential writes another agent's key | the broker accepting the write |
 | 11 | `stop` a sleeping agent | an `asleep` record left behind, or the alias still held |
 | 12 | `sleep` against a revision-58 Manager | anything sent, or a sentence other than section 4's |
-| 13 | Delete the Pi session file while asleep, wake | a woken process, or a fresh conversation |
+| 13 | Delete the Pi session file while asleep, wake, once under each `wake.conversationGone` value | `fresh`: a different lifecycle, `conversation` not `"fresh"`, or the notice missing. `refuse`: a woken process |
+| 14 | Change the Pi session file while asleep, wake, once under each `wake.conversationMoved` value | `copy`: the changed bytes continued, or `conversation` not `"copy"`. `refuse`: a woken process |
+| 15 | A test `pause` runtime in the cell: sleep, report `paused` while idle, report `paused` mid-turn, report `ended` | presence not `asleep` after a report, a turn not stamped, a wake that relaunches, or `ended` leaving the alias held |
+| 16 | The test `pause` runtime's `resume` rejects | the seat started anywhere, or not still `asleep` |
 
 ## 9. Pull requests, in order
 
@@ -571,14 +720,18 @@ Each ships alone and passes its own cells.
    mint on both auth modes, and the SPEC Appendix B row. Cell 10.
 5. **`sleep` and `wake`, revision 59, Pi, CLI** (about 600 lines, held for the hosted deploy).
    `supportsSleep`, `sleepPolicy`, `quiesce`, the state machine, the CLI verbs and docs. Cells 1-5,
-   8, 9 and 11-13.
+   8, 9 and 11-14.
 6. **Stored-copies notice on wake** (about 120 lines). The DLV consumer-info row and the first-turn
    notice. Cell 7.
+7. **The `pause` path** (about 300 lines). `pause`, `resume`, `watchSleep` and the reports, with
+   the test runtime the cells use. No stock runtime implements it, and a hosted runtime takes it
+   from here. Cells 15 and 16.
 
 Pull requests 1 and 2 can land in any order. Pull request 5 needs 1 (one release earlier), 2 and 4.
-Pull request 6 needs 5.
+Pull requests 6 and 7 need 5.
 
 ## 10. Not in this step
 
-Triggers (idle sleep, wake on a DM, wake on a mention), other harnesses, run pause and resume,
-hosted sandboxes, and moving a sleeping agent between Managers.
+Triggers (idle sleep, wake on a DM, wake on a mention), other harnesses, run pause and resume, a
+hosted runtime's own `pause` implementation (pull request 7 defines the contract it implements),
+and moving a sleeping agent between Managers.
