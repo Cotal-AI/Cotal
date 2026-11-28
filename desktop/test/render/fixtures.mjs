@@ -150,6 +150,7 @@ export function nativeStub(scenario) {
           window.__advanceSetup = () => progress("applications", "available", "connectors: available", { applications: ["Claude Code", "Codex"] });
           await new Promise(() => {});
         }
+        if (state.otherInstallation) return fail("CONFLICT", "the background service was set up by another Cotal installation, so this one cannot refresh it");
         if (state.setupError) return fail("LIFECYCLE_BLOCKED", `Setup could not proceed: ${state.setupError}. Stop active sessions before retrying.`, state.setupError);
         if (state.serviceBehind) {
           // An older background service restarts into the app's version only when no agent runs, as the daemon's idle fence does.
@@ -854,6 +855,11 @@ export const scenarios = [
   { name: "personal", state: { multiple: true, personal: true }, act: signIn },
   { name: "add-space", state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); await page.selectOption('#space', 'research'); } },
   { name: "connecting", state: { connecting: true }, act: connect },
+  { name: "other-installation", state: { otherInstallation: true }, act: connect, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Another Cotal installation runs the background service");
+    assert.equal(await page.locator("#recover").isHidden(), true, "no button offers a setup that cannot succeed");
+    assert.equal(/\/|`/.test(await page.locator("#refusal-detail").textContent()), false, "Details shows no command line");
+  } },
   { name: "ready", state: {}, act: connect },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
   { name: "no-application", state: { noApp: true }, act: connect },

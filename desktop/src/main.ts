@@ -543,6 +543,7 @@ function showStage(next: Stage, focus = false): void {
   if (recovery && !lost) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
+    el("recover").hidden = recovery.action === "none";
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
     if (!retrySignIn && ["EXPIRED", "VERSION_MISMATCH"].includes(issue!) && !el("recover").querySelector(".icon-refresh")) el("recover").prepend(icon("refresh"));
@@ -1156,6 +1157,7 @@ el("login-form").addEventListener("submit", (event) => {
   });
 });
 el("recover").addEventListener("click", () => {
+  if (el("recover").dataset.action === "none") return;
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
   const recovery = el("recover").dataset.action;
   const keepNotAnswering = problem === "NOT_ANSWERING" && recovery === "refresh";
