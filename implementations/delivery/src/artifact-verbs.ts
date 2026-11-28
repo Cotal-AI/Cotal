@@ -122,6 +122,8 @@ export class ArtifactVerbs {
     if (args.size === 0) throw notExecuted("bad-request", "put-begin: an artifact holds at least one byte; nothing was staged");
     const over = this.staging.refusal(caller, args.size);
     if (over !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${over}`);
+    const tooSmall = this.stores("put-begin").objects.storeRefusal();
+    if (tooSmall !== undefined) throw notExecuted("resource-exhausted", `put-begin: ${tooSmall}; nothing was staged`);
     scope.fence.check(scope.generation, "staging the upload");
     const uploadId = randomBytes(16).toString("hex");
     this.staging.begin(uploadId, { caller, name: args.name, mediaType: args.mediaType, size: args.size, digest: args.digest });

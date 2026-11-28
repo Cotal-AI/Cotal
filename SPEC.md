@@ -7377,10 +7377,12 @@ caller without the token is refused by the broker (`permission-denied`, `not-exe
 the caller's own lifecycle. Possession and staging are keyed on the caller's lifecycle UID.
 
 **Put.** `put-begin` stages an upload in the server's memory and refuses before any byte past the
-per-artifact limit or the per-lifecycle staging bounds (`resource-exhausted`, `not-executed`). An
-upload stays charged against those bounds until its commit finishes or fails, so overlapping commits
-cannot exceed them. Chunks arrive in order; a chunk out of order, empty, or past the declared size ends
-the upload. `put-commit` hashes the staged bytes and refuses unless they hash to the declared digest.
+per-artifact limit or the per-lifecycle staging bounds (`resource-exhausted`, `not-executed`), and when
+the broker's payload limit cannot carry one stored chunk (64 KiB plus 1 KiB of headers in the
+reference). An upload stays charged against those bounds until its commit finishes or fails, so
+overlapping commits cannot exceed them. Chunks arrive in order; a chunk out of order, empty, or past
+the declared size ends the upload. `put-commit` hashes the staged bytes and refuses unless they hash
+to the declared digest.
 A commit writes, in this order, a reservation row, the chunks, the meta record and the caller's
 possession row. The server stores the bytes in fixed-size chunks whatever chunks they arrived in, and
 every store write is create-only, so a re-put of the same digest in another chunking, or the retry of

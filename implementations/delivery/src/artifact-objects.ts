@@ -107,6 +107,16 @@ export class ArtifactObjects {
     return m === null ? undefined : m.data;
   }
 
+  /** Why this connection cannot store an artifact, or `undefined` when it can: a broker message limit
+   *  below one stored chunk and its headers. Asked at `put-begin`, before any byte is staged (C15), and
+   *  again before the first write. */
+  storeRefusal(): string | undefined {
+    const max = this.nc.info?.max_payload;
+    return typeof max === "number" && max < ARTIFACT_STORE_CHUNK_BYTES + STORE_HEADER_ALLOWANCE
+      ? `the broker's payload limit is too small: its max_payload is ${max} bytes, and storing an artifact needs at least ${ARTIFACT_STORE_CHUNK_BYTES + STORE_HEADER_ALLOWANCE}`
+      : undefined;
+  }
+
   /** Write `blocks`, the bytes of `meta.digest` in storage framing, then its meta record. The caller
    *  has already hashed the bytes to the digest. `guard` runs before every publish, so the serve fence
    *  can refuse a write that has not started. Blocks not in storage framing (every block but the last
@@ -122,9 +132,8 @@ export class ArtifactObjects {
     const size = blocks.reduce((n, b) => n + b.byteLength, 0);
     if (blocks.some((b, i) => b.byteLength !== storedChunkLength(size, i)) || blocks.length !== storedChunkCount(size))
       throw new Error(`the bytes of ${meta.digest} are not in storage framing; nothing was written`);
-    const max = this.nc.info?.max_payload;
-    if (typeof max === "number" && max < ARTIFACT_STORE_CHUNK_BYTES + STORE_HEADER_ALLOWANCE)
-      throw new Error(`the broker's ${max}-byte message limit is below one ${ARTIFACT_STORE_CHUNK_BYTES}-byte stored chunk and its headers`);
+    const tooSmall = this.storeRefusal();
+    if (tooSmall !== undefined) throw new Error(tooSmall);
     const js = jetstream(this.nc);
     const record: ArtifactMeta = { ...meta, size, chunks: blocks.length };
     const createOnly = () => { const h = headers(); h.set("Nats-Expected-Last-Subject-Sequence", "0"); return h; };

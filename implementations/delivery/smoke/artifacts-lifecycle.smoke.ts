@@ -44,7 +44,7 @@ import type { ChatEntryForConfirm } from "../src/artifact-chat-read.js";
 import { DaemonEndpointBinder, type ServeScope } from "../src/endpoint-bind.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 19;
+const EXPECTED_CELLS = 20;
 const { check, finish, passed, failed } = createSuite();
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -206,6 +206,17 @@ try {
     const empty = await refusal(verbs.putChunk(s)(ctx(dave, { uploadId, seq: 0, data: "" })));
     const after = await refusal(verbs.putChunk(s)(ctx(dave, { uploadId, seq: 0, data: "AAAAAA==" })));
     check("an empty put-chunk is refused, not-executed, and ends the upload", /carries no byte/.test(empty) && /not-executed/.test(empty) && /no upload/.test(after), { empty, after });
+  }
+  {
+    // C15: a data connection whose broker limit is below one stored chunk refuses at put-begin, before
+    // any byte is staged, not at commit. The real handler over a connection reporting that limit.
+    const small = new ArtifactObjects({ info: { max_payload: 60_000 } } as unknown as NatsConnection, space);
+    const smallVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: small }), locks: new DigestLocks(),
+      fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined });
+    const refused = await refusal(smallVerbs.putBegin(s)(ctx(dave, { name: "s", mediaType: "x/y", size: 10, digest: sha(bytesOf(10, 7)) })));
+    check("on a broker limit below one stored chunk, put-begin refuses before staging, resource-exhausted, not-executed, naming the limit",
+      /"code":"resource-exhausted"/.test(refused) && /payload limit is too small: its max_payload is 60000 bytes/.test(refused) && /not-executed/.test(refused)
+        && smallVerbs.staging.chargeOf(dave).uploads === 0, refused);
   }
   {
     const first = await stage(carol, bytesOf(1000, 3), [1000]);
