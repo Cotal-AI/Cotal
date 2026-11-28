@@ -128,6 +128,8 @@ const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
 const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
+const deferredActivationRepro = process.argv.includes("--deferred-activation-repro");
+const deferredActivationEmpty = process.argv.includes("--deferred-activation-empty");
 if (manualAdmissionRace && (!process.argv.includes("--hosting-only") || !process.argv.includes("--update-repro"))) throw new Error("manual admission repro requires --hosting-only --update-repro");
 const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const cancelOnly = process.argv.includes("--cancel-only");
@@ -286,7 +288,7 @@ const jwtsIssued: string[] = [];
 let idpRevoked = false;
 let signOutRequests = 0;
 let signOutSuccesses = 0;
-let idpJwtTtl = 120;
+let idpJwtTtl = deferredActivationRepro ? 900 : 120;
 let tokenFailure: "unreachable" | "unusable" | undefined;
 let recoverOnApproval = false;
 let deviceCodeRequests = 0;
@@ -2003,7 +2005,8 @@ try {
       writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
 const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(e,out)=>e?reject(e):resolve(out.trim())));
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
-      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
+      const registryImport = deferredActivationRepro ? "@cotal-ai/core" : coreUrl;
+      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(registryImport)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
       const cleanSeed = claudeWakeOnly || process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
@@ -3257,6 +3260,54 @@ process.stdin.once('data', () => {
           } finally {
             renameSync(`${app}.retired`, app);
           }
+          return;
+        }
+        if (deferredActivationRepro) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const caller = { versionSkew: (text: string) => text, roster: async () => [] };
+          const seat = "deferred_activation_seat";
+          const request = (command: "start" | "stop" | "managerStatus", body?: Record<string, unknown>) =>
+            askManager(caller, ON, target.server, command, body, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+          const installed = async (...args: string[]) => {
+            const proc = spawn(join(globalPrefix, "bin", "cotal"), args, { cwd: root, env: { ...env, npm_config_prefix: globalPrefix }, stdio: ["ignore", "pipe", "pipe"], timeout: 360_000, killSignal: "SIGKILL" });
+            let text = "";
+            proc.stdout.on("data", b => { text += String(b); }); proc.stderr.on("data", b => { text += String(b); });
+            const code = await new Promise<number | null>((resolve, reject) => { proc.once("error", reject); proc.once("close", resolve); });
+            console.log("DEFERRED_ACTIVATION command", JSON.stringify({ args, code, text }));
+            return { code, text };
+          };
+          const daemon = async () => {
+            const observed = await cli("status");
+            assert.equal(observed.code, 0, observed.err);
+            return observed.doc.result;
+          };
+          const currentPackages = "No newer CLI version; installed package closure is current. No connector reconciliation was run.";
+          const hint = /run `(?:pnpm )?cotal update --self --stop-agents` to activate/;
+          const started = await request("start", { name: seat, agent: "daemon-smoke", events: false, persona: { prompt: "Owned activation regression, no model.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } });
+          assert.ok(started.ok, started.error);
+          try {
+            const before = await daemon();
+            assert.equal(before.version, "0.151.2");
+            assert.equal(before.generation, undefined);
+            const initial = await installed("update", "--self");
+            assert.equal(initial.code, 0, initial.text);
+            assert.match(initial.text, hint);
+            assert.match(initial.text, /cotal-ai@0\.151\.3 in use and reconciled/);
+            const retry = await installed("update", "--self");
+            const pending = await daemon();
+            const occupied = await request("managerStatus");
+            check("Current self-update without consent keeps activation pending and preserves the same seat", retry.code === 0 && retry.text.includes(currentPackages) && retry.text.includes("activation is still waiting") && hint.test(retry.text) && pending.pid === before.pid && pending.version === "0.151.2" && pending.generation?.installed === "0.151.3" && pending.generation?.running === "0.151.2" && hint.test(pending.generation.waiting) && occupied.ok && (occupied.data as any).stopImpact?.agents?.some((agent: any) => agent.name === seat && agent.lifecycleUid === (started.data as any).lifecycleUid), { retry, pending, occupied });
+            if (deferredActivationEmpty) {
+              const stopped = await request("stop", { name: seat });
+              assert.ok(stopped.ok, stopped.error);
+            }
+            const activation = await installed("update", "--self", ...(deferredActivationEmpty ? [] : ["--stop-agents"]));
+            const ready = await daemon();
+            check(deferredActivationEmpty ? "Current self-update activates after the seat exits without a flag" : "Current self-update with consent stops the seat and activates the installed daemon", activation.code === 0 && activation.text.includes(currentPackages) && activation.text.includes("activated installed Cotal 0.151.3") && ready.pid !== before.pid && ready.version === "0.151.3" && ready.generation === undefined && ready.managers?.some((row: any) => row.space === ON && row.state === "answering") && ready.agents?.some((row: any) => row.space === ON && row.state === "read" && row.agents.length === 0), { activation, ready });
+            const current = await installed("update", "--self", "--stop-agents");
+            const after = await daemon();
+            check("Current self-update without deferred activation keeps the existing fast path", current.code === 0 && current.text.includes(currentPackages) && !/activation is still waiting|activated installed Cotal|Built-in connectors/.test(current.text) && after.pid === ready.pid && after.version === ready.version && after.generation === undefined, { current, after });
+          } finally { await request("stop", { name: seat }).catch(() => {}); }
           return;
         }
         if (process.argv.includes("--update-stop-agents-repro")) {

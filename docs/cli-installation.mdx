@@ -529,9 +529,15 @@ With `--self`, the selected running manager is reported before any global instal
 For daemon-hosted Managers whose agents cannot survive replacement, a terminal lists the agents
 and their reported idle times, then asks once whether to stop them and continue. Missing activity
 measurements are shown as unavailable. Save their work before answering yes. Use
-`cotal update --self --stop-agents` to give the same consent without a prompt. Without a terminal
-or this flag, the update refuses without stopping agents. Automatic updates always defer and name
-the blocking agents.
+`cotal update --self --stop-agents` to give the same consent without a prompt. Without consent, a
+staged update can install the software and leave daemon activation pending. Automatic updates defer
+and name the blocking agents.
+
+When the installed packages are already current and activation is pending, `cotal update --self`
+activates the release after the agents exit. If agents are still running, it leaves them running and
+reports that activation is waiting. To activate before they exit, save their work and run
+`cotal update --self --stop-agents`. It stops the blocking hosted agents and confirms the daemon is
+running the installed release.
 
 If a previous update replaced the CLI but left first-party extensions on older versions,
 `cotal --version` and `cotal update --check` report pending reconciliation and the repair command.

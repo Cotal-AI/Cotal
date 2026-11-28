@@ -27,6 +27,7 @@ import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "
 import { reclaimInterruptedUpdateSnapshots } from "./update-snapshot-cleanup.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
+import { activateDeferredUpdate, declinedAgentStop } from "./update-deferred-activation.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
  *  from before that marker never waits there, so its child keeps the line. */
@@ -207,7 +208,7 @@ const composed: Command = { ...command, async run(args) {
       try { consent = /^(y|yes)$/i.test((await input.question("Stop these agents and continue the update? [y/N] ")).trim()); }
       finally { input.close(); }
     }
-    if (!consent) { deferActivation("running agents were not stopped; save their work and run `cotal update --self --stop-agents` to activate", plan.occupied); return; }
+    if (!consent) { deferActivation(declinedAgentStop, plan.occupied); return; }
     for (const manager of plan.inventory) await withIdpSessionDir(homeCotalDir(), async () => {
       const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
       const client = { versionSkew: (text: string) => text, roster: async () => [] };
@@ -660,8 +661,10 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
-  // Current packages need no Manager census or restart. Keep the guarded start of a stopped native service.
+  // Only an explicitly deferred activation needs a Manager census. Keep the guarded service start.
   if (packageCheck === "current") {
+    const entry = logicalExecutionEntry();
+    if (staged && entry && args.values.self === true && !process.env.COTAL_UPDATE_PARENT && await activateDeferredUpdate(entry, updateRuntime.version(), args.values, async plan => { admission = plan; await consumeAdmission(args.values); })) return;
     const state = join(homeCotalDir(), "daemon");
     if (daemonObserved || !existsSync(unitReceiptFile({ state })) || await observeUpdateDaemon()) return;
   }
