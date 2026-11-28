@@ -606,7 +606,7 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
       const message = error instanceof CommandFailure ? error.message : error instanceof Error ? error.message : String(error);
       const ended = disabled
         ? `Nothing was started. ${message} Automatic start is off. Run \`cotal daemon start\` again.`
-        : `${message} Automatic start could not be turned off. Run \`cotal daemon start\` again.`;
+        : `${message} Automatic start is on, and it could not be turned off. Run \`cotal daemon stop\` to turn it off, or \`cotal daemon start\` to start it.`;
       const remedy = "run `cotal daemon start` again";
       if (error instanceof CommandFailure) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { remedy, native: error.native, cause: error });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", ended, { remedy, cause: error });
@@ -1365,7 +1365,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         enable() { task.enable(receipt); },
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
-    const ended = startOnly ? (stoppedAgain ? "Automatic start is off." : "Automatic start is on, and it could not be turned off.") : "";
+    const ended = startOnly ? (stoppedAgain ? "Automatic start is off." : "Automatic start is on, and it could not be turned off. Run `cotal daemon stop` to turn it off, or `cotal daemon start` to start it.") : "";
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained${ended ? ` ${ended}` : ""}`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: startOnly ? "run \`cotal daemon start\` again" : "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }

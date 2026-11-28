@@ -409,6 +409,11 @@ if (process.platform === "linux") {
   const kept = disableFailedPersonStart(livePaths, { prepareStop() { blocked.on = false; throw new Error("disable refused"); } }, { v: 1, unit: "task", unitPath: "task.xml", unitSha256: "0", installedAt: "t" }, true);
   check("a failed start whose disable fails keeps the marker", kept === false && blocked.on === false && existsSync(marker), { kept, blocked: blocked.on });
   writeFileSync(marker, "stopped\n", { mode: 0o600 });
+  let disableRefused = "";
+  try { await startInstalled(livePaths, resolvedHome, undefined, undefined, true, { windowsFailure: missingAction, enabled: () => true, setEnabled() { throw new Error("disable refused"); } }); }
+  catch (error) { disableRefused = error instanceof Error ? error.message : String(error); }
+  check("a failed start whose disable fails says automatic start is on and names stop and start", disableRefused.includes("Automatic start is on, and it could not be turned off") && disableRefused.includes("cotal daemon stop") && disableRefused.includes("cotal daemon start") && existsSync(marker), { disableRefused });
+  writeFileSync(marker, "stopped\n", { mode: 0o600 });
   const readFailure = await probeStop("unread");
   check("a macOS start whose automatic start cannot be read says the service started and leaves no stop marker", readFailure.doc?.started === true && readFailure.doc.enabled === true && readFailure.doc.failed?.code === "TARGET_UNAVAILABLE" && readFailure.doc.failed.message === "the service started, but automatic start could not be read" && readFailure.doc.marker === false, readFailure);
   for (const listener of prior) server.on("connection", listener as (socket: Socket) => void);
