@@ -406,7 +406,7 @@ test("Start restores an intentionally stopped service and leaves no notice", asy
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
     const from = a.calls.length;
     await a.click("recover");
-    assert.deepEqual(a.calls.slice(from).filter(call => call.op === "start" || call.op === "install"), [{ op: "start" }]);
+    assert.deepEqual(a.calls.slice(from).filter(call => call.op === "start" || call.op === "install").map(call => ({ ...call })), [{ op: "start" }]);
     assert.equal(a.node("connection-title").textContent, before);
     assert.equal(a.node("notice").textContent, "");
     assert.equal(a.node("notice").hidden, true);
