@@ -60,8 +60,12 @@ if (args.includes("--cold-reconcile") || args.includes("--cold-reconcile-quota")
   const cases = args.includes("--manual-admission-repros")
     ? [["--update-repro", "--manual-admission-race-repro"], ["--update-repro", "--manual-admission-empty-repro"]]
     : [args.length ? args : ["--upgrade-active-repro", "--watcher-seat-repro"]];
+  const failures: unknown[] = [];
   for (const flags of cases) {
-    await run([join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "bin/smoke/daemon-service-connect.smoke.ts"), "--hosting-only", ...(flags.includes("--update-repro") ? [] : ["--upgrade-repro"]), ...flags], { ...env, COTAL_DAEMON_UPGRADE_FIXTURE: fixture });
+    try {
+      await run([join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "bin/smoke/daemon-service-connect.smoke.ts"), "--hosting-only", ...(flags.includes("--update-repro") ? [] : ["--upgrade-repro"]), ...flags], { ...env, COTAL_DAEMON_UPGRADE_FIXTURE: fixture });
+    } catch (error) { failures.push(error); }
   }
+  if (failures.length) throw new AggregateError(failures, "daemon-generation-live acceptance failed");
 }
 console.log("daemon-generation-live: copied-install generation acceptance passed");
