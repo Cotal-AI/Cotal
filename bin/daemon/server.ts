@@ -308,20 +308,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       owned.clear();
     });
     let stopPrepared = false;
+    const rejectFrame = (reply: DaemonResponse) => { counters.requestsRefused++; void write(reply); };
     const handle = (line: string): void => {
       counters.framesDecoded++;
       const parsed = parseRequest(line);
-      if (!parsed.ok) {
-        counters.requestsRefused++;
-        void write({ v: DAEMON_PROTOCOL_VERSION, id: parsed.id, ok: false, error: { code: parsed.code, message: parsed.message } });
-        return;
-      }
+      if (!parsed.ok) return rejectFrame({ v: DAEMON_PROTOCOL_VERSION, id: parsed.id, ok: false, error: { code: parsed.code, message: parsed.message } });
       const req = parsed.request;
-      if (req.op === "hosted-pty-remove") {
-        counters.requestsRefused++;
-        void write(darwinRemovalGateReply(paths, opts.sessionDir, sock, restartOwner, req.id));
-        return;
-      }
+      if (req.op === "hosted-pty-remove") return rejectFrame(darwinRemovalGateReply(paths, opts.sessionDir, sock, restartOwner, req.id));
       if (req.op === "daemon-stop") {
         // The reply acknowledges the request, not completed shutdown. The uninstaller
         // independently waits for this process and endpoint to disappear.
