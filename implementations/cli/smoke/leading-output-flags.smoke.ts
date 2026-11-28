@@ -428,12 +428,14 @@ const scaffold = run(["endpoint", "init", "note", "--dir", "starter"]);
 check("endpoint init creates the contract for the separator check", scaffold.status === 0, shown(scaffold));
 if (scaffold.status === 0) {
   const contract = "starter/contract.json";
-  for (const flags of [["--file", "--json"], ["--json", "--file"]]) {
-    const r = run(["endpoint", "check", contract, ...flags]);
-    check(`endpoint check ${flags.join(" ")} tells the caller to omit --file`,
-      r.status === 1 && r.stderr === "" && r.envelope?.command === "endpoint check" && r.envelope.outcome === "refused" &&
-      r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === "`endpoint check` does not take --file" &&
-      r.envelope.error.remedy === "omit --file and keep the contract path", shown(r));
+  for (const option of ["--file", "--server"]) {
+    for (const flags of [[option, "--json"], ["--json", option]]) {
+      const r = run(["endpoint", "check", contract, ...flags]);
+      check(`endpoint check ${flags.join(" ")} tells the caller to omit ${option}`,
+        r.status === 1 && r.stderr === "" && r.envelope?.command === "endpoint check" && r.envelope.outcome === "refused" &&
+        r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === `\`endpoint check\` does not take ${option}` &&
+        r.envelope.error.remedy === `omit ${option} and keep the contract path`, shown(r));
+    }
   }
   const retry = run(["endpoint", "check", contract, "--json"]);
   check("endpoint check succeeds with the same contract and output mode after omitting --file",

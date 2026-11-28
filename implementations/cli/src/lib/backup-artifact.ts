@@ -122,8 +122,19 @@ class ArtifactReadDenied extends ArtifactFileFault {
   }
 }
 
-export function artifactReadRefusal(error: ArtifactFileFault, directory: string, restoreRoot?: string): CommandFailure | undefined {
-  if (!(error instanceof ArtifactReadDenied)) return undefined;
+/** Classify reads denied at the canonical artifact, not writes denied at a staging destination. */
+export function artifactReadRefusal(error: unknown, directory: string, restoreRoot?: string): CommandFailure | undefined {
+  if (!(error instanceof ArtifactReadDenied)) {
+    if (!(error instanceof Error)) return undefined;
+    const { code, syscall, path } = error as NodeJS.ErrnoException;
+    if (code !== "EACCES" && code !== "EPERM") return undefined;
+    if (!(syscall === "scandir" && path === directory) && !(syscall === "lstat" && path !== undefined && dirname(path) === directory)) return undefined;
+    const message = "this account cannot read or search the backup artifact folder";
+    return new CommandFailure("refused", "PERMISSION_DENIED", restoreRoot === undefined ? message : `${message}; nothing was restored`, {
+      target: { directory, ...(restoreRoot === undefined ? {} : { root: restoreRoot }) }, native: { code },
+      remedy: "restore read and search access to this folder for your account, or use an accessible copy of the backup",
+    });
+  }
   return new CommandFailure("refused", "PERMISSION_DENIED", restoreRoot === undefined ? error.message : `${error.message}; nothing was restored`, {
     target: { directory, file: error.file, fault: error.fault, ...(restoreRoot === undefined ? {} : { root: restoreRoot }) },
     native: { code: error.code },
