@@ -14,6 +14,7 @@ import { assertSocketPathFits, unsupportedTransport } from "../src/protocol.js";
 import { nativeHelperPath, unsupportedNativeArch } from "../src/peercred.js";
 import { acquireSharedClosureLease, collectSharedRuntimeClosures } from "../src/shared-closure-lease.js";
 import { acquireSharedExecutionLease } from "../src/shared-execution-lease.js";
+import { WINDOWS_SEAT_STORE, windowsSeatStorePresent } from "../src/shared-slot-win32.js";
 
 let pass = 0;
 let fail = 0;
@@ -37,6 +38,31 @@ for (const [platform, max] of [["darwin", 103], ["linux", 108]] as const) {
   check(`${platform} accepts a UTF-8 path of exactly ${max} bytes`, assertSocketPathFits(path, platform) === path);
   assert.throws(() => assertSocketPathFits(`${path}a`, platform), new RegExp(`${max + 1} bytes, over the ${max}-byte limit`));
   check(`${platform} rejects one UTF-8 byte over its limit`, true);
+}
+
+{
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "seat-store-")));
+  const present = (parent: string) => windowsSeatStorePresent({ parent, root: join(parent, WINDOWS_SEAT_STORE), installation: root });
+  try {
+    const appData = join(root, "AppData"), local = join(appData, "Local");
+    assert.equal(present(local), false, "the uncreated private profile has no seat store");
+    assert.deepEqual(readdirSync(root), [], "the absence check does not create the profile");
+    mkdirSync(appData);
+    assert.equal(present(local), false, "a missing final profile directory has no seat store");
+    mkdirSync(local);
+    assert.equal(present(local), false, "a physical empty profile has no seat store");
+    assert.deepEqual(readdirSync(local), [], "the absence check does not create the store");
+    const file = join(root, "file");
+    writeFileSync(file, "not a directory");
+    assert.throws(() => present(join(file, "Local")), "a non-directory ancestor is not proof of absence");
+    const redirected = join(root, "redirected");
+    symlinkSync(appData, redirected, "junction");
+    assert.throws(() => present(join(redirected, "Missing", "Local")), "a redirected ancestor is not proof of absence");
+    assert.throws(() => present(join(root, "NUL.txt", "Local")), "a reserved path is not proof of absence");
+    writeFileSync(join(local, WINDOWS_SEAT_STORE), "not a custody store");
+    assert.throws(() => present(local), "a present malformed store is not empty");
+    check("Windows custody accepts absent profile and store entries only under a physical directory", true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
 if (process.platform === "linux" && existsSync("/usr/bin/flock") &&

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createWindowsPrivateDir, windowsUserSid } from "./host.js";
 import { acquireWindowsCustodyLock, checkWindowsCustodyRoot, makeWindowsCustodyDirectory, withWindowsCustodyLock } from "./shared-files-win32.js";
 import { readWindowsPrivateRecord, writeWindowsPrivateRecord } from "./shared-record-win32-io.js";
 
 export const WINDOWS_SEAT_STORE = "CotalSeatHost";
+const AMBIGUOUS_WINDOWS_ENTRY = /[<>:"/\\|?*\x00-\x1f]|[ .]$|^(?:con|conin\$|conout\$|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:[ .]|$)/i;
 
 /** The same generation and Manager lineage address the task, pipe and local host records. */
 export function deriveWindowsSeatSlot(store: string, installation: string, sid: string, space: string, generation: string) {
@@ -28,26 +29,34 @@ export function windowsSeatSlot(installation: string, space: string, generation:
 export function windowsSeatStoreAddress(installation: string) {
   const local = process.env.LOCALAPPDATA;
   if (!local || !/^[a-z]:\\/i.test(local)) throw new Error("Windows local application data directory is unavailable");
-  const requested = resolve(local);
-  const parent = realpathSync.native(requested);
-  if (parent.toLowerCase() !== requested.toLowerCase() || !lstatSync(parent).isDirectory())
-    throw new Error("Windows local application data directory is not canonical");
+  const parent = resolve(local);
   const root = join(parent, WINDOWS_SEAT_STORE);
   const install = realpathSync.native(installation);
   if (contains(install, root) || contains(root, install)) throw new Error("Windows PTY runtime store overlaps the installation");
   return { parent, root, installation: install.toLowerCase() };
 }
 
-/** A physical parent with a provably missing store needs no custody ACL yet. */
+/** A missing store or profile directory must be a missing entry under a physical directory. */
 export function windowsSeatStorePresent(address: ReturnType<typeof windowsSeatStoreAddress>): boolean {
-  const before = lstatSync(address.parent, { bigint: true });
-  if (!before.isDirectory() || before.ino === 0n) throw new Error("Windows PTY store parent is unknown");
-  const store = lstatSync(address.root, { throwIfNoEntry: false });
-  const after = lstatSync(address.parent, { bigint: true });
+  let directory = address.parent, entry = address.root;
+  let before = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  while (!before) {
+    const ancestor = dirname(directory), name = basename(directory);
+    if (ancestor === directory || AMBIGUOUS_WINDOWS_ENTRY.test(name))
+      throw new Error("Windows PTY store parent is unknown");
+    entry = directory;
+    directory = ancestor;
+    before = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+  }
+  if (!before.isDirectory() || before.ino === 0n || realpathSync.native(directory).toLowerCase() !== directory.toLowerCase())
+    throw new Error("Windows PTY store parent is unknown");
+  const found = lstatSync(entry, { throwIfNoEntry: false });
+  const after = lstatSync(directory, { bigint: true });
   if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino || before.birthtimeNs !== after.birthtimeNs ||
-      realpathSync.native(address.parent).toLowerCase() !== address.parent.toLowerCase())
+      realpathSync.native(directory).toLowerCase() !== directory.toLowerCase())
     throw new Error("Windows PTY store parent changed");
-  if (!store) return false;
+  if (!found) return false;
+  if (entry !== address.root) throw new Error("Windows PTY store parent changed");
   checkWindowsCustodyRoot(address.parent);
   checkWindowsCustodyRoot(address.root);
   return true;

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { verifyIdentityPin } from "@cotal-ai/workspace";
+import { acquireWindowsSeatStoreFence } from "@cotal-ai/seat";
+import { windowsDetachedSeatOccupancy } from "../daemon/manager-custody-win32.js";
 
 // Run the built CLI with its bundled broker, without the operator's home, credentials or PATH tools.
 // Retain command output and roots for inspection. Teardown uses only the sandbox's own CLI route.
@@ -19,6 +21,26 @@ const source = resolve(import.meta.dirname, "../..");
 const cliPath = join(source, "bin/dist/cotal.js");
 const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-startup-native-")));
+if (windows) {
+  const home = mkdtempSync(join(root, "custody-profile-"));
+  const previous = process.env.LOCALAPPDATA;
+  try {
+    process.env.LOCALAPPDATA = join(home, "AppData", "Local");
+    assert.equal(windowsDetachedSeatOccupancy(source), "empty", "a missing private LOCALAPPDATA is not a held seat");
+    assert.equal(windowsDetachedSeatOccupancy(source, "retention"), "empty");
+    const release = acquireWindowsSeatStoreFence(source);
+    release?.();
+    assert.equal(release, undefined, "there is no store to lock");
+    assert.deepEqual(readdirSync(home), [], "the custody checks must not create the private profile");
+    writeFileSync(join(home, "AppData"), "not a directory");
+    assert.equal(windowsDetachedSeatOccupancy(source), "unknown", "an obstructed profile path is not empty");
+    assert.throws(() => acquireWindowsSeatStoreFence(source));
+    console.log("Windows detached custody passed missing and obstructed private profile checks");
+  } finally {
+    if (previous === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previous;
+  }
+}
 const receipt = process.env.COTAL_STARTUP_RESULTS ?? join(root, "result.json");
 const logs = `${receipt}.logs`;
 mkdirSync(logs, { mode: 0o700 });
