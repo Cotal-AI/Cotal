@@ -115,8 +115,8 @@ export class SeedChildFailure extends Error {
 }
 
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
-export async function reconcileSeededConnectors(resumeFirstSeed = false): Promise<void> {
-  await reconcile("auto", true, resumeFirstSeed);
+export async function reconcileSeededConnectors(resumeFirstSeed = false, retryFailed = false): Promise<void> {
+  await reconcile("auto", true, resumeFirstSeed, false, retryFailed);
 }
 
 /** Whether the seed journal, authority, installed built-in payloads and shared peers need no repair. */
@@ -147,14 +147,14 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
   const child = seedChildStatus();
   if (child.kind === "ambiguous") return ambiguousSeedChild(child.path);
   if (child.kind !== "none") return;
-  if (cursor && interruptedUpgrade(cursor, generation)) return;
+  if (cursor && (olderFailedSeed(cursor, generation) || interruptedUpgrade(cursor, generation))) return;
   return seedRepairRefusal(cursor, generation);
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
-export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<void> {
+export async function runSeed(flags: SeedFlags, selfUpdate = false, retryFailed = false): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
-  const result = await reconcile(mode, false, false, selfUpdate);
+  const result = await reconcile(mode, false, false, selfUpdate, retryFailed);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
     return;
@@ -169,11 +169,11 @@ export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<voi
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false, retryFailed = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
-    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit", windowsHide: true });
+    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: retryFailed && process.connected ? ["inherit", "inherit", "inherit", "ipc"] : "inherit", windowsHide: true });
     const forward = (signal: NodeJS.Signals) => child.kill(signal);
     const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
     process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
@@ -185,10 +185,10 @@ async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false,
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode, automatic, resumeFirstSeed, selfUpdate);
+  return reconcileUnderClosure(mode, automatic, resumeFirstSeed, selfUpdate, retryFailed);
 }
 
-async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean, selfUpdate: boolean): Promise<ReconcileResult> {
+async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean, selfUpdate: boolean, retryFailed: boolean): Promise<ReconcileResult> {
   const generation = seedGeneration();
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
@@ -234,7 +234,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
           await reconcile("repair", automatic);
           return NOOP;
         }
-        if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
+        if (!canResumeSeed(cursor, generation, resumeFirstSeed, retryFailed)) throw seedRepairRefusal(cursor, generation);
       }
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -298,13 +298,13 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      }, checkInterrupted, resumeFirstSeed);
+      }, checkInterrupted, resumeFirstSeed, retryFailed);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
       // interruption, and the seed's own error is still the one reported.
       if (e !== cancelled) {
-        try { markCursorFailed(lock.nonce, e instanceof Error ? e.message : String(e)); } catch { /* reported below */ }
+        try { markCursorFailed(lock.nonce, `seed generation ${generation}\n${e instanceof Error ? e.message : String(e)}`); } catch { /* reported below */ }
       }
       throw e;
     } finally {
@@ -330,9 +330,39 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
  * maintenance command is safe to resume unattended. A same-generation (or unstamped/corrupt-stamp)
  * cursor is not attributed to an upgrade and remains fail-loud. */
 function interruptedUpgrade(cursor: ReconcileCursor, generation: string): { readonly from: string } | undefined {
+  if (recordedFailureGeneration(cursor)) return undefined;
   const stamp = readStamp();
   if (!stamp || !isValidSemver(stamp.generation) || !isStrictlyNewer(generation, stamp.generation)) return undefined;
   return { from: stamp.generation };
+}
+
+const FAILURE_GENERATION = /^seed generation ([^\r\n]+)\n/;
+
+function recordedFailureGeneration(cursor: ReconcileCursor): string | undefined {
+  const generation = FAILURE_GENERATION.exec(cursor.failed ?? "")?.[1];
+  return generation && isValidSemver(generation) ? generation : undefined;
+}
+
+function failedSeedGeneration(cursor: ReconcileCursor): string | undefined {
+  const generation = recordedFailureGeneration(cursor);
+  if (generation) return generation;
+  const prefix = `failed to seed connector "${cursor.package}" from `;
+  if (!cursor.failed?.startsWith(prefix)) return;
+  // Legacy add failures record the staged payload path before the child diagnostic.
+  const path = cursor.failed.slice(prefix.length).split(`: `, 1)[0]?.replaceAll("\\", "/");
+  const source = path && /\/seed\/store\/([^/]+)\/([^/]+)$/.exec(path);
+  if (source && source[2] === cursor.package && source[1] && isValidSemver(source[1])) return source[1];
+}
+
+function olderFailedSeed(cursor: ReconcileCursor, generation: string): boolean {
+  const failed = cursor.failed && failedSeedGeneration(cursor);
+  return !!failed && isStrictlyNewer(generation, failed);
+}
+
+function canResumeSeed(cursor: ReconcileCursor | undefined, generation: string, resumeFirstSeed: boolean, retryFailed: boolean): boolean {
+  if (!cursor?.failed) return resumeFirstSeed && interruptedFirstSeed(cursor, generation);
+  const failed = failedSeedGeneration(cursor);
+  return olderFailedSeed(cursor, generation) || (retryFailed && (failed === undefined || !isStrictlyNewer(failed, generation)));
 }
 
 /** An absent stamp is not enough: look for the current staged add and rule out a prior seed or repair. */
@@ -414,7 +444,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean, retryFailed: boolean): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -445,7 +475,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   if (downgrade) throw downgrade;
 
   // A competing writer may have changed the cursor or committed while setup waited for the locks.
-  if (mode === "auto" && resumeFirstSeed && interruptedFirstSeed(readCursor(), generation)) mode = "repair";
+  if (mode === "auto" && canResumeSeed(readCursor(), generation, resumeFirstSeed, retryFailed)) mode = "repair";
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
@@ -897,7 +927,8 @@ function childFailure(r: SpawnSyncReturns<string>): string {
 
 /** The refusal after a seed that failed: what failed, and that `--repair` finishes it. */
 function failedSeed(cursor: ReconcileCursor): Error {
-  return new Error(`a previous connector seed failed (package "${cursor.package}", phase ${cursor.phase}): ${cursor.failed} - fix that, then run \`cotal ext seed --repair\``);
+  const reason = cursor.failed?.replace(FAILURE_GENERATION, "");
+  return new Error(`a previous connector seed failed (package "${cursor.package}", phase ${cursor.phase}): ${reason} - fix that, then run \`cotal ext seed --repair\``);
 }
 
 function ambiguousSeedChild(path: string): Error {

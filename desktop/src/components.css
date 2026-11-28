@@ -17,6 +17,16 @@
 .footnote { margin-top: 12px; }
 #host-help { margin: 6px 0 0; }
 #space-panel select { margin-bottom: 8px; }
+
+/* The Repair panel inside the Connection view. */
+.repair-panel { margin-top: 16px; }
+.repair-panel h2 { font-size: var(--t-small); margin: 0 0 8px; }
+.repair-panel ol { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 8px; }
+.repair-panel li { display: grid; gap: 2px; font-size: 12px; overflow-wrap: anywhere; }
+.repair-panel li small { color: var(--dim); }
+.repair-panel li[data-outcome="cannot"], .repair-panel li[data-outcome="needs-you"], .repair-panel li[data-outcome="failed"] { font-weight: 600; }
+.repair-panel ul { margin: 4px 0 12px; padding-left: 20px; max-height: 100px; overflow-y: auto; font-size: 12px; overflow-wrap: anywhere; }
+.repair-panel li[data-outcome="unchecked"] { color: var(--dim); }
 #space-panel .actions { margin-top: 0; }
 #add-space-panel:not(:empty) { margin: 12px 0; }
 #connected-space { display: none; }
@@ -63,6 +73,8 @@
 .code-row { padding: 8px 12px; }
 .approval strong { font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
 .approval .button { margin-bottom: 8px; }
+#approval-link { overflow-wrap: anywhere; user-select: text; }
+#copy-link-status:empty { margin: 0; }
 .caret { display: none; }
 .progress { list-style: none; margin: 12px 0; padding: 0; }
 .progress li { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 0; font-size: 12px; }

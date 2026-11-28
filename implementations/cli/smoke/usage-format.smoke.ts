@@ -407,8 +407,16 @@ if (process.platform !== "win32") {
   const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
   const partialReceipt = JSON.parse(partial.stdout);
   check("endpoint init reports directories created before a component exceeds the filename limit", partial.status === 4
-    && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
+    && partialReceipt.error?.code === "OPERATION_PARTIAL" && partialReceipt.error.cause?.code === "ENAMETOOLONG"
+    && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
     && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
+  const noChanges = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
+  const rejectedPath = JSON.parse(noChanges.stdout);
+  check("an overlong path under an existing parent is a usage refusal without changes", noChanges.status === 1 && rejectedPath.outcome === "refused" &&
+    rejectedPath.error?.code === "USAGE_INVALID" && rejectedPath.error.cause?.code === "ENAMETOOLONG" && !rejectedPath.changed, shown(noChanges));
+  const partialText = run(["endpoint", "init", "scratch", "--dir", `partial-text/${"x".repeat(256)}`, "--plain"], {}, cwd);
+  check("a partial scaffold names its retained directory and the shorter-path remedy in text", partialText.status === 4 && partialText.stderr.includes("ENAMETOOLONG") &&
+    partialText.stderr.includes(join(cwd, "partial-text")) && partialText.stderr.includes("shorter path"), shown(partialText));
 
   const directoryArgs = ["endpoint", "check", dir];
   const directoryText = [run(directoryArgs, {}, cwd), run([...directoryArgs, "--plain"], {}, cwd)];

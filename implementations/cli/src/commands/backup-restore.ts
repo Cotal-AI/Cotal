@@ -22,7 +22,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
       ...(values.only === "registry" ? { "restore-only": "registry" } : {}),
       ...(values["accept-missing-source"] === true ? { "accept-missing-source": true } : {}),
       ...(values["store-dir"] !== undefined ? { "store-dir": values["store-dir"] } : {}),
-    });
+    }, presentationOf(values));
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const message = (error as Error).message;
