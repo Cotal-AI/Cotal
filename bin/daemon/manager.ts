@@ -13,7 +13,7 @@ import {
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, isDiskFull, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFailure, managerFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
@@ -616,7 +616,14 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       });
     });
     child.stderr?.setEncoding("utf8");
-    const logged = (text: string) => { try { append(text); } catch { l.view = { ...l.view, logError: "the hosted Manager log could not be written; inspect its private state directory" }; } };
+    const logged = (text: string) => {
+      try { append(text); }
+      catch (error) {
+        l.view = { ...l.view, logError: isDiskFull(error)
+          ? "the hosted Manager log could not be written because the disk is full; free space and it is written again"
+          : "the hosted Manager log could not be written; inspect its private state directory" };
+      }
+    };
     const stdoutLine = lines(logged);
     const stderrLine = lines((line) => {
       logged(line);

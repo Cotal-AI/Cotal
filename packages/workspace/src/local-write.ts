@@ -1,6 +1,16 @@
 import { constants } from "node:os";
 import { CommandFailure } from "./output.js";
 
+/** Whether a failed write or read reports that the destination filesystem is out of space:
+ *  ENOSPC, or EDQUOT including the raw POSIX errno libuv can leave unclassified on some
+ *  platforms. One classification for every surface that must say "Disk full". */
+export function isDiskFull(error: unknown): boolean {
+  const native = error as NodeJS.ErrnoException | null;
+  const quota = constants.errno.EDQUOT;
+  const code = process.platform !== "win32" && typeof quota === "number" && native?.errno === -quota ? "EDQUOT" : native?.code;
+  return code === "ENOSPC" || code === "EDQUOT";
+}
+
 /** Report a failed local save at its destination, keeping storage errors separate from bad input.
  *  Call only where the requested save is known not to have completed. Unrecognized errors propagate. */
 export function localWriteFailure(error: unknown, path: string, target: object = {}): CommandFailure {

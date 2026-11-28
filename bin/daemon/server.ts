@@ -26,11 +26,12 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isDiskFull, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
+import { createDiskFullState, daemonStatusFrame, diskFullAwareRead, observeDiskFullWith, startDiskFullRecheck } from "./disk-state.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 
@@ -40,7 +41,10 @@ function managerResultError(op: string, error: unknown, log: (message: string) =
   const cause = clean(String(error instanceof Error ? error.message : error));
   log(`daemon: ${op} refused: ${cause}`);
   if (error instanceof HostedManagerRefusal) return { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) };
-  if (op !== "agent-stop" && op !== "agent-terminal") return managerUnavailable(op, cause);
+  if (op !== "agent-stop" && op !== "agent-terminal") {
+    if (isDiskFull(error)) return { code: "OPERATION_FAILED" as const, message: "The disk is full, so this change wasn't saved. Free up space on this computer, then try again." };
+    return managerUnavailable(op, cause);
+  }
   const failure = isConnectRefusal(error) ? error.failure() : error;
   if (!isCommandFailure(failure)) return managerUnavailable(op, cause);
   return { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) };
@@ -165,6 +169,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
 
   const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, spacesAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0, connectChecksAnswered: 0, registersAnswered: 0, serviceAnswered: 0, socketsRecovered: 0, connectionsResumed: 0 };
   const machineHome = opts.sessionDir ?? homeCotalDir();
+  // One disk-full state for every write this daemon performs on its own records. Set by a failed
+  // write (ENOSPC/EDQUOT), cleared by a later success or the minute recheck; status carries it as
+  // DaemonStatus.diskFull so the window, pill, tray and CLI agree without computing it again.
+  const diskFull = createDiskFullState();
+  const observeDiskFull = observeDiskFullWith(diskFull, () => notifyStatusWatchers());
+  startDiskFullRecheck(diskFull, machineHome, () => notifyStatusWatchers());
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   let loginActive = false;
   let logoutActive = false;
@@ -184,21 +194,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
-  const status = (): DaemonStatus => ({
-    vitals: account.vitals(),
-    vitalsError: account.vitalsError(),
-    computer: account.name(),
-    ...(account.nameWarning() ? { computerNameWarning: account.nameWarning() } : {}),
-    state: "ready",
-    protocol: DAEMON_PROTOCOL_VERSION,
-    version: opts.version,
-    pid: process.pid,
-    startedAt: startedAt.toISOString(),
-    uptimeMs: Date.now() - startedAt.getTime(),
-    managers: managers.all(),
-    account: account.status(),
-    ...(opts.updateStatus ? { update: opts.updateStatus() } : {}),
-    ...(generation ? { generation } : {}),
+  const status = (): DaemonStatus => daemonStatusFrame({
+    diskFull: diskFull.full(), update: opts.updateStatus, version: opts.version, startedAt, generation,
+    vitals: account.vitals(), vitalsError: account.vitalsError(), computer: account.name(), computerNameWarning: account.nameWarning(),
+    managers: managers.all(), account: account.status(),
   });
   const statusWatchKey = (s: DaemonStatus): string => {
     const normAccount = (a: DaemonStatus["account"]) => a ? {
@@ -209,6 +208,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return JSON.stringify({
       computer: s.computer,
       computerNameWarning: s.computerNameWarning,
+      diskFull: s.diskFull,
       state: s.state,
       protocol: s.protocol,
       version: s.version,
@@ -221,7 +221,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       generation: s.generation,
     });
   };
-  const snapshotStatus = async (cachedAgents: boolean): Promise<DaemonStatus> => {
+  const snapshotStatus = async (cachedAgents: boolean): Promise<DaemonStatus> => diskFullAwareRead(diskFull, machineHome, async () => {
     if (!cachedAgents) await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
     const result = { ...status(), agents: await managers.agents(cachedAgents) };
     if (!result.update) return result;
@@ -230,7 +230,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
     try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
     return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
-  };
+  })();
   notifyStatusWatchers = (): void => {
     if (watchers.size === 0) return;
     if (watchNotifying) { watchNotifyQueued = true; return; }
@@ -339,9 +339,11 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => {
+          if (req.op === "name" || req.op === "update-settings") diskFull.clear();
           if (req.op !== "status") notifyStatusWatchers();
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
+          observeDiskFull(error);
           counters.requestsRefused++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));

@@ -1,0 +1,6 @@
+---
+"cotal-ai": patch
+"@cotal-ai/workspace": patch
+---
+
+The background service now recognises a full disk as its own state. When a write it performs fails because the filesystem is out of space, `cotal daemon status` reports a Disk row in text and a `diskFull` field in JSON, a refused request says the disk is full in plain words, and the previous record is kept untouched. The state clears by itself on the next status read once space returns, with no restart.

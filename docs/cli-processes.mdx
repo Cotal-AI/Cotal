@@ -820,6 +820,14 @@ even when Manager registration cleanup refuses. The cleanup refusal remains visi
 
 Daemon status includes `agents`, a per-space local inventory read from each hosted Manager over its parent IPC channel. A `read` observation contains agent name, application, optional pinned model, folder, start time and running or exited state. An `unreadable` observation means the Manager did not answer, changed during the read or exceeded the response bound. It never means no agents. Text and JSON show the same observation. The read changes no seat or admission state and carries no prompts, credentials or console links.
 
+When a write the daemon performs fails because the filesystem holding its records is out of
+space, status carries an optional `diskFull` boolean set to true. Human output adds a Disk row
+naming it and the next step. The field is absent when the disk is not the obstacle, and it clears
+on the next status read once space has returned, without a restart: every status read rechecks the
+filesystem, and a daemon-side timer rechecks once a minute when nobody is reading. A refused write
+names the full disk in its message, and record writes keep the previous record: the atomic
+temp-and-rename publication leaves the prior bytes in place when the write fails.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.
