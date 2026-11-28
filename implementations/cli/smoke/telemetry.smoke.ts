@@ -281,6 +281,12 @@ for (const level of ["regular", "minimal"]) {
   check("a project path with a control character is named only locally", refused.status === 1 && refused.stdout.includes(marker) && refused.stdout.includes("a tab") && !existsSync(odd)
     && reported.length === 1 && reported[0]?.errorCode === "USAGE_INVALID" && reported[0].errorMessage === null && reported[0].errorStack === null && !JSON.stringify(refused.sent).includes(marker), shown(refused));
   const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"], { DO_NOT_TRACK: "1" });
+  const other = "fixture-tenant-marker", store = join(s.project, `store ${marker}`), stream = `CHAT_${other}`;
+  mkdirSync(join(store, "jetstream", "$G", "streams", stream), { recursive: true, mode: 0o700 });
+  const occupied = await s.run(["up", "--space", space, "--store-dir", store, "--server", "nats://127.0.0.1:1", "--open", "--no-manager", "--json"]);
+  const conflict = occupied.sent.find(body => body.event === "command");
+  check("startup keeps the shared store and its other tenant local", occupied.status === 2 && occupied.stdout.includes(store) && occupied.stdout.includes(stream) &&
+    conflict?.errorCode === "CONFLICT" && conflict.errorMessage === null && conflict.errorStack === null && ![marker, other].some(text => JSON.stringify(occupied.sent).includes(text)), shown(occupied));
   const absent = "private-absent-fixture", unknown = await s.run(["use", absent, "--plain"]);
   const event = unknown.sent.find(body => body.event === "command");
   check("a refused selection lists known spaces only on this machine", unknown.status === 2 && unknown.stderr.includes(space) && unknown.stderr.includes(absent)
