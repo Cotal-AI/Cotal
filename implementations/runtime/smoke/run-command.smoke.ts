@@ -1154,6 +1154,22 @@ const takeoverRun = startedId()!;
     await kv.put(statusKey, status.value);
   } finally { await nc.drain().catch(() => nc.close()); }
 
+  // Records the list does not read. More than one page of them must not add a list request.
+  const goals = 1025;
+  const writer = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "goal-writer", { goalWriter: { endpoint } }), tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const kv = await openRecordsBucket(writer, SPACE);
+    for (let i = 0; i < goals; i++) await kv.put(`goal.${endpoint}.o.a.u.g${i}.spec`, new TextEncoder().encode("x"));
+  } finally { await writer.drain().catch(() => writer.close()); }
+  const goalReader = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint, takeoverId: "batch-goals" } }), tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const before = goalReader.stats().outMsgs;
+    const beside = await cotalLangRunHost.list({ nc: goalReader, js: jetstream(goalReader), jsm: await jetstreamManager(goalReader), kv: await openRecordsBucket(goalReader, SPACE), space: SPACE }, { endpoint });
+    const requests = goalReader.stats().outMsgs - before;
+    c(`a list beside ${goals} records of another family keeps its one row and does not page those records`,
+      beside.length === 1 && beside[0]?.runId === runId && requests <= 12, { rows: beside.length, requests });
+  } finally { await goalReader.drain().catch(() => goalReader.close()); }
+
   const listCreds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, takeoverId: "batch-list" } });
   const reader = await connect({ servers, ...standaloneConnectOpts({ creds: listCreds, tls: false }), maxReconnectAttempts: 0 });
   try {
@@ -1194,7 +1210,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 148;
+const DECLARED = 149;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

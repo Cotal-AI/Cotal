@@ -362,24 +362,6 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
 /** Messages per batched Direct Get page in {@link lastKvEntries}. */
 const DIRECT_BATCH = 1024;
 
-/** A stored delete whose body is empty. Callers that drop DEL and PURGE never decode it, and a
- *  caller that does gets a refusal naming the key rather than a syntax error from the empty body. */
-function markerEntry(entry: KvEntry): KvEntry {
-  return {
-    bucket: entry.bucket,
-    key: entry.key,
-    rawKey: entry.rawKey,
-    value: entry.value,
-    created: entry.created,
-    revision: entry.revision,
-    delta: entry.delta,
-    operation: entry.operation,
-    length: entry.length,
-    json: () => { throw new Error(`record ${entry.key} is a ${entry.operation} marker and has no value`); },
-    string: () => { throw new Error(`record ${entry.key} is a ${entry.operation} marker and has no value`); },
-  };
-}
-
 /**
  * The last entry of every key `filter` matches, DEL and PURGE markers included, read WITHOUT a
  * consumer. `filter` defaults to `>`, the whole bucket. A wildcard names one subject family, and
@@ -394,9 +376,11 @@ function markerEntry(entry: KvEntry): KvEntry {
  * bucket of more than 1024 keys ("too many results", measured on nats-server 2.15.1).
  *
  * A key rewritten during the walk only moves to a higher sequence, so the walk still reaches it, and
- * the greatest revision per key wins, as in {@link walkKvLatest}. Each message reports how many are
- * still behind it; the walk ends at 0 or when the broker has nothing at or after the cursor, and a
- * page that ends with neither throws {@link IncompleteKvScan} instead of returning a short list.
+ * the greatest revision per key wins, as in {@link walkKvLatest}. Each message's `Nats-Num-Pending`
+ * counts how many messages that still match the batch's `next_by_subj` remain after it (ADR-31,
+ * Response headers), so a filter's pending count ignores keys the filter does not match. The walk ends
+ * at 0 or when the broker has nothing at or after the cursor, and a page that ends with neither throws
+ * {@link IncompleteKvScan} instead of returning a short list.
  *
  * Each completed page releases its native reply subscription immediately, without waiting for the
  * native five-second timeout. The callback is the client's supported cleanup-owning read path.
@@ -437,11 +421,7 @@ export async function lastKvEntries(kv: KV, filter = ">"): Promise<KvEntry[]> {
                   return;
                 }
                 try {
-                  const e = bucket.smToEntry(sm);
-                  // A delete stores an empty body under KV-Operation DEL. The client's entry reports
-                  // that operation, and decoding the empty body is a syntax error, so the marker is
-                  // what the caller sees. An empty PUT is the same shape and is kept the same way.
-                  const entry = e.length === 0 || e.operation === "DEL" || e.operation === "PURGE" ? markerEntry(e) : e;
+                  const entry = bucket.smToEntry(sm);
                   const prior = latest.get(entry.key);
                   if (prior === undefined || entry.revision >= prior.revision) latest.set(entry.key, entry);
                   last = sm.seq;

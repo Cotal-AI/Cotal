@@ -439,11 +439,18 @@ export const cotalLangRunHost: RunHost = {
   listPage: listRunPage,
 
   async list(planes: RunHostPlanes, req: { endpoint?: string }): Promise<RunListRow[]> {
+    // A name that is not DNS-shaped matches no recorded endpoint. The open-mesh list answers with no
+    // rows, the same answer a name that is DNS-shaped and unrecorded gets, rather than an internal error.
+    let endpoint: string;
+    try {
+      endpoint = req.endpoint === undefined ? "*" : endpointToken(req.endpoint);
+    } catch {
+      return [];
+    }
     // The list form holds a batched Direct Get of the records stream. One filter names
     // one record family, and the batch API takes one filter, so the three families a row is made of
     // are three reads. A space's other records are not read. A page is 1024 messages, so a
     // few hundred runs are one round trip per family and more are one per page.
-    const endpoint = req.endpoint === undefined ? "*" : endpointToken(req.endpoint);
     let records: KvEntry[];
     try {
       const [specs, statuses, programs] = await Promise.all([
@@ -515,8 +522,6 @@ export const cotalLangRunHost: RunHost = {
 function runEntries(entries: readonly KvEntry[], field: "spec" | "status" | "program"): Map<string, { endpoint: string; runId: string; entry: KvEntry }> {
   const out = new Map<string, { endpoint: string; runId: string; entry: KvEntry }>();
   for (const entry of entries) {
-    // A deleted key is a marker, not a value. The old whole-bucket walk dropped these before
-    // classifying, so a deleted program stays absent and a deleted status invents no state.
     if (entry.operation === "DEL" || entry.operation === "PURGE") continue;
     const parts = entry.key.split(".");
     const run = parts[0] === "run" && parts.length === 4 && parts[3] === field;

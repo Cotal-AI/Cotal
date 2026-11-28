@@ -99,7 +99,8 @@ deadline is also unknown, exit 3, and is not retried, because the manager may ha
 the run with `cotal run show` or list the runs with `cotal run` before running it again. A list or
 `show` whose request drew no reply fails with `OPERATION_FAILED`, exit 5: the manager answered on the
 same rail just before, so it runs, and a read of one run is safe to run again. A list that misses
-its budget misses it again. `cotal run --page --on <instance>` reads one page. When no manager answered before
+its budget may miss it again. `cotal run --page --on <instance>` reads one page. `<instance>` is one
+`cotal ps` names, and a page needs a manager at contract revision 29 or later. When no manager answered before
 the request went out, or none was subscribed to receive it, the verb refuses `TARGET_UNAVAILABLE`,
 exit 2.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the

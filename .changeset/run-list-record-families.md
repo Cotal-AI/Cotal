@@ -3,4 +3,4 @@
 "@cotal-ai/runtime": patch
 ---
 
-`cotal run` lists the runs recorded on a manager without reading the rest of that manager's record store, so a store that has grown for days still answers inside the list budget. A list that still misses its budget says to read one page with `cotal run --page`, instead of saying the same list is safe to run again.
+`cotal run` lists the runs recorded in a space without reading the rest of that space's record store, so a store that has grown for days still answers inside the list budget. A list that still misses its budget says it may miss it again and names `cotal run --page`, which needs a manager at contract revision 29 or later.

@@ -329,8 +329,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       && String(f.remedy).startsWith("read the run with `cotal run show`, or list the runs with `cotal run`, before trying again"), { outcome: f.outcome, code: f.code, message: f.message });
   }
   // The describe before a read was answered on the same rail, so the rail and skew wording does not
-  // apply: one run failed, and reading it again is safe. A list that misses its budget misses it
-  // again, so the remedy names the page that bounds the read.
+  // apply: one run failed, and reading it again is safe. A list that misses its budget may miss it
+  // again, so the remedy names one page of the same list, with the flags the caller already passed.
   {
     const read = unansweredHostFailure("run-status", "s", sent("run-status"));
     c("run-status published and unanswered failed, exit 5, and names neither the rail nor a restart",
@@ -339,11 +339,17 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       && !read.message.includes("disjoint at the broker") && read.remedy === "a read changes nothing, so it is safe to run again", { outcome: read.outcome, code: read.code, message: read.message });
   }
   {
-    const read = unansweredHostFailure("run-ps", "s", sent("run-ps"));
-    c("run-ps published and unanswered failed, exit 5, and names a page instead of a retry",
+    const read = unansweredHostFailure("run-ps", "s", sent("run-ps"), { space: "s", server: "nats://127.0.0.1:4222", creds: "op.creds", endpoint: "manager", json: true });
+    const page = "a list that misses its budget may miss it again; `cotal run --page --on <instance> --space s --server 'nats://127.0.0.1:4222' --creds op.creds --endpoint manager --json` reads one page. <instance> is one `cotal ps` names, and a page needs a manager at contract revision 29 or later";
+    c("run-ps published and unanswered failed, exit 5, and names a page of the same list",
       read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
       && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
-      && !read.message.includes("disjoint at the broker") && read.remedy === "a list that misses its budget misses it again; `cotal run --page --on <instance>` reads one page", { outcome: read.outcome, code: read.code, message: read.message });
+      && !read.message.includes("disjoint at the broker") && read.remedy === page, { outcome: read.outcome, code: read.code, message: read.message, remedy: read.remedy });
+  }
+  {
+    const paged = unansweredHostFailure("run-ps", "s", sent("run-ps"), { page: true });
+    c("a page that itself drew no reply keeps the retry a read of one run gets",
+      paged.outcome === "failed" && paged.code === "OPERATION_FAILED" && paged.remedy === "a read changes nothing, so it is safe to run again", paged.remedy);
   }
   const readDescribed = unansweredHostFailure("run-ps", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
     [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));

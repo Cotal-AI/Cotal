@@ -738,12 +738,12 @@ const UNCONFIRMED_REMEDY = "read the run with `cotal run show`, or list the runs
  *  published and then went unanswered followed a describe the manager answered on the same rail,
  *  so the manager runs: a read failed, and a start, resume, answer or amend may have been recorded,
  *  because the manager does not stop when the caller stops waiting, so it is unknown. */
-export function unansweredHostFailure(command: string, space: string, e: EpEnvelopeError): CommandFailure {
+export function unansweredHostFailure(command: string, space: string, e: EpEnvelopeError, values: RunValues = {}): CommandFailure {
   const options = { target: { space }, native: { code: e.code } };
-  if (e.outcome === "unknown" && command === "run-status")
+  if (e.outcome === "unknown" && (command === "run-status" || (command === "run-ps" && values.page === true)))
     return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: "a read changes nothing, so it is safe to run again" });
   if (e.outcome === "unknown" && command === "run-ps")
-    return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: "a list that misses its budget misses it again; `cotal run --page --on <instance>` reads one page" });
+    return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: runPageRemedy(values) });
   if (e.outcome === "unknown")
     return new CommandFailure("unknown", "OPERATION_UNKNOWN", `${e.code}: ${e.message}; the manager may already have recorded it`, { ...options, remedy: UNCONFIRMED_REMEDY });
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { ...options, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
@@ -1099,6 +1099,16 @@ function retryFlag(flag: string, value: string | undefined): string {
   const word = oneLine(value) === value ? shellPath(value)
     : `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
   return ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+}
+
+/** A page of the same list. `<instance>` is one `cotal ps` names. A manager answers a page from contract
+ *  revision 29 on. */
+function runPageRemedy(values: RunValues): string {
+  const display = values.server === undefined || brokerAddressForDisplay(values.server) === oneLine(values.server);
+  const flags = display ? (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("") : "";
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  const page = display ? codeSpan(`cotal run --page --on <instance>${flags}${output}`) : "`cotal run --page`";
+  return `a list that misses its budget may miss it again; ${page} reads one page. <instance> is one \`cotal ps\` names, and a page needs a manager at contract revision 29 or later`;
 }
 
 /** A step key the run has no open request at, answered with the open keys whose step name it matches,
