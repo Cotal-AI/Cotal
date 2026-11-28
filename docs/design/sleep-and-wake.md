@@ -47,7 +47,8 @@ Wire
   #10893), and both designs use the same shape (section 5). Its `sleep` object carries `at`,
   `sessionId`, `reopen`, `sessionDigest?`, `wakeBy?`, `keptUntil?` and `reason?`.
 - One new connector control op, `quiesce`, sent only to a connector that declares it. It answers
-  `{ ok: true, sessionId, sessionFile? }` or `{ ok: false, reason }`.
+  `{ ok: true, sessionId, sessionFile? }` or `{ ok: false, reason }`. Its pair `unquiesce` lifts
+  the gate on a thawed seat.
 - Two Manager config values, `wake.conversationGone` (`refuse` | `fresh`) and
   `wake.conversationMoved` (`refuse` | `copy`), both open for the project owner (section 1).
 - An optional `rootExpiresAt` (epoch ms) on the agent bearer exchange answer, which the auth
@@ -110,6 +111,7 @@ Sentences (each is placed in sections 1, 4, 6 and 7)
   finish."
 - "`<name>` ended while asleep (`<reason>`); its runtime no longer holds it"
 - "`<name>` ended while asleep at `<UTC>` (`<reason>`)"
+- "`<name>` resumed but did not reopen for turns (`<error>`)"
 
 ## 1. The state machine
 
@@ -167,7 +169,8 @@ its alias.
    status `working` from presence is not enough, because a batch can be dispatched between the
    read and the stop. The connector holds the gate itself.
 4. **Record the sleep.** Write the v2 seat record with `state: "asleep"` and
-   `sleep: { at, sessionId, reopen, wakeBy? }` before the process is touched. `sessionId` is the
+   `sleep: { at, sessionId, reopen, sessionDigest?, wakeBy?, keptUntil? }` before the process is
+   touched (`keptUntil` is filled in once `pause` answers, step 6). `sessionId` is the
    one `quiesce` returned, and it must equal `readManagedSession`
    (`implementations/manager/src/session-recovery.ts:187-192`). `reopen` is true when the session
    file already exists (Pi wrote a turn). It is the same distinction the code draws between
@@ -242,11 +245,37 @@ The reply is `{ name, lifecycleUid, sessionId, asleepAt, wakeBy? }`.
    writing it.
 
 For a `pause` runtime, steps 3 and 4 are the runtime's `resume`, which thaws the same process,
-with no relaunch and no session proof. The thawed agent finds its broker connection gone and
-rebuilds it under the same lifecycle (`packages/core/src/endpoint-connection.ts:485-533`), and
-each reconnect re-reads its bearer (`:155-158`). The Manager tells it that it slept: the first
-turn after wake starts with "You were asleep from `<UTC>` to `<UTC>`." The same sentence goes to a
-seat that `stop` put to sleep.
+with no relaunch and no session proof. A wake from a freeze runs in this order:
+
+1. The keeper is closed and its credential revoked, and its last `asleep` record stays on the key.
+   Closing it first means the thawed agent is the only writer from the moment it runs.
+2. `resume` thaws the process. Its broker connections were closed at the pause, so peers keep
+   reading `asleep` from the keeper's last record until its 6 s window passes
+   (`packages/core/src/endpoint-presence.ts:891`). If the thaw takes longer, peers read `offline`
+   until the agent writes again.
+3. The agent rebuilds its connection under the same lifecycle
+   (`packages/core/src/endpoint-connection.ts:485-533`), and each reconnect re-reads its bearer
+   (`:155-158`). It then writes its own presence again. The freeze measured from the hosted side
+   shows this path. After a 540 s freeze, the agent was idle on the roster again 2.5 s after it
+   continued, with the same process and the same lifecycle UID, after one new bearer exchange and
+   no person. A 20 s freeze came back in 0.5 s with no exchange.
+4. The Manager sends `unquiesce` on the control endpoint, which lifts the gate `quiesce` set at
+   sleep (section 1, step 3). Until then the thawed agent takes no turn. If `unquiesce` gets no
+   answer within the readiness window, the seat is still recorded as live, the gate stays set, and
+   the Manager logs "`<name>` resumed but did not reopen for turns (`<error>`)". A `stop` wake needs
+   no `unquiesce`, because the relaunched process starts without the gate. A connector that does
+   not serve `quiesce` was never gated, so nothing is sent to it.
+5. The seat record is rewritten as `live`, as in step 5 above.
+
+How the agent learns that it slept: its own connection dropped and came back, but that also
+happens on any network blip, so it is not enough. The Manager therefore says so in the first turn
+after wake: "You were asleep from `<UTC>` to `<UTC>`." The same sentence goes to a seat that `stop`
+put to sleep.
+
+Measured from the hosted side on the published 0.183.1 with SIGSTOP and SIGCONT, a real TLS
+broker and real auth and delivery services. Not measured: a provider pause (it closes every
+connection at once rather than freezing them), a harness with a conversation, and delivery of a
+message sent while frozen. Cell 15 covers the last two with the test `pause` runtime.
 
 ### The two wake policies (open for the project owner)
 
@@ -337,8 +366,10 @@ the grant rather than by the writer's good behavior. A record it wrote for the w
 be dropped by every reader, because `card.id` must equal the key
 (`packages/core/src/subjects.ts:569`).
 
-On wake, the keeper is closed and its credential revoked before the agent's process starts. That
-way two writers never share the key.
+On wake, the keeper is closed and its credential revoked before the agent's process runs again.
+For `stop`, that is before the relaunch. For `pause`, it is before `resume` (section 1, "A wake
+from a freeze"). That way two writers never share the key. The keeper's last `asleep` record stays
+until the agent overwrites it or it ages out.
 
 ### Before the record is written
 
@@ -349,10 +380,11 @@ each case, a peer sees the following:
 |---|---|---|
 | Stopped seat (`stop`) | the keeper, after the exit is proved | the agent's last live record, then its graceful `offline` (`packages/core/src/endpoint-connection.ts:923-926`), for under one heartbeat (2 s) |
 | Frozen seat the Manager paused (`pause`) | the keeper, once `pause` resolves | the agent's last live record, still inside the 6 s window, so no `offline` |
-| Frozen seat the runtime paused by itself | the keeper, once the runtime reports it (section 7) | `offline` from 6 s after the last heartbeat (`packages/core/src/endpoint-presence.ts:891`) until the report arrives |
+| Frozen seat the runtime paused by itself | the keeper, once the runtime reports it (section 7) | `offline` from 6 s after the last heartbeat (`packages/core/src/endpoint-presence.ts:891`) until the report arrives. The hosted freeze measured `offline` 8 s after the freeze |
+| Frozen seat, at wake | the thawed agent itself, once it reconnects | the keeper's last `asleep` for up to 6 s, then `offline` if the reconnect takes longer. The hosted freeze measured idle again 2.5 s after the thaw |
 
-A frozen process cannot write its own record, the same as a stopped one. The keeper is the only
-writer in every case.
+A frozen process cannot write its own record, the same as a stopped one. While the seat sleeps,
+the keeper is the only writer in every case, and after wake the agent is.
 
 ## 3. Older readers, and the SPEC text
 
@@ -595,8 +627,9 @@ session id is kept in a per-lifecycle state file (`extensions/pi/src/connector.t
 `extensions/pi/src/extension.ts:86-91`). `buildLaunch` removes that file at launch (`:220`), and
 the extension writes it again at start.
 
-Wake uses `reopenSession` when `sleep.reopen` is true, so a deleted conversation is refused rather
-than recreated empty. It uses `continueSession` when false, which is a seat that never took a turn.
+Wake uses `reopenSession` when `sleep.reopen` is true, so Pi never recreates a deleted conversation
+empty under the old id. What wake does then is the `wake.conversationGone` policy (section 1). It
+uses `continueSession` when `reopen` is false, which is a seat that never took a turn.
 Pi declares `supportsSleep: true`. The Pi extension serves `quiesce` from its driver state.
 
 Every other connector leaves `supportsSleep` unset and is refused by name (section 1). That is
@@ -701,7 +734,7 @@ installed or started outside the cell.
 | 12 | `sleep` against a revision-58 Manager | anything sent, or a sentence other than section 4's |
 | 13 | Delete the Pi session file while asleep, wake, once under each `wake.conversationGone` value | `fresh`: a different lifecycle, `conversation` not `"fresh"`, or the notice missing. `refuse`: a woken process |
 | 14 | Change the Pi session file while asleep, wake, once under each `wake.conversationMoved` value | `copy`: the changed bytes continued, or `conversation` not `"copy"`. `refuse`: a woken process |
-| 15 | A test `pause` runtime in the cell: sleep, report `paused` while idle, report `paused` mid-turn, report `ended` | presence not `asleep` after a report, a turn not stamped, a wake that relaunches, or `ended` leaving the alias held |
+| 15 | A test `pause` runtime in the cell: sleep, DM the seat while frozen, wake; then report `paused` while idle, report `paused` mid-turn, report `ended` | the DM missing from the first turn after wake, a turn taken before `unquiesce`, two writers on the key, presence not `asleep` after a report, a turn not stamped, a wake that relaunches, or `ended` leaving the alias held |
 | 16 | The test `pause` runtime's `resume` rejects | the seat started anywhere, or not still `asleep` |
 
 ## 9. Pull requests, in order
