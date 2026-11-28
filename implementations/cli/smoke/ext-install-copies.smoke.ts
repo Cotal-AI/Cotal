@@ -226,6 +226,14 @@ registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback 
       checkMissingLocalTarball(dir, prefix, cli);
       const manifestPath = join(prefix, "extensions.json");
       const before = readFileSync(manifestPath, "utf8");
+      const noNpm = join(dir, "empty-path");
+      mkdirSync(noNpm);
+      const unavailable = cli(["ext", "add", "./example-extension"], { PATH: noNpm });
+      assert.equal(unavailable.status, 2, unavailable.stderr);
+      assert.match(unavailable.stderr, /DEPENDENCY_UNAVAILABLE/);
+      assert.match(unavailable.stderr, /npm --version/);
+      assert.equal(readFileSync(manifestPath, "utf8"), before);
+      assert.equal(cli(["greet-example"]).stdout.trim(), "Hello from the extension");
       writeFileSync(join(source, "README.md"), "# Greeting extension\n");
       writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version: "2.0.0", exports: "./greet.mjs", files: ["README.md"] }));
       const omitted = cli(["ext", "add", "./example-extension"]);
