@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   acquireLock,
   acquireLockAsync,
@@ -9,6 +10,7 @@ import {
   checkConversationSelection,
   DEV_OWNER,
   deprovisionAgent,
+  dialerFor,
   eventChannel,
   isReachable,
   loadAgentFile,
@@ -19,7 +21,9 @@ import {
   patternInAllow,
   processStartToken,
   provisionAgent,
+  readPluginChannelSpaceState,
   resolveReadAcl,
+  standaloneConnectOpts,
   type AgentDef,
   type ConversationGrant,
   type ConversationPending,
@@ -151,9 +155,9 @@ function missingPersonaNext(persona: string, t: MeshTarget): string {
 /** The grant a conversation gets on an open or static mesh: the channels, role and capabilities of
  *  the persona a bare `cotal spawn` loads there, or the part of them a selection names. A selection
  *  only narrows, and an item the persona does not hold refuses the whole request. */
-function localGrant(def: AgentDef, selection?: ConversationSelection): { subscribe: string[]; grant: ConversationGrant } {
+function localGrant(def: AgentDef, selection?: ConversationSelection, pluginChannelsEnabled = false): { subscribe: string[]; grant: ConversationGrant } {
   const subscribe = def.subscribe ?? [];
-  const allowSubscribe = resolveReadAcl(subscribe, def.allowSubscribe);
+  const allowSubscribe = resolveReadAcl(subscribe, def.allowSubscribe, pluginChannelsEnabled);
   const allowPublish = def.allowPublish ?? [];
   const role = def.role ?? null;
   const scope = def.capabilities ?? [];
@@ -163,13 +167,25 @@ function localGrant(def: AgentDef, selection?: ConversationSelection): { subscri
   if (selection.role !== null && selection.role !== role)
     throw new Error(`the role "${selection.role}" is not within what this mesh's default persona grants; nothing was opened`);
   for (const { channel, access } of selection.channels)
-    if (!patternInAllow(allowSubscribe, channel) || (access === "read-post" && !patternInAllow(allowPublish, channel)))
+    if (!patternInAllow(allowSubscribe, channel, pluginChannelsEnabled) || (access === "read-post" && !patternInAllow(allowPublish, channel, pluginChannelsEnabled)))
       throw new Error(`channel "${channel}" (${access}) is not within what this mesh's default persona grants; nothing was opened`);
   return { subscribe: [], grant: {
     scope: [...selection.capabilities], role: selection.role, subscribe: [], endpoints: [],
     allowSubscribe: selection.channels.map((c) => c.channel),
     allowPublish: selection.channels.filter((c) => c.access === "read-post").map((c) => c.channel),
   } };
+}
+
+async function pluginChannelsEnabledForLocalApp(target: MeshTarget): Promise<boolean> {
+  if (!target.auth) return false;
+  const identity = newIdentity();
+  const creds = await mintCreds(target.auth, identity, "provisioner");
+  const nc = await dialerFor(target.server)({ servers: target.server, ...standaloneConnectOpts({ creds, tls: target.tlsRequired }), inboxPrefix: `_INBOX_${identity.id}`, reconnect: false });
+  try {
+    return (await readPluginChannelSpaceState(await jetstreamManager(nc), target.space)).state.enabled;
+  } finally {
+    await nc.close().catch(() => {});
+  }
 }
 
 /** Open one native conversation's identity on an open or static mesh this computer runs. A static
@@ -214,7 +230,9 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
       return { ok: false, error: `no "${persona}" persona in ${t.personaRoot} for the mesh "${t.space}". ${missingPersonaNext(persona, t)}` };
     throw e;
   }
-  const { subscribe, grant } = localGrant(def, selection);
+  const legacyGrant = localGrant(def, selection);
+  const pluginChannelsEnabled = await pluginChannelsEnabledForLocalApp(t);
+  const { subscribe, grant } = pluginChannelsEnabled ? localGrant(def, selection, true) : legacyGrant;
   const identity = newIdentity();
   const lifecycleUid = mintLifecycleUid();
   // The conversation publishes its own activity on its own event channel, as a spawned seat does.
@@ -244,7 +262,7 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
         acceptedToken = issue.issued.acceptedToken;
         return provisionAgent(prov, auth, identity, {
           subscribe, allowSubscribe: grant.allowSubscribe, allowPublish, ...(grant.role ? { role: grant.role } : {}), capabilities: grant.scope,
-          lifecycleUid, expiresAt: issue.expiresAt, issued: issue.issued, issuance: issue.issuance,
+          lifecycleUid, expiresAt: issue.expiresAt, issued: issue.issued, issuance: issue.issuance, pluginChannelsEnabled,
         });
       });
     });

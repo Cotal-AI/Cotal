@@ -27,12 +27,13 @@ export interface ManagedAgentDeps {
   serializedForAlias: <T>(dir: string, owner: string, actor: string, fn: () => Promise<T>) => Promise<T>;
   opts: OpenAuthAuthorityPlaneOptions;
   onConnection: AuthorityClientOpts["onConnection"] | undefined;
+  resolvePluginChannelState: AuthAuthorityPlane["resolvePluginChannelState"];
 }
 
 /** The plane's managed-agent operations (retained validation, enrollment and its verification,
  *  prepare-retirement verification and the runtime check), over the closure's deps. */
 export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorityPlane, "validateRetainedAgent" | "verifyManagedAgentEnrollment" | "verifyManagedAgentPrepareRetirement" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "verifyManagedAgentRuntime"> {
-  const { server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection } = deps;
+  const { server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection, resolvePluginChannelState } = deps;
   return {
     validateRetainedAgent: async (holder) => {
       refuseIfFenced();
@@ -59,9 +60,10 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
       // the set the enrollment provisions; any other list the target omits is measured as empty.
       const t = r.target;
       const spawner = await resolveRemoteSpawner({ request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission });
-      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe), allowPublish: t.allowPublish ?? [], role: t.role };
-      if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper);
-      assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, "spawn");
+      const { enabled } = await resolvePluginChannelState(space);
+      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe, enabled), allowPublish: t.allowPublish ?? [], role: t.role };
+      if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper, enabled);
+      assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, "spawn", enabled);
       return { request: r, parent: spawner.parent };
     },
     verifyManagedAgentPrepareRetirement: async ({ owner, scope, request }) => {
@@ -82,8 +84,7 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
       const subscribe = t.subscribe ?? [];
       // An omitted or empty read list reads the subscribe set, so the bound, the row and the
       // footprint all take the read set it resolves to.
-      const allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);
-      const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
+      const { lifecycleUid, row, allowSubscribe } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
         // The custody this enrollment attests: the instance the authorized request names, checked
         // against its current registration above. Never a field of the participant's target.
         const custody = { kind: "remote-manager" as const, instanceId: r.instanceId };
@@ -94,6 +95,8 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
         const spawner = findManagedActor(opts.dir, owner, t.actor)?.tokenHash === t.tokenHash ? undefined : await resolveRemoteSpawner({
           request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission,
         });
+        const { enabled } = await resolvePluginChannelState(space);
+        const allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe, enabled);
         // ONE synchronous transaction for the read, the decision and the write, so an
         // enrollment in another process (or a provider grant) cannot land between them.
         const decided = withManagedGrantTransaction(opts.dir, (tx) => {
@@ -116,7 +119,7 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
           // A retry walks the held grant again: its spawner chain may have narrowed since the
           // first answer, and provisioning would restore what it took away.
           if (held !== undefined) {
-            assertWithinSpawnerGrant(opts.dir, held, "spawn");
+            assertWithinSpawnerGrant(opts.dir, held, "spawn", enabled);
             return { lifecycleUid: held.lifecycleUid!, row: held, wrote: false };
           }
           if (spawner === undefined)
@@ -126,7 +129,7 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
           if (spawner.run !== undefined)
             assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, {
               owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe, allowPublish: t.allowPublish ?? [], role: t.role,
-            });
+            }, enabled);
           // A fresh uid is never one a retirement tombstoned, and only the host can make that
           // promise. The grant's envelope walk refuses an over-wide request before any durable exists.
           const lifecycleUid = mintLifecycleUid();
@@ -143,7 +146,7 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
             lifecycleUid,
             tokenHash: t.tokenHash,
             custody,
-          });
+          }, enabled);
           return { lifecycleUid, row, wrote: true };
         });
         const { lifecycleUid, row } = decided;
@@ -163,7 +166,7 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
           });
           await provisioner.start();
           try {
-            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe, role: row.role });
+            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe, role: row.role, pluginChannelsEnabled: enabled });
           } finally {
             await provisioner.stop();
           }
@@ -179,7 +182,7 @@ export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorit
           }
           throw e;
         }
-        return { lifecycleUid, row };
+        return { lifecycleUid, row, allowSubscribe };
       });
       return {
         v: 1,

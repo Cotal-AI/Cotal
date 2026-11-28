@@ -314,6 +314,8 @@ async function runAuthServiceHost(args: { manifest: string; server: string; root
 /** An embedded auth-service context: what `runAuthService` writes to `auth-service.json` (the
  *  loopback URL, the public URL and the capability) plus the hosted lifecycle handle. */
 export interface AuthServiceHandle extends HostedServiceHandle {
+  /** Leader-served routing state for host-side delegated launch admission. */
+  resolvePluginChannelState: AuthAuthorityPlane["resolvePluginChannelState"];
   /** Trusted host door. The embedder authenticates the space operator or same-account owner. */
   deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** Settles after clean-close ordering and every owned connection's terminal closed signal.
@@ -675,6 +677,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       space,
       dir,
       mintConnectCredential: plane.mintConnectCredential,
+      resolvePluginChannelState: plane.resolvePluginChannelState,
       selectManagerInstance: plane.selectManagerInstance,
       listManagerInstances: plane.listManagerInstances,
       verifySession: plane.verifySession,
@@ -826,6 +829,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     };
     const service: Omit<AuthServiceHandle, "readiness"> = {
       deregisterEndpoint: (request, granter) => { refuseUnlessReady(); return plane.deregisterEndpoint(request, granter); },
+      resolvePluginChannelState: (requestedSpace) => { refuseUnlessReady(); return plane.resolvePluginChannelState(requestedSpace); },
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
       cap,

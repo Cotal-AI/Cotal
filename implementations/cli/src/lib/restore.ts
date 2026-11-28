@@ -12,6 +12,7 @@ import {
   consumerConfigFromCheckpoint,
   hardenPrivate,
   spaceBackupInventory,
+  spacePluginStreams,
   validateSpaceAuth,
   validateBackupStreamState,
   validateCanonicalBackupStreamConfig,
@@ -73,7 +74,7 @@ import {
   type StoreIdentity,
 } from "@cotal-ai/workspace";
 import { controllerStackApplies } from "../commands/stack-up.js";
-import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, declaredArtifactStreams, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { inspectPreviousStore, readRegistryDefault, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
@@ -85,7 +86,7 @@ import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldSt
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
-import { RESTORE_TIMEOUT_MS, sanitizeStreamSnapshot, applyRecordedAge, restoreAndValidate } from "./restore-streams.js";
+import { RESTORE_TIMEOUT_MS, sanitizeStreamSnapshot, applyRecordedAge, restoreAndValidate, restoredPluginState } from "./restore-streams.js";
 export interface RestoreFlags {
   restore: string;
   "restore-only"?: string;
@@ -400,7 +401,7 @@ async function validateManifest(
   if (manifest.space !== ready.space)
     throw new CommandFailure("refused", "CONFLICT", `backup belongs to space ${JSON.stringify(manifest.space)}, not ${JSON.stringify(ready.space)}; the preserved cut was not changed`, { target: { space: ready.space, backupSpace: manifest.space }, remedy: `restore it on the root that preserved ${JSON.stringify(manifest.space)}, or use a backup of ${JSON.stringify(ready.space)}` });
   if (manifest.mode !== ready.mode) throw new Error(`backup auth mode ${manifest.mode} does not match preserved source mode ${ready.mode}`);
-  const held = artifactStreams(manifest);
+  const held = declaredArtifactStreams(manifest);
   const selected = flags["restore-only"] === "registry" ? spaceBackupInventory(manifest.space).registry : held;
   const actual = manifest.streams.map((entry) => entry.stream);
   if (new Set(actual).size !== actual.length || JSON.stringify([...actual].sort()) !== JSON.stringify([...held].sort()))
@@ -437,6 +438,26 @@ async function validateManifest(
             : "a full backup restores only into a root that still holds the trust state it was taken under: restore it there, or use a full backup taken on this root") + registry,
         });
     }
+  }
+}
+
+function assertOffRestoreArtifact(space: string, streams: readonly { stream: string }[]): void {
+  if (spacePluginStreams(space).some((name) => streams.some(({ stream }) => stream === name)))
+    throw new CommandFailure("refused", "CONFLICT", "the backup contains plugin channel history, but the destination does not have plugin channels enabled; nothing was restored");
+}
+
+function validateRestoreCheckpoints(manifest: BackupManifest, wanted: readonly string[], checkpoints: ReturnType<typeof readStagedCheckpoints>): void {
+  for (const checkpoint of checkpoints) {
+    if (!wanted.includes(checkpoint.stream)) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} is outside the restored selection`);
+    const streamRecord = manifest.streams.find((entry) => entry.stream === checkpoint.stream);
+    if (!streamRecord) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} has no snapshot stream`);
+    const snapshotState = validateBackupStreamState(streamRecord.state as unknown as Readonly<Record<string, unknown>>);
+    if (JSON.stringify(checkpoint.streamState) !== JSON.stringify({
+      messages: snapshotState.messages,
+      first_seq: snapshotState.first_seq,
+      last_seq: snapshotState.last_seq,
+    })) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} does not match its snapshot stream state`);
+    consumerConfigFromCheckpoint(manifest.space, checkpoint, manifest.mode === "open");
   }
 }
 
@@ -489,7 +510,7 @@ const CLASS_WORDS: Record<string, string> = {
  *  same in words. A full restore that brought back no workflow store carries a note that says why:
  *  a user-mode artifact holds none, and an older artifact was made before full backups held runs. */
 export function restoreComposition(space: string, restored: readonly string[], mode: MaintenanceReadyRecord["mode"]): { restored: string[]; recreatedEmpty: string[]; restoredWords: string; emptyWords: string; note?: string } {
-  const inventory = spaceBackupInventory(space);
+  const inventory = spaceBackupInventory(space, spacePluginStreams(space).some((stream) => restored.includes(stream)));
   const all = [...inventory.backedUp, ...inventory.excluded];
   const empty = all.filter((entry) => !restored.includes(entry.name));
   const words = (entries: readonly { class: string }[]) => [...new Set(entries.map((entry) => CLASS_WORDS[entry.class]))].join(", ") || "none";
@@ -783,16 +804,20 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       if (flags["restore-only"] !== "registry" && selection !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
         throw new CommandFailure("refused", "USAGE_INVALID", `--runtime ${JSON.stringify(flags.runtime)} contradicts the preserved agent runtime ${JSON.stringify(preservedRuntime)}; nothing was restored`, { remedy: "omit --runtime or restore only the registry with --restore-only registry" });
     };
-    let stageParent: string;
     let artifact: StagedArtifact;
     // A faulty artifact is refused before anything moves, naming the file and fault verify names.
     try {
-      if (flags["restore-only"] !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
-        assertRuntime(inspectBackupArtifact(artifactPath, false).selection);
-      stageParent = ensurePrivateAttemptsDir(root).path;
-      // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
-      sweepAttemptResidue(root);
-      artifact = stageArtifact(artifactPath, stageParent);
+      if (flags["restore-only"] !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime) {
+        const inspected = inspectBackupArtifact(artifactPath, false);
+        if (inspected.space === journal.space) assertOffRestoreArtifact(journal.space, inspected.streams);
+        assertRuntime(inspected.selection);
+      }
+      artifact = stageArtifact(artifactPath, (manifest) => {
+        if (manifest.space === journal.space) assertOffRestoreArtifact(journal.space, manifest.streams);
+        // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
+        sweepAttemptResidue(root);
+        return ensurePrivateAttemptsDir(root).path;
+      });
     } catch (error) {
       const denied = artifactReadRefusal(error, artifactPath, root);
       if (denied) throw denied;
@@ -810,19 +835,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     // Retained agents relaunch under their preserved runtime; a contradicting override must fail
     // in preflight, before any mutation or listener exposure.
     assertRuntime(artifact.manifest.selection);
-    const wanted = onlyRegistry ? spaceBackupInventory(journal.space).registry : artifactStreams(artifact.manifest);
-    for (const checkpoint of onlyRegistry ? [] : checkpoints) {
-      if (!wanted.includes(checkpoint.stream)) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} is outside the restored selection`);
-      const streamRecord = artifact.manifest.streams.find((entry) => entry.stream === checkpoint.stream);
-      if (!streamRecord) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} has no snapshot stream`);
-      const snapshotState = validateBackupStreamState(streamRecord.state as unknown as Readonly<Record<string, unknown>>);
-      if (JSON.stringify(checkpoint.streamState) !== JSON.stringify({
-        messages: snapshotState.messages,
-        first_seq: snapshotState.first_seq,
-        last_seq: snapshotState.last_seq,
-      })) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} does not match its snapshot stream state`);
-      consumerConfigFromCheckpoint(journal.space, checkpoint, artifact.manifest.mode === "open");
-    }
+    const wanted = onlyRegistry ? spaceBackupInventory(journal.space).registry : declaredArtifactStreams(artifact.manifest);
+    if (!onlyRegistry) validateRestoreCheckpoints(artifact.manifest, wanted, checkpoints);
     const authorityBeforeMutation = await authorityFingerprint(root, journal.space, journal.mode);
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
       throw new Error("current trust state changed during restore validation");
@@ -859,11 +873,11 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     } else if (targetPath === journal.source.path) {
       const fallbackPath = join(dirname(targetPath), `.cotal-restore-fallback-${attemptId}`);
       prepareSamePathRestore(lock, { attemptId, targetPath, fallbackPath, claim, selection });
-      moveSamePathRestoreSource(lock);
     } else {
       prepareAlternateRestore(lock, { attemptId, targetPath, claim, selection });
     }
     transitioned = true;
+    if (sourceExists && targetPath === journal.source.path) moveSamePathRestoreSource(lock);
     createOwnedDirectory(targetPath);
     const targetStat = lstatSync(targetPath, { bigint: true });
     targetIdentity = { dev: targetStat.dev, ino: targetStat.ino };
@@ -875,6 +889,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     // The lock is held across broker spawn → owner record so no live broker can exist outside the
     // journaled claim, even across a crash in between; stale recovery then never races an orphan.
     lock = acquireMaintenanceLock(root);
+    const stageParent = dirname(artifact.directory);
     const quarantinePath = join(stageParent, `${attemptId}-quarantine`);
     createOwnedDirectory(quarantinePath);
     const quarantineStat = lstatSync(quarantinePath, { bigint: true });
@@ -949,6 +964,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     await restoreAndValidate(broker, journal.space, artifact, sanitized!.path, "target", onlyRegistry, checkpoints, true);
+    if (journal.mode === "auth" && !onlyRegistry) await restoredPluginState(broker, journal.space);
     // A newer cut can hold state the artifact lacks. Inspect the set-aside store on a private
     // clone before waiving consent, and use both brokers' journals to name rolled-back runs.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);

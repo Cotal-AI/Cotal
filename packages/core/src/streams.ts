@@ -48,6 +48,10 @@ import {
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
+import { spacePluginStreams } from "./space-deletion-targets.js";
+import {
+  PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, channelRoute, pluginChannelFilter, pluginChannelStream,
+} from "./plugin-channel-route.js";
 import {
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
   HISTORY_NO_COUNT,
@@ -58,7 +62,7 @@ import {
   historyLimitStreamOf,
   validateCanonicalBackupStreamConfig,
   type HistoryLimit,
-  type HistoryLimitStream,
+  type StoredHistoryLimitStream,
 } from "./backup-config.js";
 import { standaloneConnectOpts } from "./standalone-connect.js";
 
@@ -168,11 +172,12 @@ export interface ClearSpaceHistoryResult {
 }
 
 /** Native message-stream creation fields shared by bootstrap and schema planning. */
-export function spaceMessageStreamConfigs(space: string) {
+export function spaceMessageStreamConfigs(space: string, pluginChannels = false) {
   return [
     ...[chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)]
       .map((stream) => canonicalBackupStreamConfig(space, stream)),
     { ...canonicalBackupStreamConfig(space, chatStream(space)), name: eventPayloadStream(space), subjects: [`${spacePrefix(space)}.evp.>`] },
+    ...(pluginChannels ? spacePluginStreams(space).map((stream) => canonicalBackupStreamConfig(space, stream)) : []),
   ];
 }
 
@@ -265,8 +270,9 @@ export function anycastStoreDefinition(space: string) {
 export async function createSpaceStreams(
   jsm: JetStreamManager,
   space: string,
+  pluginChannels = false,
 ): Promise<void> {
-  for (const definition of spaceMessageStreamConfigs(space)) {
+  for (const definition of spaceMessageStreamConfigs(space, pluginChannels)) {
     // The history limit of CHAT, INBOX, DLV and DM is the operator's (`cotal history limit`), so an
     // existing one of them is left as it is: an add over a different limit would refuse, and this
     // also runs on every open-mode connect. `setupSpaceStreams` checks their other settings.
@@ -299,14 +305,14 @@ export class HistoryLimitUpdateUnknown extends Error {
 
 /** The stream's limit moved between the caller's read and this write. */
 export class HistoryLimitChanged extends Error {
-  constructor(readonly stream: string, readonly kind: HistoryLimitStream, readonly expected: HistoryLimit, readonly found: HistoryLimit) {
+  constructor(readonly stream: string, readonly kind: StoredHistoryLimitStream, readonly expected: HistoryLimit, readonly found: HistoryLimit) {
     super(`the history limit of ${stream} changed since it was read: expected ${describeHistoryLimit(kind, expected)}, found ${describeHistoryLimit(kind, found)}`);
   }
 }
 
 /** `30d, 1000 per sender` on CHAT, `no age limit, 1000 per agent` on INBOX and DLV, `no age limit,
  *  no count limit` on DM. A DM count holds per sender to each recipient. */
-export function describeHistoryLimit(stream: HistoryLimitStream, limit: HistoryLimit): string {
+export function describeHistoryLimit(stream: StoredHistoryLimitStream, limit: HistoryLimit): string {
   const age = limit.maxAgeMs === 0 ? "no age limit" : formatChatAge(limit.maxAgeMs);
   const count = limit.perSubject === HISTORY_NO_COUNT ? "no count limit" : `${limit.perSubject} per ${stream === "inbox" || stream === "dlv" ? "agent" : "sender"}`;
   return `${age}, ${count}`;
@@ -321,7 +327,7 @@ export function formatChatAge(ms: number): string {
 
 /** The config of `space`'s `stream`, refused unless every field but the history limit is canonical
  *  and the limit is one the stream may hold. */
-async function readHistoryStreamConfig(jsm: JetStreamManager, space: string, stream: HistoryLimitStream): Promise<StreamConfig> {
+async function readHistoryStreamConfig(jsm: JetStreamManager, space: string, stream: StoredHistoryLimitStream): Promise<StreamConfig> {
   const name = historyLimitStreamName(space, stream);
   const { config } = await jsm.streams.info(name);
   validateCanonicalBackupStreamConfig(space, name, config as unknown as Record<string, unknown>);
@@ -342,7 +348,7 @@ async function readHistoryStreamConfig(jsm: JetStreamManager, space: string, str
 export async function setHistoryLimit(
   jsm: JetStreamManager,
   space: string,
-  stream: HistoryLimitStream,
+  stream: StoredHistoryLimitStream,
   limit: HistoryLimit,
   expected?: HistoryLimit,
 ): Promise<HistoryLimitChange | undefined> {
@@ -496,6 +502,11 @@ export function fanoutDurableConfig(
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.New,
   };
+}
+
+/** The shared plugin history fan-out starts at the live frontier. */
+export function pluginFanoutDurableConfig(space: string, opts: { ackWaitMs?: number } = {}): Partial<ConsumerConfig> {
+  return { ...fanoutDurableConfig(space, opts), durable_name: PLUGIN_FANOUT_DURABLE, filter_subject: pluginChannelFilter(space) };
 }
 
 /** Connect with the given (privileged) creds, create the space's streams, and disconnect.
@@ -926,6 +937,8 @@ export function assertArtifactStoreConfig(config: StreamConfig, space: string): 
 export async function setupSpaceStreams(opts: {
   servers: string;
   space: string;
+  /** Trusted space state, not inferred from an existing stream. */
+  pluginChannels?: boolean;
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
   /** Explicit consent plus exact delete authority for legacy File-backed derived membership. */
@@ -945,10 +958,15 @@ export async function setupSpaceStreams(opts: {
     // fresh connection, including reconnects.
     requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
-    await createSpaceStreams(jsm, opts.space);
+    if (opts.pluginChannels && !opts.creds) throw new Error("plugin channel storage requires an authenticated space");
+    await createSpaceStreams(jsm, opts.space, opts.pluginChannels);
     // An existing CHAT, INBOX, DLV or DM stream keeps the history limit it holds, so the create above
     // skips it. Every other setting of it must still be canonical (SPEC §8), or setup refuses.
     for (const stream of ["chat", "inbox", "dlv", "dm"] as const) await readHistoryStreamConfig(jsm, opts.space, stream);
+    if (opts.pluginChannels) for (const stream of spacePluginStreams(opts.space)) {
+      const { config } = await jsm.streams.info(stream);
+      validateCanonicalBackupStreamConfig(opts.space, stream, config as unknown as Record<string, unknown>);
+    }
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
     // them. Idempotent. The TTL'd ones come from `ttlBuckets` and ONLY from there, so a new one
     // cannot be created on this path without also being reconciled on the upgrade path; the
@@ -1021,6 +1039,22 @@ export async function clearSpaceHistory(opts: {
   }
 }
 
+/** Purge one fenced plugin's retained posts. The caller must prevent new writers. */
+export async function purgePluginHistory(jsm: JetStreamManager, space: string, plugin: string): Promise<number> {
+  if (!plugin) throw new Error("expected one literal plugin ID");
+  return purgePluginHistoryFilter(jsm, space, pluginChannelFilter(space, plugin));
+}
+
+async function purgePluginHistoryFilter(jsm: JetStreamManager, space: string, filter: string): Promise<number> {
+  const stream = pluginChannelStream(space);
+  const { config } = await jsm.streams.info(stream);
+  validateCanonicalBackupStreamConfig(space, stream, config as unknown as Record<string, unknown>);
+  const reply = await jsm.streams.purge(stream, { filter });
+  if (reply.success !== true || !Number.isSafeInteger(reply.purged) || reply.purged < 0)
+    throw new Error(`unconfirmed plugin history purge on ${stream}`);
+  return reply.purged;
+}
+
 /** {@link clearChannel} purged the channel's history but did not remove its registry entry: the
  *  registry read or delete was refused or failed, so the channel may still be listed. `purged` is
  *  the count the purge already removed, and `cause` is the registry step's error. */
@@ -1047,6 +1081,8 @@ export async function clearChannel(opts: {
   servers: string;
   space: string;
   channel: string;
+  /** Trusted space state; the legacy chat path is unchanged when plugin channels are off. */
+  pluginChannels?: boolean;
   creds?: string;
   /** User mode: a `channel-purger`-view bearer + the space's sentinel creds (instead of a creds file). */
   bearer?: string;
@@ -1054,9 +1090,15 @@ export async function clearChannel(opts: {
 }): Promise<{ channel: string; purged: number; removed: boolean }> {
   if (!isConcreteChannel(opts.channel))
     throw new Error(`"${opts.channel}" is a wildcard, not a deletable channel`);
+  const route = opts.pluginChannels ? channelRoute(opts.space, "*", "*", opts.channel, "isolated") : undefined;
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
+    if (route?.rail.kind === PLUGIN_CHANNEL_ROOT) {
+      const purged = await purgePluginHistoryFilter(jsm, opts.space, route.subject);
+      // Plugin names are not stored in the ordinary registry. Leave any legacy card untouched.
+      return { channel: opts.channel, purged, removed: false };
+    }
     // A missing chat stream holds no retained messages. The registry entry is still removed.
     let purged = 0;
     try {

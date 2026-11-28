@@ -83,9 +83,11 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { deliveryBucket, mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { canonicalBackupStreamConfig, deliveryBucket, isStreamNotFound, mintCreds, mintLifecycleUid, newIdentity, pluginChannelStream, pluginFanoutDurableConfig, PLUGIN_CHANNEL_ROOT, PLUGIN_FANOUT_DURABLE, standaloneConnectOpts } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { openSigned } from "../../../packages/core/smoke/_snapshot-ack.js";
+import { pluginChannelSubject } from "../../../packages/core/src/plugin-channel-route.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -126,6 +128,47 @@ const cliWithEnv = (cwd: string, args: string[], childEnv: NodeJS.ProcessEnv): R
 };
 const cli = (cwd: string, ...args: string[]) => cliWithEnv(cwd, args, env);
 const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+
+async function deleteWithPluginHistory(root: string, space: string): Promise<Run> {
+  const server = findMesh(space)!.server;
+  const auth = (await getSpaceAuth(workspaceSecretStore(root), space))!;
+  const decoy = `${space}_decoy`;
+  const spaces = [space, decoy];
+  const names = spaces.map(pluginChannelStream);
+  const actor = newIdentity().id;
+  const subjects = spaces.map((name) => pluginChannelSubject(name, actor, actor, `${PLUGIN_CHANNEL_ROOT}.fixture.post`));
+  const nc = await openSigned(server, auth, "space_delete_fixture", {
+    pub: { allow: ["$JS.API.INFO", ...subjects, ...names.flatMap((name) => [
+      `$JS.API.STREAM.CREATE.${name}`, `$JS.API.STREAM.INFO.${name}`, `$JS.API.STREAM.MSG.GET.${name}`,
+      `$JS.API.CONSUMER.CREATE.${name}.>`, `$JS.API.CONSUMER.INFO.${name}.${PLUGIN_FANOUT_DURABLE}`,
+    ]), `$JS.API.STREAM.DELETE.${names[1]}`] },
+    sub: { allow: ["_INBOX_space_delete_fixture.>"] },
+  });
+  try {
+    const manager = await jetstreamManager(nc);
+    for (const [index, name] of spaces.entries()) {
+      await manager.streams.add(canonicalBackupStreamConfig(name, names[index]));
+      await manager.consumers.add(names[index], pluginFanoutDurableConfig(name));
+      await jetstream(nc).publish(subjects[index], new Uint8Array([42 + index]));
+    }
+    const preview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    const streams = preview.env?.result?.streams as { name: string; messages: number }[] | undefined;
+    check("authenticated plugin teardown preview names the exact history and omits the decoy", preview.status === 0 && streams !== undefined && streams.some((entry) => entry.name === names[0] && entry.messages === 1) && !streams.some((entry) => entry.name === names[1]), shown(preview));
+    const deleted = cli(home, "space", "delete", space, "--yes");
+    const gone = await manager.streams.info(names[0]).then(() => false, isStreamNotFound);
+    const durableGone = await manager.consumers.info(names[0], PLUGIN_FANOUT_DURABLE).then(() => false, isStreamNotFound);
+    check("authenticated plugin teardown removes the exact stream and its fan-out", deleted.status === 0 && gone && durableGone, shown(deleted));
+    const kept = await manager.streams.getMessage(names[1], { last_by_subj: subjects[1] });
+    const durable = await manager.consumers.info(names[1], PLUGIN_FANOUT_DURABLE);
+    check("authenticated plugin teardown leaves the decoy post and fan-out intact", kept?.data[0] === 43 && durable.num_pending === 1);
+    const repeated = cli(home, "space", "delete", space, "--yes");
+    check("repeated authenticated plugin teardown succeeds after records deletion", repeated.status === 0, shown(repeated));
+    return deleted;
+  } finally {
+    try { await (await jetstreamManager(nc)).streams.delete(names[1]).catch((error: unknown) => { if (!isStreamNotFound(error)) throw error; }); }
+    finally { await nc.close(); }
+  }
+}
 
 function checkStoppedDeliveryLog(root: string, space: string, instanceId: string | null | undefined): void {
   const credential = join(root, ".cotal", deliveryCredsKey(space, { injected: false, root }));
@@ -422,7 +465,7 @@ try {
       first.status === 0 && asked && during.status === 0 && typedExit === 2 && clean(typedOut).includes(`CHAT_${space} holds 2 messages, 1 message when reviewed`) && /CONFLICT/.test(typedOut),
       { first: shown(first), during: shown(during), exit: typedExit, out: clean(typedOut).slice(-1500) });
 
-    const deleted = cli(home, "space", "delete", space, "--yes");
+    const deleted = await deleteWithPluginHistory(root, space);
     check("space delete applies with only the broker running", deleted.status === 0 && /Space streams deleted/.test(deleted.stdout), shown(deleted));
     check("its receipt lists the waiting run it removed", /Workflow runs removed/.test(deleted.stdout) && deleted.stdout.includes(runId ?? "-"), shown(deleted));
     check("its receipt names the route back: cotal up there, or cotal down --yes and cotal space forget",

@@ -1100,7 +1100,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       });
     },
     ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection, composedSourceIsLive }),
-    ...managedAgentAuthority({ server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection }),
+    ...managedAgentAuthority({ server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection, resolvePluginChannelState: callout.resolvePluginChannelState }),
     ...managerRunAuthority({ server, space, dataAccount, cancelObservations, standingTtl, remoteIssuer, recordsScanner, barrierReg, recordsJsm, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, composedSourceIsLive, ledgerDelegation, takeObservedRunRequest, opts, onConnection }),
     observeManagerInstance: async (instanceId) => {
       refuseIfFenced();
@@ -1286,6 +1286,7 @@ export interface HandlerCtx {
   /** The authority plane's root-credential ensure — the agent-exchange arm stamps from it (the
    *  human arm stamps inside the bridge). */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  resolvePluginChannelState: AuthAuthorityPlane["resolvePluginChannelState"];
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
   listManagerInstances: AuthAuthorityPlane["listManagerInstances"];
   verifySession: AuthAuthorityPlane["verifySession"];

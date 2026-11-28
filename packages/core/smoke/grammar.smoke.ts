@@ -15,7 +15,7 @@ import {
   chatSubject, unicastSubject, anycastSubject, controlServiceSubject, dinboxSubject,
   parseSubject, principalKey, parsePrincipalKey, parseDinboxPrincipal, unicastRecvFilter,
   anycastServeFilter, dmDurable, isPrincipalOwnerToken, assertInboxConnId, principalTags,
-  principalFromTags, patternCovers, patternInAllow, DEV_OWNER,
+  principalFromTags, channelInAllow, membershipInAllow, patternCovers, patternInAllow, subjectPatternCovers, DEV_OWNER,
 } from "../src/index.js";
 import { subjectMatches } from "../src/subject-grammar.js";
 import {
@@ -180,6 +180,21 @@ c("patternInAllow: union of entries is NOT considered (single-entry containment,
 c("!patternCovers with a malformed cap (non-terminal '>') — never widens", patternCovers("review.>.x", "review.secret") === false);
 c("!patternCovers with a malformed pattern (non-terminal '>') — never admitted", patternCovers("a.>", "a.>.x") === false);
 c("!patternCovers('>.x', 'a') — malformed leading '>' cap", patternCovers(">.x", "a") === false);
+
+{
+  const tree = `${PLUGIN_CHANNEL_ROOT}.linear.>`;
+  const resource = `${PLUGIN_CHANNEL_ROOT}.linear.issue`;
+  const otherPlugin = `${PLUGIN_CHANNEL_ROOT}.other.issue`;
+  c("legacy channel patterns retain coverage for reserved-looking names", patternCovers(">", resource) && patternCovers(">", tree, false));
+  c("isolated chat wildcards cannot cover a literal plugin or its subtree", !channelInAllow([">"], resource, true)
+    && !patternInAllow(["*.>"], tree, true) && !membershipInAllow([">"], tree, true));
+  c("isolated plugin scope contains only its literal plugin", patternCovers(tree, resource, true) && !patternCovers(tree, otherPlugin, true));
+  c("isolated root-shaped grants are not plugin grants", !patternCovers(`${PLUGIN_CHANNEL_ROOT}.>`, tree, true)
+    && !patternCovers(`${PLUGIN_CHANNEL_ROOT}.*.>`, tree, true));
+  c("broker subject containment is independent of channel rails", subjectPatternCovers(`${PLUGIN_CHANNEL_ROOT}.>`, tree)
+    && subjectPatternCovers("$JS.API.CONSUMER.>", "$JS.API.CONSUMER.INFO.a.b")
+    && !subjectPatternCovers("$JS.API.>.INFO", "$JS.API.CONSUMER.INFO.a.b"));
+}
 
 console.log(`\nGRAMMAR SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
 process.exit(fail ? 1 : 0);

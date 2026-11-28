@@ -96,9 +96,9 @@ export function buildChatParentPin(row: ActorRow, head: { mapping: LifecycleMapp
 
 /** Containment: every requested entry is contained in the parent's CURRENT
  *  list. Nothing is added: no `>` the user did not name, no default. */
-export function assertChatListsContained(row: Pick<ActorRow, "allowSubscribe" | "allowPublish">, lists: { read: string[]; post: string[] }): void {
-  const overRead = lists.read.filter((ch) => !patternInAllow(row.allowSubscribe, ch));
-  const overPost = lists.post.filter((ch) => !patternInAllow(row.allowPublish, ch));
+export function assertChatListsContained(row: Pick<ActorRow, "allowSubscribe" | "allowPublish">, lists: { read: string[]; post: string[] }, pluginChannelsEnabled = false): void {
+  const overRead = lists.read.filter((ch) => !patternInAllow(row.allowSubscribe, ch, pluginChannelsEnabled));
+  const overPost = lists.post.filter((ch) => !patternInAllow(row.allowPublish, ch, pluginChannelsEnabled));
   if (overRead.length || overPost.length)
     throw new EpEnvelopeError("permission-denied", `the chat session would exceed the parent grant: ${[
       overRead.length ? `read [${overRead.join(", ")}]` : "",
@@ -115,6 +115,7 @@ export function assertChatParentPinCurrent(
   row: ActorRow | undefined,
   head: { mapping: LifecycleMapping; revision: number } | undefined,
   lists: { read: string[]; post: string[] },
+  pluginChannelsEnabled = false,
 ): void {
   const deny = (why: string): never => {
     throw new EpEnvelopeError("permission-denied", `the chat session's parent moved (${why}); this session has ended - open a new one`);
@@ -126,5 +127,5 @@ export function assertChatParentPinCurrent(
   if (head!.mapping.lifecycleUid !== pin.lifecycleUid) deny("the parent head names another incarnation");
   if (head!.revision !== pin.headRevision) deny(`the parent head revision is ${head!.revision}, pinned ${pin.headRevision}`);
   if (chatParentRowDigest(row!) !== pin.rowDigest) deny("the parent row's authority fields changed");
-  assertChatListsContained(row!, lists);
+  assertChatListsContained(row!, lists, pluginChannelsEnabled);
 }

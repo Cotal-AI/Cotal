@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import {
-  MANAGED_HANDOFF_KIND, assertLifecycleToken, canonicalJson, parsePrincipalKey, principalKey,
+  DEFAULT_SERVER, MANAGED_HANDOFF_KIND, assertLifecycleToken, canonicalJson, parsePrincipalKey, principalKey,
   provisionAgentDurables, resolveAuthProvider, runAgentBearer, rejectionText, attemptCleanup, describeCleanupFailures,
   type CleanupFailure, type CotalEndpoint, type EpCaller, type EpErrorCode, type EpErrorDetail,
   type ManagedLifecycleHandoff, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult,
@@ -169,6 +169,7 @@ export class UserProvision {
         store: secrets,
         dir,
         space: this.config.space,
+        broker: { server: this.config.servers ?? DEFAULT_SERVER },
         owner,
         actor: name,
         scope,

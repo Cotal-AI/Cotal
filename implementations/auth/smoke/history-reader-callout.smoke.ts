@@ -17,23 +17,33 @@
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
+import { AckPolicy, StorageType, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, userInboxConnId, type CotalMessage,
-  chatSubject, mintMembershipObserverCreds, provisionAgentDurables, startMembershipFeed,
+  chatSubject, chatHistDurable, idFromCreds, mintMembershipObserverCreds, provisionAgentDurables, startMembershipFeed,
+  remoteManagerServePrincipal,
+  type RemoteManagedAgentEnrollmentRequest, type SecretStore,
 } from "@cotal-ai/core";
-import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
-import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
+import { PLUGIN_CHANNEL_ROOT, pluginChannelStream, pluginChannelFilter, pluginChannelSubject } from "../../../packages/core/src/plugin-channel-route.js";
+import { createCalloutAuth, calloutPermissions, cotalAuthProvider, deriveOwnerToken, ensureCalloutAuth, saveServiceKeys, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
+import { findManagedActor, grantActor, ledgerAclResolver, ledgerAuthorizeConnect, newActorToken } from "../src/ledger.js";
+import { pluginChannelStateResolver } from "../src/callout-authority.js";
+import { managedAgentAuthority, type ManagedAgentDeps } from "../src/service-managed-agents.js";
+import { handleExchange, LOOPBACK_POLICY } from "../src/service-exchange-routes.js";
+import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
+import type { HandlerCtx } from "../src/service.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { matchesMainPermissions } from "../../../packages/core/smoke/_off-channel-main.js";
 
 const { check, finish } = createSuite();
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -58,6 +68,15 @@ const releaseBroker = teardownOnSignal(srv, dir);
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
 const ISS = "https://auth.cotal.test";
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|history-reader");
+const parityUid = "p".repeat(26), parityScope = ["spawn"], paritySpace = "off-parity";
+const offRows = await calloutPermissions(() => ({
+  lifecycleUid: parityUid, scope: parityScope, kind: "managed-agent",
+  allowSubscribe: ["general", `${PLUGIN_CHANNEL_ROOT}.linear.inbox`], allowPublish: [`${PLUGIN_CHANNEL_ROOT}.linear.inbox`],
+}), undefined, undefined, undefined, undefined, undefined, async () => ({ enabled: false }))({
+  owner: OWNER, space: paritySpace, scope: [], ver: USER_TOKEN_VER, exp: 2_000_000_000,
+  act: { owner: OWNER, actor: "worker", scope: parityScope, lifecycleUid: parityUid },
+}, "conn0123456789abcdef", "reader0123456789abcdef");
+check("off-state user callout matches main's complete permission rows", matchesMainPermissions("userCallout", offRows));
 /** An admin-view bearer for `actor`: the elevated read view a hosted dashboard connects with. */
 async function adminBearer(actor: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -84,7 +103,156 @@ async function participantBearer(row: typeof participantRows[number]): Promise<s
 
 const endpoints: CotalEndpoint[] = [];
 const raws: NatsConnection[] = [];
+let routed = false;
+let readPluginChannelState: ReturnType<typeof pluginChannelStateResolver>;
+const resolveRouting: ReturnType<typeof pluginChannelStateResolver> = async (requestedSpace) => {
+  const off = await readPluginChannelState(requestedSpace);
+  // The shipped reader refuses activation. Only this broker fixture can exercise enabled grants.
+  return routed ? { enabled: true } : off;
+};
+const calloutDenials: string[] = [];
 let feed: Awaited<ReturnType<typeof startMembershipFeed>> | undefined;
+
+async function checkRoutedCallout(control: NatsConnection): Promise<void> {
+  const stream = pluginChannelStream(space);
+  const channel = `${PLUGIN_CHANNEL_ROOT}.linear.inbox`;
+  const filter = pluginChannelSubject(space, "*", "*", channel);
+  const manager = await jetstreamManager(control);
+  await manager.streams.add({ name: stream, subjects: [pluginChannelFilter(space)], storage: StorageType.Memory });
+  const dial = async (row: ReturnType<typeof grantActor>, bearer?: string) => {
+    const actor = row.actor;
+    const nonce = userInboxConnId(row.owner, row.actor);
+    const nc = await connect({ servers: SERVERS,
+      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearer ?? await participantBearer(row))],
+      name: nonce, inboxPrefix: `_INBOX_${nonce}`, reconnect: false,
+    });
+    raws.push(nc);
+    return { nc, actor, history: chatHistDurable(row.owner, actor, row.lifecycleUid!) };
+  };
+  await checkDelegationDoors(channel, dial);
+  routed = true;
+  const open = (actor: string, read: string[]) => dial(grantActor(dir, { owner: OWNER, actor, scope: [], allowSubscribe: read, allowPublish: read }));
+  const broad = await open("routed_broad", [">"]);
+  const scoped = await open("routed_plugin", [`${PLUGIN_CHANNEL_ROOT}.linear.>`]);
+  const posted = await jetstream(scoped.nc).publish(pluginChannelSubject(space, OWNER, scoped.actor, channel), enc("callout history probe"));
+  check("callout: an explicitly granted sender publishes to the plugin history stream", posted.stream === stream);
+  const create = (reader: typeof scoped) => reader.nc.request(`$JS.API.CONSUMER.CREATE.${stream}.${reader.history}.${filter}`, enc(JSON.stringify({
+    stream_name: stream, action: "create",
+    config: { name: reader.history, filter_subject: filter, ack_policy: "none", deliver_policy: "all", inactive_threshold: 5_000_000_000 },
+  })), { timeout: 1000 });
+  const allowed = (await create(scoped)).json<{ error?: unknown; num_pending?: number }>();
+  check("callout: an explicit plugin grant can open its own retained history", allowed.error === undefined && allowed.num_pending === 2, allowed);
+  const denied = await create(broad).then(() => false, (error: unknown) => /permission/i.test(String(error)));
+  check("callout: the broker refuses plugin history for a broad chat-only grant", denied);
+}
+
+async function checkDelegationDoors(channel: string, dial: (row: ReturnType<typeof grantActor>, token?: string) => Promise<{ nc: NatsConnection }>) {
+  const instanceId = mintLifecycleUid(), managerLifecycleUid = mintLifecycleUid(), serveEpoch = 4, registrationRevision = 9;
+  const identities = { supervisor: newIdentity(), executor: newIdentity(), serve: newIdentity(), goalWriter: newIdentity(), sessionLedger: newIdentity() };
+  const dataAccount = { pub: auth.account.pub, signingSeed: auth.account.signingSeed };
+  const manager = { space, actor: "routed_parent", instanceId, managerLifecycleUid, identities: Object.fromEntries(Object.entries(identities).map(([k, { id }]) => [k, { id }])) as RemoteManagedAgentEnrollmentRequest["identities"] };
+  const registrationProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, OWNER, manager, { registrationRevision, processEpoch: serveEpoch });
+  const unexpectedRetirement = async () => { throw new Error("no retirement in the fixture"); };
+  const authority = managedAgentAuthority({
+    server: SERVERS, space, dataAccount, issuerAuth: () => auth, refuseIfFenced: () => {},
+    observeLegacyManagerGate: async () => ({ state: "open", space, endpoint: "manager", lifecycleUid: instanceId,
+      principal: remoteManagerServePrincipal(OWNER, instanceId), registrationRevision, processEpoch: serveEpoch,
+      generation: 1, nameAuthorityRevision: 1, revision: 1 }),
+    resolvePluginChannelState: resolveRouting,
+    opts: { server: SERVERS, space, dataAccount, dir, identityRoot: dir, log: () => {} },
+    takeObservedSpawnRequest: async () => false, readRunStarterAdmission: async () => { throw new Error("no run in the fixture"); },
+    deprovisionManagedFootprint: async () => {}, onConnection: undefined,
+    managedRetirement: { retireManagedLifecycle: unexpectedRetirement, prepareManagedAgentRetirement: unexpectedRetirement },
+    serializedForAlias: async (_dir, _owner, _actor, fn) => fn(),
+  });
+  const ask = (actor: string, grant: string) => {
+    const secret = newActorToken();
+    const args = { owner: OWNER, scope: ["supervise"], sentinelCreds: callout.sentinelCreds, agentBearerExchangeUrl: "http://127.0.0.1:9/unused",
+      request: { ...manager, v: 1 as const, kind: "manager-managed-agent-enrollment" as const, requestId: `enroll${mintLifecycleUid()}`,
+        registrationProof, serveEpoch, target: { actor, tokenHash: secret.tokenHash, subscribe: [], allowSubscribe: [grant], allowPublish: [grant] } } };
+    return { ...secret, actor, args };
+  };
+  let exchangeRoutingReads = 0;
+  const ctx = { cap: "review-fixture", failures: [], badCaps: [], space, dir,
+    resolvePluginChannelState: (requestedSpace: string) => { exchangeRoutingReads++; return resolveRouting(requestedSpace); },
+    connectLimiter: { check: () => {} }, mintConnectCredential: async () => "fixture",
+    issuer: { issue: async ({ actor }: { actor: string }) => participantBearer(findManagedActor(dir, OWNER, actor)!) }, log: () => {} } as unknown as HandlerCtx;
+  const http = createServer((req, res) => { void handleExchange(req, res, ctx, LOOPBACK_POLICY).catch(e => { res.statusCode = 500; res.end(String(e)); }); });
+  await new Promise<void>(resolve => { http.listen(0, "127.0.0.1", resolve); });
+  const port = (http.address() as { port: number }).port;
+  const exchange = async ({ actor, actorToken }: ReturnType<typeof ask>) => {
+    const response = await fetch(`http://127.0.0.1:${port}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ctx.cap}` }, body: JSON.stringify({ owner: OWNER, actor, actorToken }) });
+    return { status: response.status, ...await response.json() as { token?: string; error?: string } };
+  };
+  const parent = (channels: string[]) => grantActor(dir, { owner: OWNER, actor: manager.actor, scope: ["spawn"], allowSubscribe: channels, allowPublish: channels });
+  try {
+    await checkLocalSpawn(parent([">"]), channel, dataAccount);
+    const legacy = ask("legacy_child", channel);
+    await authority.enrollManagedAgent(legacy.args);
+    const legacyRow = findManagedActor(dir, OWNER, legacy.actor)!;
+    check("off: managed spawn writes the reserved-looking ordinary chat grant", legacyRow.allowSubscribe.includes(channel));
+    const invalid = await exchange({ ...legacy, actorToken: newActorToken().actorToken });
+    check("off: the exchange refuses an invalid secret without reading protected routing state", invalid.status === 401 && exchangeRoutingReads === 0);
+    const legacyBearer = await exchange(legacy);
+    check("off: the legacy child exchanges its secret for a bearer", legacyBearer.status === 200 && !!legacyBearer.token);
+    const old = await dial(legacyRow, legacyBearer.token);
+    check("off: callout grants ordinary chat for the legacy child", (await jetstream(old.nc).publish(chatSubject(space, OWNER, legacy.actor, channel), enc("legacy"))).stream === chatStream(space));
+    routed = true;
+    const denied = ask("routed_denied", channel);
+    const refusal = /exceed.*spawner.*grant/;
+    await assert.rejects(authority.verifyManagedAgentEnrollment(denied.args), refusal);
+    await assert.rejects(authority.enrollManagedAgent(denied.args), refusal);
+    check("on: chat-only spawn and verification refuse before the child row is written", findManagedActor(dir, OWNER, denied.actor) === undefined);
+    const badExchange = await exchange(legacy);
+    check("on: exchange refuses the existing child under a chat-only spawner", badExchange.status === 401 && refusal.test(badExchange.error ?? "") && !badExchange.token);
+    check("on: a still-valid cached bearer is refused by the same callout bound", await dial(legacyRow, legacyBearer.token).then(() => false, () => true));
+    for (let i = 0; i < 20 && !calloutDenials.some(line => line.includes(channel)); i++) await wait(20);
+    check("on: the broker denial names the current spawner grant", calloutDenials.some(line => line.includes("exceeds its spawner's CURRENT grant") && line.includes(channel)));
+    parent([channel]);
+    const wide = ask("routed_wide", `${PLUGIN_CHANNEL_ROOT}.linear.>`);
+    await assert.rejects(authority.enrollManagedAgent(wide.args), refusal);
+    check("on: an exact parent cannot delegate the wider plugin subtree", findManagedActor(dir, OWNER, wide.actor) === undefined);
+    const scoped = ask("routed_scoped", channel);
+    await authority.verifyManagedAgentEnrollment(scoped.args);
+    await authority.enrollManagedAgent(scoped.args);
+    const granted = await exchange(scoped);
+    check("on: scoped spawn and HTTP exchange admit the exact plugin grant", granted.status === 200 && !!granted.token);
+    const routedChild = await dial(findManagedActor(dir, OWNER, scoped.actor)!, granted.token);
+    const stream = pluginChannelStream(space);
+    check("on: callout permits the child to publish on that exact plugin rail", (await jetstream(routedChild.nc).publish(pluginChannelSubject(space, OWNER, scoped.actor, channel), enc("routed"))).stream === stream);
+    const filter = pluginChannelSubject(space, "*", "*", channel);
+    const history = chatHistDurable(OWNER, scoped.actor, findManagedActor(dir, OWNER, scoped.actor)!.lifecycleUid!);
+    const retained = await routedChild.nc.request(`$JS.API.CONSUMER.CREATE.${stream}.${history}.${filter}`, enc(JSON.stringify({
+      stream_name: stream, action: "create",
+      config: { name: history, filter_subject: filter, ack_policy: "none", deliver_policy: "all", inactive_threshold: 5_000_000_000 },
+    })), { timeout: 1000 });
+    check("on: the delegated child has its explicit retained history", retained.json<{ num_pending?: number }>().num_pending === 1);
+    parent([]);
+    const narrowed = await exchange(scoped);
+    check("on: narrowing the parent also stops the next exchange", narrowed.status === 401 && refusal.test(narrowed.error ?? ""));
+  } finally {
+    http.closeAllConnections();
+    await new Promise<void>((resolve, reject) => http.close(err => err ? reject(err) : resolve()));
+  }
+}
+
+async function checkLocalSpawn(parent: ReturnType<typeof grantActor>, channel: string, dataAccount: ManagedAgentDeps["dataAccount"]) {
+  const values = new Map<string, string>();
+  const store: SecretStore = {
+    get: async key => values.get(key), put: async (key, value) => { values.set(key, value); },
+    create: async (key, value) => { if (values.has(key)) return false; values.set(key, value); return true; },
+    delete: async key => { values.delete(key); },
+  };
+  await ensureCalloutAuth(store, { space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+  await saveServiceKeys(store, space, { dataAccount });
+  const args = { store, dir, space, owner: OWNER, actor: "local_child", parent: `${parent.owner}.${parent.actor}`, scope: [],
+    allowSubscribe: [channel], allowPublish: [channel], lifecycleUid: mintLifecycleUid(), custody: { kind: "foreground" as const } };
+  await assert.rejects(cotalAuthProvider.grantAgent(args), /requires a trusted broker target/);
+  check("local spawn: no broker target refuses before writing", findManagedActor(dir, OWNER, args.actor) === undefined);
+  await cotalAuthProvider.grantAgent({ ...args, broker: { server: SERVERS } });
+  check("local spawn: scoped leader read admits the legacy grant unchanged", findManagedActor(dir, OWNER, args.actor)?.allowPublish[0] === channel);
+}
+
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -92,6 +260,9 @@ try {
 
   const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
+  const routingNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(mgrCreds)), inboxPrefix: `_INBOX_${idFromCreds(mgrCreds)}`, reconnect: false });
+  raws.push(routingNc);
+  readPluginChannelState = pluginChannelStateResolver(await jetstreamManager(routingNc, { checkAPI: false }), space);
   await seedChannelRegistry({ servers: SERVERS, space, creds: mgrCreds, file: { defaults: { replay: true }, channels: { general: { replay: true, deliveryClass: "live" } } } });
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: mgrCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "prov", role: "manager", kind: "endpoint" } });
   mgr.on("error", () => {}); await mgr.start(); endpoints.push(mgr);
@@ -112,10 +283,13 @@ try {
     token: { key: publicKey as never, issuer: ISS },
     recordIssuance: async () => {},
     authorizeActor: (t) => { if (!t.act.view) ledgerAuthorizeConnect(dir)(t); },
-    permissionsFor: calloutPermissions((t) => t.act.view
+    permissionsFor: calloutPermissions((t, enabled) => t.act.view
       ? { allowSubscribe: ["general"], allowPublish: [], lifecycleUid: smokeUid, scope: ["admin"] }
-      : ledgerAclResolver(dir)(t)),
-    log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
+      : ledgerAclResolver(dir)(t, enabled), undefined, undefined, undefined, undefined, undefined, resolveRouting),
+    log: (l) => {
+      if (routed && l.includes("outcome=denied")) calloutDenials.push(l);
+      if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l);
+    },
   });
   await calloutNc.flush();
 
@@ -299,6 +473,7 @@ try {
     await participant.stop();
   }
 
+  await checkRoutedCallout(control);
   console.log(`  counts ${JSON.stringify({ reads: READS, answered, base, afterReads, outcome, survives, again, afterReconnect })}`);
 } finally {
   await feed?.stop();

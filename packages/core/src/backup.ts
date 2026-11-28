@@ -2,6 +2,7 @@ import {
   AckPolicy,
   DeliverPolicy,
   ReplayPolicy,
+  jetstreamManager,
   type ConsumerConfig,
   type ConsumerInfo,
 } from "@nats-io/jetstream";
@@ -15,15 +16,21 @@ import {
   type SpaceBackupSelection,
 } from "./backup-config.js";
 import { withDeadline } from "./deadline.js";
-import { wfjStreamName } from "./endpoint-binding.js";
+import { recordsKvStreamName, wfjStreamName } from "./endpoint-binding.js";
 import { DEFAULT_OPEN_DM_INACTIVE_MS } from "./endpoint-options.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
+import { EpEnvelopeError } from "./endpoint-error.js";
+import { boundedValue, oneLine } from "./one-line.js";
 import {
   dlvDurableConfig,
   dmDurableConfig,
   fanoutDurableConfig,
   inboxReaderConfig,
+  pluginFanoutDurableConfig,
   taskDurableConfig,
 } from "./streams.js";
+import { PLUGIN_FANOUT_DURABLE, pluginChannelStream } from "./plugin-channel-route.js";
+import { readPluginChannelSpaceState, type PluginChannelSpaceSnapshot } from "./plugin-channel-space-state.js";
 import {
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
@@ -102,6 +109,19 @@ function assertExactSubject(subject: string, label: string): string {
 function assertBackupStream(space: string, stream: string): string {
   canonicalBackupStreamConfig(space, stream);
   return stream;
+}
+
+/** Read the protected plugin routing state on a maintenance connection without a broad API probe. */
+export async function readPluginMaintenanceState(nc: NatsConnection, space: string): Promise<PluginChannelSpaceSnapshot> {
+  try {
+    return await readPluginChannelSpaceState(await jetstreamManager(nc, { checkAPI: false }), space);
+  } catch (error) {
+    if (isStreamNotFound(error)) return { state: { version: 1, epoch: 0, enabled: false }, revision: 0 };
+    if (error instanceof Error && error.message === "this release does not support enabled plugin channels") throw error;
+    const reason = error instanceof EpEnvelopeError ? "the protected record could not be decoded or was deleted"
+      : error instanceof Error ? oneLine(boundedValue(error.message, 200)) : "unknown read failure";
+    throw new Error(`could not read plugin channel state in records store ${recordsKvStreamName(space)}: ${reason}`, { cause: error });
+  }
 }
 
 /** Download a no-consumer native snapshot through one ordered, deadline-bounded sink. Each ackable
@@ -323,6 +343,8 @@ function expectedConsumerConfig(space: string, stream: string, name: string, ope
     const principal = principalFromDurable(name, "dlv_");
     if (principal) return dlvDurableConfig(space, principal.owner, principal.actor, principal.lifecycleUid);
   }
+  if (!openBackup && stream === pluginChannelStream(space) && name === PLUGIN_FANOUT_DURABLE)
+    return pluginFanoutDurableConfig(space);
   if (stream === taskStream(space) && /^svc_[A-Za-z0-9_-]+$/.test(name))
     return { ...taskDurableConfig(space, name.slice("svc_".length)), deliver_policy: DeliverPolicy.All };
   throw new Error(`unsupported persistent consumer ${stream}/${name}`);
@@ -558,7 +580,8 @@ export async function recreateConsumerCheckpoint(
 
 export type BackupPermissionScope =
   | { operation: "snapshot"; stream: string; deliverSubject: string }
-  | { operation: "inspect"; selection: SpaceBackupSelection };
+  | { operation: "plugin-state" }
+  | { operation: "inspect"; selection: SpaceBackupSelection; pluginChannels?: boolean };
 
 export type RestorePermissionScope =
   | { operation: "initiate"; stream: string }
@@ -585,10 +608,14 @@ export function backupProfilePermissions(
 ): Record<string, unknown> {
   assertInboxConnId(connId);
   const inbox = `_INBOX_${connId}.>`;
+  if (scope.operation === "plugin-state") return {
+    pub: { allow: [`$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`] },
+    sub: { allow: [inbox] },
+  };
   if (scope.operation === "inspect") {
     if (scope.selection !== "full" && scope.selection !== "registry")
       throw new Error(`unsupported backup selection ${JSON.stringify(scope.selection)}`);
-    const streams = spaceBackupInventory(space)[scope.selection];
+    const streams = spaceBackupInventory(space, scope.pluginChannels)[scope.selection];
     return {
       pub: {
         allow: [

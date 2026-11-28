@@ -5,8 +5,8 @@ import { PermissionViolationError, type NatsConnection } from "@nats-io/transpor
 import { canPrompt } from "./meshes-wizard.js";
 import {
   dialerFor, endpointNameOf, isJetStreamMissing, isTransferStream, liveKvEntries, mintCreds,
-  mintLifecycleUid, newIdentity, observeBrokerConnectionIdentity, presenceBucket, recordsBucket,
-  spaceDeletionStreams, standaloneConnectOpts, token, validateSpaceAuth,
+  mintLifecycleUid, newIdentity, observeBrokerConnectionIdentity, presenceBucket, readPluginMaintenanceState, recordsBucket,
+  spaceDeletionStreams, spacePluginStreams, standaloneConnectOpts, token, validateSpaceAuth,
   type ParsedArgs, type Presence, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
@@ -20,6 +20,31 @@ import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { verdictSection } from "../lib/verdict.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+
+function scopedDeletionStream(space: string, name: string): boolean {
+  return isTransferStream(space, name) || spacePluginStreams(space).includes(name);
+}
+
+function pluginDeletionFailure(space: string, streams: readonly string[], action: string): CommandFailure | undefined {
+  const plugin = spacePluginStreams(space).find((name) => streams.includes(name));
+  if (!plugin) return undefined;
+  return new CommandFailure("refused", "AUTH_REQUIRED", `could not ${action} plugin channel history stream ${codeSpan(plugin)}; no delete request was submitted`, { target: { space } });
+}
+
+async function assertPluginDeletionState(entry: MeshEntry, space: string, auth: SpaceAuth, serverId: string): Promise<void> {
+  const target = { space };
+  const identity = newIdentity();
+  const creds = await mintCreds(auth, identity, "provisioner");
+  const reader = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ creds, tls: entry.tlsRequired === true }), reconnect: false, maxReconnectAttempts: 0 });
+  try {
+    if (reader.info?.server_id !== serverId || (await observeBrokerConnectionIdentity(reader, { user: identity.id, account: auth.account.pub })).state !== "matched")
+      throw new CommandFailure("refused", "CONFLICT", "the state reader did not reach the same authenticated broker; no delete request was submitted", { target });
+    try { await readPluginMaintenanceState(reader, space); }
+    catch {
+      throw new CommandFailure("refused", "CONFLICT", `plugin channel state is unsupported or could not be verified in records store ${codeSpan(`KV_${recordsBucket(space)}`)}; no delete request was submitted`, { target });
+    }
+  } finally { await reader.close(); }
+}
 
 /** Positional names beginning with a dash go after the command's options. */
 function spaceDeleteCommand(name: string, options = ""): string {
@@ -214,13 +239,16 @@ async function readSpaceDeletion(name: string, entry = resolveSpaceDeletionEntry
     }
     const jsm = await jetstreamManager(nc);
     const transfers: string[] = [];
-    for await (const stream of jsm.streams.names()) if (isTransferStream(name, stream)) transfers.push(stream);
+    for await (const stream of jsm.streams.names()) if (scopedDeletionStream(name, stream)) transfers.push(stream);
+    if (auth) await assertPluginDeletionState(entry, name, auth, info.server_id);
     let transferManager: Awaited<ReturnType<typeof jetstreamManager>> | undefined;
     if (transfers.length && auth) {
-      // The first credential can enumerate names but cannot inspect a transfer bucket it did
+      // The first credential can enumerate names but cannot inspect an optional store it did
       // not name at mint. Mint a second, exact-name grant; do not widen the first connection.
       const identity = newIdentity();
-      const creds = await mintCreds(auth, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: transfers });
+      const creds = await mintCreds(auth, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: transfers }).catch((error: unknown) => {
+        throw pluginDeletionFailure(name, transfers, "mint the exact credential for") ?? error;
+      });
       transferConnection = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ creds, tls: entry.tlsRequired === true }), inboxPrefix: `_INBOX_${identity.id}`, timeout: 2_000, reconnect: false, maxReconnectAttempts: 0 });
       if (transferConnection.info?.server_id !== info.server_id || transferConnection.info?.auth_required !== true)
         throw new CommandFailure("refused", "CONFLICT", "the exact-transfer reader did not reach the same authenticated broker; no combined impact was inferred", { target });
@@ -233,10 +261,11 @@ async function readSpaceDeletion(name: string, entry = resolveSpaceDeletionEntry
     for (const stream of spaceDeletionStreams(name, transfers)) {
       const kind = stream.startsWith("KV_") ? "bucket" : stream.startsWith("OBJ_") ? "object-store" : "stream";
       try {
-        const observed = await (isTransferStream(name, stream) && transferManager ? transferManager : jsm).streams.info(stream);
+        const observed = await (scopedDeletionStream(name, stream) && transferManager ? transferManager : jsm).streams.info(stream);
         streams.push({ name: stream, kind, state: "present", messages: observed.state.messages });
       } catch (error) {
-        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) throw error;
+        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound))
+          throw pluginDeletionFailure(name, [stream], "inspect") ?? error;
         streams.push({ name: stream, kind, state: "absent", messages: null });
       }
     }
@@ -312,13 +341,13 @@ async function applySpaceDeletion(observed: DeletionObservation, progress: Delet
       if (current.operator.jwt !== auth.operator.jwt || current.operator.seed !== auth.operator.seed || current.sys.pub !== auth.sys.pub || current.sys.jwt !== auth.sys.jwt || current.account.pub !== auth.account.pub || current.account.jwt !== auth.account.jwt || current.account.signingPub !== auth.account.signingPub || current.account.signingSeed !== auth.account.signingSeed) throw new Error("trust changed");
     } catch { throw new CommandFailure("refused", "CONFLICT", "the local static trust changed since the impact read; no delete request was submitted", { target }); }
   }
-  const transfers = result.streams.filter((stream) => isTransferStream(result.space, stream.name)).map((stream) => stream.name);
+  const transfers = result.streams.filter((stream) => scopedDeletionStream(result.space, stream.name)).map((stream) => stream.name);
   let credential: { creds: string; id: string; account: string } | undefined;
   if (auth) {
     try {
       const identity = newIdentity();
       credential = { creds: await mintCreds(auth, identity, "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams: transfers }), id: identity.id, account: auth.account.pub };
-    } catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the exact-scope teardown credential could not be minted; no delete request was submitted", { target }); }
+    } catch { throw pluginDeletionFailure(result.space, transfers, "mint the exact credential for") ?? new CommandFailure("refused", "AUTH_REQUIRED", "the exact-scope teardown credential could not be minted; no delete request was submitted", { target }); }
   }
   let nc: NatsConnection;
   try {
@@ -336,9 +365,12 @@ async function applySpaceDeletion(observed: DeletionObservation, progress: Delet
     }
     const jsm = await jetstreamManager(nc);
     const nowTransfers: string[] = [];
-    for await (const stream of jsm.streams.names()) if (isTransferStream(result.space, stream)) nowTransfers.push(stream);
-    if (nowTransfers.length !== transfers.length || nowTransfers.some((stream) => !transfers.includes(stream)))
-      throw new CommandFailure("refused", "CONFLICT", "the native transfer-stream target set changed; no delete request was submitted", { target });
+    for await (const stream of jsm.streams.names()) if (scopedDeletionStream(result.space, stream)) nowTransfers.push(stream);
+    if (nowTransfers.length !== transfers.length || nowTransfers.some((stream) => !transfers.includes(stream))) {
+      const pluginTargets = [...nowTransfers, ...transfers].some((stream) => spacePluginStreams(result.space).includes(stream));
+      throw new CommandFailure("refused", "CONFLICT", pluginTargets ? "the optional native stream target set changed; no delete request was submitted" : "the native transfer-stream target set changed; no delete request was submitted", { target });
+    }
+    if (auth) await assertPluginDeletionState(entry, result.space, auth, result.serverId);
     const names = spaceDeletionStreams(result.space, transfers);
     if (names.length !== result.streams.length || names.some((name, index) => name !== result.streams[index]?.name))
       throw new CommandFailure("refused", "CONFLICT", "the deletion credential and impact read name different resources; no delete request was submitted", { target });
@@ -364,7 +396,7 @@ async function applySpaceDeletion(observed: DeletionObservation, progress: Delet
       catch (error) { if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) throw error; }
     }
     for await (const stream of jsm.streams.names())
-      if (isTransferStream(result.space, stream) && !remaining.includes(stream) && !transfers.includes(stream)) remaining.push(stream);
+      if (scopedDeletionStream(result.space, stream) && !remaining.includes(stream) && !transfers.includes(stream)) remaining.push(stream);
     if (remaining.length) throw new CommandFailure(acknowledged.length ? "partial" : "refused", acknowledged.length ? "OPERATION_PARTIAL" : "CONFLICT", "native post-delete inspection still sees space resources; no additional deletion was submitted", { target, changed: acknowledged, native: { outcome: "unknown", detail: { acknowledged, alreadyAbsent, remaining } }, remedy: "inspect these exact resources on the original broker before another deletion attempt" });
   } catch (error) {
     if (error instanceof CommandFailure && progress.submitted === null && (!acknowledged.length || error.outcome === "partial")) throw error;

@@ -12,6 +12,7 @@ import { CHANNEL_DEFAULTS_KEY, channelBucket, chatStream, isPrincipalOwnerToken,
 import { decodeChannelEntry } from "./channels.js";
 import { isEventChannel } from "./event-channel.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
+import { pluginChannelStream } from "./plugin-channel-route.js";
 import { idFromCreds, newIdentity } from "./identity.js";
 import { mintCreds, type SpaceAuth } from "./provision.js";
 import { lastKvEntries } from "./kv-scan.js";
@@ -135,7 +136,9 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
 
 async function listTransferStreams(nc: NatsConnection, space: string): Promise<string[]> {
   const names: string[] = [];
-  for await (const name of (await jetstreamManager(nc)).streams.names()) if (isTransferStream(space, name)) names.push(name);
+  const pluginHistory = pluginChannelStream(space);
+  for await (const name of (await jetstreamManager(nc)).streams.names())
+    if (isTransferStream(space, name) || name === pluginHistory) names.push(name);
   return names;
 }
 
