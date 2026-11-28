@@ -13,11 +13,10 @@ import { isMainEntry } from './main-entry.mjs';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
-import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
+import { archiveHostedDiagnostics, writeHostedSeatRecorder, writeUpgradeSeatConnector } from './hosted-consent-diagnostics.mjs';
 import { captureDaemonDiagnostics, inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
-import { writePluginFixture } from './plugin-fixture.mjs';
 import { activePluginContract, expectedRecorded, retiredBuiltin } from './plugin-cut.mjs';
 import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter, intermediateWholeMachine } from './candidate-next-evidence.mjs';
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
@@ -721,16 +720,10 @@ export async function matrixCell(options) {
         ? `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';import {execFile} from 'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`
         : `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,...(e.COTAL_CREDS?{creds:readFileSync(e.COTAL_CREDS,'utf8')}:{}),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
       const recorder = daemonHostedManager ? writeHostedSeatRecorder(fixture, seat) : undefined;
-      const launchedSeat = recorder?.launcher ?? seat;
-      const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
       const ready = join(root, 'writer-ready'), release = join(root, 'writer-release');
       releaseHolder = () => writeFileSync(release, 'release');
       const coreVersion = json(join(pkg, 'node_modules/@cotal-ai/core/package.json')).version;
-      const contract = report.contracts.source;
-      const provider = {kind: 'connector', name: 'upgrade-standin', requires: ['node']};
-      const registration = contract === 1 ? 'export default host => host.register' : "import {registry} from '@cotal-ai/core'; registry.register";
-      writePluginFixture(fixture, { name: 'cotal-upgrade-native-fixture', version: report.target, contract, core: coreVersion, provides: [provider],
-        factorySource: `import {writeFileSync} from 'node:fs';${registration}({...${JSON.stringify(provider)},buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});` });
+      writeUpgradeSeatConnector(fixture, { version: report.target, contract: report.contracts.source, core: coreVersion, recorder, seat });
       if (state === 'agent' && daemonHostedManager) {
         assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'daemon-hosted Manager requires prepared remote user-auth participant without a local Manager');
         const space = report.participant.space;

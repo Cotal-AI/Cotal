@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { archiveHostedDiagnostics, writeHostedSeatRecorder, writeUpgradeSeatConnector } from './hosted-consent-diagnostics.mjs';
 
 test('real fixture child retains full output and actual exit, not only Node last line', () => {
   const root = mkdtempSync(join(tmpdir(), 'consent-diag-')), seat = join(root, 'seat.mjs');
@@ -41,29 +41,35 @@ test('archive redacts console bearer tokens and refuses root/destination symlink
 });
 
 test('generated hosted connector records the actual Manager launch without environment values', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'consent-connector-')), seat = join(root, 'seat.mjs');
-  const { launcher, paths } = writeHostedSeatRecorder(root, seat);
-  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
-  const line = source.split('\n').find(line => line.includes("writeFileSync(join(fixture, 'index.js')"));
-  assert(line);
-  const core = new URL('../packages/core/dist/index.js', import.meta.url).href;
-  mkdirSync(join(root, 'node_modules/@cotal-ai'), { recursive: true });
-  symlinkSync(fileURLToPath(new URL('../packages/core', import.meta.url)), join(root, 'node_modules/@cotal-ai/core'));
-  const ready = join(root, 'ready'), release = join(root, 'release'), launchedSeat = launcher;
-  const launchRecord = `writeFileSync(${JSON.stringify(paths.launch)},JSON.stringify({name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid}),{mode:0o600});`;
-  const expression = line.slice(line.indexOf('`'), line.lastIndexOf('`') + 1);
-  const generated = new Function('core', 'ready', 'release', 'launchRecord', 'launchedSeat', `return ${expression}`)(core, ready, release, launchRecord, launchedSeat);
-  assert(generated.startsWith("import {registry} from '@cotal-ai/core';"));
-  const file = join(root, 'index.mjs'); writeFileSync(file, generated); await import(new URL(`file://${file}`));
-  const { registry } = await import(core); const connector = registry.resolve('connector', 'upgrade-standin');
   const opts = { name: 'upgrade_proof_worker', lifecycleUid: 'lifecycle', space: 'test_space', servers: 'nats://localhost:4222', userAuth: { owner: 'u_owner', actor: 'upgrade_proof_worker', sentinelCredsPath: '/private/sentinel.creds', bearerCmd: [process.execPath, '/private/bearer.mjs'] } };
-  const launch = connector.buildLaunch(opts);
-  assert.equal(launch.env.COTAL_SENTINEL_CREDS, opts.userAuth.sentinelCredsPath);
-  assert.deepEqual(JSON.parse(launch.env.COTAL_BEARER_CMD), opts.userAuth.bearerCmd);
-  assert.equal(launch.env.COTAL_OWNER, opts.userAuth.owner); assert.equal(launch.env.COTAL_ACTOR, opts.userAuth.actor);
-  assert.equal(launch.env.COTAL_CREDS, undefined); assert.equal(launch.env.COTAL_ID, undefined);
-  assert.deepEqual(launch.args, [launcher]);
-  const record = JSON.parse(readFileSync(paths.launch)); assert.equal(record.name, 'upgrade_proof_worker'); assert.equal(record.managerPid, process.pid); assert(!JSON.stringify(record).includes('/private/credential'));
+  for (const contract of [0, 1]) {
+    const root = mkdtempSync(join(tmpdir(), 'consent-connector-')), seat = join(root, 'seat.mjs');
+    const recorder = writeHostedSeatRecorder(root, seat);
+    writeUpgradeSeatConnector(root, { version: '1.2.3', contract, core: '1.2.3', recorder, seat });
+    let connector;
+    if (contract === 0) {
+      const core = new URL('../packages/core', import.meta.url);
+      mkdirSync(join(root, 'node_modules/@cotal-ai'), { recursive: true });
+      symlinkSync(fileURLToPath(core), join(root, 'node_modules/@cotal-ai/core'));
+      await import(pathToFileURL(join(root, 'index.js')));
+      const { registry } = await import(new URL('../packages/core/dist/index.js', import.meta.url));
+      connector = registry.resolve('connector', 'upgrade-standin');
+      registry.unregister('connector', 'upgrade-standin', connector);
+    } else {
+      const { default: factory } = await import(pathToFileURL(join(root, 'index.js')));
+      factory({ register: value => { connector = value; } });
+      assert.equal(JSON.parse(readFileSync(join(root, 'package.json'))).cotal.contract, 1);
+    }
+    const launch = connector.buildLaunch(opts);
+    assert.equal(launch.env.COTAL_SENTINEL_CREDS, opts.userAuth.sentinelCredsPath);
+    assert.deepEqual(JSON.parse(launch.env.COTAL_BEARER_CMD), opts.userAuth.bearerCmd);
+    assert.equal(launch.env.COTAL_OWNER, opts.userAuth.owner); assert.equal(launch.env.COTAL_ACTOR, opts.userAuth.actor);
+    assert.equal(launch.env.COTAL_CREDS, undefined); assert.equal(launch.env.COTAL_ID, undefined);
+    assert.deepEqual(launch.args, [recorder.launcher]);
+    const record = JSON.parse(readFileSync(recorder.paths.launch));
+    assert.equal(record.name, opts.name); assert.equal(record.managerPid, process.pid);
+    assert(!JSON.stringify(record).includes('/private/'));
+  }
 });
 
 test('actual hosted matrix path archives before spawn assertion and Manager cleanup', () => {

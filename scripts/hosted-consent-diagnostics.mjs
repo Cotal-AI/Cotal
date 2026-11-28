@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { writePluginFixture } from './plugin-fixture.mjs';
 
 function privateDirectory(path) {
   const stat = lstatSync(path);
@@ -10,6 +11,15 @@ function privateDirectory(path) {
   if (process.getuid) assert.equal(stat.uid, process.getuid(), 'diagnostic directory owner differs');
 }
 export const redactDiagnostic = text => text.replace(/(#t=)[A-Za-z0-9_-]+/g, '$1<redacted>').replace(/eyJ[A-Za-z0-9_.-]*/g, '<redacted>');
+
+export function writeUpgradeSeatConnector(fixture, { version, contract, core, recorder, seat }) {
+  const launchedSeat = recorder?.launcher ?? seat;
+  const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
+  const provider = {kind: 'connector', name: 'upgrade-standin', requires: ['node']};
+  const registration = contract === 1 ? 'export default host => host.register' : "import {registry} from '@cotal-ai/core'; registry.register";
+  writePluginFixture(fixture, { name: 'cotal-upgrade-native-fixture', version, contract, core, provides: [provider],
+    factorySource: `import {writeFileSync} from 'node:fs';${registration}({...${JSON.stringify(provider)},buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});` });
+}
 
 export function writeHostedSeatRecorder(fixture, seat) {
   privateDirectory(fixture);
