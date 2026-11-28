@@ -46,7 +46,8 @@ const home = join(fx.dir, "cli-home"); mkdirSync(home);
 process.env.COTAL_HOME = home;
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(publicKey), kid: "keyed-idp", alg: "EdDSA" };
-let runRecovery: "idp" | "connection" | "issuer" | "attempt" | "permanent" | undefined;
+let runRecovery: "idp" | "idp-rate" | "idp-unsupported" | "connection" | "issuer" | "attempt" | "permanent" | "rate-limit" | "rate-bare" | "rate-plain" | "rate-read" | "not-implemented" | "unsupported-read" | undefined;
+let recoveryRunId: string | undefined;
 const recoveryFailures: string[] = [];
 let permanentRefusals = 0;
 const idp = createServer(async (req, res) => {
@@ -55,6 +56,21 @@ const idp = createServer(async (req, res) => {
     runRecovery = "connection";
     res.writeHead(500).end();
     return;
+  }
+  if (req.url === "/api/auth/token" && runRecovery === "idp-unsupported") {
+    recoveryFailures.push("IdP HTTP 501");
+    res.writeHead(501).end("plain");
+    return;
+  }
+  if (req.url === "/api/auth/token" && runRecovery === "idp-rate") {
+    if (recoveryFailures.length) {
+      recoveryFailures.push(`retried at ${Date.now()}`);
+      runRecovery = undefined;
+    } else {
+      recoveryFailures.push(`IdP HTTP 429 at ${Date.now()}`);
+      res.writeHead(429, { "retry-after": "1" }).end("plain");
+      return;
+    }
   }
   res.setHeader("content-type", "application/json");
   // A fresh short-lived proof makes each recovery attempt check the IdP, without a cache hit.
@@ -68,7 +84,6 @@ const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(a.store, a.space))
 const cli = grantActor(stateDir, { owner, actor: "cli", scope: ["run", "supervise"], allowSubscribe: [], allowPublish: [] });
 const signProof = (ttl: string) => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: "keyed-idp" })
   .setSubject("keyed-human").setIssuer(origin).setAudience(origin).setIssuedAt().setExpirationTime(ttl).sign(privateKey);
-const idpToken = await signProof("10m");
 let service: AuthServiceHandle | undefined;
 let remote: Awaited<ReturnType<typeof nativeRemoteManager>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
@@ -123,6 +138,42 @@ const edge = createServer(async (req, res) => {
         res.writeHead(502, { "content-type": "text/plain" }).end("Bad Gateway");
         return;
       }
+      if ((runRecovery === "rate-read" || runRecovery === "unsupported-read") && request.operator?.runId === recoveryRunId && request.attempt === undefined) {
+        if (runRecovery === "rate-read" && recoveryFailures.length) {
+          recoveryFailures.push(`retried at ${Date.now()}`);
+          runRecovery = undefined;
+        } else {
+          const status = runRecovery === "rate-read" ? 429 : 501;
+          recoveryFailures.push(status === 429 ? `operator read HTTP 429 at ${Date.now()}` : "operator read HTTP 501");
+          res.writeHead(status, { "content-type": "text/plain", ...(status === 429 ? { "retry-after": "1" } : {}) }).end("plain");
+          return;
+        }
+      }
+      if (runRecovery === "rate-plain" && request.attempt?.epoch === 2) {
+        if (!recoveryFailures.length) {
+          recoveryFailures.push(`driver issuance HTTP 429 text at ${Date.now()}`);
+          res.writeHead(429, { "content-type": "text/plain", "retry-after": "1" }).end("Too Many Requests");
+          return;
+        }
+        recoveryFailures.push(`retried at ${Date.now()}`);
+        runRecovery = undefined;
+      }
+      if ((runRecovery === "rate-limit" || runRecovery === "rate-bare") && request.attempt?.epoch === 2) {
+        if (!recoveryFailures.length) {
+          recoveryFailures.push(`driver issuance HTTP 429 at ${Date.now()}`);
+          res.writeHead(429, { "content-type": "application/json", ...(runRecovery === "rate-limit" ? { "retry-after": "2" } : {}) })
+            .end(JSON.stringify({ error: "too many requests" }));
+          return;
+        }
+        recoveryFailures.push(`retried at ${Date.now()}`);
+        runRecovery = undefined;
+      }
+      if (runRecovery === "not-implemented" && request.attempt?.epoch === 2) {
+        recoveryFailures.push("driver issuance HTTP 501");
+        res.writeHead(501, { "content-type": "application/json" })
+          .end(JSON.stringify({ error: "not implemented" }));
+        return;
+      }
     }
     const unavailable = req.url === "/manager-service-authority" && now >= outageStart && now < outageStart + outageMs;
     if (unavailable) {
@@ -142,11 +193,23 @@ const edge = createServer(async (req, res) => {
   }
 });
 
-async function recoverInterruptedRun(start: () => Promise<string>, show: (runId: string) => Promise<RunStatusView>, permanent = false) {
+async function recoverInterruptedRun(
+  start: () => Promise<string>,
+  show: (runId: string) => Promise<RunStatusView | undefined>,
+  outcome: boolean | "rate-limit" | "rate-bare" | "rate-plain" | "rate-read" | "idp-rate" | "idp-unsupported" | "not-implemented" | "unsupported-read" | "restart" = false,
+  bootAgain?: () => Promise<void>,
+) {
+  recoveryFailures.length = 0;
   async function until<T>(description: string, observe: () => Promise<T | undefined>, ms: number): Promise<T> {
     const end = Date.now() + ms;
     for (;;) {
-      const result = await observe();
+      let result: T | undefined;
+      try {
+        result = await observe();
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code !== "unavailable" && code !== "deadline-exceeded" && !(error instanceof Error && error.name === "ClosedConnectionError")) throw error;
+      }
       if (result !== undefined) return result;
       assert.ok(Date.now() < end, description);
       await wait(200);
@@ -155,7 +218,7 @@ async function recoverInterruptedRun(start: () => Promise<string>, show: (runId:
   const runId = await start();
   const parked = await until("run did not park before the outage", async () => {
     const view = await show(runId);
-    return view.journal.some(row => row.kind === "step" && row.step === "/sleep:before#0" && row.state === "pending") ? view : undefined;
+    return view?.journal.some(row => row.kind === "step" && row.step === "/sleep:before#0" && row.state === "pending") ? view : undefined;
   }, 10_000);
   assert.equal(parked.status?.epoch, 1);
   const log = console.error;
@@ -163,7 +226,10 @@ async function recoverInterruptedRun(start: () => Promise<string>, show: (runId:
   const recoveryLogs: string[] = [];
   console.error = (...args: unknown[]) => {
     const line = args.map(String).join(" ");
-    releasePending ||= line.includes(`${runId}: the "released" status write did not land`);
+    releasePending ||= line.includes(runId) && (
+      line.includes(`the "released" status write did not land`)
+      || line.includes(`the "released" status was recorded after the broker became available`)
+      || line.includes("released - JournalAppendRejected"));
     if (line.includes(runId) && /retrying automatic recovery|could not resume after the broker interruption/.test(line)) recoveryLogs.push(line);
     log(...args);
   };
@@ -171,22 +237,79 @@ async function recoverInterruptedRun(start: () => Promise<string>, show: (runId:
     brokerCut = true;
     for (const socket of brokerSockets) socket.destroy();
     await until("the outage did not interrupt a journal append", async () => releasePending || undefined, 90_000);
-    runRecovery = permanent ? "permanent" : "idp";
+    runRecovery = outcome === "restart" ? "attempt"
+      : outcome === true ? "permanent"
+      : outcome === false ? "idp"
+      : outcome;
+    recoveryRunId = runId;
     brokerCut = false;
-    if (permanent) {
+    if (outcome === true) {
       await until("the permanent issuer refusal did not stop recovery", async () => recoveryLogs[0], 20_000);
       await wait(2_500);
       assert.equal(permanentRefusals, 1);
       assert.equal(recoveryLogs.length, 1);
       assert.match(recoveryLogs[0]!, /could not resume.*revoked/);
-      assert.equal((await show(runId)).status?.state, "released");
+      await until("the run did not stay released", async () => (await show(runId))?.status?.state === "released" ? true : undefined, 15_000);
       console.log("PASS a permanent issuer refusal ended automatic recovery on the first attempt");
+      return;
+    }
+    if (outcome === "not-implemented") {
+      await until("the unsupported issuance did not stop recovery", async () => recoveryLogs[0], 20_000);
+      await wait(2_500);
+      assert.equal(recoveryFailures.length, 1);
+      assert.match(recoveryLogs[0]!, /could not resume/);
+      await until("the run did not stay released", async () => (await show(runId))?.status?.state === "released" ? true : undefined, 15_000);
+      console.log("PASS an HTTP 501 ended automatic recovery on the first attempt");
+      return;
+    }
+    if (outcome === "rate-limit" || outcome === "rate-bare" || outcome === "rate-plain" || outcome === "rate-read" || outcome === "idp-rate") {
+      const bareMinute = outcome === "rate-bare";
+      // A status read takes a fresh operator credential and a fresh IdP proof. Polling it before the
+      // recovery retry would record that poll as the retry.
+      if (outcome === "rate-read" || outcome === "idp-rate") {
+        await until("the rate-limited read was not retried", async () => recoveryFailures.length >= 2 ? true : undefined, 40_000);
+      }
+      const recovered = await until("a rate-limited issuance did not recover", async () => {
+        const view = await show(runId);
+        return view?.status && ["running", "completed"].includes(view.status.state) && view.status.epoch === 2 ? view : undefined;
+      }, bareMinute ? 180_000 : 40_000);
+      const limitedAt = Number(/429.*?at (\d+)/.exec(recoveryFailures[0] ?? "")?.[1]);
+      const retriedAt = Number(/retried at (\d+)/.exec(recoveryFailures[1] ?? "")?.[1]);
+      const gap = retriedAt - limitedAt;
+      if (outcome === "rate-limit") assert.ok(gap >= 1_500, `recovery retried ${gap}ms after the rate limit`);
+      else if (bareMinute) assert.ok(gap >= 50_000, `recovery retried ${gap}ms after a rate limit with no Retry-After`);
+      else assert.ok(gap >= 800, `recovery retried ${gap}ms after the rate limit`);
+      assert.equal(recovered.status?.epoch, 2);
+      if (outcome !== "rate-read" && outcome !== "idp-rate") assert.equal(recoveryLogs.length, 1);
+      console.log(`PASS one HTTP 429 ${outcome} recovered inside the same window`);
+      return;
+    }
+    if (outcome === "unsupported-read" || outcome === "idp-unsupported") {
+      await until("the unsupported read did not stop recovery", async () => recoveryLogs[0], 20_000);
+      assert.match(recoveryLogs[0]!, /could not resume/);
+      await wait(2_500);
+      assert.equal(recoveryLogs.length, 1);
+      console.log(`PASS one HTTP 501 ${outcome} ended automatic recovery on the first attempt`);
+      return;
+    }
+    if (outcome === "restart") {
+      await until("automatic recovery did not start before the stop", async () => recoveryLogs[0], 30_000);
+      assert.match(recoveryLogs[0]!, /retrying automatic recovery/);
+      await remote!.manager.stop();
+      runRecovery = undefined;
+      await bootAgain!();
+      const recovered = await until("the restarted Manager did not continue the released run", async () => {
+        const view = await show(runId);
+        return view?.status && ["running", "completed"].includes(view.status.state) && view.status.epoch > parked.status!.epoch ? view : undefined;
+      }, 40_000);
+      assert.ok(recovered.status!.epoch > parked.status!.epoch);
+      console.log("PASS the same Manager continued a released run after it stopped during recovery");
       return;
     }
     await until("automatic recovery did not reach driver issuance after the transient errors", async () => runRecovery === undefined || undefined, 80_000);
     const recovered = await until("the Manager did not recover its released run", async () => {
       const view = await show(runId);
-      return view.status && ["running", "completed"].includes(view.status.state) && view.status.epoch === 2 ? view : undefined;
+      return view?.status && ["running", "completed"].includes(view.status.state) && view.status.epoch === 2 ? view : undefined;
     }, 75_000);
     assert.deepEqual(recoveryFailures, ["IdP HTTP 500", "exchange connection dropped", "issuer restart HTTP 403", "driver issuance HTTP 502"]);
     assert.equal(recoveryLogs.length, 1);
@@ -198,6 +321,7 @@ async function recoverInterruptedRun(start: () => Promise<string>, show: (runId:
   } finally {
     brokerCut = false;
     runRecovery = undefined;
+    recoveryRunId = undefined;
     console.error = log;
   }
 }
@@ -223,14 +347,14 @@ async function restartAuthority(root: string, runIds: string[], manager: Awaited
   let firstStatus: number | undefined;
   let adoption: number | undefined;
   let duringRefusal: string | undefined;
-  while (Date.now() < restoredAt + 12_000) {
+  while (Date.now() < restoredAt + 20_000) {
     const at = Date.now() - restoredAt;
+    if (at >= 0 && renewedSupervisor() !== supervisorCreds) adoption ??= at;
     const [results, managerStatus] = await Promise.all([probe(), at < -10_000 ? cli(["ps", "--json"]) : undefined]);
     if (managerStatus) assert.equal(managerStatus.code, 0, `Manager ps must still answer: ${managerStatus.text}`);
     const allOk = results.every(result => result.code === 0);
-    if (at < -10_000 && !allOk) duringRefusal ??= results.find(result => result.code !== 0)?.text;
-    if (at >= 0 && allOk) firstStatus ??= Date.now() - restoredAt;
-    if (renewedSupervisor() !== supervisorCreds) adoption ??= Date.now() - restoredAt;
+    if (at < 0 && !allOk) duringRefusal ??= results.find(result => result.code !== 0)?.text;
+    if (at >= 0 && allOk) firstStatus ??= at;
     console.log(`run show at ${at}ms from authority restoration: ${results.map(result => result.code).join(",")}${allOk ? "" : ` ${results.find(result => result.code !== 0)?.text}`}`);
     if (firstStatus !== undefined && adoption !== undefined) break;
     await wait(1_000);
@@ -271,17 +395,21 @@ try {
   recordMesh({ space: a.space, server: fx.servers, root, mode: "user", origin: "manual", policy: { events: "required" },
     userAuth: { provider: "cotal", remote: true, idp: { url: `${origin}/api/auth`, issuer: origin, audience: origin }, endpoints: { url: edgeUrl }, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });
   saveIdpSession(homeCotalDir(), `${origin}/api/auth`, { token: "fixture-session", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "keyed-human" });
-  remote = await nativeRemoteManager({ space: a.space, servers: brokerUrl, root, exchangeUrl: service.publicUrl!, execution: "runtime", runtime: "pty",
-    call: async request => {
-      if (request.kind === "manager-run-submission") keyedHostCalls++;
-      if (request.kind === "manager-run-admission") legacyHostAdmissions++;
-      if (request.operation === "renewStandingBundle") return cotalAuthProvider.managerServiceAuthority!({ store, dir, request });
-      if (request.kind === "manager-run-attempt") return cotalAuthProvider.requestRemoteRunAttempt!({ store, dir, request });
-      return post("/manager-service-authority", { idpToken, request });
-    } });
+  const exchangeUrl = service.publicUrl!;
+  async function bootManager() {
+    return nativeRemoteManager({ space: a.space, servers: brokerUrl, root, exchangeUrl, execution: "runtime", runtime: "pty",
+      call: async request => {
+        if (request.kind === "manager-run-submission") keyedHostCalls++;
+        if (request.kind === "manager-run-admission") legacyHostAdmissions++;
+        if (request.operation === "renewStandingBundle") return cotalAuthProvider.managerServiceAuthority!({ store, dir, request });
+        if (request.kind === "manager-run-attempt") return cotalAuthProvider.requestRemoteRunAttempt!({ store, dir, request });
+        return post("/manager-service-authority", { idpToken: await signProof("10m"), request });
+      } });
+  }
+  remote = await bootManager();
   assert.equal(remote.owner, owner);
   async function dial() {
-    const exchange = await post<{ token: string }>("/exchange", { idpToken, actor: "cli", view: "manager-caller", managerInstanceId: remote!.state.instanceId });
+    const exchange = await post<{ token: string }>("/exchange", { idpToken: await signProof("10m"), actor: "cli", view: "manager-caller", managerInstanceId: remote!.state.instanceId });
     const nonce = mintLifecycleUid();
     const nc = await connect({ servers: fx.servers,
       authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)],
@@ -319,22 +447,45 @@ try {
     assert.ok(next.runId);
     runIds.push(next.runId);
   }
-  await restartAuthority(root, runIds, remote);
-  const current = await dial();
+  if (!process.env.F_RECOVERY_FROM) await restartAuthority(root, runIds, remote);
+  let current = await dial();
   const start = async () => {
     const reply = await invokeCommand(current.nc, a.space, current.selected, "run-start", {
       source: 'await sleep("8s", { name: "before" }); await sleep("1s", { name: "after" });',
     }, { deadlineMs: 15_000 });
-    assert.equal(reply.reply.ok, true);
+    assert.equal(reply.reply.ok, true, JSON.stringify(reply.reply.error ?? reply.reply).slice(0, 400));
     return (reply.reply.data as { runId: string }).runId;
   };
-  const show = async (runId: string) => {
-    const reply = await invokeCommand(current.nc, a.space, current.selected, "run-status", { runId }, { deadlineMs: 5_000 });
-    assert.equal(reply.reply.ok, true);
-    return reply.reply.data as RunStatusView;
+  let redialedAt = 0;
+  const show = async (runId: string): Promise<RunStatusView | undefined> => {
+    try {
+      const reply = await invokeCommand(current.nc, a.space, current.selected, "run-status", { runId }, { deadlineMs: 5_000 });
+      if (reply.reply.ok === true) return reply.reply.data as RunStatusView;
+      // A caller generation ends with the bearer it was minted from. Later cells outlive that bearer.
+      if (!JSON.stringify(reply.reply.error ?? "").includes("expired") || Date.now() - redialedAt < 2_000) return undefined;
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "ClosedConnectionError") || Date.now() - redialedAt < 2_000) throw error;
+    }
+    redialedAt = Date.now();
+    saveIdpSession(homeCotalDir(), `${origin}/api/auth`, { token: "fixture-session", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "keyed-human" });
+    try { await current.nc.close(); } catch { /* the broker already dropped it */ }
+    current = await dial();
+    return undefined;
   };
-  await recoverInterruptedRun(start, show);
-  await recoverInterruptedRun(start, show, true);
+  const recoveryCells: Array<Parameters<typeof recoverInterruptedRun>[2]> = [
+    undefined, true, "not-implemented", "rate-limit", "rate-bare", "rate-plain", "rate-read",
+    "unsupported-read", "idp-rate", "idp-unsupported", "restart",
+  ];
+  const from = process.env.F_RECOVERY_FROM;
+  const startAt = from ? recoveryCells.findIndex(cell => cell === from) : 0;
+  assert.ok(startAt >= 0, `unknown recovery cell ${from}`);
+  for (const outcome of recoveryCells.slice(startAt)) {
+    await recoverInterruptedRun(start, show, outcome, outcome === "restart" ? async () => {
+      remote = await bootManager();
+      await current.nc.close();
+      current = await dial();
+    } : undefined);
+  }
   console.log(JSON.stringify({ scope: "owned native signerless Manager + actual auth HTTP/encrypted callout + driver, not Cloud/webhook/deployment",
     instanceId: remote.state.instanceId, epoch: remote.epoch, submissionId: submission.submissionId, runId, keyedHostCalls, legacyHostAdmissions,
     modelSeats: 0 }));

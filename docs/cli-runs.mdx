@@ -151,7 +151,12 @@ It retries temporary failures for at least 30 minutes after recording the releas
 first minute it waits at least a minute between attempts. The manager logs the first failure it
 will retry and any failure that ends retries. It replays the journal under a new attempt instead
 of retrying the interrupted append. A revoked run or a run that another attempt already holds ends
-retries immediately. If the manager stops first, its next boot takes back runs still recorded `running`.
+retries immediately. A rate-limit answer is temporary. The manager waits for the `Retry-After` it
+carries, and at most one minute when that wait is missing or longer. The wait also ends when the
+30 minutes do. An answer that says the request is not implemented ends recovery at once, including
+one that arrives while the manager is reading the run. If the manager stops while a retry is still due, its next boot
+continues that recovery for the rest of the 30 minutes. Its next boot also takes back runs still
+recorded `running`.
 The manager scans run records in batches. It checks programs, admissions and journals only for
 runs recorded `running`, so finished runs do not each require a separate broker round trip.
 

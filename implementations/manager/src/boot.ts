@@ -1,12 +1,12 @@
 import { CotalEndpoint, credsClaims, DEFAULT_SERVER, drainAndClose, ensureAuthorityStores, epgateKey, listGoalIndex, MANAGER_LEASE_RENEW_MS, mintCreds, mintLifecycleUid, newIdentity, parseEndpointGate, recordsBucket, rejectionText, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC } from "@cotal-ai/core";
 import type { SpaceAuth } from "@cotal-ai/core";
-import { authDir, claimIdentityRecord, createManagerInstanceIdentity, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, userAuthStateDir } from "@cotal-ai/workspace";
+import { authDir, claimIdentityRecord, createManagerInstanceIdentity, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, spaceSegment, userAuthStateDir } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { credRenewIntervalMs } from "./credential-renewal.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
@@ -517,6 +517,7 @@ export class ManagerBoot {
         holder: { id: this.remoteAuthority.identities.supervisor.id, lifecycleUid: this.config.managerLifecycleUid },
         auth: undefined,
         log: (line) => console.error(line),
+        stateDir: join(this.config.workspaceRoot, ".cotal", spaceSegment(this.config.space)),
         admitRun: remoteRuns.admitRun,
         submitRun: remoteRuns.submitRun,
         revokeRun: remoteRuns.revokeRun,
@@ -535,6 +536,7 @@ export class ManagerBoot {
         holder: { id: this.ep.ref().id, lifecycleUid: this.config.managerLifecycleUid },
         auth: this.auth,
         log: (line) => console.error(line),
+        stateDir: join(this.config.workspaceRoot, ".cotal", spaceSegment(this.config.space)),
       });
       await this.runHosting.reconcile();
     }

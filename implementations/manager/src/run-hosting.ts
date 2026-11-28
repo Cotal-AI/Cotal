@@ -42,6 +42,10 @@ import { drainAndClose } from "@cotal-ai/core";
  */
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import {
+  readInterruptedRunRecovery, updateInterruptedRunRecovery,
+  type InterruptedRunRecovery, type InterruptedRunRecoveryRead,
+} from "./interrupted-run-recovery.js";
 import { ClosedConnectionError, ConnectionError, credsAuthenticator, RequestError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -124,6 +128,10 @@ export interface RunHostingContext {
   /** The space signer on an auth mesh; undefined on an open mesh (bare connections). */
   readonly auth: SpaceAuth | undefined;
   readonly log: (line: string) => void;
+  /** This manager's private directory. A released run this process is still retrying is named here,
+   *  so the next boot of the same manager continues that recovery. Absent in a composition that has
+   *  no directory of its own: that process logs the resume command when it stops instead. */
+  readonly stateDir?: string;
   /** Signerless host: the closed `renewRunDriver` issuance for one live attempt's SAME driver and
    *  mediator nkeys. When set, renewal never mints locally; a refusal keeps last-good and records
    *  debt on the slot. */
@@ -190,6 +198,10 @@ const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
 const TAKE_BACK_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 // Keep trying through a 30-minute outage, with a full minute between attempts after the initial backoff.
 const INTERRUPTED_RUN_RETRY_DELAYS_MS = [0, ...TAKE_BACK_RETRY_DELAYS_MS, ...Array<number>(32).fill(60_000)];
+/** How long automatic recovery of one released run may keep trying, matching the retry schedule. */
+const INTERRUPTED_RUN_RETRY_WINDOW_MS = 30 * 60 * 1000;
+/** A rate-limit answer names its own wait. Recovery never waits longer than one ordinary gap. */
+const INTERRUPTED_RUN_RATE_LIMIT_WAIT_MS = 60_000;
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
  *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
  *  before anything is written, rather than letting a burst of starts pin unbounded connections for
@@ -212,6 +224,8 @@ export class RunHosting {
   private readonly cancellations = new Map<string, { runId: string; reason: string; observed: boolean; mayHaveDispatched: boolean }>();
   /** The launches in their activation wait, each with its run id once one is known. */
   private readonly launching = new Map<symbol, string | undefined>();
+  /** Runs whose recovery loop is already running, including one asleep between attempts. */
+  private readonly recovering = new Set<string>();
   private reconciled = false;
   private stopping = false;
   private takeBackRetry: ReturnType<typeof setTimeout> | undefined;
@@ -958,9 +972,13 @@ export class RunHosting {
       });
     } catch (e) {
       this.ctx.log(`! workflow-run boot reconcile failed: ${rejectionText(e)}`);
+      await this.continueInterruptedRecovery();
       return false;
     }
-    if (this.stopping || inherited.length === 0) return true;
+    if (this.stopping || inherited.length === 0) {
+      await this.continueInterruptedRecovery();
+      return true;
+    }
     const host = this.host();
     let takenBack = 0;
     for (const r of inherited) {
@@ -976,7 +994,20 @@ export class RunHosting {
       }
     }
     this.ctx.log(`workflow-run boot reconcile: took back ${takenBack} run(s) recorded running`);
+    await this.continueInterruptedRecovery();
     return true;
+  }
+
+  /** Resume released runs this manager was still retrying. A run already held, or already retrying, is left alone. */
+  private async continueInterruptedRecovery(): Promise<void> {
+    for (const pending of await this.pendingInterruptedRecovery()) {
+      if (this.stopping || this.runs.has(pending.runId) || this.recovering.has(pending.runId)) continue;
+      this.recovering.add(pending.runId);
+      void this.resumeInterruptedRun(pending.runId, pending.timeout,
+        { holder: pending.holder, epoch: pending.epoch, fencingToken: pending.fencingToken }, pending.until)
+        .catch((error: unknown) => { this.ctx.log(`! run ${pending.runId} could not resume after the broker interruption: ${rejectionText(error).split(/\r?\n/, 1)[0]}`); })
+        .finally(() => { this.recovering.delete(pending.runId); });
+    }
   }
 
   /** Renewal: re-mint every live drive's `run-driver` credential for the SAME nkey and attempt
@@ -1268,7 +1299,8 @@ export class RunHosting {
       await drainAndClose(nc);
       if (mediatorNc) await drainAndClose(mediatorNc);
       if (recover) await this.resumeInterruptedRun(req.runId, req.timeout,
-        { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken });
+        { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken })
+        .finally(() => { this.recovering.delete(req.runId); });
     });
     try {
       await activation;
@@ -1311,27 +1343,73 @@ export class RunHosting {
     }
   }
 
-  private async resumeInterruptedRun(runId: string, timeout: string, previous: Pick<RunStatusValue, "holder" | "epoch" | "fencingToken">): Promise<void> {
+  private async resumeInterruptedRun(runId: string, timeout: string, previous: Pick<RunStatusValue, "holder" | "epoch" | "fencingToken">, until = Date.now() + INTERRUPTED_RUN_RETRY_WINDOW_MS): Promise<void> {
+    this.recovering.add(runId);
+    await this.noteInterruptedRecovery({ runId, timeout, holder: previous.holder, epoch: previous.epoch, fencingToken: previous.fencingToken, until })
+      .catch((error: unknown) => { this.ctx.log(`! run ${runId}: automatic recovery could not record its note: ${rejectionText(error)}`); });
     const startedAt = performance.now();
     for (const [attempt, backoff] of INTERRUPTED_RUN_RETRY_DELAYS_MS.entries()) {
       const wait = backoff > 0 && performance.now() - startedAt + backoff + 1_000 >= 60_000 ? 60_000 : backoff;
       if (wait > 0) await delay(wait + Math.random() * 1_000, undefined, { ref: false });
-      if (this.stopping || this.cancelPending(runId)) return;
+      if (this.stopping || this.cancelPending(runId)) return await this.leaveInterruptedRecovery(runId);
       try {
         // Every retry rechecks the original admission and released fence before launching.
         await this.resumeRun({ runId, timeout }, undefined, previous);
+        await this.forgetInterruptedRecovery(runId);
         return;
       } catch (error) {
-        if (this.stopping || this.cancelPending(runId)) return;
+        if (this.stopping || this.cancelPending(runId)) return await this.leaveInterruptedRecovery(runId);
         const reason = rejectionText(error).split(/\r?\n/, 1)[0];
-        if (retryInterruptedRun(error) && attempt + 1 < INTERRUPTED_RUN_RETRY_DELAYS_MS.length) {
+        const retryFor = interruptedRunRetryWaitMs(error, until);
+        if (retryInterruptedRun(error) && attempt + 1 < INTERRUPTED_RUN_RETRY_DELAYS_MS.length && retryFor > 0) {
           if (attempt === 0) this.ctx.log(`! run ${runId}: retrying automatic recovery after the broker interruption: ${reason}`);
+          if (recoveryHttpStatus(error) === 429) await delay(retryFor, undefined, { ref: false });
           continue;
         }
+        await this.forgetInterruptedRecovery(runId);
         this.ctx.log(`! run ${runId} could not resume after the broker interruption: ${reason}`);
         return;
       }
     }
+    await this.forgetInterruptedRecovery(runId);
+    this.ctx.log(`! run ${runId} is still released: automatic recovery reached the end of its window. Resume it with \`cotal run resume ${runId}\``);
+  }
+
+  /** A stop keeps the note, so the next boot continues. A cancel removes it: the run is not coming back. */
+  private async leaveInterruptedRecovery(runId: string): Promise<void> {
+    if (this.cancelPending(runId)) await this.forgetInterruptedRecovery(runId);
+  }
+
+  private async noteInterruptedRecovery(note: InterruptedRunRecovery): Promise<void> {
+    const dir = this.ctx.stateDir;
+    if (dir === undefined) return;
+    await updateInterruptedRunRecovery(dir, (read) => [...read.notes.filter((row) => row.runId !== note.runId), note]);
+  }
+
+  private async forgetInterruptedRecovery(runId: string): Promise<void> {
+    const dir = this.ctx.stateDir;
+    if (dir === undefined) return;
+    await updateInterruptedRunRecovery(dir, (read) => read.notes.filter((row) => row.runId !== runId))
+      .catch((error: unknown) => { this.ctx.log(`! run ${runId}: automatic recovery could not record its note: ${rejectionText(error)}`); });
+  }
+
+  /** Runs this manager released and was still retrying when it stopped, inside the retry window. */
+  private async pendingInterruptedRecovery(): Promise<InterruptedRunRecovery[]> {
+    const dir = this.ctx.stateDir;
+    if (dir === undefined) return [];
+    const now = Date.now();
+    const live = (read: InterruptedRunRecoveryRead) => read.notes.filter((row) => row.until > now);
+    const first = readInterruptedRunRecovery(dir);
+    const read = !first.corrupt && first.dropped === 0 && live(first).length === first.notes.length
+      ? first
+      : await updateInterruptedRunRecovery(dir, (current) => live(current)).catch((error: unknown) => {
+        this.ctx.log(`! automatic recovery could not record its note: ${rejectionText(error)}`);
+        return first;
+      });
+    if (read.corrupt) this.ctx.log("! automatic recovery could not read its note of released runs; those runs stay released. Resume one with `cotal run resume <runId>`");
+    else if (read.dropped > 0) this.ctx.log(`! automatic recovery skipped ${read.dropped} unreadable note${read.dropped === 1 ? "" : "s"}; resume a run that is still released with \`cotal run resume <runId>\``);
+    for (const row of read.notes) if (row.until <= now) this.ctx.log(`! run ${row.runId} is still released: its automatic recovery window ended while this manager was stopped. Resume it with \`cotal run resume ${row.runId}\``);
+    return live(read);
   }
 
   /** One served read or answer over a one-shot `run-operator` connection (open mesh: bare). The
@@ -1379,12 +1457,32 @@ export class RunHosting {
 
 function retryInterruptedRun(error: unknown): boolean {
   const request = error instanceof RequestError ? error : error instanceof Error ? error.cause : undefined;
+  if (recoveryHttpStatus(error) === 501) return false;
   return error instanceof TimeoutError || error instanceof ConnectionError || error instanceof ClosedConnectionError
     || (request instanceof RequestError && request.isNoResponders())
-    || (error instanceof EpEnvelopeError && (error.code === "unavailable" || error.code === "resource-exhausted"));
+    || (error instanceof EpEnvelopeError && (error.code === "unavailable" || error.code === "resource-exhausted"))
+    || recoveryHttpStatus(error) === 429;
 }
 
-/** A validation problem without its rendered source frame (the caller holds the source). */
+/** The HTTP status an authority refusal carries, when the refusal recorded one. */
+function recoveryHttpStatus(error: unknown): number | undefined {
+  const status = (error as { status?: unknown } | undefined)?.status;
+  return typeof status === "number" && Number.isInteger(status) ? status : undefined;
+}
+
+/** How long a retry may sleep before the window ends. A rate-limit answer waits for the time it
+ *  named, never longer than one ordinary gap and never past the window. Anything else returns the
+ *  time left, so the caller can tell a closed window from a retry. */
+function interruptedRunRetryWaitMs(error: unknown, until: number): number {
+  const left = until - Date.now();
+  if (left <= 0) return 0;
+  if (recoveryHttpStatus(error) !== 429) return left;
+  const seconds = (error as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;
+  const asked = typeof seconds === "number" && Number.isSafeInteger(seconds) && seconds >= 1
+    ? Math.min(seconds * 1000, INTERRUPTED_RUN_RATE_LIMIT_WAIT_MS) : INTERRUPTED_RUN_RATE_LIMIT_WAIT_MS;
+  return Math.min(asked, left);
+}
+
 function withoutFrame(e: Record<string, unknown>): Record<string, unknown> {
   const where = e.where;
   if (where === null || typeof where !== "object") return e;

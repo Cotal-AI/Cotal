@@ -16,7 +16,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, retryAfterSeconds, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -25,7 +25,7 @@ import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@co
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
 import { CommandFailure, type ConversationAccount } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { conversationAccountKey, deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, IdpTokenServerError, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { conversationAccountKey, deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpRateLimitedError, IdpSessionRejectedError, IdpTokenServerError, IdpUnreachableError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -999,12 +999,13 @@ async function postManagerAuthority(
   // A stand-in object would reach the caller as a result the endpoint never sent.
   const body = await response.json().catch((error: unknown) => {
     const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
-    if (isManagerAuthorityOutage(response.status)) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    if (isManagerAuthorityOutage(response.status) || (what === "manager run issuance" && (response.status === 429 || response.status === 501)))
+      throw new ManagerAuthorityRefusal(message, response.status, undefined, response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : undefined);
     if (response.ok && isManagerAuthorityTransportOutage(error)) throw new ManagerAuthorityTransportError(message, { cause: error });
     throw new Error(message);
   });
   signal?.throwIfAborted();
-  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
+  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status, response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : undefined);
   return body;
 }
 
@@ -1025,16 +1026,18 @@ function isManagerAuthorityTransportOutage(error: unknown): boolean {
 }
 
 function isRunAuthorityOutage(error: unknown, space: string): error is Error {
-  if (error instanceof ManagerAuthorityTransportError || error instanceof IdpTokenServerError || error instanceof IdpUnreachableError) return true;
+  if (error instanceof ManagerAuthorityTransportError || error instanceof IdpTokenServerError || error instanceof IdpUnreachableError || error instanceof IdpRateLimitedError) return true;
   if (!(error instanceof ManagerAuthorityRefusal)) return false;
   // Some issuers report a restart as 403. Only the exact restart refusal is temporary.
-  return isManagerAuthorityOutage(error.status) || (error.status === 403 && (error.body as { error?: unknown } | null)?.error ===
+  // 429 is a rate limit and 501 names a request this host will not serve. Both reach recovery,
+  // which waits for the first and stops on the second.
+  return isManagerAuthorityOutage(error.status) || error.status === 429 || error.status === 501 || (error.status === 403 && (error.body as { error?: unknown } | null)?.error ===
     `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
 }
 
 /** A host's non-2xx answer to a manager-authority request, with the HTTP status and body it answered. */
 class ManagerAuthorityRefusal extends Error {
-  constructor(message: string, readonly status: number, readonly body: unknown) {
+  constructor(message: string, readonly status: number, readonly body: unknown, readonly retryAfterSeconds?: number) {
     super(message);
   }
 }
@@ -1049,14 +1052,14 @@ function heldConflict(message: string, body: unknown, actor: string): EpEnvelope
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
-function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): ManagerAuthorityRefusal {
+function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number, retryAfterSeconds?: number): ManagerAuthorityRefusal {
   const why = (body as { error?: unknown } | null)?.error;
   const reason = typeof why === "string" ? why : `HTTP ${status}`;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status, body);
+  return new ManagerAuthorityRefusal(`signed in, but ${what} was refused: ${reason}${skew}`, status, body, retryAfterSeconds);
 }
 
 function carriesField(value: unknown, field: string): boolean {

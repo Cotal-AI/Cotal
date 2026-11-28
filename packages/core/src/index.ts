@@ -2,6 +2,7 @@
 export { requestSafeReconnect } from "./request-safe-reconnect.js";
 export * from "./types.js";
 export { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
+export * from "./deadline.js";
 export * from "./advisory-lock.js";
 export * from "./local-consumer-custody.js";
 export * from "./subjects.js";

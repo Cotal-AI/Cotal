@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { canonicalJson, type ConversationSelection } from "@cotal-ai/core";
+import { canonicalJson, retryAfterSeconds, type ConversationSelection } from "@cotal-ai/core";
 import { conversationResumeToken, type ConversationResumeProof } from "@cotal-ai/workspace/conversation-resume";
 import type { ConversationMaterial } from "./conversation-identity.js";
 
@@ -57,18 +57,4 @@ export async function confirmConversationResume(m: ConversationMaterial, actorTo
   const seconds = response.status === 429 ? retryAfterSeconds(response.headers.get("retry-after")) : undefined;
   const hint = seconds !== undefined ? ` Wait at least ${seconds} seconds before trying again.` : retryable ? " Wait before trying again." : "";
   throw new ConversationRequestError(`the conversation resume exchange did not confirm its approval (HTTP ${response.status}); the saved identity was retained.${hint}`, retryable);
-}
-
-function retryAfterSeconds(value: string | null): number | undefined {
-  if (!value) return undefined;
-  if (/^[0-9]{1,8}$/.test(value)) {
-    const seconds = Number(value);
-    return seconds > 0 ? seconds : undefined;
-  }
-  // Anything else is an HTTP date or nothing at all: Node's Date.parse reads "-5", "1.5" and "+5"
-  // as dates in 2001, which would print a wait of 0 seconds.
-  if (!/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value)) return undefined;
-  const time = Date.parse(value);
-  const seconds = Number.isFinite(time) ? Math.ceil((time - Date.now()) / 1000) : undefined;
-  return seconds !== undefined && seconds > 0 && seconds <= 99_999_999 ? seconds : undefined;
 }

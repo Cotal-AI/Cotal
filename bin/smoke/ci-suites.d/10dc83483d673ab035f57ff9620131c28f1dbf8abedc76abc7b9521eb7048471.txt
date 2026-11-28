@@ -1,0 +1,2 @@
+# One recovery loop, a per-space note, and a cancel that drops it.
+smoke:interrupted-run-recovery
