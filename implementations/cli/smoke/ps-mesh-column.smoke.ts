@@ -87,8 +87,7 @@ judge("a joined receipt keeps a name", joinedAgentRows({ name: "ada", id: "local
 // where a terminal can answer its questions, `setup --help` anywhere else, so a scripted run
 // never follows the Next into a usage error.
 const nextOf = (report: ReturnType<typeof psView>): readonly { command: string; description: string }[] => {
-  for (const section of report.sections) for (const block of section.blocks) if (block.kind === "commands") return block.items;
-  return [];
+  return report.sections.flatMap((section) => section.blocks.flatMap((block) => block.kind === "commands" ? block.items : []));
 };
 const emptyPs = { kind: "seats", items: [], managers: [{ instanceId: "mgr", state: "answered" }] } as const;
 const interactiveNext = nextOf(psView(emptyPs, false, new Map(), true));
