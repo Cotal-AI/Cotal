@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { repairPlan?: Record<string, unknown>; repairApply?: Record<string, unknown>; removedAccount?: boolean; managerRefused?: boolean; recovery?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { repairPlan?: Record<string, unknown>; repairApply?: Record<string, unknown>; removedAccount?: boolean; managerRefused?: boolean; recovery?: boolean; browserFailureAt?: number; copyFailure?: boolean; appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -37,7 +37,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
   win.setTimeout = (fn: () => Promise<void>) => { tick = fn; return 1; }; win.clearTimeout = () => {};
   win.setInterval = (fn: () => void) => { clock = fn; return 2; }; win.clearInterval = () => { clock = undefined; };
   let copied = "";
-  Object.defineProperty(win.navigator, "clipboard", { value: { writeText: async (value: string) => { copied = value; } } });
+  Object.defineProperty(win.navigator, "clipboard", { value: { writeText: async (value: string) => { if (options.copyFailure) throw new Error("Clipboard unavailable"); copied = value; } } });
   win.HTMLImageElement.prototype.decode = async () => {};
   win.isTauri = true;
   win.__TAURI_INTERNALS__ = {
@@ -58,7 +58,11 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
       if (cmd === "app_update_receipt") return options.appReceipt;
       if (cmd === "app_update_apply") { applyArgs.push({ explicit: args.explicit }); return options.appUpdate ?? { phase: "unconfigured" }; }
       if (cmd === "app_update_download") return { phase: "ready", version: options.appUpdate?.version };
-      if (cmd === "open_browser") { urls.push(args.url!); return; }
+      if (cmd === "open_browser") {
+        urls.push(args.url!);
+        if (urls.length === options.browserFailureAt) throw "The browser could not be opened.";
+        return;
+      }
       assert.equal(cmd, "daemon_request"); const r = args.request!; calls.push(r);
       const ok = (result: Record<string, unknown>): Frame => ({ v: 1, event: "result", ok: true, result });
       const send = (frame: Frame, index: number) => callbacks.get(args.onEvent!.id)!({ message: frame, index });
@@ -841,6 +845,49 @@ for (const provider of [COTAL_CLOUD_IDP, "https://cloud.cotal.ai/api/auth"]) {
     } finally { a.dom.window.close(); }
   });
 }
+
+for (const browserFailureAt of [1, 2]) {
+  test(`browser open failure on attempt ${browserFailureAt} keeps device approval usable`, async () => {
+    const a = await app({ installed: true, browserFailureAt });
+    try {
+      await a.click("login");
+      if (browserFailureAt === 2) await a.click("open-approval");
+      assert.equal(a.urls.length, browserFailureAt);
+      assert.equal(a.node("sign-in-panel").hidden, false, "browser failure must not hide the pending approval");
+      assert.equal(a.node("approval").hidden, false);
+      assert.equal(a.node("approval-code").textContent, "ABCD");
+      assert.match(a.node("approval-expiry").textContent!, /^Expires in /);
+      assert.equal(a.node("approval-browser-help").hidden, false);
+      assert.equal(a.node("approval-link").textContent, a.urls[0]);
+      assert.equal(a.node("recovery-panel").hidden, true);
+      await a.click("copy-link");
+      assert.equal(a.copied(), a.urls[0]);
+      assert.equal(a.node("copy-link-status").textContent, "Approval link copied.");
+      a.advance(1000);
+      assert.equal(a.node("approval-expiry").textContent, "Expires in 9:40");
+      await a.login();
+      assert.equal(a.node("connect-panel").hidden, false);
+      assert.equal(a.node("approval").hidden, true);
+      assert.equal(a.calls.filter(r => r.op === "login").length, 1);
+    } finally { a.dom.window.close(); }
+  });
+}
+
+test("a clipboard failure leaves the approval link selectable until its code expires", async () => {
+  const a = await app({ installed: true, browserFailureAt: 1, copyFailure: true, loginReason: "expired" });
+  try {
+    await a.click("login"); await a.click("copy-link");
+    assert.equal(a.node("copy-link-status").textContent, "The link could not be copied. Select the link and copy it manually.");
+    assert.equal(a.node("approval-link").textContent, a.urls[0]);
+    assert.equal(a.node("sign-in-panel").hidden, false);
+    a.advance(581000);
+    assert.equal(a.node("connection-title").textContent, "Your code has expired");
+    assert.equal(a.node<HTMLButtonElement>("copy-link").disabled, true);
+    assert.equal(a.node<HTMLButtonElement>("open-approval").disabled, true);
+    await a.login();
+    assert.equal(a.node("approval-link").textContent, "");
+  } finally { a.dom.window.close(); }
+});
 
 test("linked first run needs sign-in approval then connect, with one panel and structured progress", async () => {
   const a = await app({ link: `cotal://connect?idp=${encodeURIComponent(COTAL_CLOUD_IDP)}&space=sp_team`, count: 2 });

@@ -17,8 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
-import { acquireMaintenanceLock, CommandFailure, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, CommandFailure, releaseMaintenanceLock, userAuthStateDir } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
+import { liveServicesRefusal } from "../src/commands/down-services.js";
 import { recordedProcessRefusal } from "../src/commands/service-registry.js";
 import { membershipConversionRefusal } from "../src/commands/up-stores.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
@@ -317,6 +318,21 @@ for (const level of ["regular", "minimal"]) {
 }
 
 {
+  const s = sandbox("project with private-location-marker"), space = "fixture-space";
+  const prepared = await s.run(["space", "create", space, "--root", s.project, "--json"]);
+  check("prepare the project for the startup mode refusal", prepared.status === 0);
+  const state = userAuthStateDir(s.project, space);
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  const marker = join(state, "idp.json");
+  writeFileSync(marker, "{}", { mode: 0o600 });
+  const r = await s.run(["up", "--space", space, "--detach", "--server", "nats://127.0.0.1:1"]);
+  const event = r.sent.find(body => body.event === "command");
+  check("startup mode conflict names the state directory only locally", r.status === 2 && (r.stderr + r.stdout).includes(state) &&
+    readFileSync(marker, "utf8") === "{}" && !existsSync(join(s.project, ".cotal", "stack-controller.json")) &&
+    event?.errorCode === "CONFLICT" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(r.sent).includes("private-location-marker"));
+}
+
+{
   const s = sandbox(), space = "private-preset-fixture";
   const marker = "private-root-fixture", file = join(s.project, `regular file ${marker}`);
   writeFileSync(file, "original");
@@ -457,6 +473,9 @@ for (const level of ["regular", "minimal"]) {
   const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
+  const service = liveServicesRefusal(space, [{ definition: "fixture-worker", instanceId: "fixture-instance", host: "fixture-host", process: "running", recordedState: "running", action: "stop-first", reason: null, remedy: null }], "down --preserve-state");
+  const blocked = telemetryErrorText("down", service);
+  check("a service blocking shutdown is identified locally but not in telemetry", service?.code === "LIFECYCLE_BLOCKED" && service.message.includes("fixture-worker instance fixture-instance") && blocked.message === null && blocked.stack === null);
   const failure = membershipConversionRefusal(space);
   const text = telemetryErrorText("up", failure);
   check("a legacy membership refusal keeps the space in its local target but out of the reported diagnostic",
