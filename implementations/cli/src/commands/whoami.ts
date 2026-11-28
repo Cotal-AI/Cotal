@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
+import { chatSubjectPrefix, credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
 import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceErrorParts, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -191,7 +191,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
 /** The channels a credential's allowed subjects reach on the space's chat plane: `all` for the whole
  *  plane, else the channel of each `chat.<owner>.<actor>.<channel>` row. */
 function chatChannels(rows: readonly string[], space: string): Grant {
-  const chat = `${spacePrefix(space)}.chat.`;
+  const chat = chatSubjectPrefix(space);
   const channels: string[] = [];
   for (const row of rows) {
     if (!row.startsWith(chat)) continue;

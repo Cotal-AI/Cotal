@@ -53,7 +53,7 @@ export function refuseRegisteredAddress(server: string, space: string, elsewhere
 }
 
 export function membershipConversionRefusal(space: string, remedy = "stop the stack with `cotal down --yes`, then run `cotal up --recreate-membership-store`"): CommandFailure {
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `space ${space} has a legacy File-backed membership store; it was not changed while its broker or membership services may be in use`, {
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected space has a legacy File-backed membership store; it was not changed while its broker or membership services may be in use", {
     target: { space }, remedy,
   });
 }

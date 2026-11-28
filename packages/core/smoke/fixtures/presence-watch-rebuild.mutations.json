@@ -19,8 +19,8 @@
     },
     {
       "name": "P3 the endpoint stops recognising its own watch's rebuild delete, so the refused predecessor delete reaches its error event",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "&& this.connection.isOwnWatchDelete(s.error.subject))",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "&& this.isOwnWatchDelete(s.error.subject))",
       "replace": "&& false)",
       "expectRed": "1.6 and the client treats that refusal as handled",
       "cell": "1.6 and the client treats that refusal as handled: no endpoint error names the delete"

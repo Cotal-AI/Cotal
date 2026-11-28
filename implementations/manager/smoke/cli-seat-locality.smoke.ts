@@ -319,6 +319,14 @@ try {
   ]);
   check("stop --json and input --json print the refusal envelope, and attach refuses the same way, each exit 2",
     misses.every((r) => r.status === 2 && /TARGET_NOT_FOUND/.test(r.out)) && misses.slice(0, 2).every((r) => r.out.includes('"outcome":"refused"')), misses.map((r) => ({ status: r.status, out: r.out.slice(-400) })));
+  check("both JSON misses suggest the JSON roster on the selected route", misses.slice(0, 2).every((r) =>
+    JSON.parse(r.out).error?.remedy?.includes(`\`cotal ps --json ${route.join(" ")}\``)), misses.slice(0, 2));
+  const pinnedInput = await cotal(["input", "no-such-seat", "hello", "--on", IID1, ...route, "--json"], other);
+  const lookup = JSON.parse(pinnedInput.out).error?.remedy?.split("`")[1];
+  const copied = lookup === `cotal ps --on ${IID1} --json ${route.join(" ")}` ? await cotal(lookup.split(" ").slice(1), other) : undefined;
+  const answering = copied?.status === 0 ? JSON.parse(copied.out).result?.managers : undefined;
+  check("the pinned input miss lists only the requested manager in JSON from another project", pinnedInput.status === 2 &&
+    answering?.length === 1 && answering[0].instanceId === IID1 && answering[0].state === "answered", pinnedInput);
   check("attach names the same roster read as stop", misses[2]!.out.includes(`run \`${roster}\` to see the agents each manager runs`), misses[2]);
   const follow = suggestedRoster === roster ? await cotal(suggestedRoster.split(" ").slice(1), other) : undefined;
   check("the suggested roster lists both managers instead of the selected space", follow?.status === 0 && follow.out.includes(IID1) && follow.out.includes(IID2), follow ?? noName);

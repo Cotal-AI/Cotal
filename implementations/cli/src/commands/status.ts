@@ -514,8 +514,9 @@ function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
   try {
     skew = agentSkillsSkew();
   } catch (e) {
-    gaps.add("SKILLS_UNREADABLE", `the skills bundle could not be read: ${(e as Error).message}`);
-    return { state: "unreadable", total: 0, behind: 0, retired: 0, error: (e as Error).message };
+    const message = isCommandFailure(e) && e.remedy ? `${e.message}. ${e.remedy}` : (e as Error).message;
+    gaps.add("SKILLS_UNREADABLE", `the skills bundle could not be read: ${message}`);
+    return { state: "unreadable", total: 0, behind: 0, retired: 0, error: message };
   }
   const behind = skew.filter((s) => s.state !== "current");
   const retired = behind.filter((s) => s.state === "retired").length;

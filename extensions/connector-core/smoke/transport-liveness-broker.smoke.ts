@@ -21,7 +21,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { AgentConfig } from "../src/config.js";
-import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "../../../packages/core/dist/index.js";
+import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams, type Presence } from "../../../packages/core/dist/index.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -39,6 +39,58 @@ const awaitExit = (proc: ChildProcess, timeoutMs = 4_000): Promise<void> =>
     const timer = setTimeout(resolve, timeoutMs);
     proc.once("exit", () => { clearTimeout(timer); resolve(); });
   });
+
+async function completes<T>(work: Promise<T>, timeoutMs = 5_000): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Hold a matching presence put once and send other records to the broker as normal. */
+function gatePresence(agent: MeshAgent) {
+  const { conn, presence } = agent.ep as unknown as {
+    conn: { kv: { put(key: string, record: string): Promise<unknown> } };
+    presence: { status: Presence["status"] };
+  };
+  type Put = { resolve(): void; reject(error: Error): void };
+  type Gate = { matches(record: Presence): boolean; put?: Put };
+  const kv = conn.kv;
+  const originalPut = kv.put;
+  const gates: Gate[] = [];
+  const records: Presence[] = [];
+  kv.put = (key, raw) => {
+    const record = JSON.parse(raw) as Presence;
+    records.push(record);
+    const gate = gates.find((g) => !g.put && g.matches(record));
+    if (!gate) return originalPut.call(kv, key, raw);
+    return new Promise<void>((resolve, reject) => { gate.put = { resolve, reject }; })
+      .then(() => originalPut.call(kv, key, raw));
+  };
+  return {
+    presence, records,
+    hold(matches: Gate["matches"]) {
+      const gate: Gate = { matches };
+      gates.push(gate);
+      return {
+        get started() { return gate.put !== undefined; },
+        async take() { return await until(() => gate.put !== undefined, 10_000) ? gate.put : undefined; },
+      };
+    },
+    restore() {
+      kv.put = originalPut;
+      for (const gate of gates) gate.put?.resolve();
+    },
+  };
+}
+
+async function stopOrderingAgent(agent: MeshAgent): Promise<void> {
+  if (await completes(agent.stop().then(() => true, () => false))) return;
+  // A failed ordering check must not leave the endpoint's broker connection open.
+  await agent.ep.stop();
+}
 
 let pass = 0;
 let fail = 0;
@@ -130,16 +182,16 @@ try {
   );
 
   // Keep the broker down until nats.js exhausts its reconnect attempts and closes the real current
-  // connection. This reaches CotalEndpoint.superviseConnection through nc.closed(), not through a
+  // connection. This reaches EndpointConnection.superviseConnection through nc.closed(), not through a
   // constructed fake, and observes the MeshAgent diagnostic the user-facing status surface reads.
   const ep = agent.ep as unknown as {
     conn: { nc?: {
       setServers(servers: string[]): void;
       reconnect(): Promise<void>;
     } };
-    reestablishLoop(): Promise<void>;
+    connection: { reestablishLoop(): Promise<void> };
   };
-  ep.reestablishLoop = async () => {};
+  ep.connection.reestablishLoop = async () => {};
   const unreachablePort = await pickFreePort();
   ep.conn.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
   await ep.conn.nc!.reconnect();
@@ -595,204 +647,118 @@ try {
     { b2Refusal, b2AfterOlderSuccess },
   );
 
-  // #636 / #2055: PRESENCE WRITES FROM ONE AGENT LAND IN CALL ORDER. The cells above drive
-  // endpoint.publishPresence directly, which says nothing about MeshAgent: setStatus is one or
-  // two awaited puts (an entering-working condition clear, then the status and activity in one)
-  // and every connector fires it without awaiting, so two overlapping calls interleave their puts
-  // and the record that lands last is whichever call's last put finished last — measured at a
-  // driven turn's end as working, idle, working (#2055). The stimulus is the same held-put kv
-  // stub the cells above use, because the defect is entirely about WHEN a later call's puts may
-  // START: with the serialization gone, the second call's first put is already in the queue while
-  // the first call's is still held. The heartbeat also lands puts in this stub (it publishes
-  // straight from the endpoint, 2s cadence), and an entering-working clear adds one more, so each
-  // leg QUIETS the stub first — settle every put until none arrives for 300ms — and then settles
-  // puts ONE AT A TIME as the leg's own calls issue them; a heartbeat put landing mid-leg plays
-  // the same role the next settle was about to play and changes no observation below.
+  // Hold the status/activity record itself, not the condition clear, heartbeat or agent endpoint
+  // metadata refresh. At shutdown only a record with status offline counts as departure.
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering-${port}` });
   await orderingAgent.start(100);
-  await until(() => orderingAgent!.connected, 30_000);
-  const orderingEp = orderingAgent.ep as unknown as { conn: { kv?: unknown }; presence: { status?: string } };
-  const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void; record: string }> = [];
-  const liveOrderingKv = orderingEp.conn.kv;
-  orderingEp.conn.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
-  const takeOrdering = async () => { await until(() => heldOrdering.length > 0, 10_000); return heldOrdering.shift()!; };
-  // Settle every put that arrives until none has arrived for 300ms, polling the array directly.
-  // A racing takeOrdering() call left running past its own 300ms loss would keep polling in the
-  // background and could steal a put a later, explicit takeOrdering() is waiting for, discarding
-  // its resolver and stalling the agent's presence chain forever — so this never calls takeOrdering.
-  const quietOrdering = async (): Promise<void> => {
-    let quietMs = 0;
-    while (quietMs < 300) {
-      const put = heldOrdering.shift();
-      if (put) { put.resolve(); quietMs = 0; continue; }
-      await sleep(20);
-      quietMs += 20;
-    }
-  };
-  // Settle whatever arrives in heldOrdering, in whatever order, until `done` flips true (set by a
-  // `.then()` on the real call(s) under test) or the bound elapses. Never calls takeOrdering, so
-  // nothing is left polling in the background after this returns — the same hazard quietOrdering
-  // above avoids, and for the same reason: an orphaned poller can steal a later put out from under
-  // an explicit takeOrdering() and stall the agent's presence chain forever.
-  const drainUntil = async (done: { v: boolean }, timeoutMs = 5_000): Promise<void> => {
-    const end = Date.now() + timeoutMs;
-    while (!done.v && Date.now() < end) {
-      const put = heldOrdering.shift();
-      if (put) { put.resolve(); continue; }
-      await sleep(20);
-    }
-  };
+  const ordering = gatePresence(orderingAgent);
+  try {
+    const endpointServed = await until(() => orderingAgent?.prompts !== undefined);
+    const working = ordering.hold((row) => row.status === "working" && row.activity === "");
+    const orderA = orderingAgent.setStatus("working", "").then(() => true, () => false);
+    const statusPut = await working.take();
+    const idle = ordering.hold((row) => row.status === "idle" && row.activity === "ordered idle");
+    const orderB = orderingAgent.setStatus("idle", "ordered idle").then(() => true, () => false);
+    await sleep(150);
+    const idleStartedWhileHeld = idle.started;
+    statusPut?.resolve();
+    const idlePut = await idle.take();
+    idlePut?.resolve();
+    const orderingDone = (await completes(Promise.all([orderA, orderB])))?.every(Boolean);
+    check(
+      "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
+      statusPut !== undefined && idlePut !== undefined && !idleStartedWhileHeld && orderingDone === true && orderingAgent.status === "idle" && ordering.presence.status === "idle",
+      { idleStartedWhileHeld, orderingDone, agentStatus: orderingAgent.status, epStatus: ordering.presence.status },
+    );
+    // The first row that carries either half of the update must carry both.
+    const statusRecord = ordering.records.find((row) => row.status === "working" || row.activity === "");
+    check(
+      "a status write with an activity is one presence put carrying both",
+      statusRecord?.status === "working" && statusRecord.activity === "",
+      { status: statusRecord?.status, activity: statusRecord?.activity },
+    );
 
-  // Cell (a): setStatus("working", "") and setStatus("idle"), neither awaited by the caller. The
-  // working call's LAST put is held open; while it is held the idle call must not have started
-  // ANY put. Then everything settles and the endpoint's recorded status ends idle.
-  await quietOrdering();
-  const orderA = orderingAgent!.setStatus("working", "").catch(() => {});
-  const clearPut = await takeOrdering(); // entering working clears the condition first
-  clearPut.resolve();
-  const statusPut = await takeOrdering(); // setStatus("working", "") — HELD
-  const orderB = orderingAgent!.setStatus("idle").catch(() => {});
-  // Give an unserialized idle write every chance to land its put while the working call's last
-  // put is still held: this is the window the fix must keep empty.
-  await sleep(150);
-  const idleStartedWhileHeld = heldOrdering.length > 0;
-  statusPut.resolve();
-  // Drain whatever remains (the idle call's own put, wherever it lands) until both calls settle;
-  // never assume a specific put belongs to a specific call, only that both calls need one more.
-  const orderingDone = { v: false };
-  void Promise.all([orderA, orderB]).then(() => { orderingDone.v = true; });
-  await drainUntil(orderingDone);
-  check(
-    "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
-    !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.presence.status === "idle",
-    { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.presence.status },
-  );
-  // A status with an activity is one put: a peer never reads the new activity beside the old status.
-  const statusRecord = JSON.parse(statusPut.record) as { status?: string; activity?: string };
-  check(
-    "a status write with an activity is one presence put carrying both",
-    statusRecord.status === "working" && statusRecord.activity === "",
-    { status: statusRecord.status, activity: statusRecord.activity },
-  );
+    const waiting = ordering.hold((row) => row.status === "waiting" && row.activity === "ordered departure");
+    const offline = ordering.hold((row) => row.status === "offline");
+    const orderC = orderingAgent.setStatus("waiting", "ordered departure").then(() => true, () => false);
+    let stopped = false;
+    const heldPut = await waiting.take();
+    const stopPromise = orderingAgent.stop().then(() => (stopped = true), () => false);
+    await sleep(150);
+    const offlineStartedWhileHeld = offline.started;
+    heldPut?.resolve();
+    const offlinePut = await offline.take();
+    const stoppedBeforeOfflineSettled = stopped;
+    offlinePut?.resolve();
+    const departureDone = (await completes(Promise.all([orderC, stopPromise])))?.every(Boolean);
+    check(
+      "departure is ordered behind a status write already in flight",
+      endpointServed && heldPut !== undefined && offlinePut !== undefined && !offlineStartedWhileHeld && !stoppedBeforeOfflineSettled && departureDone === true && ordering.presence.status === "offline",
+      { endpointServed, offlineStartedWhileHeld, stoppedBeforeOfflineSettled, departureDone, epStatus: ordering.presence.status },
+    );
+  } finally {
+    ordering.restore();
+    await stopOrderingAgent(orderingAgent);
+    orderingAgent = undefined;
+  }
 
-  // Cell (b): a status write's put is held open when stop() is called. Departure is ordered
-  // behind writes already in flight (#636): the offline put must not start until the held put
-  // settles. The kv stub stays installed so ep.stop()'s offline publish parks in it too; after
-  // the held put settles the offline put arrives, is settled, and only then does stop() return.
-  await quietOrdering();
-  const orderC = orderingAgent!.setStatus("waiting", "ordered departure").catch(() => {});
-  const heldPut = await takeOrdering(); // setStatus("waiting", "ordered departure") — held
-  const stopPromise = orderingAgent!.stop().catch(() => {});
-  // Give stop()'s offline publish every chance to start while the write already in flight is
-  // still held: this is the window the fix must keep empty.
-  await sleep(150);
-  const offlineStartedWhileHeld = heldOrdering.length > 0;
-  heldPut.resolve();
-  // The offline publish is owed after this, and a defect-under-test can deliver puts in any
-  // order, so drain until both calls have settled rather than assuming which put is which.
-  const departureDone = { v: false };
-  void Promise.all([orderC, stopPromise]).then(() => { departureDone.v = true; });
-  await drainUntil(departureDone);
-  check(
-    "departure is ordered behind a status write already in flight",
-    !offlineStartedWhileHeld && orderingEp.presence.status === "offline",
-    { offlineStartedWhileHeld, epStatus: orderingEp.presence.status },
-  );
-  orderingEp.conn.kv = liveOrderingKv;
-
-  // Cell (c): a rejected presence write must not stall the next one. The first call's put
-  // rejects; the chain swallows the rejection at its tail only, so the second call's put still
-  // arrives and settles, and the endpoint records the second call's status.
+  // Fail the first status put itself, not a coincident metadata refresh, then settle the next.
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering2-${port}` });
   await orderingAgent.start(100);
-  await until(() => orderingAgent!.connected, 30_000);
-  const rejectEp = orderingAgent.ep as unknown as { conn: { kv?: unknown }; presence: { status?: string } };
-  const heldReject: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveRejectKv = rejectEp.conn.kv;
-  rejectEp.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldReject.push({ resolve, reject })) };
-  const takeReject = async () => { await until(() => heldReject.length > 0, 10_000); return heldReject.shift()!; };
-  const rejA = orderingAgent!.setStatus("waiting").catch(() => {});
-  const rejAPut = await takeReject();
-  rejAPut.reject(new Error("bucket refuses writes"));
-  await rejA;
-  const rejB = orderingAgent!.setStatus("idle").catch(() => {});
-  const rejBPut = await Promise.race([takeReject(), sleep(2_000).then(() => undefined)]);
-  const secondPutArrived = rejBPut !== undefined;
-  rejBPut?.resolve();
-  await rejB.catch(() => {});
-  for (const held of heldReject.splice(0)) held.resolve();
-  rejectEp.conn.kv = liveRejectKv;
-  check(
-    "a rejected presence write does not stall the next one",
-    secondPutArrived && rejectEp.presence.status === "idle",
-    { secondPutArrived, epStatus: rejectEp.presence.status },
-  );
-  // Cell (d) rebinds orderingAgent, so this agent would otherwise be dropped unstopped and its
-  // heartbeat/self-heal timers would keep the process alive after the banner (#2055 lane).
-  await orderingAgent.stop();
+  const rejection = gatePresence(orderingAgent);
+  try {
+    const denied = rejection.hold((row) => row.status === "waiting" && row.activity === "rejected write");
+    const refusal = new Error("bucket refuses writes");
+    const rejA = orderingAgent.setStatus("waiting", "rejected write").then(() => false, (error) => error === refusal);
+    const rejAPut = await denied.take();
+    rejAPut?.reject(refusal);
+    const accepted = rejection.hold((row) => row.status === "idle" && row.activity === "next write");
+    const rejB = orderingAgent.setStatus("idle", "next write").then(() => true, () => false);
+    const rejBPut = await accepted.take();
+    rejBPut?.resolve();
+    const recovered = (await completes(Promise.all([rejA, rejB])))?.every(Boolean);
+    check(
+      "a rejected presence write does not stall the next one",
+      rejAPut !== undefined && rejBPut !== undefined && recovered === true && rejection.presence.status === "idle",
+      { firstPutArrived: denied.started, secondPutArrived: accepted.started, recovered, epStatus: rejection.presence.status },
+    );
+  } finally {
+    rejection.restore();
+    await stopOrderingAgent(orderingAgent);
+    orderingAgent = undefined;
+  }
 
-  // Cell (d): the straggler rule. The stimulus is the same held-put stub: a setAttention is
-  // admitted BEFORE stop() and its put held open, so departure queues behind it in the chain;
-  // then a setStatus is admitted AFTER stop() began. That later write must refuse at once with
-  // the stopping error and never queue a put (a setStatus without the refusal instead sits out
-  // the ten-second requireConnected grace inside the chain, and a setModel or setAttention
-  // without it queues its put BEFORE the offline put and lands first — the reviewer's finding).
-  // The offline publish itself must not start until the held put settles: departure is the last
-  // write, later writes are refused, not reordered (#636).
+  // An attention write admitted before stop holds departure. A status write after stop is refused.
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-straggler-${port}` });
   await orderingAgent.start(100);
-  await until(() => orderingAgent!.connected, 30_000);
-  const stragglerEp = orderingAgent.ep as unknown as { conn: { kv?: unknown }; status?: string };
-  const heldStraggler: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveStragglerKv = stragglerEp.conn.kv;
-  stragglerEp.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldStraggler.push({ resolve, reject })) };
-  const takeStraggler = async () => { await until(() => heldStraggler.length > 0, 10_000); return heldStraggler.shift()!; };
-  // The same quiet the ordering cells use: settle everything (the heartbeat's puts) until none
-  // has arrived for 300ms, polling the array directly so no orphaned poller can steal a put.
-  const quietStraggler = async (): Promise<void> => {
-    let quietMs = 0;
-    while (quietMs < 300) {
-      const put = heldStraggler.shift();
-      if (put) { put.resolve(); quietMs = 0; continue; }
-      await sleep(20);
-      quietMs += 20;
-    }
-  };
-  await quietStraggler();
-  // A write admitted BEFORE stop(): its put parks and is held open.
-  orderingAgent!.setAttention("focus").catch(() => {});
-  const attentionPut = await takeStraggler(); // setAttention's presence put — HELD
-  const stragglerStop = orderingAgent!.stop().catch(() => {});
-  // A write admitted AFTER stop() began: refused, synchronously-shaped, no put queued. The race
-  // is bounded so a tree without the refusal still reaches the assertions below (it would leave
-  // this write parked in the chain behind departure instead).
-  const stragglerWrite = orderingAgent!.setStatus("working", "straggler").catch((e) => e as Error);
-  const stragglerRefusal = await Promise.race([
-    stragglerWrite.then((r) => (r instanceof Error && r.message === "agent is stopping; presence writes are refused" ? r.message : "wrong error")),
-    sleep(1_500).then(() => "no refusal"),
-  ]);
-  // Give stop()'s offline publish every chance to start while the write admitted before it is
-  // still held: this is the window the fix must keep empty.
-  await sleep(150);
-  const offlineStartedWhileHeldStraggler = heldStraggler.length > 0;
-  attentionPut.resolve();
-  const offlinePut = await Promise.race([takeStraggler(), sleep(10_000).then(() => undefined)]); // departure's put: ordered AFTER the held write
-  offlinePut?.resolve();
-  // On an unfenced tree nothing may resolve from here on, so every wait below is bounded and the
-  // held puts are drained and the live kv restored BEFORE anything open-ended is awaited: the
-  // suite must terminate and red cell (d) by name rather than hang the proof (see #636 lane).
-  for (const held of heldStraggler.splice(0)) held.resolve();
-  stragglerEp.conn.kv = liveStragglerKv;
-  await Promise.race([stragglerStop, sleep(5_000)]);
-  await Promise.race([stragglerWrite, sleep(5_000)]); // settles (refused, or rejected in-chain on an unfenced tree) with no put
-  await sleep(300); // nothing may land after offline: the straggler was refused, the heartbeat is stopped
-  const putAfterOffline = heldStraggler.length > 0;
-  for (const held of heldStraggler.splice(0)) held.resolve();
-  check(
-    "a presence write admitted after stop() began is refused and no put lands after offline",
-    stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
-    { stragglerRefusal, offlineStartedWhileHeldStraggler, putAfterOffline },
-  );
+  const straggler = gatePresence(orderingAgent);
+  try {
+    const attention = straggler.hold((row) => row.attention === "focus");
+    const attentionWrite = orderingAgent.setAttention("focus").then(() => true, () => false);
+    const attentionPut = await attention.take();
+    const offline = straggler.hold((row) => row.status === "offline");
+    const stragglerStop = orderingAgent.stop().then(() => true, () => false);
+    const stragglerWrite = orderingAgent.setStatus("working", "straggler").then(() => "accepted", (error: Error) => error.message);
+    const stragglerRefusal = await completes(stragglerWrite, 1_500);
+    await sleep(150);
+    const offlineStartedWhileHeldStraggler = offline.started;
+    attentionPut?.resolve();
+    const offlinePut = await offline.take();
+    offlinePut?.resolve();
+    const stragglerDone = (await completes(Promise.all([attentionWrite, stragglerStop, stragglerWrite])))?.every(Boolean);
+    const offlineIndex = straggler.records.findIndex((row) => row.status === "offline");
+    const putAfterOffline = offlineIndex >= 0 && offlineIndex !== straggler.records.length - 1;
+    const stragglerPut = straggler.records.some((row) => row.activity === "straggler");
+    check(
+      "a presence write admitted after stop() began is refused and no put lands after offline",
+      attentionPut !== undefined && offlinePut !== undefined && stragglerDone === true && stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline && !stragglerPut,
+      { stragglerRefusal, offlineStartedWhileHeldStraggler, stragglerDone, putAfterOffline, stragglerPut },
+    );
+  } finally {
+    straggler.restore();
+    await stopOrderingAgent(orderingAgent);
+    orderingAgent = undefined;
+  }
   // A real WebSocket dial can reject with ConnectionError whose message is empty on Node 24.
   // Drive the actual transport and registered MCP routes, without constructing an error object.
   {

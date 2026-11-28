@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.183.1
+
+### Patch Changes
+
+- 99e5057: Internal refactor: the endpoint's internal parts reach each other through one `EndpointParts` record that the endpoint fills at the end of its constructor, replacing per-call dependency callbacks and the private methods that only forwarded to another part. No behaviour change.
+
 ## 0.183.0
 
 ### Minor Changes
