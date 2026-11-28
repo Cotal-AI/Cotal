@@ -616,7 +616,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
   if (candidate.launchRestriction) throw new CommandFailure("refused", "UNSUPPORTED", candidate.launchRestriction, { target });
   assertPreferencesFolderProtected();
-  if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
+  if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile, presentation) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
   let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true, false, presentation);
   if (state === "started") {
