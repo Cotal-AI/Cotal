@@ -65,6 +65,8 @@ function isolated(name: string) {
     writeFileSync(join(dir, "native", "systemctl"), '#!/bin/sh\ncase "$*" in\n "--user show-environment") printf "HOME=%s\\nXDG_CONFIG_HOME=%s\\n" "$HOME" "$XDG_CONFIG_HOME";;\n "--user show --no-pager --property=LoadState --value cotal-daemon.service") printf "not-found\\n";;\n *) exit 99;;\nesac\n', { mode: 0o700 });
     mkdirSync(join(env.XDG_CONFIG_HOME!, "systemd", "user"), { recursive: true, mode: 0o700 });
   }
+  // A macOS account already has Library. Keep LaunchAgents absent and probe the real GUI domain.
+  if (process.platform === "darwin") mkdirSync(join(dir, "home", "Library"), { mode: 0o700 });
   return { dir, env, home: join(dir, "home") };
 }
 type Isolated = ReturnType<typeof isolated>;
