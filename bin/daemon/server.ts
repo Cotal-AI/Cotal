@@ -38,6 +38,19 @@ import { withAppMutation } from "./agent-app-admission.js";
 import { repairConnectorConfigMode } from "./connector-config-repair.js";
 
 type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | ConnectorConfigRepairResult | { argv: string[] };
+function respondToManagerRequest(
+  req: { op: string; id: string }, run: () => ManagerResult | Promise<ManagerResult>,
+  write: (reply: DaemonResponse) => Promise<void>, counters: ServerCounters, notify: () => void, log: (message: string) => void,
+): Promise<void> {
+  return Promise.resolve().then(run).then((result) => {
+    if (req.op !== "status") notify();
+    return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+  }, (error: unknown) => {
+    counters.requestsRefused++;
+    return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
+  });
+}
+
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
   const cause = clean(String(error instanceof Error ? error.message : error));
@@ -371,15 +384,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         })().catch(error => log(`daemon: shutdown failed: ${String(error)}`));
         return;
       }
-      const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
-        replyTask(Promise.resolve().then(run).then((result) => {
-          if (req.op !== "status") notifyStatusWatchers();
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        }, (error: unknown) => {
-          counters.requestsRefused++;
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
-        }));
-      };
+      const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => replyTask(respondToManagerRequest(req, run, write, counters, notifyStatusWatchers, log));
       if (req.op === "manager-start" || req.op === "manager-status") {
         managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
         return;
