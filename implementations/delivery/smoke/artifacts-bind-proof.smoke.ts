@@ -26,7 +26,7 @@ import { attachmentIndexKey, attachmentKey, attachmentKeyDigest, channelAttachme
 /** A manager no cell reaches: an adoption refused before the bind starts never reads the gate. */
 const unreachedJsm = new Proxy({}, { get: () => { throw new Error("no broker in this cell"); } }) as JetStreamManager;
 
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 19;
 const { check, finish, passed, failed } = createSuite();
 
 const space = "bindproof";
@@ -169,13 +169,24 @@ const rawGets = sources.map((p) => relative(root, p)).filter((rel) => {
   return /artifact(Attach|Possess|Reserve)Bucket\(/.test(text) && /\.(get|put|create|update|delete)\(/.test(text) && !allowedReader(rel);
 });
 function allowedReader(rel: string): boolean {
-  // The artifacts endpoint (a filtered scan) and the index layer (point reads and writes) open the
-  // index buckets, and both take every key from artifact-keys.ts. Any other file that opens an index
-  // bucket and reads or writes it by key is a second key builder.
-  const readers = new Set(["implementations/delivery/src/artifacts-endpoint.ts", "implementations/delivery/src/artifact-index.ts"]);
+  // The artifacts endpoint (a filtered scan), the index layer (point reads and writes) and the sweep
+  // (scans, deletes and tombstones) open the index buckets, and each takes every key from
+  // artifact-keys.ts. Any other file that opens an index bucket and reads or writes it by key is a
+  // second key builder.
+  const readers = new Set(["implementations/delivery/src/artifacts-endpoint.ts", "implementations/delivery/src/artifact-index.ts", "implementations/delivery/src/artifact-sweep.ts"]);
   return readers.has(rel) && readFileSync(join(root, rel), "utf8").includes("./artifact-keys.js");
 }
 check("no source file but the artifacts endpoint and the index layer opens an index bucket and reads or writes it by key", rawGets.length === 0, rawGets);
+// S3: on the delivery credential the chat stream's message get is read in exactly one place, the sealed
+// confirm-attach read, and it is called from exactly one place, the artifacts endpoint. (Other
+// processes hold their own chat reads on their own credentials; this row is the delivery daemon's.)
+const deliverySources = sources.map((p) => relative(root, p)).filter((rel) => rel.startsWith("implementations/delivery/"));
+const chatGetters = deliverySources.filter((rel) => /getMessage\(\s*chatStream\(/.test(code(readFileSync(join(root, rel), "utf8"))));
+const chatReadCallers = deliverySources.filter((rel) => rel !== "implementations/delivery/src/artifact-chat-read.ts"
+  && /readChatEntryForConfirm\(/.test(code(readFileSync(join(root, rel), "utf8"))));
+check("the chat stream is read by sequence in one sealed helper, called from one site (S3)",
+  JSON.stringify(chatGetters) === JSON.stringify(["implementations/delivery/src/artifact-chat-read.ts"])
+    && JSON.stringify(chatReadCallers) === JSON.stringify(["implementations/delivery/src/artifacts-endpoint.ts"]), { chatGetters, chatReadCallers });
 
 finish();
 if (passed() + failed() !== EXPECTED_CELLS) {

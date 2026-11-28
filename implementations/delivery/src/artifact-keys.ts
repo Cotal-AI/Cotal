@@ -65,6 +65,38 @@ export function attachmentIndexKey(digest: string, channel: string): string {
   return `=d.${digestToken(digest)}.${concreteChannel(channel)}`;
 }
 
+/** The filter that lists every digest-index row of one digest. */
+export function digestIndexFilter(digest: string): string {
+  return `=d.${digestToken(digest)}.>`;
+}
+
+/** The channel a digest-index row key found under {@link digestIndexFilter} names. Throws on a key that
+ *  is not an index row of `digest`. */
+export function indexKeyChannel(digest: string, key: string): string {
+  const prefix = `=d.${digestToken(digest)}.`;
+  if (!key.startsWith(prefix)) throw new Error(`index key ${key} is not an index row of ${digest}`);
+  return concreteChannel(key.slice(prefix.length));
+}
+
+/** The filter that lists every possession or reservation row of one digest. */
+export function digestPrincipalFilter(digest: string): string {
+  return `${digestToken(digest)}.>`;
+}
+
+/** Whether a key in the attachment bucket is a digest-index row rather than a channel row. */
+export function isIndexKey(key: string): boolean {
+  return key.startsWith("=d.");
+}
+
+/** The channel and digest an attachment row key names (its last token is the digest). Throws on a key
+ *  that is not a channel row this module would have built. */
+export function parseAttachmentKey(key: string): { channel: string; digest: string } {
+  if (isIndexKey(key)) throw new Error(`attachment key ${key} is a digest-index row`);
+  const dot = key.lastIndexOf(".");
+  if (dot <= 0) throw new Error(`attachment key ${key} names no channel`);
+  return { channel: concreteChannel(key.slice(0, dot)), digest: digestOfToken(key.slice(dot + 1)) };
+}
+
 /** A caller's possession or reservation row for one digest. */
 export function principalDigestKey(digest: string, caller: { owner: string; actor: string; uid: string }): string {
   return `${digestToken(digest)}.${principalKey(caller.owner, caller.actor).key}.${assertLifecycleToken(caller.uid, "lifecycleUid")}`;

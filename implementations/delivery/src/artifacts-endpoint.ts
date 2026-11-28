@@ -20,6 +20,8 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   AmbiguousAclAlias, ARTIFACTS_COMMANDS, ARTIFACTS_CONTRACTS, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, ARTIFACTS_LIST_PAGE_LIMIT,
+  ARTIFACTS_CONFIRM_ATTACH_COMMAND, ARTIFACTS_FETCH_BEGIN_COMMAND, ARTIFACTS_FETCH_CHUNK_COMMAND, ARTIFACTS_PIN_COMMAND,
+  ARTIFACTS_PUT_BEGIN_COMMAND, ARTIFACTS_PUT_CHUNK_COMMAND, ARTIFACTS_PUT_COMMIT_COMMAND, type EpCommandDef,
   artifactAttachBucket, artifactBucket, artifactIndexStreamNames, artifactPossessBucket, artifactReserveBucket,
   artifactsClusterArtifacts, assertLifecycleToken, channelInAllow, dialerFor, drainAndClose,
   EpEnvelopeError, liveKvEntries, objectStoreStream, principalKey, standaloneConnectOpts, watchNativeConnection,
@@ -30,8 +32,14 @@ import { ARTIFACT_DATA_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, daemonEndpointKe
 import { attachmentKeyDigest, channelAttachmentsFilter, concreteChannel } from "./artifact-keys.js";
 import { ArtifactIndex } from "./artifact-index.js";
 import { ArtifactObjects } from "./artifact-objects.js";
+import { ArtifactVerbs, DigestLocks, fenceCallerWith } from "./artifact-verbs.js";
+import { readChatEntryForConfirm } from "./artifact-chat-read.js";
+import { startSweeps, UNCONFIRMED_COMMIT_EVENT } from "./artifact-sweep.js";
 import type { DaemonServedEndpoint, ServeScope, StagedStores } from "./endpoint-bind.js";
 import type { ServedEndpointContext } from "./served-endpoints.js";
+
+/** How often the lease holder sweeps. The lifetimes it enforces are hours and days long. */
+const ARTIFACT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 /** The largest `list` reply this handler builds. The broker's own payload limit still applies. */
 const LIST_REPLY_CEILING = 512 * 1024;
@@ -89,6 +97,30 @@ function listRow(digest: string, raw: unknown, now: number): ArtifactsListRow | 
 export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServedEndpoint {
   /** The installed set: what the handlers read and write now. Replaced only by a committed stage. */
   let installed: StoreSet | undefined;
+  const locks = new DigestLocks();
+  const verbs = new ArtifactVerbs({
+    space: ctx.space,
+    stores: () => installed,
+    fenceCaller: (caller, command) => fenceCallerWith((p) => ctx.delivery.aclForAlias(p), caller, command),
+    mayReadChannel: (caller, channel, command) => assertMayReadChannel(ctx.delivery, caller, channel, command),
+    readChatEntry: (seq) => readChatEntryForConfirm(ctx.deliveryJsm(), ctx.space, seq),
+    locks,
+  });
+  /** The scope of the latest bound generation: the sweep writes under its fence, so a quiesce or a lost
+   *  lease ends every sweep write until the next bind. */
+  let sweepScope: ServeScope | undefined;
+  const stopSweeps = startSweeps({
+    intervalMs: ARTIFACT_SWEEP_INTERVAL_MS, log: ctx.log,
+    current: () => {
+      const set = installed, scope = sweepScope;
+      if (set === undefined || scope === undefined) return undefined;
+      return {
+        space: ctx.space, nc: set.sweeper.nc, kv: set.sweepKv, locks,
+        fence: (what: string) => scope.fence.check(scope.generation, what),
+        emit: (event) => ctx.log(`${UNCONFIRMED_COMMIT_EVENT} ${JSON.stringify(event)}`),
+      };
+    },
+  });
 
   const open = async (label: "artifact-data" | "artifact-sweeper", kind: string): Promise<StoreConn> => {
     const creds = await ctx.store.get(daemonEndpointKey(ctx.space, ARTIFACTS_ENDPOINT, kind));
@@ -123,6 +155,11 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
       const set: StoreSet = {
         data, sweeper,
         attachScan: await new Kvm(sweeper.nc).open(artifactAttachBucket(ctx.space)),
+        sweepKv: {
+          attach: await new Kvm(sweeper.nc).open(artifactAttachBucket(ctx.space)),
+          possess: await new Kvm(sweeper.nc).open(artifactPossessBucket(ctx.space)),
+          reserve: await new Kvm(sweeper.nc).open(artifactReserveBucket(ctx.space)),
+        },
         index: new ArtifactIndex({
           attach: await kvmData.open(artifactAttachBucket(ctx.space)),
           possess: await kvmData.open(artifactPossessBucket(ctx.space)),
@@ -146,7 +183,50 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     }
   };
 
-  const list = (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsListOutput> => {
+  const list = listHandler(ctx, () => installed?.attachScan);
+
+  return {
+    endpoint: ARTIFACTS_ENDPOINT,
+    cluster: artifactsClusterArtifacts(),
+    stage,
+    // Every contract command has its handler (SPEC 13.9).
+    defs: (scope) => {
+      sweepScope = scope;
+      const handlers: Record<string, EpCommandDef["handler"]> = {
+        [ARTIFACTS_LIST_COMMAND]: list(scope),
+        [ARTIFACTS_PUT_BEGIN_COMMAND]: verbs.putBegin(scope),
+        [ARTIFACTS_PUT_CHUNK_COMMAND]: verbs.putChunk(scope),
+        [ARTIFACTS_PUT_COMMIT_COMMAND]: verbs.putCommit(scope),
+        [ARTIFACTS_FETCH_BEGIN_COMMAND]: verbs.fetchBegin(scope),
+        [ARTIFACTS_FETCH_CHUNK_COMMAND]: verbs.fetchChunk(scope),
+        [ARTIFACTS_CONFIRM_ATTACH_COMMAND]: verbs.confirmAttach(scope),
+        [ARTIFACTS_PIN_COMMAND]: verbs.pin(scope),
+      };
+      return ARTIFACTS_COMMANDS.map((command) => {
+        const handler = handlers[command];
+        if (handler === undefined) throw new Error(`${ARTIFACTS_ENDPOINT}: no handler for contract command ${command}`);
+        return { command, contract: ARTIFACTS_CONTRACTS[command]!, handler };
+      });
+    },
+    nativeConnections: () => [
+      ...(installed ? [{ label: "artifact-data", binding: installed.data.native.binding() }] : []),
+      ...(installed ? [{ label: "artifact-sweeper", binding: installed.sweeper.native.binding() }] : []),
+    ],
+    close: async () => {
+      stopSweeps();
+      sweepScope = undefined;
+      verbs.dropStaged();
+      const set = installed;
+      installed = undefined;
+      if (set) for (const conn of [set.data, set.sweeper]) await drainAndClose(conn.nc).catch(() => {});
+    },
+  };
+}
+
+/** The `list` handler: read gate first, then a filtered scan of the channel's attachment rows on the
+ *  sweeper connection, paged so the actual reply fits one broker message. */
+function listHandler(ctx: ServedEndpointContext, scan: () => KV | undefined) {
+  return (scope: ServeScope) => async (sctx: EpServeContext): Promise<ArtifactsListOutput> => {
     const { generation, fence } = scope;
     const args = (sctx.request.args ?? {}) as unknown as ArtifactsListInput;
     let channel: string;
@@ -154,7 +234,7 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     catch (e) { throw notExecuted("bad-request", `list: ${(e as Error).message}`); }
     await assertMayReadChannel(ctx.delivery, sctx.subject.caller, channel, "list");
     fence.check(generation, "the attachment scan");
-    const kv = installed?.attachScan;
+    const kv = scan();
     if (kv === undefined) throw notExecuted("unavailable", "list: the artifacts store connection is not open; retry");
     if (!sctx.replyFits) throw notExecuted("unavailable", "list: this serving connection cannot measure a reply, so no page is sent");
     const fitsFn = sctx.replyFits;
@@ -189,29 +269,6 @@ export function artifactsServedEndpoint(ctx: ServedEndpointContext): DaemonServe
     fence.check(generation, "the list reply");
     return envelope(page);
   };
-
-  return {
-    endpoint: ARTIFACTS_ENDPOINT,
-    cluster: artifactsClusterArtifacts(),
-    stage,
-    // Every ephemeral command in the contract needs a def (SPEC 13.9). The put, fetch, confirm and pin
-    // handlers land at checkpoint 2; until then each refuses before any effect.
-    defs: (scope) => ARTIFACTS_COMMANDS.map((command) => ({
-      command, contract: ARTIFACTS_CONTRACTS[command]!,
-      handler: command === ARTIFACTS_LIST_COMMAND ? list(scope) : async () => {
-        throw new EpEnvelopeError("unimplemented", `${command}: not served yet`, undefined, "not-executed");
-      },
-    })),
-    nativeConnections: () => [
-      ...(installed ? [{ label: "artifact-data", binding: installed.data.native.binding() }] : []),
-      ...(installed ? [{ label: "artifact-sweeper", binding: installed.sweeper.native.binding() }] : []),
-    ],
-    close: async () => {
-      const set = installed;
-      installed = undefined;
-      if (set) for (const conn of [set.data, set.sweeper]) await drainAndClose(conn.nc).catch(() => {});
-    },
-  };
 }
 
 /** One installed or staged set of store connections and the handles bound on them. */
@@ -219,6 +276,8 @@ interface StoreSet {
   data: StoreConn;
   sweeper: StoreConn;
   attachScan: KV;
+  /** The three index buckets on the sweeper connection: scans, deletes and tombstones only. */
+  sweepKv: { attach: KV; possess: KV; reserve: KV };
   index: ArtifactIndex;
   objects: ArtifactObjects;
 }
