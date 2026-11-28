@@ -144,10 +144,8 @@ export function initializeSharedHostCgroup(scope: string): SharedHostCgroup {
       try {
         if (read(leaf, "cgroup.type") !== "domain" || read(leaf, "memory.max") !== "max")
           throw new Error("shared PTY seat has no unrestricted domain memory controller");
-        for (const name of ["cgroup.procs", "cgroup.kill", "memory.oom.group"])
+        for (const name of ["cgroup.procs", "cgroup.kill"])
           accessSync(join(leaf, name), constants.W_OK);
-        write(leaf, "memory.oom.group", "1");
-        if (read(leaf, "memory.oom.group") !== "1") throw new Error("shared PTY seat could not enable group OOM");
       } catch (error) {
         try { checkOwner(); checkLeaf(); rmdirSync(leaf); } catch { /* Never kill during configuration rollback. */ }
         throw error;

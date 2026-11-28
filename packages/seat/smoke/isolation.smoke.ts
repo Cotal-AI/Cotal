@@ -7,12 +7,11 @@ import { accessSync, chmodSync, constants, existsSync, lstatSync, readFileSync, 
 import { join } from "node:path";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, processStartToken, seatId } from "../src/index.js";
+import { adoptSeatSync, launchSeat, linuxSharedCustodyAvailable, processStartToken, seatId, type SharedHandle } from "../src/index.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 import { SharedScreen } from "../src/shared-screen.js";
 import { sharedCgroupAvailable } from "../src/shared-cgroup.js";
-import { exitPath } from "../src/record.js";
-import { isSharedScope, readPrivateRecord, readSharedHost, recordedProcess, sharedSeatRecord } from "../src/shared-record.js";
+import { isSharedScope, readPrivateRecord, readSharedHost, recordedProcess } from "../src/shared-record.js";
 
 if (process.platform !== "linux") {
   console.log(`SEAT ISOLATION COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -196,12 +195,10 @@ function capFixtureMemory(unit: string, leaf: string): { target: string; descrip
   return { target, description };
 }
 
-const oomProgram = `
-  const { spawn } = require('node:child_process');
-  const { existsSync } = require('node:fs');
-  const descendant = "require('node:fs').writeFileSync(process.argv[1], String(process.pid) + String.fromCharCode(10), { flag: 'wx', mode: 0o600 }); setInterval(() => {}, 1000)";
-  const child = spawn(process.execPath, ['-e', descendant, process.argv[2]], { detached: true, stdio: 'ignore' });
-  child.unref();
+const runawayProgram = `
+  const { existsSync, writeFileSync } = require('node:fs');
+  writeFileSync('/proc/self/oom_score_adj', '1000');
+  writeFileSync(process.argv[2], String(process.pid) + '\\n', { flag: 'wx', mode: 0o600 });
   const retained = [];
   let ticksAtCap = 0;
   setInterval(() => {
@@ -211,6 +208,29 @@ const oomProgram = `
     if (retained.length === 96 && ++ticksAtCap === 80) process.exit(92);
   }, 25);
 `;
+
+const oomProgram = `
+  const child = require('node:child_process').spawn(process.execPath,
+    ['-e', ${JSON.stringify(runawayProgram)}, process.argv[1], process.argv[2]], { detached: true, stdio: 'ignore' });
+  child.once('exit', (code, signal) => process.stdout.write('runaway:' + (signal ?? code) + '\\n'));
+  ${program}
+`;
+
+function seatProbe(handle: SharedHandle) {
+  let output = "";
+  const terminal = handle.attach();
+  terminal.onData(data => { output = (output + data.toString()).slice(-8192); });
+  return {
+    saw: (marker: string) => output.includes(marker),
+    async reply(marker: string): Promise<boolean> {
+      for (let n = 0; n < 10; n++) {
+        assert.equal(await handle.write(`${marker}\n`), marker.length + 1);
+        if (await eventually(() => output.includes(`echo:${marker}`), 350)) return true;
+      }
+      return false;
+    },
+  };
+}
 
 async function nativeRunawayOom(): Promise<void> {
   const skip = !linuxSharedCustodyAvailable() ? "systemd user manager or systemd-run unavailable" :
@@ -246,17 +266,8 @@ async function nativeRunawayOom(): Promise<void> {
     const unit = `/sys/fs/cgroup${unitPath(host.scope)}`, badLeaf = join(unit, `seat-${badId}`), goodLeaf = join(unit, `seat-${goodId}`);
     const badChild = bad.childIdentity, goodChild = good.childIdentity;
     assert(badChild && goodChild);
-    const goodTerminal = good.attach();
-    let output = "";
-    goodTerminal.onData(data => { output = (output + data.toString()).slice(-8192); });
-    const reply = async (marker: string): Promise<boolean> => {
-      for (let n = 0; n < 10; n++) {
-        assert.equal(await good.write(`${marker}\n`), marker.length + 1);
-        if (await eventually(() => output.includes(`echo:${marker}`), 350)) return true;
-      }
-      return false;
-    };
-    assert(await reply("before-oom"), "sibling did not acknowledge pre-OOM input");
+    const affected = seatProbe(bad), sibling = seatProbe(good);
+    assert(await affected.reply("before-oom") && await sibling.reply("before-oom"), "both seats must answer before the OOM");
     assert(await eventually(() => existsSync(ready) && /^\d+\n$/.test(readFileSync(ready, "utf8"))), "runaway did not report its detached descendant");
     const descendant = Number(readFileSync(ready, "utf8"));
     const descendantStart = processStartToken(descendant);
@@ -282,26 +293,23 @@ async function nativeRunawayOom(): Promise<void> {
     assert.deepEqual(cgRead(badLeaf, "cgroup.procs").split("\n").sort(), [String(descendant), String(badChild.pid)].sort());
     assert.equal(cgRead(goodLeaf, "cgroup.procs"), String(goodChild.pid));
     assert.equal(cgRead(unit, "memory.oom.group"), "0");
-    assert.equal(cgRead(badLeaf, "memory.oom.group"), "1");
-    const groupKills = () => Number(/^oom_group_kill (\d+)$/m.exec(cgRead(unit, "memory.events"))?.[1]);
-    const before = groupKills();
-    if (!Number.isSafeInteger(before)) { console.log("  SKIP v2 runaway OOM: kernel lacks hierarchical oom_group_kill"); return; }
+    assert.equal(cgRead(badLeaf, "memory.oom.group"), "0");
+    const kills = () => Number(/^oom_kill (\d+)$/m.exec(cgRead(unit, "memory.events"))?.[1]);
+    const before = kills();
+    assert(Number.isSafeInteger(before), "kernel did not report the unit's hierarchical OOM kill counter");
     const limit = capFixtureMemory(unit, badLeaf);
     if (!limit) { console.log("  SKIP v2 runaway OOM: no writable private memory limit"); return; }
     const parentOoms = () => Number(/^oom (\d+)$/m.exec(cgRead(unit, "memory.events.local"))?.[1]);
     const parentBefore = limit.target === unit ? parentOoms() : undefined;
     writeFileSync(trigger, "allocate\n", { flag: "wx", mode: 0o600 });
-    const receipt = exitPath(sharedSeatRecord(generation, badId));
-    assert(await eventually(() => recordedProcess(badChild.pid, badChild.start, badChild.boot) === "gone" &&
-      recordedProcess(descendant, descendantStart, host.bootId) === "gone" && !existsSync(badLeaf) && existsSync(receipt) && groupKills() > before),
-    `runaway group OOM not proved under ${limit.description}`);
+    assert(await eventually(() => recordedProcess(descendant, descendantStart, host.bootId) === "gone" && kills() > before && affected.saw("runaway:SIGKILL")),
+      `runaway child OOM not proved under ${limit.description}`);
     if (parentBefore !== undefined) assert(parentOoms() > parentBefore, "common-parent cap did not cause the OOM");
-    const exit = readPrivateRecord(receipt) as { code?: number; signal?: number };
-    assert([undefined, 0, 137].includes(exit.code) && [undefined, 0, 9].includes(exit.signal), "unexpected runaway exit (92 means allocation reached its bound)");
     checkMember(host.pid, host.start, "host");
+    checkMember(badChild.pid, badChild.start, `seat-${badId}`);
     checkMember(goodChild.pid, goodChild.start, `seat-${goodId}`);
-    check(`v2 runaway group OOM preserves sibling and host (${limit.description})`,
-      groupKills() === before + 1 && await reply("after-oom"));
+    check(`v2 runaway child OOM preserves its seat, sibling and host (${limit.description})`,
+      kills() === before + 1 && await affected.reply("after-oom") && await sibling.reply("after-oom"));
   } finally {
     for (const handle of handles) handle.close();
     for (const generation of generations()) {
