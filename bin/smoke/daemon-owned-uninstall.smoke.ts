@@ -49,7 +49,7 @@ for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-so
   // Model the measured boundary: the owned supervisor acknowledges removal, but its
   // launcher child remains outside its custody, serving the actual endpoint.
   const pidFile = join(root, "owned-pid");
-  writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nimport { appendFileSync, readFileSync } from 'node:fs';\nconst args=process.argv.slice(2).join(' ');\nif(args==='--user show-environment') console.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\nelse {appendFileSync(${JSON.stringify(effects)},args+'\\n');${mode === "native-refusal" ? "process.exit(1);" : ""}${mode === "native-stop" ? `if(args.includes(' stop '))process.kill(Number(readFileSync(${JSON.stringify(pidFile)},'utf8')),'SIGTERM');` : ""}}\n`, { mode: 0o700 });
+  writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nimport { appendFileSync, existsSync, readFileSync } from 'node:fs';\nconst args=process.argv.slice(2).join(' ');\nif(args==='--user show-environment') { ${mode === "owned" ? `if(!existsSync(${JSON.stringify(pidFile)}))process.exit(1);` : ""} console.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)}); }\nelse {appendFileSync(${JSON.stringify(effects)},args+'\\n');${mode === "native-refusal" ? "process.exit(1);" : ""}${mode === "native-stop" ? `if(args.includes(' stop '))process.kill(Number(readFileSync(${JSON.stringify(pidFile)},'utf8')),'SIGTERM');` : ""}}\n`, { mode: 0o700 });
   const daemonEntry = mode === "foreground" ? entry : join(repo, "bin/dist/daemon-native.js");
   const daemon = spawn(process.execPath, [daemonEntry, "daemon", "serve"], { env, cwd: root, stdio: "ignore" });
   try {
@@ -60,6 +60,14 @@ for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-so
       await delay(25);
     }
     assert.equal(pid, daemon.pid, "the actual launched process owns the endpoint");
+    const daemonLog = join(paths.state, "daemon.log");
+    if (mode === "owned") {
+      // Make the uninstaller exercise stop-time verification, not a cached startup success.
+      for (let i = 0; !readFileSync(daemonLog, "utf8").includes("native ownership unknown: observation-failed"); i++) {
+        assert.ok(i < 200, "startup ownership observation failed while the supervisor was unavailable");
+        await delay(25);
+      }
+    }
     writeFileSync(pidFile, String(pid));
     if (mode === "stopped") await killAndAwaitExit(daemon, "SIGTERM");
     if (mode === "changed-source") writeFileSync(unitPath, `${source}# changed\n`);
@@ -71,6 +79,7 @@ for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-so
     const code = await new Promise<number | null>(resolve => command.once("exit", resolve));
     if (mode === "owned" || mode === "native-stop" || mode === "stopped") {
       assert.equal(code, 0, output);
+      if (mode === "owned") assert.match(readFileSync(daemonLog, "utf8"), /native ownership owned: verified/, "uninstall verifies ownership while holding the repair lock");
       let answering = false;
       try { answering = (await queryDaemon({ paths })).ok; }
       catch (error) { assert.equal((error as { code?: string }).code, "NOT_RUNNING"); }

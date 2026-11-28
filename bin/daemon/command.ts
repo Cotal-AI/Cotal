@@ -574,9 +574,9 @@ async function serve(args: ParsedArgs): Promise<void> {
   let ownershipPending = process.env.COTAL_DAEMON_NATIVE_SERVICE === "1";
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
-  const observe = async (): Promise<DaemonOwnershipObservation> => {
+  const observe = async (forStop = false): Promise<DaemonOwnershipObservation> => {
     const signal = provenance.signal;
-    const result = await observeDaemonOwnedService(paths, home, signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    const result = await observeDaemonOwnedService(paths, home, signal, forStop).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
     if (!signal.aborted) ownershipPending = false;
     if (result.state === "owned") owned = true;
     if (!loggedReasons.has(result.reason)) {
@@ -592,7 +592,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     if (!stopObservation) {
       provenance.abort();
       provenance = new AbortController();
-      stopObservation = observe().finally(() => { stopObservation = undefined; });
+      stopObservation = observe(true).finally(() => { stopObservation = undefined; });
     }
     return stopObservation;
   };

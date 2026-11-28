@@ -871,11 +871,12 @@ export interface DaemonOwnershipObservation {
 }
 
 /** A native launch marker is trusted only with this installation's verified recorded source. */
-export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
+export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string, forStop = false): DaemonOwnershipObservation {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
     const intent = process.platform === "darwin" || process.platform === "linux" ? (readServiceRepair(paths.state) ?? (process.platform === "linux" ? readServiceRepair(paths.state, servicePolicyRepairFile(paths.state)) : undefined)) : undefined;
-    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
+    // The stop caller can hold the repair lock while waiting for this read-only check.
+    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, forStop || intent !== undefined);
     if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
@@ -900,7 +901,7 @@ export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string
 }
 
 /** Observe native provenance without running supervisor tools on the serving event loop. */
-export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal): Promise<DaemonOwnershipObservation> {
+export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal, forStop = false): Promise<DaemonOwnershipObservation> {
   if (signal?.aborted) return Promise.resolve({ state: "unknown", reason: "observation-aborted" });
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return Promise.resolve({ state: "not-owned", reason: "marker-absent" });
   return new Promise(resolve => {
@@ -916,8 +917,8 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
       if (workerData.execution) Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze(workerData.execution) });
-      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
-    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
+      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home, workerData.forStop))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
+    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, forStop, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
     const finish = (observation: DaemonOwnershipObservation) => {
@@ -1229,10 +1230,11 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        // Reset or a Darwin peer closed before identification proves neither a live
-        // endpoint nor absence. Reobserve under the same shutdown deadline.
+        // A Linux probe can connect just before unlink and read the lifetime after release.
+        // Reobserve a vanished path, but still require endpoint absence and process exit.
         else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET"
           && !(process.platform === "darwin" && error instanceof ClosedPeerRefusal)
+          && !(process.platform === "linux" && socket && error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER" && !existsSync(paths.socket))
           && !(process.platform === "win32" && stopCommitted && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
