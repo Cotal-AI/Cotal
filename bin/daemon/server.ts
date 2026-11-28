@@ -33,8 +33,7 @@ import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/au
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
-import { hasDarwinRemovalConsent, type DarwinRemovalPeer } from "./seat-removal-consent-darwin.js";
-import { verifiedDarwinRemovalReceipt } from "./install.js";
+import { darwinRemovalGateReply } from "./seat-removal-consent-darwin.js";
 
 type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
 function managerResultError(op: string, error: unknown, log: (message: string) => void) {
@@ -266,7 +265,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   };
   // One connection whose peer the kernel already reported as this user: decode its requests.
   const daemonRestartOwner = `daemon:${process.pid}:${processBirth(process.pid)}`;
-  const serveConnection = (sock: Socket, restartOwner: () => string, peer?: DarwinRemovalPeer): void => {
+  const serveConnection = (sock: Socket, restartOwner: () => string): void => {
     counters.accepted++;
     let buf = "";
     let bufBytes = 0;
@@ -319,16 +318,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const req = parsed.request;
       if (req.op === "hosted-pty-remove") {
-        const consent = () => hasDarwinRemovalConsent(paths.state, sock, peer, req.id);
-        let message = "hosted-pty-remove requires the active consented uninstall transaction";
-        if (consent()) {
-          try {
-            verifiedDarwinRemovalReceipt(paths, opts.sessionDir, consent);
-            message = "hosted-pty-remove has no verified hosted stop coordinator";
-          } catch { message = "hosted-pty-remove could not verify the owned daemon receipt"; }
-        }
         counters.requestsRefused++;
-        void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message } });
+        void write(darwinRemovalGateReply(paths, opts.sessionDir, sock, restartOwner, req.id));
         return;
       }
       if (req.op === "daemon-stop") {
@@ -647,19 +638,17 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       let owner: string | undefined;
-      let removalPeer: DarwinRemovalPeer | undefined;
       try {
         const identity = localPeerCredentials(sock);
         const birth = processBirth(identity.pid);
         if (identity.uid === uid && Number.isSafeInteger(identity.pid) && identity.pid > 0 && birth) {
           owner = JSON.stringify(["peer", identity.uid, identity.pid, birth]);
-          if (process.platform === "darwin") removalPeer = { ...identity, birth };
         }
       } catch { /* Ordinary requests do not require restart ownership. */ }
       serveConnection(sock, () => {
         if (!owner) throw new Error("restart owner process identity is unavailable");
         return owner;
-      }, removalPeer);
+      });
     });
   }
 

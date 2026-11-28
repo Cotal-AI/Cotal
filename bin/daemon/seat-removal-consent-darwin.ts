@@ -4,14 +4,16 @@ import { join } from "node:path";
 import { inspectLock } from "@cotal-ai/core";
 import { localPeerCredentials } from "@cotal-ai/seat";
 import { readLocalRecordSource } from "@cotal-ai/workspace";
-import { checkDir } from "./endpoint.js";
+import { checkDir, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
+import { verifiedDarwinRemovalReceipt } from "./install.js";
 import { processBirth } from "./lifetime.js";
+import type { DaemonResponse } from "./protocol.js";
 
 export const darwinRemovalLockLabel = "consented daemon uninstall";
 
-export interface DarwinRemovalPeer { readonly pid: number; readonly uid: number; readonly birth: string }
+interface DarwinRemovalPeer { readonly pid: number; readonly uid: number; readonly birth: string }
 
-export function readDarwinRemovalPeer(socket: Socket): DarwinRemovalPeer | undefined {
+function readDarwinRemovalPeer(socket: Socket): DarwinRemovalPeer | undefined {
   if (process.platform !== "darwin" || socket.destroyed) return undefined;
   try {
     const { pid, uid } = localPeerCredentials(socket);
@@ -24,7 +26,7 @@ export function readDarwinRemovalPeer(socket: Socket): DarwinRemovalPeer | undef
 
 /** The request ID is the nonce of the existing uninstall transaction, not a client consent flag.
  * Check the original socket incarnation and the protected lock on every destructive boundary. */
-export function hasDarwinRemovalConsent(state: string, socket: Socket, peer: DarwinRemovalPeer | undefined, id: string): boolean {
+function hasDarwinRemovalConsent(state: string, socket: Socket, peer: DarwinRemovalPeer | undefined, id: string): boolean {
   if (!peer || !/^[a-f0-9]{24}$/.test(id)) return false;
   const actual = readDarwinRemovalPeer(socket);
   if (!actual || actual.pid !== peer.pid || actual.uid !== peer.uid || actual.birth !== peer.birth) return false;
@@ -42,4 +44,19 @@ export function hasDarwinRemovalConsent(state: string, socket: Socket, peer: Dar
       held.owner.label === darwinRemovalLockLabel && before.dev === after.dev && before.ino === after.ino && before.ctimeNs === after.ctimeNs &&
       processBirth(peer.pid) === peer.birth && !socket.destroyed;
   } catch { return false; }
+}
+
+export function darwinRemovalGateReply(paths: DaemonPaths, daemonHome: string | undefined, socket: Socket, restartOwner: () => string, id: string): DaemonResponse {
+  let message = "hosted-pty-remove requires the active consented uninstall transaction";
+  const peer = readDarwinRemovalPeer(socket);
+  const consent = () => Boolean(peer && restartOwner() === JSON.stringify(["peer", peer.uid, peer.pid, peer.birth]) &&
+    hasDarwinRemovalConsent(paths.state, socket, peer, id));
+  try {
+    if (consent()) {
+      message = "hosted-pty-remove could not verify the owned daemon receipt";
+      verifiedDarwinRemovalReceipt(paths, daemonHome, consent);
+      message = "hosted-pty-remove has no verified hosted stop coordinator";
+    }
+  } catch { /* The reply stays a refusal. */ }
+  return { v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message } };
 }
