@@ -820,6 +820,22 @@ export function artifactBucket(space: string): string {
   return `cotal_artifacts_${token(space)}`;
 }
 
+/** The artifact attachment index: `<channel>.<digestToken>` rows, plus `=d.<digestToken>.<channel>`
+ *  digest-index rows. Written only by the delivery daemon's artifacts service. */
+export function artifactAttachBucket(space: string): string {
+  return `cotal_artattach_${token(space)}`;
+}
+
+/** The artifact possession rows: `<digestToken>.<owner>.<actor>.<lifecycleUid>`. */
+export function artifactPossessBucket(space: string): string {
+  return `cotal_artpossess_${token(space)}`;
+}
+
+/** The artifact commit reservations: `<digestToken>.<owner>.<actor>.<lifecycleUid>`. */
+export function artifactReserveBucket(space: string): string {
+  return `cotal_artreserve_${token(space)}`;
+}
+
 /** Name of one manager instance's **transfer bucket**: the Object Store a carried resume transcript
  *  travels through to that instance (docs/design/resume-transfer.md). One bucket per receiving
  *  instance, because a grant matches whole subject tokens and nothing inside one bucket carries the

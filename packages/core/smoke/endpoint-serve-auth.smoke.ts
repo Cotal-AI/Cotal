@@ -771,6 +771,24 @@ try {
   };
   const handle = serveEndpoint(serveNc, space, serveGrant, [statusDef], { public: true });
   await serveNc.flush();
+  let boundOk = false;
+  try { await handle.bound(); boundOk = true; } catch (e) { boundOk = false; console.log("    bound() refused:", (e as Error).message); }
+  c("bound() resolves when the broker accepted every serve subscription of the real serve credential", boundOk);
+  // The control: the same branded grant served on a connection whose credential holds no serve row.
+  // The broker refuses each subscription, and bound() must say so rather than read as served.
+  const bareId = newIdentity();
+  const bareNc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, bareId, "probe", {}))),
+    inboxPrefix: `_INBOX_${bareId.id}`,
+  });
+  const bareHandle = serveEndpoint(bareNc, space, serveGrant, [statusDef], { public: true });
+  let bareRefusal: unknown;
+  try { await bareHandle.bound(); } catch (e) { bareRefusal = e; }
+  c("bound() rejects with permission-denied when the broker refused a serve subscription",
+    bareRefusal instanceof EpEnvelopeError && bareRefusal.code === "permission-denied", bareRefusal);
+  await bareHandle.stop();
+  await bareNc.close();
 
   const callerNc = await connect({
     servers: SERVERS,

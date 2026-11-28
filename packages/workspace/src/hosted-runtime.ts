@@ -16,6 +16,10 @@ export interface HostedContextInputs {
   readonly storeIdentity: SecretStoreIdentity;
   /** Explicit owner of non-secret local state, such as the auth ledger and IdP pin. */
   readonly stateDir: string;
+  /** The endpoints a delivery context serves beside Plane-3, by name (for example `["artifacts"]`).
+   *  Omitted or empty: none. The injected store must then hold each endpoint's material, written by
+   *  the composition's issuer: see the delivery daemon's served-endpoint docs. */
+  readonly endpoints?: readonly string[];
 }
 
 /** A context's readiness, separate from worker PID and broker transport liveness. */

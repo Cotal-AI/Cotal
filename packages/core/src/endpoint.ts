@@ -19,7 +19,7 @@ import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTa
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./endpoint-subjects.js";
 import { type EpPrincipalCommandDef } from "./endpoint-serve.js";
-import { epPrincipalCall } from "./endpoint-call.js";
+import { epPrincipalCall, type EpArgsFit } from "./endpoint-call.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
@@ -61,7 +61,7 @@ import type { DeliveryLeaseInfo, ManagerLeaseInfo } from "./lease.js";
 import { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import { EndpointDeliveryPlane, type MaybePromise } from "./endpoint-delivery-plane.js";
 import { EndpointControlPlane } from "./endpoint-control-plane.js";
-import { EndpointMessaging } from "./endpoint-messaging.js";
+import { EndpointMessaging, type MulticastOptions } from "./endpoint-messaging.js";
 import { EndpointDurableBackstop } from "./endpoint-durable-backstop.js";
 import { EndpointDurable } from "./endpoint-durable.js";
 import { EndpointAnycast } from "./endpoint-anycast.js";
@@ -110,7 +110,6 @@ export {
 import {
   resolveEndpointPrincipal,
   resolveEndpointSettings,
-  type PrincipalServeIntent,
   type EndpointOptions,
   type TransportState,
   type ChannelMember,
@@ -139,10 +138,7 @@ import {
 export {
   isFromSubjectSender,
 } from "./endpoint-messages.js";
-
-/** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
- *  would subscribe the same subject and both answer one request (SPEC 13.21). */
-const principalServers = new Map<string, PrincipalServeIntent>();
+export type { MulticastOptions } from "./endpoint-messaging.js";
 
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
@@ -416,11 +412,14 @@ export class CotalEndpoint extends EventEmitter {
   }, this.parts);
 
   /** Multicast: broadcast to everyone on a channel. */
-  async multicast(
-    text: string,
-    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
-  ): Promise<CotalMessage> {
+  async multicast(text: string, opts?: MulticastOptions): Promise<CotalMessage> {
     return this.messaging.multicast(text, opts);
+  }
+
+  /** {@link multicast}, plus the chat stream sequence the broker acknowledged for the entry it wrote,
+   *  the handle `confirm-attach` names a post by. */
+  async multicastWithAck(text: string, opts?: MulticastOptions): Promise<{ msg: CotalMessage; seq: number; duplicate: boolean }> {
+    return this.messaging.multicastWithAck(text, opts);
   }
 
   /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
@@ -750,7 +749,7 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     command: string,
     args?: Record<string, unknown>,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string; fitArgs?: EpArgsFit } = {},
   ): Promise<EpAttributedReply> {
     return this.controlPlane.invokeService(endpoint, command, args, opts);
   }
@@ -1750,7 +1749,6 @@ export class CotalEndpoint extends EventEmitter {
   /** The principal serve and prompts of this endpoint. Every dependency is read when it is used, and
    *  every endpoint method is looked up at call time, so a member a caller replaced on the endpoint runs. */
   private readonly principalServe = new EndpointPrincipalServe(this.identity, this.conn, this.delivery, {
-    principalServers: () => principalServers,
     emitRecoverable: (err) => this.emitRecoverable(err),
     requireLifecycleUid: (what) => this.requireLifecycleUid(what),
     notLiveMsg: () => this.notLiveMsg(),

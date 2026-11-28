@@ -195,6 +195,8 @@ export async function startDeliveryWithBroker(
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
     maxSessions?: number;
+    /** `cotal up --serve`: endpoints the delivery daemon also serves, registered once it answers. */
+    serve?: readonly string[];
     managerName?: string;
     managerSeatCap?: SeatCap;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
@@ -354,6 +356,8 @@ export async function serveReadyListener(l: {
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
   maxSessions?: number;
+  /** `cotal up --serve`: endpoints the delivery daemon also serves; recorded on the mesh entry. */
+  serve?: readonly string[];
   managerName?: string;
   managerSeatCap?: SeatCap;
   maxFileStore?: number;
@@ -396,6 +400,7 @@ export async function serveReadyListener(l: {
   // Read the prior host and session limit before replacing the registry entry on resume.
   const attachHost = attachHostFor(space, l.host);
   const maxSessions = maxSessionsFor(space, l.maxSessions);
+  const serve = serveFor(space, l.serve);
   try {
     recordOurMesh({
       space, server, root: cotalRoot(),
@@ -405,6 +410,7 @@ export async function serveReadyListener(l: {
       ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
       ...(attachHost ? { attachHost } : {}),
       ...(maxSessions !== undefined ? { maxSessions } : {}),
+      ...(serve ? { serve } : {}),
       ...(l.maxFileStore !== undefined ? { maxFileStore: l.maxFileStore } : {}),
       storeDir: l.storeDir,
       ts: new Date().toISOString(),
@@ -430,6 +436,7 @@ export async function serveReadyListener(l: {
     // is never a side effect of anything but the operator binding the mesh somewhere reachable.
     attachHost,
     maxSessions,
+    ...(serve ? { serve } : {}),
     managerName: l.managerName,
     managerSeatCap: l.managerSeatCap,
     noManager: l.noManager,
@@ -502,6 +509,8 @@ export interface DetachOpts {
   resumeAttempt?: string;
   resumeCommit?: { path: string; sha256: string };
   maxSessions?: number;
+  /** `cotal up --serve`: endpoints the delivery daemon also serves; recorded on the mesh entry. */
+  serve?: readonly string[];
   managerName?: string;
   managerSeatCap?: SeatCap;
   /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
@@ -609,6 +618,7 @@ export async function startMeshDetached(
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
+    ...(opts.serve ? { serve: opts.serve } : {}),
     managerName: opts.managerName,
     managerSeatCap: opts.managerSeatCap,
     maxFileStore: opts.maxFileStore,
@@ -866,6 +876,14 @@ export function attachHostFor(space: string, explicit?: string): string | undefi
  */
 export function maxSessionsFor(space: string, explicit?: number): number | undefined {
   return explicit ?? findMesh(space)?.maxSessions;
+}
+
+/** The endpoints the delivery daemon serves for this mesh: the ones this invocation asked for, else the
+ *  recorded decision. Every relaunch of the daemon reads it, so a restart never quietly stops serving
+ *  what the operator asked for with `cotal up --serve`. */
+export function serveFor(space: string, explicit?: readonly string[]): string[] | undefined {
+  const recorded = explicit ?? findMesh(space)?.serve;
+  return recorded?.length ? [...recorded] : undefined;
 }
 
 /**

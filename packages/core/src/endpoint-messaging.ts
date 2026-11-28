@@ -23,6 +23,10 @@ import {
 } from "./subjects.js";
 import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js";
 
+/** The options of a multicast: the concrete channel (default: the first concrete one joined), parts,
+ *  thread and context links, and mentions. */
+export interface MulticastOptions { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] }
+
 /** What the messaging component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointMessagingDeps {
@@ -41,10 +45,17 @@ export class EndpointMessaging {
   private emitRecoverable(err: Error) { this.deps.emitRecoverable(err); }
 
   /** Multicast: broadcast to everyone on a channel. */
-  async multicast(
-    text: string,
-    opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
-  ): Promise<CotalMessage> {
+  async multicast(text: string, opts?: MulticastOptions): Promise<CotalMessage> {
+    return (await this.multicastWithAck(text, opts)).msg;
+  }
+
+  /** {@link multicast}, plus the chat stream sequence the broker acknowledged for the entry it wrote.
+   *  A publisher that must later name its own entry uses the sequence: `confirm-attach` names the post
+   *  that referenced an artifact by it. It is learned from an ack the publish already receives, so it
+   *  grants nothing. `seq`, not the message id, is the handle, because JetStream reads by sequence or
+   *  by subject and never by message id. `duplicate` is true when the broker's dedupe window answered
+   *  a retry of the same message id with the earlier entry's sequence. */
+  async multicastWithAck(text: string, opts?: MulticastOptions): Promise<{ msg: CotalMessage; seq: number; duplicate: boolean }> {
     // Publish must target a concrete sub-channel — you can't broadcast to a
     // wildcard. Default to the first concrete channel we're on (channels[0] may
     // itself be a wildcard subscription like `team.>`). On no channels there is NO default: refuse
@@ -70,8 +81,8 @@ export class EndpointMessaging {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.identity.space, this.identity.owner, this.identity.actor, channel), msg);
-    return msg;
+    const ack = await this.publishMsg(chatSubject(this.identity.space, this.identity.owner, this.identity.actor, channel), msg);
+    return { msg, seq: ack.seq, duplicate: ack.duplicate };
   }
 
   /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
@@ -410,8 +421,8 @@ export class EndpointMessaging {
       contextId: opts?.contextId,
     };
     assertPartsSerializable(msg.parts);
-    // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this path
-    // must read the ack, and publishMsg deliberately discards it.
+    // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this subject is
+    // not a chat subject and the msgID dedupe is the only expectation it carries.
     const ack = await this.conn.js.publish(
       anycastSubject(this.identity.space, service, this.identity.owner, this.identity.actor),
       JSON.stringify(msg),
@@ -420,12 +431,13 @@ export class EndpointMessaging {
     return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
-  private async publishMsg(subject: string, msg: CotalMessage): Promise<void> {
+  private async publishMsg(subject: string, msg: CotalMessage): Promise<{ seq: number; duplicate: boolean }> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
     assertPartsSerializable(msg.parts);
     // msgID = message id → free server-side dedup across JetStream redelivery.
     try {
-      await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      const ack = await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      return { seq: ack.seq, duplicate: ack.duplicate === true };
     } catch (error) {
       if (error instanceof TimeoutError)
         throw new Error(

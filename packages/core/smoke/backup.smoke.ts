@@ -68,8 +68,13 @@ assert.deepEqual(
 // anycast request records. The artifact object store keeps its own class because pin extends
 // lifetime, not durability; endpoint state is recreated empty after restore rather than
 // misrepresented as derived or transient data. The issued-authority stores (SPEC 13.15) stay
-// excluded and come back empty.
-assert.equal(inventory.excluded.length, 18);
+// excluded and come back empty. The three artifact index stores share the object store's class:
+// an index row without its bytes, or bytes without their rows, is not a durable record of anything.
+assert.equal(inventory.excluded.length, 21);
+assert.deepEqual(
+  inventory.excluded.filter((stream) => stream.class === "artifact").map((stream) => stream.name).sort(),
+  ["KV_cotal_artattach_backup_smoke", "KV_cotal_artpossess_backup_smoke", "KV_cotal_artreserve_backup_smoke", "OBJ_cotal_artifacts_backup_smoke"],
+);
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live

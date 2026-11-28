@@ -222,7 +222,7 @@ export class ServePlane {
     // handlers here: the status or launch that changed availability can be one of them.
     let draining: Promise<void> | undefined = serving.handle.stop();
     void draining.finally(() => { draining = undefined; });
-    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), draining]); } };
+    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), draining]); }, bound: () => replacement.bound() };
   }
 
   /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and

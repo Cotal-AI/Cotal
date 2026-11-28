@@ -93,6 +93,11 @@ console.log("capabilities");
   ok("admin from a non-admin spawner is refused", same(a, ["capabilities:admin"]), a);
   const u = names(over(evidence({ capabilities: ["spawn"] }), { capabilities: ["superuser"] }));
   ok("an unknown token is refused, never read as an empty grant", same(u, ["capabilities:superuser"]), u);
+  // The `artifacts` token (A1, draft) delegates like spawn: only a spawner that holds it hands it on,
+  // and holding spawn or run does not imply it.
+  const art = names(over(evidence({ capabilities: ["spawn", "run"] }), { capabilities: ["artifacts"] }));
+  ok("artifacts from a spawner without it is refused, even one holding spawn and run", same(art, ["capabilities:artifacts"]), art);
+  ok("artifacts from an artifacts holder is within", over(evidence({ capabilities: ["artifacts"] }), { capabilities: ["artifacts"] }).length === 0);
 }
 
 console.log("ceiling modes");

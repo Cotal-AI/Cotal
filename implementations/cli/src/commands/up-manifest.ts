@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isReachable, DEFAULT_SERVER, type BrokerTransport } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, brokerAddressForDisplay, canonicalRoot, getCurrent, loadMeshes, oneLine, writeResult, type Report, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CommandFailure, DAEMON_ENDPOINT_BOOTSTRAPS, bootstrapDaemonEndpoint, getSpaceAuth, isCommandFailure, brokerAddressForDisplay, canonicalRoot, getCurrent, loadMeshes, oneLine, writeResult, type Report, workspaceSecretStore } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveAuthProvider } from "../lib/auth-proc.js";
 import { c, stderrLine } from "../ui.js";
@@ -178,6 +178,16 @@ export function controllerStackNative(): StackUpNative {
     recreateDeletedStreams,
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
+    bootstrapServedEndpoints: async ({ root, space, server, serve, tls }) => {
+      const store = workspaceSecretStore(root);
+      const auth = await getSpaceAuth(store, space);
+      if (!auth) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the static space trust is missing, so ${serve.join(", ")} cannot be registered; nothing was served`, { target: { root, space } });
+      for (const name of serve) {
+        const spec = DAEMON_ENDPOINT_BOOTSTRAPS[name];
+        if (spec === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--serve ${name}: the delivery daemon serves only ${Object.keys(DAEMON_ENDPOINT_BOOTSTRAPS).join(", ")}`, { target: { root, space } });
+        await bootstrapDaemonEndpoint({ auth, servers: server, space, tls, store, log: (line) => process.stderr.write(`${line}\n`) }, spec());
+      }
+    },
   };
 }
 

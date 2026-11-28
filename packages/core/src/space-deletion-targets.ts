@@ -4,6 +4,7 @@ import {
   objectStoreStream, presenceBucket, taskStream,
 } from "./subjects.js";
 import { endpointPlaneStreamNames } from "./endpoint-binding.js";
+import { artifactIndexStreamNames } from "./artifact-index-stores.js";
 import { eventPayloadStream } from "./event-payloads.js";
 
 /** Native streams belonging to one space, including the backing streams of its KV and object buckets.
@@ -14,7 +15,7 @@ export function spaceDeletionStreams(space: string, observedNames: readonly stri
     `KV_${presenceBucket(space)}`, `KV_${channelBucket(space)}`, `KV_${membersBucket(space)}`,
     `KV_${aclBucket(space)}`, `KV_${membershipBucket(space)}`, `KV_${anycastBucket(space)}`,
     `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
-    ...endpointPlaneStreamNames(space), objectStoreStream(artifactBucket(space)),
+    ...endpointPlaneStreamNames(space), objectStoreStream(artifactBucket(space)), ...artifactIndexStreamNames(space),
   ];
   return [...base, ...observedNames.filter((name) => isTransferStream(space, name))];
 }

@@ -9,6 +9,7 @@ import {
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
   membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream,
+  artifactBucket, artifactIndexBuckets,
   type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
@@ -92,6 +93,8 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "run-admitter": () => one("run-admitter", { runAdmitter: { endpoint: "manager", runId: "census-run" } }),
     "transfer-writer": () => one("transfer-writer", { transferWriter: { instanceId: instance, hex: "0".repeat(64) } }),
     "transfer-reader": () => one("transfer-reader", { transferReader: { instanceId: instance } }),
+    "artifact-data": () => one("artifact-data"),
+    "artifact-sweeper": () => one("artifact-sweeper"),
     "remote-manager"() {
       for (const actor of [`manager_${instance}`, `manager_exec_${instance}`]) {
         one("remote-manager", { remoteManager: { owner: "local", instanceId: instance, actor } }, actor.startsWith("manager_exec") ? "executor" : "server", { ...principal, actor });
@@ -202,6 +205,10 @@ export function streamSubjects(space: string): Record<string, string> {
     [`KV_${anycastBucket(space)}`]: kv(anycastBucket(space)),
     // The census instance's transfer bucket (SPEC 8): its writer and reader read it raw.
     [objectStoreStream(transferBucket(space, CENSUS_INSTANCE))]: `$O.${transferBucket(space, CENSUS_INSTANCE)}.>`,
+    // The artifact object store and its three index buckets: the daemon's artifact-data credential
+    // writes and reads them, the named trusted overlap the census must see.
+    [objectStoreStream(artifactBucket(space))]: `$O.${artifactBucket(space)}.>`,
+    ...Object.fromEntries(artifactIndexBuckets(space).map((bucket) => [`KV_${bucket}`, kv(bucket)])),
   };
 }
 
@@ -259,6 +266,9 @@ export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "o
  */
 export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
+  // The delivery daemon's artifacts store and sweep credentials: a write plus a body-selected read
+  // on the index buckets, so never a peer's.
+  "artifact-data", "artifact-sweeper",
   "teardown", "issued-store-recreate", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",

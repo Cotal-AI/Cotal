@@ -28,7 +28,7 @@ import { retainedBrokerSeed } from "./sys-creds.js";
 const STOP_BOUND_MS = 10_000;
 
 /** The flags of a single-space daemon. Each would be ignored or wrong for every other lane. */
-const SINGLE_SPACE_FLAGS = ["creds", "dev-mint", "shard", "shards"] as const;
+const SINGLE_SPACE_FLAGS = ["creds", "dev-mint", "shard", "shards", "serve"] as const;
 
 /** Refuse a `--spaces` run that is not one complete host invocation. Nothing is read or dialed yet. */
 function validateDeliveryHost(args: ParsedArgs): { manifest: string; server: string } {

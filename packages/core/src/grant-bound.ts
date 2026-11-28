@@ -41,8 +41,9 @@ export interface GrantOverreach {
   readonly value: string;
 }
 
-/** The capability tokens a spawner may hand on, besides `role:<r>`. */
-export const DELEGABLE_CAPABILITIES = Object.freeze(["spawn", "run", "admin"] as const);
+/** The capability tokens a spawner may hand on, besides `role:<r>`. `artifacts` (A1, draft) is held
+ *  and handed on like the others: a spawner passes it to a child only when it holds it itself. */
+export const DELEGABLE_CAPABILITIES = Object.freeze(["spawn", "run", "admin", "artifacts"] as const);
 
 export function isDelegableCapability(token: string): boolean {
   return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || capabilityRole(token) !== undefined;

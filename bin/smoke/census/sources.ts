@@ -47,6 +47,7 @@ const ENDPOINT_CONTRACTS = [
   { endpoint: "auth", file: "implementations/auth/dist/auth-service-contract.js", doc: "authClusterDocument", values: "authContractArtifactValues" },
   { endpoint: "linear", file: "implementations/linear/dist/contract.js", doc: "linearClusterDocument", values: "linearContractArtifactValues" },
   { endpoint: "registry", file: "packages/core/dist/registry-contract.js", doc: "registryClusterDocument", values: "registryContractArtifactValues" },
+  { endpoint: "artifacts", file: "packages/core/dist/artifacts-contract.js", doc: "artifactsClusterDocument", values: "artifactsContractArtifactValues" },
 ] as const;
 
 /** Every input field of a schema, nested object fields included, as dotted paths. */

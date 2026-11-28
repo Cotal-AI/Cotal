@@ -9,7 +9,6 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
-  rmdirSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -20,6 +19,7 @@ import {
   mintCreds,
   newIdentity,
   reconcileSpaceMemoryBuckets,
+  reconcileArtifactIndexStores,
   LEASE_TTL_MS,
   type AuthPrepared,
   type SpaceAuth,
@@ -180,6 +180,7 @@ import {
   serviceEndpointsArgs,
   folderSpace,
   assertSelectionNotMoved,
+  parseUpServe,
 } from "./up-args.js";
 import {
   startUserAuthService,
@@ -197,12 +198,13 @@ import {
   claimSpace,
   attachHostFor,
   maxSessionsFor,
+  serveFor,
   recordOurMesh,
   seedPersonaAfterUp,
   belowPresenceSafeBroker,
 } from "./up-detach.js";
 import { holdForegroundListener } from "./up-foreground-listener.js";
-import { createUpControlDirectory, withUpProjectTrust } from "./up-project-trust.js";
+import { createUpControlDirectory, removeEmptyRecords, withUpProjectTrust } from "./up-project-trust.js";
 import { controllerStackNative, manifestFileRefusal, upManifest } from "./up-manifest.js";
 import {
   printRestoreReceipt,
@@ -300,6 +302,7 @@ export const upFlags: FlagSpec[] = [
   { name: "manager-name", type: "string", value: "<name>", description: "name this root's manager for who --all, the manager choice and --on; kept for later starts" },
   { name: "seat-cap", type: "string", value: "<n|unlimited>", description: "live seats this root's manager admits per owner (default unlimited); kept for later starts" },
   { name: "no-manager", type: "boolean", description: "broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager (refuses on a mesh whose manager is live)" },
+  { name: "serve", type: "string", value: "<endpoints>", description: "auth mode: the delivery daemon also serves these endpoints (comma-separated, for example artifacts); each is registered and bound before up reports success, and kept for later starts" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
   { ...jsonFlag, description: "one structured receipt on stdout (controller-owned stack only, without --foreground)" },
@@ -482,16 +485,6 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
   }
 }
 
-/** Remove the `.cotal` a failed `up` made for a fresh folder when the run wrote nothing in it. One
- *  that holds anything stays, as the run's records. */
-function removeEmptyRecords(path: string): void {
-  try { rmdirSync(path); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOTEMPTY" && code !== "EEXIST") console.error(c.yellow(`! ${path} was left in place (${code ?? "an error"})`));
-  }
-}
-
 const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has a maintenance attempt to recover - a resume needs a manager to commit the preserved inventory; recover it (`cotal up` alone) or roll it back first";
 
 function unfinishedPreservedStop(root: string, space: string): CommandFailure {
@@ -517,6 +510,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     "manager-name"?: string;
     "seat-cap"?: string;
     "no-manager"?: boolean;
+    serve?: string;
     json?: boolean; plain?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
@@ -980,6 +974,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   const noManager = Boolean(values["no-manager"]);
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
+  const serve = parseUpServe(values);
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
   const logFile = values["log-file"] === undefined ? undefined : resolve(values["log-file"]);
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", values["logfile-size-limit"]);
@@ -1122,7 +1117,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       const prepare = async () => {
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
-          return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
+          return await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(serve ? { serve } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
             managerName, retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
@@ -1648,6 +1643,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`
             : `  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
+        for (const stream of await reconcileArtifactIndexStores({ servers: server, space: held.space, creds: reconcileCreds }))
+          console.log(c.dim(`  created ${stream}: the space predates the artifact index stores`));
         // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
         if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
@@ -1726,6 +1723,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         runtime: values.runtime,
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
+        ...(serveFor(held.space, serve) ? { serve: serveFor(held.space, serve) } : {}),
         managerName,
         managerSeatCap,
         noManager,
@@ -1740,7 +1738,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // record as ours (see `Provenance`), and it passes only what this invocation decided.
       // `recordOurMesh` carries everything else (`tlsRequired`, the recorded host and session
       // ceiling, the store) from the record as it stands at write time, not from `held`.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(serve ? { serve } : {}), ts: new Date().toISOString() }, "refresh");
       if (noManager && held.mode !== "open") recordOperationWarning(await noManagerCredentialWarning(root, held.space));
       seedPersonaAfterUp(root);
       // The same Next a launch ends with: this mesh runs, so the steps are the ones that use and
@@ -1854,6 +1852,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       host: values.host,
       runtime: values.runtime,
       maxSessions,
+      ...(serve ? { serve } : {}),
       managerName,
       managerSeatCap,
       noManager,
@@ -2010,6 +2009,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
       maxSessions,
+      ...(serve ? { serve } : {}),
       managerName,
       managerSeatCap,
       maxFileStore,

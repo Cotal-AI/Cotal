@@ -3,6 +3,7 @@
 // endpoint-serve executor, deprovisioner, delivery, membership and connection-evictor profiles.
 // provision-permission-builders.ts re-exports each of them, so import paths are unchanged.
 import { eventPayloadStream } from "./event-payloads.js";
+import { artifactIndexStreamNames } from "./artifact-index-stores.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { spacePrefix, principalKey, deprovisionTargetPrincipal, unicastSubject, artifactBucket, objectStoreStream, chatStream, dmStream, taskStream, dlvStream, inboxStream, dmDurable, dlvDurable, presenceBucket, channelBucket, membersBucket, aclBucket, aclKey, memberKey, assertLifecycleToken, type DeprovisionTarget, membershipBucket, deliveryBucket, managerBucket, connzRequestSubject, accountConnectSubject, accountDisconnectSubject, MEMBERSHIP_INBOX_PREFIX, INBOX_READER_DURABLE, livenessServeFilter, livenessReplyGrant, takeServeFilter, takeReplyGrant, anycastBucket } from "./subjects.js";
@@ -100,7 +101,9 @@ export function provisionerPermissions(space: string, pr: MintPrincipal): Record
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
+  // The three artifact index buckets: create-or-verify only, exactly like the object store above. The
+  // provisioner holds no value write and no read on them; the artifacts service is their only writer.
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...artifactIndexStreamNames(space), ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
@@ -581,6 +584,11 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     // this stream and already reads all of it.
     `$JS.API.CONSUMER.CREATE.${CHAT}`,
     `$JS.API.CONSUMER.CREATE.${CHAT}.>`,
+    // `confirm-attach` (A1, S3) reads the ONE chat entry the caller names by its acknowledged sequence,
+    // to check the caller published the artifact reference it confirms. A strict subset of the consume
+    // power above: the daemon already reads every chat entry through the fan-out. It sits behind one
+    // sealed helper in the delivery daemon that returns the subject and parts only.
+    `$JS.API.STREAM.MSG.GET.${CHAT}`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${CHAT}.>`,
     `$JS.API.CONSUMER.INFO.${CHAT}.>`,
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.>`,
@@ -629,6 +637,12 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     `$JS.API.STREAM.MSG.GET.${eptStreamName(space)}`,
     `$JS.API.STREAM.INFO.KV_${recordsBucket(space)}`,
     `$JS.API.STREAM.MSG.GET.KV_${recordsBucket(space)}`,
+    // A delivery-served endpoint's bind (the `artifacts` service): before it serves on a credential
+    // the daemon re-proves the instance's issuance gate with two leader-served point reads of the
+    // `epgate` key. Read-only and body-selected: the same named residual the auth profile accepts for
+    // its gate read above. No auth-store write of any shape.
+    `$JS.API.STREAM.INFO.KV_${epAuthBucket(space)}`,
+    `$JS.API.STREAM.MSG.GET.KV_${epAuthBucket(space)}`,
     `${p}.ept.*.*.*.*.armed`,
     // Plane-3 data writes: dinbox (fan-out target) + dlv (post-auth handoff) for ANY lifecycle — the
     // identity slots widen to `.*.*.*` (owner+actor+lifecycleUid: dinbox/dlv are per-LIFECYCLE now,

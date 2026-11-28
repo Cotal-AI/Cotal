@@ -3,6 +3,7 @@ import { assertAuthStoreConfig, assertContractStoreConfig, assertRecordsStoreCon
 import { assertIssuedStoreConfig, WRITE_ONCE_PER_KEY } from "./issued-authority.js";
 import { assertAdmissionStoreConfig } from "./run-admission.js";
 import { authorityStreamShapeIssue } from "./authority-store-config.js";
+import { assertArtifactIndexStoreConfig } from "./artifact-index-stores.js";
 import { assertArtifactStoreConfig, LEGACY_ARTIFACT_STORE_MAX_BYTES } from "./streams.js";
 import { historyLimitStreamOf, streamReadPolicyBaseline, validateCanonicalBackupStreamConfig } from "./backup-config.js";
 import { canonicalJson } from "./canonical.js";
@@ -89,6 +90,9 @@ function nativeVerification(resource: SpaceResourceDefinition, config: StreamCon
         assertIssuedStoreConfig(config, space, resource.bucket); break;
       case "admission": assertAdmissionStoreConfig(config, space); break;
       case "artifact": assertArtifactStoreConfig(config, space); break;
+      case "artifact-index":
+        if (resource.kind !== "kv") return { status: "not-confirmed", fields: [] };
+        assertArtifactIndexStoreConfig(config, resource.bucket); break;
       case "declared-fields":
       case "native-runtime-check-required": return { status: "not-checked", fields: [] };
       default: throw new Error("unrecognized native schema verification policy");

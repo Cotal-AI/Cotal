@@ -19,6 +19,7 @@ import {
   EP_PRINCIPAL_ROUTE, EP_PRINCIPAL_REPLY_ROUTE, epPrincipalCallerReplyFilter,
 } from "./endpoint-subjects.js";
 import { AGENT_CLUSTER, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { ARTIFACTS_COMMANDS, ARTIFACTS_ENDPOINT, ARTIFACTS_FETCH_BEGIN_COMMAND, ARTIFACTS_FETCH_CHUNK_COMMAND, ARTIFACTS_LIST_COMMAND } from "./artifacts-contract.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
  *  `routes` defaults to `["one"]`; `instanceId` additionally pins the instance form to exactly
@@ -301,6 +302,7 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "slots", "inspect", "list-personas", "show-persona", "run-status", "run-ps", "goal-result"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
+  [ARTIFACTS_ENDPOINT]: Object.freeze([ARTIFACTS_LIST_COMMAND, ARTIFACTS_FETCH_BEGIN_COMMAND, ARTIFACTS_FETCH_CHUNK_COMMAND]),
 });
 /** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
  *  handler can be attached to it (`serveEndpoint` throws on any def naming it, and a cluster
@@ -356,6 +358,19 @@ export function baselineCallerCapabilities(): EpCapability[] {
     ...DELIVERY_COMMANDS_SNAP.map((command) => ({ endpoint: BASELINE_DELIVERY_ENDPOINT, command })),
     ...SELF_LIFECYCLE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, target: { mode: "self" } as const })),
   ];
+}
+
+/** The `artifacts` capability token (A1, draft name): the caller rows for the `artifacts` endpoint,
+ *  granted only to an agent minted with this token, the way `spawn` and `run` widen an agent. No
+ *  baseline credential carries them, so every existing agent's credential is unchanged. Who holds it
+ *  by default is not decided here. */
+export const ARTIFACTS_CAPABILITY = "artifacts";
+
+/** The `artifacts` capability's rows: one untargeted class-rail request row per served command. The
+ *  commands authorize each call against the caller's live read rule and possession; the row only
+ *  lets the request be sent. */
+export function artifactsCallerCapabilities(): EpCapability[] {
+  return ARTIFACTS_COMMANDS.map((command) => ({ endpoint: ARTIFACTS_ENDPOINT, command }));
 }
 
 /** The `spawn` capability's addition (Appendix B): the manager endpoint's lifecycle commands.

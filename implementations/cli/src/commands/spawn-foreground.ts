@@ -18,6 +18,7 @@ import {
   describeCleanupFailures,
   rejectionText,
   type CleanupFailure,
+  isDelegableCapability,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -314,7 +315,7 @@ export async function provisionUserForeground(
       space,
       owner,
       actor: name,
-      scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
+      scope: (opts.capabilities ?? []).filter(isDelegableCapability),
       allowSubscribe: opts.allowSubscribe,
       allowPublish: publish,
       ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),

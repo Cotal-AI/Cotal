@@ -272,7 +272,7 @@ try {
     const overlaps = fixtures.map((f) => ({ profile: f.profile, variant: f.variant, streams: writeAndRawReadStreams(f.permissions, space) }))
       .filter((row) => row.streams.length > 0);
     const named = (profile: string) => overlaps.some((row) => row.profile === profile);
-    assert.ok(named("run-mediator") && named("provisioner"), `expected trusted overlaps, got ${JSON.stringify(overlaps)}`);
+    assert.ok(named("run-mediator") && named("provisioner") && named("artifact-data"), `expected trusted overlaps, got ${JSON.stringify(overlaps)}`);
     observations.trustedOverlaps = overlaps;
   });
 

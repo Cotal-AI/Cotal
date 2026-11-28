@@ -30,6 +30,7 @@
  */
 import {
   permissionsFor, epServeGrantRows, epsSubject, CREDENTIAL_LIFETIMES, DEV_OWNER,
+  artifactBucket, objectStoreStream, artifactIndexBuckets, artifactIndexStreamNames,
   type Profile,
 } from "@cotal-ai/core";
 
@@ -143,6 +144,8 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "run-admitter": via("run-admitter", { runAdmitter: { endpoint: EP, runId: "run-sweep" } }),
   "transfer-writer": via("transfer-writer", { transferWriter: { instanceId: IID, hex: "0".repeat(64) } }),
   "transfer-reader": via("transfer-reader", { transferReader: { instanceId: IID } }),
+  "artifact-data": via("artifact-data"),
+  "artifact-sweeper": via("artifact-sweeper"),
 };
 
 // ── exhaustiveness: the table's key set IS the profile set, proven at runtime ──────────────────
@@ -235,6 +238,28 @@ console.log("D. the session-ledger (the durable revocation authority) holds NO s
     !ledger.some((r) => anyRail.some((rail) => subjectMatches(r, rail))) && !ledger.some((r) => r.includes(".eps.")), ledger);
   c("it DOES hold the sessions-bucket ledger write (the sweep is not passing by holding nothing)",
     ledger.some((r) => r.startsWith("$KV.cotal_sessions_")), ledger);
+}
+
+console.log("E. only the artifacts service's two credentials reach the artifact stores");
+{
+  const OBJ_BUCKET = artifactBucket(SPACE), OBJ = objectStoreStream(OBJ_BUCKET);
+  const indexBuckets = artifactIndexBuckets(SPACE), indexStreams = artifactIndexStreamNames(SPACE);
+  // A value, read, consumer or purge row on the object store or an index bucket. STREAM.CREATE and
+  // STREAM.INFO are setup, not reach, so the provisioner's create-or-verify rows are not counted.
+  const reaches = (r: string) =>
+    r.startsWith(`$O.${OBJ_BUCKET}`) || [OBJ, ...indexStreams].some((s) =>
+      r.includes(`DIRECT.GET.${s}`) || r.includes(`MSG.GET.${s}`) || r.includes(`CONSUMER.CREATE.${s}`) || r.includes(`.PURGE.${s}`)) ||
+    indexBuckets.some((b) => r.startsWith(`$KV.${b}`));
+  const owners = new Set(["artifact-data", "artifact-sweeper"]);
+  const leaks: Array<{ profile: string; row: string }> = [];
+  for (const [profile, produce] of Object.entries(PRODUCERS)) {
+    if (owners.has(profile)) continue;
+    for (const row of produce()) if (reaches(row)) leaks.push({ profile, row });
+  }
+  c("no profile other than artifact-data and artifact-sweeper holds a value, read, consumer or purge row on the artifact stores",
+    leaks.length === 0, leaks);
+  c("the two owners DO reach the stores (the check is not vacuous)",
+    PRODUCERS["artifact-data"]().some(reaches) && PRODUCERS["artifact-sweeper"]().some(reaches));
 }
 
 console.log(`\neps-grant-sweep: ${ok} passed, ${fail} failed`);

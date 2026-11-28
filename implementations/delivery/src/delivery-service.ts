@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import type { Command, ParsedArgs } from "@cotal-ai/core";
 import { colorEnabled, CommandFailure, DELIVERY_CREDS_KIND, DELIVERY_PROCESS, localProcessPath, observeServiceStartup, protectedCredentialReference, publishServiceStartup, readPidfile, readProcessRecord, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
-import { runDelivery } from "./delivery.js";
+import { runDelivery, SERVED_ENDPOINT_CATALOG } from "./delivery.js";
 
 export const deliveryPreset: ServicePreset = {
   kind: "service-preset", name: "delivery", adapter: "delivery", timeoutMs: 40000,
@@ -19,6 +19,7 @@ export const deliveryService: LocalProcess = {
       root: { type: "string", minLength: 1, maxLength: 4096, description: "registered broker root; the native store and SYS scan must share its authority" },
       creds: { type: "string", minLength: 1, maxLength: 4096, description: "existing protected delivery credential in that root's native credential store" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "optional repeat of the registered broker; a different broker refuses" },
+      serve: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", enum: Object.keys(SERVED_ENDPOINT_CATALOG) }, description: "endpoints the daemon also serves (`cotal up --serve`); each binds once the signer holder registers it" },
     } },
   },
   buildServiceLaunch(context) {
@@ -32,7 +33,8 @@ export const deliveryService: LocalProcess = {
     const state = readProcessRecord(path, DELIVERY_PROCESS.isOwnCommand!);
     if (raw === "" || !["absent", "dead"].includes(state.state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the delivery record at ${path} is live, foreign or unresolved; the service controller did not adopt or stop it`, { target: { space: context.space, path, state: state.state }, remedy: "inspect the original delivery custody before creating an independent service; no manager or broker was changed" });
     const [executable, ...self] = context.cliInvocation;
-    return { executable: executable!, cwd: root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-delivery", "--root", root, "--space", context.space, "--server", target.server, "--creds", creds, "--service-instance", context.instanceId, "--service-request", context.launchRequestId, "--ready-file", serviceStartupPath(context), ...(target.tlsRequired ? ["--tls"] : [])] };
+    const serve = Array.isArray(context.options.serve) ? (context.options.serve as string[]) : [];
+    return { executable: executable!, cwd: root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-delivery", "--root", root, "--space", context.space, "--server", target.server, "--creds", creds, "--service-instance", context.instanceId, "--service-request", context.launchRequestId, "--ready-file", serviceStartupPath(context), ...(target.tlsRequired ? ["--tls"] : []), ...(serve.length ? ["--serve", serve.join(",")] : [])] };
   },
   async checkServiceReadiness(context) { return observeServiceStartup(context, "delivery-ready"); },
 };
@@ -50,6 +52,7 @@ export const nativeDeliveryCommand: Command = {
     { name: "root", type: "string", value: "<root>" }, { name: "space", type: "string", value: "<space>" },
     { name: "server", type: "string", value: "<url>" }, { name: "tls", type: "boolean" }, { name: "creds", type: "string", value: "<private-file>" },
     { name: "service-instance", type: "string", value: "<full-id>" }, { name: "service-request", type: "string", value: "<full-id>" }, { name: "ready-file", type: "string", value: "<private-path>" },
+    { name: "serve", type: "string", value: "<endpoints>" },
   ], validate,
   async run(args) {
     validate(args);
@@ -58,7 +61,7 @@ export const nativeDeliveryCommand: Command = {
     protectedCredentialReference(String(args.values.creds));
     const path = String(args.values["ready-file"]), instanceId = serviceOperationId(args.values["service-instance"]), launchRequestId = serviceOperationId(args.values["service-request"]);
     validateServiceStartupPath(path, instanceId, launchRequestId);
-    await runDelivery({ ...args, values: { root: args.values.root, space: args.values.space, server: args.values.server, creds: args.values.creds, ...(args.values.tls ? { tls: true } : {}) } }, undefined, async (started) => {
+    await runDelivery({ ...args, values: { root: args.values.root, space: args.values.space, server: args.values.server, creds: args.values.creds, ...(args.values.tls ? { tls: true } : {}), ...(typeof args.values.serve === "string" ? { serve: args.values.serve } : {}) } }, undefined, async (started) => {
       try {
         if (started.status().state !== "ready") throw new Error("native delivery did not report ready");
         publishServiceStartup(path, { phase: "delivery-ready", space: target.space, instanceId, launchRequestId });

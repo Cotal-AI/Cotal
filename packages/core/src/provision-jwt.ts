@@ -89,6 +89,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from `cotal mint`" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source" },
   delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop" },
+  "artifact-data": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "the delivery daemon's artifacts request-path store connection; seed-less, re-signed for the SAME nkey by the signer holder and adopted through delivery-admin, like delivery.creds" },
+  "artifact-sweeper": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "the delivery daemon's artifacts sweep connection, used only while it holds the lease; seed-less, renewed and adopted like artifact-data" },
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
@@ -757,9 +759,12 @@ export async function mintCreds(
   const userJwtBytes = Buffer.byteLength(userJwt, "utf8");
   if (userJwtBytes > MAX_MINTED_JWT_BYTES) {
     const channelCount = (opts.allowSubscribe?.length ?? 0) + (opts.allowPublish?.length ?? 0);
+    // Name the capability tokens too: a token such as `artifacts` adds rows, so a channel set that fit
+    // without it can stop fitting with it. The refusal says which, and drops no row to make it fit.
+    const tokens = opts.capabilities?.length ? `, capabilities [${opts.capabilities.join(", ")}]` : "";
     throw new Error(
       `mintCreds: minted JWT is ${userJwtBytes} bytes, exceeding the ${MAX_MINTED_JWT_BYTES}-byte ` +
-        `mint bound (${channelCount} allowSubscribe+allowPublish channel(s)) - the composed credential ` +
+        `mint bound (${channelCount} allowSubscribe+allowPublish channel(s)${tokens}) - the composed credential ` +
         `would exceed the broker's CONNECT line and the connect would hang silently (issue #375)`,
     );
   }

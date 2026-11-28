@@ -26,6 +26,7 @@ import {
   type PersistentConsumerCheckpoint,
   createEndpointStreams,
   ensureArtifactStore,
+  ensureArtifactIndexStores,
   hardenedAuthorityStreamNames,
   setHistoryLimit,
   type HistoryLimit,
@@ -294,6 +295,7 @@ async function createOmittedInfrastructure(
     // refuse rather than adopt it, which matters more here than at setup - a restore is exactly when
     // an operator is least able to tell an inherited config from a fresh one.
     await ensureArtifactStore(nc, space);
+    await ensureArtifactIndexStores(jsm, kvm, space);
     for (const stream of [...create, ...excluded]) await jsm.streams.info(stream);
     // The normal listener is exposed only over a complete space: assert the exact stream inventory
     // (restored + created + excluded transient) before the coordinator may write commit intent.

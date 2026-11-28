@@ -16,6 +16,7 @@ import {
   epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, instancePinnedInstrumentCapabilities, baselineCallerCapabilities, permissionsFor,
   SPAWN_CREATE_COMMANDS,
   MAX_CONTROL_LINE_BYTES, CONNECT_ENVELOPE_OVERHEAD_BYTES, MAX_MINTED_JWT_BYTES,
+  ARTIFACTS_CAPABILITY, isDelegableCapability, spacePrefix,
   type EpCapability, type EpCaller,
 } from "../src/index.js";
 
@@ -273,6 +274,43 @@ function sixDistinctChannels(): string[] {
 }
 c("the mint bound equals the control line minus the documented CONNECT envelope overhead (both read from source, so a drift is a red cell)",
   MAX_MINTED_JWT_BYTES === MAX_CONTROL_LINE_BYTES - CONNECT_ENVELOPE_OVERHEAD_BYTES);
+
+// ── the `artifacts` capability token (A1, option A): opt-in caller rows, never in the baseline ──
+{
+  const pr = { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: mintLifecycleUid() };
+  // The literal subject, written out rather than derived from the row builder, so a builder change
+  // cannot move both sides of this comparison together.
+  const listRow = `${spacePrefix(auth.space)}.ep.one.artifacts.list.u_abc.cli.${pr.lifecycleUid}.*`;
+  const isArtifactsRow = (row: string) => row.includes(".ep.one.artifacts.") || row.includes(".ep.v1.one.artifacts.");
+  // One identity for both, so the per-connection rows (which name the nkey) are the same and the token
+  // is the only difference.
+  const sameId = newIdentity();
+  const without = decode(await mintCreds(auth, sameId, "agent", { ...pr, allowSubscribe: ["general"] }));
+  const withToken = decode(await mintCreds(auth, sameId, "agent", { ...pr, allowSubscribe: ["general"], capabilities: [ARTIFACTS_CAPABILITY] }));
+  c("an agent minted without the artifacts token holds no artifacts request row",
+    !without.pub.allow.some(isArtifactsRow), without.pub.allow.filter(isArtifactsRow));
+  c("an agent minted with the artifacts token holds the list request row",
+    withToken.pub.allow.some(isArtifactsRow) && withToken.pub.allow.some((r) => r.startsWith(listRow.slice(0, listRow.lastIndexOf(".")))), withToken.pub.allow.filter(isArtifactsRow));
+  const restPub = withToken.pub.allow.filter((r) => !isArtifactsRow(r));
+  c("the token adds only artifacts rows: every other row of the two credentials is identical",
+    JSON.stringify([...restPub].sort()) === JSON.stringify([...without.pub.allow].sort())
+      && JSON.stringify([...withToken.sub.allow].sort()) === JSON.stringify([...without.sub.allow].sort()),
+    { pubOnlyWith: restPub.filter((r) => !without.pub.allow.includes(r)), pubOnlyWithout: without.pub.allow.filter((r) => !restPub.includes(r)),
+      subOnlyWith: withToken.sub.allow.filter((r) => !without.sub.allow.includes(r)), subOnlyWithout: without.sub.allow.filter((r) => !withToken.sub.allow.includes(r)) });
+  c("artifacts is a token a spawner may hand on, like spawn and run", isDelegableCapability(ARTIFACTS_CAPABILITY));
+  // Coordinator condition 1: a channel set that fits alone, plus the token, no longer fits. The mint
+  // fails loudly, naming the capability and the bound; it drops no row to make the credential fit.
+  const five = sixDistinctChannels().slice(0, 5);
+  let refused: string | undefined;
+  try { await mintCreds(auth, newIdentity(), "agent", { ...pr, allowSubscribe: five, capabilities: [ARTIFACTS_CAPABILITY] }); }
+  catch (e) { refused = (e as Error).message; }
+  c("artifacts plus five 4096-char channels fails the mint loudly, naming the capability and the bound",
+    refused !== undefined && refused.includes("capabilities [artifacts]") && refused.includes(String(MAX_MINTED_JWT_BYTES)) && refused.includes("5 allowSubscribe"),
+    refused);
+  // The fixture's five channels still mint without the token, so the refusal is the token's.
+  const fits = await mintCreds(auth, newIdentity(), "agent", { ...pr, allowSubscribe: five });
+  c("the same five channels without the token still mint", typeof fits === "string" && fits.length > 0);
+}
 
 const withCaps = decode(await mintCreds(auth, newIdentity(), "agent", {
   principal: { owner: "u_abc", actor: "cli" },

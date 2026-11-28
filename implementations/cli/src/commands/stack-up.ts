@@ -112,6 +112,8 @@ export interface StackUpNative {
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; readSeed: () => ChannelRegistryFile | undefined }): Promise<boolean>;
   recordMesh(entry: { space: string; server: string; root: string; mode: StackMode; tlsRequired: boolean; storeDir: string; userAuth?: UserAuthInfo; maxSessions?: number; attachHost?: string; maxFileStore?: number }): void;
+  /** Register each asked-for endpoint from the root's signer and have the running delivery member bind it. */
+  bootstrapServedEndpoints(target: { root: string; space: string; server: string; serve: readonly string[]; tls: boolean }): Promise<void>;
   /** Record the transport, and the auth callout timeout, payload limit and account resolver the
    *  prepared configuration rendered. */
   commitTransport(root: string, transport: BrokerTransport, limits?: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }): void;
@@ -177,6 +179,8 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  /** `cotal up --serve`: endpoints the delivery member also serves. Absent: its saved definition's. */
+  serve?: string[];
   managerName?: string;
   managerSeatCap?: SeatCap;
   channels?: string;
@@ -362,6 +366,22 @@ export function controllerStackApplies(root: string, space: string, values: Pars
     throw controllerUnsupported(canonical, unsupported, true);
   }
   return true;
+}
+
+/** The endpoints the delivery member serves. Its saved definition keeps them, as the manager's keeps
+ *  its session ceiling: a bare up, and every controller restart of the member, starts it with the set
+ *  an earlier `up --serve` chose. A running daemon cannot add or drop one, so a different explicit set
+ *  refuses while it runs. */
+function controllerServe(root: string, space: string, requested: string[] | undefined): string[] | undefined {
+  const saved = serviceDefinitionStore(space).read(STACK_DEFINITION.delivery)?.record.value.launch;
+  const savedServe = saved?.type === "adapter" && saved.options.root === root && Array.isArray(saved.options.serve) ? saved.options.serve as string[] : undefined;
+  if (requested !== undefined && JSON.stringify(requested) !== JSON.stringify(savedServe ?? [])
+    && serviceInstances(space, STACK_DEFINITION.delivery).some((row) => observeServiceProcess(row.record.value) === "running"))
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the running delivery daemon serves ${savedServe?.join(", ") || "no endpoint"} and cannot change that at runtime; nothing was started or written`, {
+      target: { root, space, serve: savedServe ?? [], requestedServe: requested },
+      remedy: `stop the stack with \`cotal down --yes\`, then run \`cotal up --serve ${requested.join(",")}\``,
+    });
+  return requested ?? savedServe;
 }
 
 export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean, maxPayload?: number, maxFileStore?: number, maxSessions?: number): never {
@@ -801,6 +821,21 @@ function advertisedWebsocketPort(port: number | undefined, mode: string, space: 
   return running ? port : undefined;
 }
 
+/** Wait out a dead predecessor's delivery lease before a replacement daemon starts. A daemon that was
+ *  killed, or that exited when its broker went away, cannot release shard 0, and a replacement started
+ *  inside the row's TTL loses the create and refuses to bind. No daemon runs here, so a row held by the
+ *  credential this folder gave the previous one is that dead daemon's: wait for the bucket TTL to
+ *  remove it. A row written again meanwhile has a live holder, and that is refused. */
+async function awaitPreviousDeliveryLease(a: { root: string; space: string; server: string; creds: string; previous: string; presentation: StackUpRequest["presentation"] }): Promise<void> {
+  const { root, space, server } = a;
+  const waited = await awaitDeadDeliveryLease({
+    servers: server, space, creds: a.creds, tls: resolveNativeServiceTarget(root, space, server).tlsRequired,
+    deadHolder: deliveryLeaseHolderFor(a.previous), ttlMs: LEASE_TTL_MS,
+    onWait: (ms) => { if (a.presentation !== "json") process.stderr.write(`${STACK_DEFINITION.delivery}: shard 0 is still leased to this folder's previous delivery daemon, which is not running; waiting ${Math.ceil(ms / 1000)}s for the lease to expire\n`); },
+  });
+  if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; \`cotal down\` does not reach a daemon this folder has no record of` });
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -916,6 +951,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         });
     }
   }
+  const serve = controllerServe(root, space, request.serve);
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
@@ -1238,24 +1274,16 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const stoppedDelivery = prepared && runningDelivery && await stopDeliveryForBrokerRepair(root, recordedMembers, runningDelivery);
       if (!runningDelivery || stoppedDelivery) {
         const creds = await mintCreds(auth, newIdentity(), "delivery");
-        // A daemon that was killed, or that exited when its broker went away, cannot release shard 0,
-        // and a replacement started inside the row's TTL loses the create and refuses to bind. No
-        // daemon runs here, so a row held by the credential this folder gave the previous one is that
-        // dead daemon's: wait for the bucket TTL to remove it. A row written again meanwhile has a
-        // live holder, and that is refused.
+        // A previous daemon's shard-0 lease is waited out first (awaitPreviousDeliveryLease).
         const previous = await store.get(credsKey);
-        if (previous !== undefined) {
-          const waited = await awaitDeadDeliveryLease({
-            servers: server, space, creds, tls: resolveNativeServiceTarget(root, space, server).tlsRequired,
-            deadHolder: deliveryLeaseHolderFor(previous), ttlMs: LEASE_TTL_MS,
-            onWait: (ms) => { if (request.presentation !== "json") process.stderr.write(`${STACK_DEFINITION.delivery}: shard 0 is still leased to this folder's previous delivery daemon, which is not running; waiting ${Math.ceil(ms / 1000)}s for the lease to expire\n`); },
-          });
-          if (waited === "rewritten") throw new CommandFailure("refused", "CONFLICT", "shard 0 of the delivery lease names this folder's previous delivery daemon and was written again while up waited for it to expire, so a live daemon holds it; no second daemon was started", { target: { root, space }, remedy: `find the process running delivery for space ${space} and stop it or keep it; \`cotal down\` does not reach a daemon this folder has no record of` });
-        }
+        if (previous !== undefined) await awaitPreviousDeliveryLease({ root, space, server, creds, previous, presentation: request.presentation });
         await store.put(credsKey, creds);
       }
-      const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
+      const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server, ...(serve?.length ? { serve } : {}) }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
+      // The asked-for endpoints, registered from this root's signer and bound before up goes on; a
+      // failure fails the delivery member, never a served-looking stack.
+      if (serve?.length) { failedRole = "delivery"; await native.bootstrapServedEndpoints({ root, space, server, serve, tls: resolveNativeServiceTarget(root, space, server).tlsRequired }); failedRole = undefined; }
     }
     if (mode === "user") {
       // The callout's deadline is the timeout this broker configuration rendered, never a second setting.

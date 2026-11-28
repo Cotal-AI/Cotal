@@ -3,13 +3,14 @@ import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } fro
 import { EVENT_CHANNEL_PREFIX } from "./event-channel.js";
 import { spacePrefix, chatSubject, chatWildcard, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
-import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
+import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, artifactsCallerCapabilities, ARTIFACTS_CAPABILITY, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
 import { epcStreamName } from "./endpoint-binding.js";
 import { epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant } from "./issued-authority.js";
 import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants } from "./run-driver-grants.js";
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
+import { artifactDataPermissions, artifactSweeperPermissions } from "./artifact-permissions.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile } from "./environment-manager-grants.js";
 import { backupProfilePermissions, restoreProfilePermissions } from "./backup.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
@@ -33,6 +34,10 @@ export type Profile =
   | "backup"
   | "restore"
   | "delivery"
+  // The delivery daemon's artifacts service: the request-path store credential and the lease
+  // holder's sweeper. Never issuable to a peer ({@link artifactDataPermissions}).
+  | "artifact-data"
+  | "artifact-sweeper"
   | "membership-rw"
   // The scoped CLI-surface profiles.
   | "space-quiescence-reader" // host-only one-shot idle-work census
@@ -131,6 +136,16 @@ export function capabilityRole(token: string): string | undefined {
   return ROLE_CAPABILITY.exec(token)?.[1];
 }
 
+/** The `artifacts` capability (A1, draft): the `artifacts` endpoint's request rows, for an agent
+ *  minted with this token only, appended without duplicates. The baseline never carries them, so a
+ *  credential without the token is byte-identical to one minted before the endpoint existed. */
+function addArtifactsCapabilityRows(space: string, opts: MintOpts, caller: EpCaller, pub: string[], sub: string[]): void {
+  if (!opts.capabilities?.includes(ARTIFACTS_CAPABILITY)) return;
+  const rows = epCallerGrantRows(space, artifactsCallerCapabilities(), caller);
+  for (const p of rows.pub) if (!pub.includes(p)) pub.push(p);
+  for (const s of rows.sub) if (!sub.includes(s)) sub.push(s);
+}
+
 /** The roles whose task queue an agent credential binds: its own role, and the role of each
  *  `role:<r>` token in its capabilities, which lets it hand that role on (SPEC 13.15). */
 export function taskRoles(role: string | undefined, capabilities: readonly string[] | undefined): string[] {
@@ -215,6 +230,8 @@ export function permissionsFor(
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
+  if (profile === "artifact-data") return artifactDataPermissions(space, pr);
+  if (profile === "artifact-sweeper") return artifactSweeperPermissions(space, pr);
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "agent-caller") return agentCallerPermissions(space, pr);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
@@ -671,6 +688,7 @@ export function permissionsFor(
     for (const p of rows.pub) if (!pubAllow.includes(p)) pubAllow.push(p);
     for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
   }
+  addArtifactsCapabilityRows(space, opts, epCaller, pubAllow, epSub);
   if (opts.capabilities?.includes("admin"))
     // The admin capability grants the admin instrument set on the ep rails, the set a
     // `control-caller-admin` holds — the any-mode rows + the `manager.admin` family + the reads. In

@@ -869,7 +869,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
 
 /** The ledger capabilities a grant's `--scope` may name, besides `role:<role>`: what the auth
  *  service, the manager and the views check a row's scope for. */
-const GRANT_CAPABILITIES = ["admin", "run", "spawn", "supervise"] as const;
+const GRANT_CAPABILITIES = ["admin", "artifacts", "run", "spawn", "supervise"] as const;
 
 function isGrantCapability(scope: string): boolean {
   if ((GRANT_CAPABILITIES as readonly string[]).includes(scope)) return true;

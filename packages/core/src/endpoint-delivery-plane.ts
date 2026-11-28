@@ -1,5 +1,6 @@
 // The plane-3 delivery region of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to it. Not re-exported by the index.
+import type { JetStreamManager } from "@nats-io/jetstream";
 import type { DeliveryState } from "./endpoint-delivery-state.js";
 import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { CredentialState } from "./endpoint-credential-state.js";
@@ -167,6 +168,14 @@ export class EndpointDeliveryPlane {
      *  schedules a resident reconnect underneath start-up awaits that are still pending on this
      *  connection. Absent means the composition has no such phase. */
     startupComplete?: () => boolean;
+    /** Composition-root hook: the daemon-served endpoints' bind (A1). `adopt` binds a candidate
+     *  serve credential for one endpoint and answers what bound; the daemon's own JetStream manager is
+     *  passed for the bind's leader reads. `state` answers `serveState`. Absent means the daemon serves
+     *  no endpoint, and both ops refuse loudly. */
+    servedEndpoints?: {
+      adopt: (endpoint: string, adoptionOpId: string, jsm: JetStreamManager) => Promise<unknown>;
+      state: (endpoint: string) => unknown;
+    };
   };
   private deliveryLimitRead?: { at: number; stamp: string };
 
@@ -189,10 +198,10 @@ export class EndpointDeliveryPlane {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string, connections?: KickTarget[]) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string, connections?: KickTarget[]) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean; servedEndpoints?: { adopt: (endpoint: string, adoptionOpId: string, jsm: JetStreamManager) => Promise<unknown>; state: (endpoint: string) => unknown } } = {},
   ): Promise<void> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete, servedEndpoints: opts.servedEndpoints };
     await this.armPlane3();
   }
 
@@ -571,6 +580,29 @@ export class EndpointDeliveryPlane {
     });
   }
 
+  /** A daemon-served endpoint (A1) on the delivery-admin rail. `adoptEndpointCreds` re-reads that
+   *  endpoint's serve credential and binds it only after the daemon's own checks; `serveState` reports
+   *  what is bound now, with the bound credential's fingerprint and the adoption op id, and is
+   *  read-only. */
+  private async deliveryServedEndpoint(req: ControlRequest): Promise<ControlReply> {
+    if (!this.plane3?.servedEndpoints)
+      return { ok: false, error: `${req.op}: this daemon serves no endpoint (start it with --serve)` };
+    const endpoint = typeof req.args?.endpoint === "string" ? req.args.endpoint : "";
+    if (!endpoint) return { ok: false, error: `${req.op}: endpoint must be a non-blank string` };
+    try {
+      if (req.op === "serveState") return { ok: true, data: this.plane3.servedEndpoints.state(endpoint) };
+      if (this.plane3.startupComplete?.() === false)
+        return { ok: false, error: "adoptEndpointCreds: this daemon has not finished starting; nothing adopted" };
+      const opId = typeof req.args?.adoptionOpId === "string" ? req.args.adoptionOpId : "";
+      if (!opId) return { ok: false, error: "adoptEndpointCreds: adoptionOpId must be a non-blank string" };
+      // The daemon's own connection serves the bind's leader reads (gate and spec), under the delivery
+      // credential's grants; it is handed over per adoption, never held by the served endpoint.
+      return { ok: true, data: await this.plane3.servedEndpoints.adopt(endpoint, opId, await this.parts.consumers.manager()) };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
   /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
    *  boundary — only the supervisor profile can publish here — and `serveControl`'s sender check +
    *  bounded reply still apply on top. `reloadCreds` is the class-2 renewal ADOPTION step: re-read
@@ -629,6 +661,7 @@ export class EndpointDeliveryPlane {
         : { ok: true, data: { delivery, membership } };
     }
     if (req.op === "evictSessionConnections") return this.deliveryEvictSessionConnections(req);
+    if (req.op === "adoptEndpointCreds" || req.op === "serveState") return this.deliveryServedEndpoint(req);
     if (req.op === "evictPrincipal") return this.deliveryEvictPrincipal(req);
     if (req.op === "evictPrincipals") {
       // The same executor over a SET: one shared sweep instead of one request and one scan per

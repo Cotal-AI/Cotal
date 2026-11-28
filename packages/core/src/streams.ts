@@ -1,4 +1,5 @@
 import { drainAndClose } from "./connection-cleanup.js";
+import { ensureArtifactIndexStores } from "./artifact-index-stores.js";
 import { eventPayloadStream } from "./event-payloads.js";
 import {
   jetstream,
@@ -893,10 +894,13 @@ export function assertArtifactStoreConfig(config: StreamConfig, space: string): 
   // on an otherwise canonical store, `put` fails outright with "rollup not permitted" - the object
   // store uses a rollup to replace an object's metadata. So a store drifted here accepts setup and
   // then rejects every artifact, which is the worst shape: green provisioning, broken feature.
-  //
-  // `allow_direct` is deliberately NOT checked. Measured on the same probe: with it false, put and
-  // get both still succeed, because this client's info path uses STREAM.MSG.GET rather than
-  // DIRECT.GET. Asserting it would refuse a store that works.
+  // `allow_direct` MUST be true, and the reason changed with the artifacts service. The stock client
+  // reads metadata with STREAM.MSG.GET and works either way, but the delivery daemon's artifacts
+  // service reads every chunk and meta record with a subject-scoped last-by-subject DIRECT.GET, the
+  // only object-store read its credential holds (it holds no bare DIRECT.GET and no consumer create,
+  // so no body can select another subject). With direct gets off, every fetch fails. The stock object
+  // store creates the stream with it on, so a store that has it off was changed by hand.
+  if (config.allow_direct !== true) drift.push("allow_direct is not true (the artifacts service reads chunks by last-by-subject direct get)");
   if (config.allow_rollup_hdrs !== true) drift.push("allow_rollup_hdrs is false, expected true (put fails without it)");
   // max_age: SILENT DATA LOSS, measured. With max_age 1s on an otherwise canonical store, a put
   // succeeds and the object is GONE 1.8s later (stream messages back to 0) - while every reference
@@ -984,6 +988,8 @@ export async function setupSpaceStreams(opts: {
     // Artifact Object Store (SPEC section 5): the bytes an `artifact` reference part points at.
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);
+    // The three artifact index stores beside it (attachments, possession, reservations).
+    await ensureArtifactIndexStores(jsm, kvm, opts.space);
   } finally {
     await drainAndClose(nc);
   }
