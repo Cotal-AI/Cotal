@@ -78,11 +78,11 @@ export function nativeStub(scenario) {
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
-      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
+      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true, ...(state.stoppedByYou ? { stopped: "by-you" } : {}) } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}), ...(state.diskFull ? { diskFull: true } : {}), ...(state.generation ? { generation: state.generation } : {}), ...(state.recovery ? { recovery: state.recovery } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
+      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; if (state.missingAfterSignIn && state.signedIn && state.statusRequests > 1) state.installed = false; return ok(statusPayload()); }
       if (request.op === "status-watch") {
         state.statusWatchRequests = (state.statusWatchRequests ?? 0) + 1;
         if (state.version && state.version !== "0.156.0") {
@@ -761,12 +761,12 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
-      const pill = observed === "connected" || observed === "removed on this computer" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "refusal" ? "Repair needed" : "Starting";
+      const pill = observed === "connected" || observed === "removed on this computer" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "refusal" ? "Can't connect" : "Starting";
       assert.equal(await page.locator("#tray-label").textContent(), pill);
       const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
       assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
       if (observed === "refusal") {
-        assert.equal(await page.locator("#connection-title").textContent(), "This computer needs a repair");
+        assert.equal(await page.locator("#connection-title").textContent(), "Can't reach your space");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
         assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
       }
@@ -778,9 +778,38 @@ export const scenarios = [
     },
   })),
   { name: "loading", state: { loading: true }, expect: async page => {
-    assert.equal(await page.locator("#tray-label").textContent(), "Checking connection");
+    assert.equal(await page.locator("#tray-label").textContent(), "Starting");
     assert.equal(await page.locator("#loading-icon .icon-spinner").count(), 1);
     assert.ok(await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().height) < 100);
+  } },
+  ...[
+    ["disk-full", { diskFull: true }, "Disk full", "Your disk is full", "Free up space on this computer. Cotal continues by itself once there is room."],
+    ["updating", { generation: { installed: "0.157.0", running: "0.156.0", waiting: "preparing" } }, "Updating", "Cotal is updating", "It finishes by itself. Agents keep running."],
+    ["repair", { recovery: { code: "DAEMON_LOST" } }, "Repair needed", "This computer needs a repair", "Repair it to use it from your spaces again."],
+  ].map(([name, extra, word, title, description]) => ({
+    name: `surface-${name}`,
+    state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] }, ...extra },
+    expect: async page => {
+      assert.equal(await page.locator("#tray-label").textContent(), word);
+      assert.equal(await page.locator("#connection-title").textContent(), title);
+      assert.equal(await page.locator("#connection-description").textContent(), description);
+      // The word comes from the field. Dropping it returns the computer to Connected.
+      await page.evaluate(key => { delete window.__renderState[key]; window.__pushStatus(); }, Object.keys(extra)[0]);
+      await page.waitForFunction(expected => document.querySelector("#tray-label").textContent === expected, "Connected");
+    },
+  })),
+  { name: "surface-service-stopped", state: { installed: true, signedIn: true, serviceStopped: true, stoppedByYou: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Service stopped");
+    assert.equal(await page.locator("#connection-description").textContent(), "You stopped the background service. Start it to run agents on this computer again.");
+  } },
+  { name: "surface-not-set-up", state: { signedIn: true, installed: true, missingAfterSignIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Not set up");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is not set up");
+  } },
+  { name: "surface-both-refused", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected", lastRefusal: "This space is set up under another sign-in on this computer." })) } }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Can't connect");
+    assert.equal(await page.locator("#connection-title").textContent(), "Can't reach your space");
+    assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
   } },
   { name: "welcome", state: {} },
   { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#journey li').count(), 4) },

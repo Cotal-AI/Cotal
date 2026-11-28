@@ -8,7 +8,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, surfaceState, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, surfaceState, surfaceInputs, type SurfaceFrame, CONNECTION_COPY, networkState, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -97,6 +97,16 @@ let appApplyRunning = false;
 let nextAppApplyTick = 0;
 let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
+let serviceNotice: "stopped" | "not-set-up" | undefined;
+let stageBeforeService: Stage | undefined;
+/** One reading of the status frame for every surface. Dropping a field here changes the word. */
+function readSurface(anyConnected: boolean) {
+  const frame = serviceStatus as (SurfaceFrame & { account?: ComputerAccount }) | undefined;
+  const account = computerAccount ?? frame?.account;
+  const rows = account ? computerSpaces(account) : [];
+  const refused = new Set(rows.filter(row => row.lastRefusal).map(row => row.space));
+  return surfaceState({ ...surfaceInputs(frame, rows, anyConnected && [...connections].some(([space, value]) => value === "launch-ready" && !refused.has(space))), service: serviceNotice });
+}
 async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
   if (tick && Date.now() < nextAppApplyTick) return;
   if (appApplyRunning || busy || loginActive || setupActive || !["darwin", "win32"].includes(appPlatform) || !autoUpdates || !appUpdate?.version) return;
@@ -522,8 +532,8 @@ function showStage(next: Stage, focus = false): void {
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
-  else if (finished && computerAccount?.hostSupport === "supported") {
-    const state = surfaceState({ rows: computerSpaces(computerAccount), anyConnected, signInRequired: computerAccount.mode === "sign-in-required" });
+  else if (finished && (computerAccount?.hostSupport === "supported" || serviceNotice)) {
+    const state = readSurface(anyConnected);
     title = state.title; description = state.description;
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
@@ -531,10 +541,10 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
+  const issue = serviceNotice === "stopped" && !problem ? "NOT_RUNNING" : problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && !(finished && runningAgents() !== undefined) && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   const lost = networkState(computerSummary(computerAccount ? computerSpaces(computerAccount) : [], anyConnected));
-  if (recovery && !lost) { title = recovery.title; description = recovery.description; }
+  if (recovery && !lost && !(serviceNotice === "stopped" && !problem)) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery || Boolean(lost);
   el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   el("recover-apps").hidden = issue !== "NO_AVAILABLE_CONNECTOR";
@@ -584,7 +594,7 @@ function showStage(next: Stage, focus = false): void {
     for (const id of ["retry-login", "sync", "another-space", "dashboard"]) el(id).hidden = true;
   }
   if (finished && computerAccount?.hostSupport === "supported") {
-    const state = surfaceState({ rows: computerSpaces(computerAccount), anyConnected, signInRequired: computerAccount.mode === "sign-in-required" });
+    const state = readSurface(anyConnected);
     el("spaces-heading").hidden = state.word === "Sign in required" || !anyConnected;
     text("tray-label", state.word);
     if (isTauri()) void invoke("set_connection_state", { connected: state.word === "Connected", label: state.word }).catch(() => undefined);
@@ -851,7 +861,7 @@ function state(value: string, space = selectedSpace()): void {
   if (value === "launch-ready" || value === "approval-pending") connections.set(space, value);
   else connections.delete(space);
   const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
-  const state = surfaceState({ rows: computerAccount ? computerSpaces(computerAccount) : [], anyConnected: verified });
+  const state = readSurface(verified);
   if (connected()) problem = undefined;
   text("tray-label", initialized ? state.word : "Starting");
   el("tray-indicator").classList.toggle("connected", state.dot === "ok");
@@ -935,6 +945,8 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   if (!current()) return;
   selectionPending = false;
   serviceStatus = status;
+  serviceNotice = undefined;
+  if (stageBeforeService) { const back = stageBeforeService; stageBeforeService = undefined; if (!completedSetup) { listOpened = false; showStage(back); } }
   ready = status.state === "ready";
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
@@ -945,14 +957,17 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
+  const space = selectedSpace();
+  const frameAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+  const refusedSpaces = new Set((frameAccount ? computerSpaces(frameAccount) : []).filter(row => row.lastRefusal).map(row => row.space));
+  observedReadySpaces = observedReadySpaces.filter(name => !refusedSpaces.has(name));
   managerReasons.clear();
   if (Array.isArray(status.managers)) for (const item of status.managers) {
     if (typeof item.connection?.reason === "string") managerReasons.set(String(item.space), item.connection.reason);
     else if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
   }
-  const space = selectedSpace();
-  computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
+  computerAccount = frameAccount;
   if (computerAccount?.hostSupport === "supported") {
     computerRows.clear(); connections.clear();
     for (const row of computerSpaces(computerAccount)) {
@@ -998,6 +1013,11 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
 /** Before the first sign-in no service is set up, which is not a problem; a stopped one is. */
 function notSetUpYet(error: unknown): boolean {
   return !listOpened && error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed !== true;
+}
+/** An intentional stop and a service that was never set up are words. An unexpected stop stays on its own path. */
+function noteService(error: unknown): void {
+  if (!(error instanceof DaemonRefusal) || error.code !== "NOT_RUNNING") { serviceNotice = undefined; return; }
+  serviceNotice = error.detail?.installed === true && error.detail?.stopped === "by-you" ? "stopped" : error.detail?.installed !== true ? "not-set-up" : undefined;
 }
 function startStatusWatch(): void {
   if (!isTauri() || watchActive || watchStarting) return;
@@ -1052,7 +1072,8 @@ function startStatusWatch(): void {
       return;
     }
     if (!busy && !loginActive && !setupActive) {
-      ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+      ready = false; serviceStatus = undefined; noteService(error); renderSettings();
+      if (serviceNotice && !(problem && !statusProblem) && problem !== "NOT_ANSWERING" && (serviceNotice === "stopped" || listOpened)) { statusProblem = false; problem = undefined; upgradeNeeded = false; if (!listOpened) stageBeforeService = stage; listOpened = true; showStage("finished"); buttons(); return; }
       if (!(problem && !statusProblem)) {
         if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
@@ -1073,7 +1094,8 @@ async function refresh(): Promise<void> {
   } catch (error) {
     if (!current()) return;
     selectionPending = false;
-    ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+    ready = false; serviceStatus = undefined; noteService(error); renderSettings();
+    if (serviceNotice && !(problem && !statusProblem) && problem !== "NOT_ANSWERING" && (serviceNotice === "stopped" || listOpened)) { statusProblem = false; problem = undefined; upgradeNeeded = false; if (!listOpened) stageBeforeService = stage; listOpened = true; showStage("finished"); buttons(); return; }
     // An error from an action stays until the person acts on it; a background check never replaces it.
     if (problem && !statusProblem) { buttons(); return; }
     if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
@@ -1457,7 +1479,7 @@ async function start(): Promise<void> {
   lastTickAt = Date.now();
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") {
-    const state = surfaceState({ rows: computerAccount ? computerSpaces(computerAccount) : [], anyConnected: [...connections.values()].includes("launch-ready") });
+    const state = readSurface([...connections.values()].includes("launch-ready"));
     text("tray-label", state.word);
   }
   if (ready) startStatusWatch();
