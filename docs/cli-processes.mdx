@@ -872,6 +872,47 @@ inspection takes at most ten seconds, so the child stop path is bounded at 74 se
 stop in parallel. New systemd units and LaunchAgents allow 90 seconds to stop, and systemd sends
 the initial signal only to the daemon so it can coordinate its children.
 
+#### Repair requested from the account
+
+The account host can ask this computer to run [Repair](#repair). Every heartbeat carries
+`capabilities: ["repair-v1"]`, and a host writes a request only for a computer whose last heartbeat
+carried it. The request is a `repair` field in the desired-spaces document, with its own revision
+counter: `{revision, request: "plan"}`, or `{revision, request: "apply", digest, consent}` with the
+digest of a plan this computer answered. The document's ETag changes with that revision.
+
+The service answers in the heartbeat's `repair` field, sent on the next poll rather than at the next
+60-second heartbeat: `{revision, state, completedAt, digest?, repaired?, reason?, steps?}`.
+`completedAt` is an ISO time. `state` is one of these:
+
+- `planned`: the plan's `digest` and `steps`.
+- `applied` or `failed`: the steps as run, and `repaired`, a boolean that says whether a new check
+  finds nothing left.
+- `refused`: `reason` is `plan-changed` when the computer no longer matches the digest,
+  `needs-this-computer` when the plan moves, sets up or starts the service, or `needs-consent` when
+  it removes an old registration without that consent. It carries a fresh `digest` and `steps`.
+- `waiting`: a local change holds the agent-app gate. The service tries again on its next poll.
+- `interrupted`: the service restarted during the run. It carries a fresh plan, and that revision
+  never runs again.
+- `unsupported`: any other request, `reset` included. Nothing runs.
+
+Each step has `step`, `outcome` and `found`, and may have `change`, `consent`, `space`, `spaces`,
+`changed: true` (it ran and finished) and `failed: true` (it ran and stopped, and the steps after it
+did not run). A space is named by its catalog id. An ack has at most 32 steps and no string over 300
+characters. Repair's words are sent only when they carry no path, command, account name, home folder
+name, computer name or space name; otherwise the step carries fixed words for its kind. What the
+service said is never sent.
+
+Only finding agent apps, starting stopped spaces and removing an old registration run from the
+account. The only consent the host can give is `remove-old-registration`. Moving, setting up or
+starting the service needs the person at this computer.
+
+Each account keeps the last revision it handled in `repair.json` beside its computer identity, so a
+repeated request, an unchanged poll or a service restart never runs a revision again. Once an
+account has handled a revision, every heartbeat for it carries the latest ack. A newer revision
+replaces an older one that has not started, so a new `plan` withdraws an `apply` that is waiting.
+When several accounts ask in the same poll, one plan read answers every plan request, identical
+applies share one run, and each account gets its own ack.
+
 `daemon status` and its JSON `account` section separate desired spaces from observed connection
 state, with computer identity, host support, last registration, desired revision and refusals.
 A desired space reads `connected` once its hosted Manager answers, because that is what lets the

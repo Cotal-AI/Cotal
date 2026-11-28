@@ -3,11 +3,12 @@ import { defaultComputerName, readComputerName, saveComputerName } from "./compu
 import { findMesh } from "@cotal-ai/workspace";
 import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
 import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
-import { accountComputerId } from "./account-identity.js";
+import { accountComputerId, accountRecordDir } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
+import { REPAIR_CAPABILITY, type CloudRepair } from "./cloud-repair.js";
 
-type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> };
+type AccountContext = { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; sentAck?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> };
 
 async function recoverAccountSpace(home: string, reconciler: ReturnType<typeof createAccountReconciler>, contexts: Map<string, AccountContext>, tick: () => Promise<void>, space: string, candidate: string, holder: string) {
   await tick();
@@ -25,8 +26,20 @@ async function recoverAccountSpace(home: string, reconciler: ReturnType<typeof c
   await withIdpSessionDir(home, () => reconciler.apply(account, snapshot, context.revision!, context.bindingRevisions!, true, context.abort.signal));
 }
 
-/** Poll account intent without interpreting transport failure as an empty desired set. */
-export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>, onChange?: () => void) {
+/** A space's catalog id from its name, as the accounts' spaces documents give it. */
+function catalogSpaceId(contexts: ReadonlyMap<string, AccountContext>, slug: string): string | undefined {
+  for (const context of contexts.values()) { const row = context.snapshot?.spaces.find(item => item.slug === slug); if (row) return row.id; }
+  return undefined;
+}
+
+/** Names that are this person's: this computer's name, account subjects and labels, space names. */
+function privateNames(computer: string, contexts: ReadonlyMap<string, AccountContext>): string[] {
+  return [computer, ...[...contexts.values()].flatMap(context => [context.state.sub, context.state.label, ...(context.snapshot?.spaces ?? []).flatMap(row => [row.slug, row.name])])].filter((item): item is string => typeof item === "string");
+}
+
+/** Poll account intent without interpreting transport failure as an empty desired set. `repair`
+ *  answers Cloud's repair requests from each account's spaces document, in that account's heartbeat. */
+export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>, onChange?: () => void, repair?: CloudRepair) {
   const notify = () => { try { onChange?.(); } catch {} };
   let vitals: ComputerVitals | undefined;
   let vitalsError: string | undefined;
@@ -68,9 +81,12 @@ export function createAccountComputer(home: string, version: string, reconciler:
     // The host can name a Manager after this computer only when the computer says which ones it hosts.
     const hosted = reconciler.hostedManagers(context.snapshot?.spaces ?? []);
     const hostedKey = JSON.stringify(hosted);
+    const repairAccount = { key: account.ownerKey, dir: accountRecordDir(home, account) }, ack = repair?.ack(repairAccount);
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
-      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted, ...(vitals && !vitalsError ? { vitals } : {}) } }) });
-    if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]")) {
+      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted, ...(vitals && !vitalsError ? { vitals } : {}), ...(repair ? { capabilities: [REPAIR_CAPABILITY], ...(ack ? { repair: ack } : {}) } : {}) } }) });
+    // A new repair ack goes out on this poll, not at the next minute's heartbeat.
+    const ackKey = JSON.stringify(ack ?? null);
+    if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]") || (repair && ackKey !== context.sentAck)) {
       context.abort.signal.throwIfAborted();
       const sentName = name;
       const result = await call("PUT");
@@ -79,12 +95,13 @@ export function createAccountComputer(home: string, version: string, reconciler:
       if (result.status !== 200 && result.status !== 201) throw new Error("computer registration unavailable");
       const body = result.body as { v?: unknown; machine?: { id?: unknown; lastSeenAt?: unknown } } | undefined;
       if (body?.v !== 1 || body.machine?.id !== machineId || typeof body.machine.lastSeenAt !== "string" || !Number.isFinite(Date.parse(body.machine.lastSeenAt))) throw new Error("invalid computer registration response");
-      context.lastHeartbeat = sentName === name ? Date.now() : 0; context.sentManagers = hostedKey; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
+      context.lastHeartbeat = sentName === name ? Date.now() : 0; context.sentManagers = hostedKey; context.sentAck = ackKey; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
     }
     context.abort.signal.throwIfAborted();
     const result = await call("GET");
     context.abort.signal.throwIfAborted();
     if (result.status === 304) {
+      repair?.offer(repairAccount, undefined, false);
       if (context.snapshot && context.revision !== undefined) await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, false, context.abort.signal));
       // The host answered and nothing changed, so an earlier failed request no longer describes this computer.
       delete state.message;
@@ -107,6 +124,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     context.revision = Number(body.revision);
     await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, true, context.abort.signal));
     context.etag = result.etag;
+    repair?.offer(repairAccount, body.repair, true);
       }
     });
   };
@@ -168,6 +186,8 @@ export function createAccountComputer(home: string, version: string, reconciler:
     async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
     recover: (space: string, candidate: string, holder: string) => recoverAccountSpace(home, reconciler, contexts, tick, space, candidate, holder).then(notify),
     vitals: () => vitals,
+    spaceId: (slug: string) => catalogSpaceId(contexts, slug),
+    privateNames: () => privateNames(name, contexts),
     vitalsError: () => vitalsError,
     name: () => name,
     nameWarning: () => nameWarning,
@@ -190,6 +210,6 @@ export function createAccountComputer(home: string, version: string, reconciler:
       for (const context of ordered) if (!computers.has(context.state.machineId)) computers.set(context.state.machineId, context);
       return { ...(ordered[0]?.state ?? state), accounts: [...computers.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
     },
-    async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
+    async close() { stopped = true; if (timer) clearTimeout(timer); await repair?.close(); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
   };
 }

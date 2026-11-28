@@ -360,7 +360,7 @@ export async function startSpaces(step: RepairStep, read: () => Promise<DaemonSt
 }
 
 /** Run the plan the person approved. Refuses when the computer changed since that plan. */
-export async function applyRepair(opts: RepairOptions & { readonly digest: string; readonly consent: readonly RepairConsent[]; readonly throwOnFailure?: boolean }): Promise<RepairResult> {
+export async function applyRepair(opts: RepairOptions & { readonly digest: string; readonly consent: readonly RepairConsent[]; readonly throwOnFailure?: boolean; readonly onFailure?: (error: unknown) => void }): Promise<RepairResult> {
   const plan = await planRepair(opts);
   if (plan.digest !== opts.digest) throw new CommandFailure("refused", "CONFLICT", "this computer changed since Repair checked it; nothing was changed", { native: { code: "PLAN_CHANGED" } });
   const missing = plan.steps.find(step => step.outcome === "fix" && step.consent && !opts.consent.includes(step.consent));
@@ -372,6 +372,7 @@ export async function applyRepair(opts: RepairOptions & { readonly digest: strin
   const done = await runSteps(plan.steps, step => fix(opts, step), opts.report, error => { failure = error; },
     run => withAppMutation(opts.paths, run), step => step.step === "agent-apps");
   // The command line reports a failed step as its refusal; the window reads the partial result.
+  if (failure !== undefined) opts.onFailure?.(failure);
   if (failure !== undefined && opts.throwOnFailure) throw failure;
   let remaining: RepairStep[] | undefined;
   try { remaining = (await planRepair(opts)).steps.filter(step => step.outcome !== "ok"); } catch { remaining = undefined; }

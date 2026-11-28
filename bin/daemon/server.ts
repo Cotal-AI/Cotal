@@ -33,6 +33,7 @@ import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/au
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
+import { serviceCloudRepair } from "./cloud-repair-service.js";
 import { agentAppRequest, type AgentAppRequest } from "./desktop-agent-apps.js";
 import { withAppMutation } from "./agent-app-admission.js";
 
@@ -213,7 +214,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const services = createServiceConnections(machineHome);
   const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
   const reconciler = createAccountReconciler(machineHome, services, managers);
-  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
+  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers(), serviceCloudRepair({ paths: opts.paths, daemonHome: opts.sessionDir, version: opts.version }, log, () => account));
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
