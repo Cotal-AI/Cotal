@@ -679,11 +679,11 @@ function localTarballFailure(output: string, prefix: string, request: ExtensionI
 
 /** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
  *  output keeps its last lines, joined, so a stored seed reason never carries a newline. */
-function npmInstallFailure(output: string, scrub = String): string {
+function npmInstallFailure(output: string, scrub?: (text: string) => string): string {
   const lines = output.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
   if (lines.some((line) => /^spawn error: spawn npm ENOENT\b/.test(line))) return "npm is not on PATH";
-  const tail = scrub(lines.slice(-8).join(" "));
-  return tail || "npm install produced no output";
+  const tail = lines.slice(-8).join(" ");
+  return tail ? scrub?.(tail) ?? tail : "npm install produced no output";
 }
 
 function fail(p: string, why: string): never {
