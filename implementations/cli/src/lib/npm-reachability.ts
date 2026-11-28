@@ -103,17 +103,21 @@ export function scrubProjectedNpmrc(file: string, env: NodeJS.ProcessEnv): (outp
 
 function removeOnInterrupt(remove: () => void): () => void {
   const handlers = new Map<"SIGINT" | "SIGTERM", () => void>();
+  const windows = process.platform === "win32";
   const dispose = () => {
     for (const [signal, listener] of handlers) process.off(signal, listener);
     remove();
   };
   // Existing command handlers own cancellation and their call still disposes in finally.
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  // Windows delivers console Ctrl-C as SIGINT. Forced termination cannot run JS cleanup.
+  for (const signal of windows ? ["SIGINT"] as const : ["SIGINT", "SIGTERM"] as const) {
     if (process.listenerCount(signal)) continue;
     const listener = () => {
       if (process.listenerCount(signal) > 1) return;
       try { dispose(); } catch { /* A scratch cleanup error cannot change the exit signal. */ }
-      process.kill(process.pid, signal);
+      // Match the console default, STATUS_CONTROL_C_EXIT, instead of TerminateProcess(1).
+      if (windows) process.exit(0xC000013A | 0);
+      else process.kill(process.pid, signal);
     };
     handlers.set(signal, listener);
     process.prependListener(signal, listener);
