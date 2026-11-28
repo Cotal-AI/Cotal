@@ -854,6 +854,7 @@ cotal ext seed [--repair|--reset|--force]
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
+If `add` cannot find npm on your PATH, it returns `DEPENDENCY_UNAVAILABLE` (exit 2) and leaves the installed extensions unchanged. Make `npm --version` work in the same shell and retry the original command.
 For a folder below the current directory, include the `./` prefix: `./plugins/example`.
 An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
@@ -871,7 +872,7 @@ Use `npm pack --dry-run ./example-extension` to check the source package content
 For local use, set the `file:` dependency to the absolute path of an existing archive and run `cotal ext add ./example-extension` again.
 For distribution, use a dependency npm can install from a registry.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
-For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
+Keep the full scope and package spelling, including a leading dot in a scope (`@.acme/tool`) or a leading underscore in the package (`@acme/_helper`).
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 On Linux and macOS, when Cotal runs a recognized npm script directly with its own Node because
