@@ -358,20 +358,20 @@ function briefly(): Promise<void> {
 }
 
 type PublicCommand = { child: ChildProcess; exited: Promise<number | null>; text(): string };
-type PublicRun = (args: string[]) => PublicCommand;
+type PublicRun = (args: string[], timeoutMs?: number) => PublicCommand;
 
-function spawnProof(ctx: HostedPtyProof, entry: string, args: string[], env = ctx.env): PublicCommand {
+function spawnProof(ctx: HostedPtyProof, entry: string, args: string[], env = ctx.env, timeoutMs = 60_000): PublicCommand {
   const child = spawn(process.execPath, [entry, ...args], { env, cwd: ctx.project, stdio: ["ignore", "pipe", "pipe"] });
-  let text = "", overflow = false;
+  let text = "", overflow = false, expired = false;
   for (const stream of [child.stdout, child.stderr]) stream.on("data", data => {
     if (overflow) return;
     text += data;
     if (text.length > 256_000) { overflow = true; text = text.slice(0, 256_000); void killAndAwaitExit(child).catch(() => {}); }
   });
   const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-  const timeout = setTimeout(() => { void killAndAwaitExit(child).catch(() => {}); }, 60_000);
+  const timeout = setTimeout(() => { expired = true; void killAndAwaitExit(child).catch(() => {}); }, timeoutMs);
   void exited.then(() => clearTimeout(timeout), () => clearTimeout(timeout));
-  return { child, exited, text: () => overflow ? `${text}\n[fixture output exceeded its limit]` : text };
+  return { child, exited, text: () => `${text}${overflow ? "\n[fixture output exceeded its limit]" : ""}${expired ? `\n[fixture child exceeded its ${timeoutMs} ms deadline]` : ""}` };
 }
 
 async function withPublicUpdateFixture(ctx: HostedPtyProof, version: string, check: (run: PublicRun) => Promise<void>): Promise<void> {
@@ -379,7 +379,7 @@ async function withPublicUpdateFixture(ctx: HostedPtyProof, version: string, che
   await new Promise<void>((resolve, reject) => { registry.once("error", reject); registry.listen(0, "127.0.0.1", resolve); });
   const address = registry.address();
   if (!address || typeof address === "string") throw new Error("update metadata fixture did not listen");
-  const run: PublicRun = args => spawnProof(ctx, ctx.entry, args, { ...ctx.env, npm_config_registry: `http://127.0.0.1:${address.port}` });
+  const run: PublicRun = (args, timeoutMs) => spawnProof(ctx, ctx.entry, args, { ...ctx.env, npm_config_registry: `http://127.0.0.1:${address.port}` }, timeoutMs);
   try { await check(run); }
   finally { await new Promise<void>(resolve => registry.close(() => resolve())); }
 }
@@ -399,7 +399,8 @@ async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, dire
     assert.ok(existsSync(entered), `ordinary spawn did not reach the held enrollment: ${launching.text()}`);
     assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager, 3_000), { reserved: 1, held: 0, names: [] });
     await assert.rejects(inspectHostedLaunches(ctx.paths, ctx.space, "wrong-instance", 3_000), /identity changed/);
-    updating = run(["update", "--space", ctx.space]);
+    // This command waits for enrollment and then runs real connector reconciliation.
+    updating = run(["update", "--space", ctx.space], 180_000);
     await waitForCommandText(updating, "Waiting for a hosted spawn to settle");
     await new Promise(resolve => setTimeout(resolve, 16_000));
     assert.equal(updating.child.exitCode, null, "the updater waits past the old fifteen-second cutoff");
