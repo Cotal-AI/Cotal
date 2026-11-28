@@ -63,7 +63,7 @@ including `TERM_PROGRAM` at `regular`. Failure text is sent at `regular` after p
 masking (see `errorMessage`); masking is not a guarantee that arbitrary error text contains no
 identifying information. When `spawn` reports a failure with a native cause, its message and
 stack stay local because the diagnostic can include the agent's terminal output. The event still
-records the typed error code. When a local session lookup refuses a resume, or the session needs a
+records the typed error code. When `input` refuses a Manager pin, its retry can contain the text meant for the terminal. The event omits that diagnostic and its stack. When a local session lookup refuses a resume, or the session needs a
 manager pin, `spawn` also keeps the message and stack local. Session IDs, candidate transcripts and
 host names in those diagnostics are not sent. When a JSON watch stream reports a typed setup failure, its command
 event records the code without collecting the stream message or stack. If `up` refuses to convert a
