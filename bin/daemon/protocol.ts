@@ -117,9 +117,8 @@ export interface DaemonStatus {
   readonly vitalsError?: string;
   readonly computer?: string;
   readonly computerNameWarning?: string;
-  /** The filesystem holding the daemon's records is out of space; a write failed with ENOSPC or
-   *  EDQUOT. Optional for older daemon clients; false by omission. Shared with desktop status
-   *  readers as the single source the window, pill and tray read. */
+  /** A daemon write failed with ENOSPC or EDQUOT and its destination has not recovered.
+   *  Absent when there is no outstanding observed failure. */
   readonly diskFull?: boolean;
   /** Optional for older daemon clients. Shared with desktop status readers. */
   readonly update?: DaemonUpdateStatus;
