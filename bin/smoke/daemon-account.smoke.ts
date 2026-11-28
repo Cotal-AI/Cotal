@@ -51,6 +51,8 @@ let etag = '"one"';
 let conditional: string | undefined;
 let persistedBeforePut = false;
 let holdGet = false;
+let holdNext = false;
+let heldReply: import("node:http").ServerResponse | undefined;
 const fixture = createServer((req, res) => {
   res.setHeader("content-type", "application/json");
   assert.equal(req.headers.authorization, "Bearer fixture-session");
@@ -68,6 +70,7 @@ const fixture = createServer((req, res) => {
   }
   gets++; conditional = req.headers["if-none-match"] as string | undefined;
   if (holdGet) return;
+  if (holdNext) { heldReply = res; return; }
   if (mode !== 200) { if (retryAfter) res.setHeader("retry-after", retryAfter); res.writeHead(mode); res.end(mode === 304 ? undefined : JSON.stringify(refusal ?? {})); return; }
   res.setHeader("etag", etag);
   res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, ...(malformed ? {} : { bindingRevisions: {} }), account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
@@ -183,17 +186,14 @@ try {
   retryAfter = undefined;
   mode = 200; revision = 3; const healing = gets;
   await until(() => gets > healing && daemon.status().account?.cloud === undefined && daemon.status().account?.desiredRevision === 3, "a later 200 clears the retry", 20_000);
-  refusal = { code: "computer-removed" }; mode = 401; const removed = gets;
-  let removalSeen = false;
-  try {
-    await until(() => gets > removed && daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.reason === "computer-removed", "a removed computer asks for a sign-in", 20_000);
-    removalSeen = true;
-  } catch { console.log("removal not observed"); }
-  if (removalSeen) {
-    assert.equal(daemon.status().account!.message, "This computer was removed from your account. Sign in to add it back.");
-    const halted = gets; await sleep(5500); assert.equal(gets, halted);
-  }
-  await daemon.close(); mode = 404;
+  refusal = { code: "computer-removed" }; mode = 401; holdNext = true; const removed = gets;
+  await until(() => heldReply !== undefined && gets > removed, "the next read waits for the removal", 20_000);
+  holdNext = false; const answered = heldReply!; heldReply = undefined;
+  answered.writeHead(401); answered.end(JSON.stringify(refusal));
+  await until(() => daemon.status().account?.mode === "sign-in-required" && daemon.status().account?.reason === "computer-removed", "a removed computer asks for a sign-in", 20_000);
+  assert.equal(daemon.status().account!.message, "This computer was removed from your account. Sign in to add it back.");
+  const halted = gets; await sleep(5_500); assert.equal(gets, halted, "a removed computer stops");
+  mode = 404; refusal = undefined; await daemon.close();
   daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
   await until(() => daemon.status().account?.mode === "per-space", "404 explicitly reports unsupported per-space mode");
   assert.equal(daemon.status().account!.machineId, identity);
