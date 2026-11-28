@@ -6,3 +6,5 @@
 ---
 
 Run eligible Linux daemon-hosted PTYs in a separate shared host with a cgroup per seat. A control connection loss does not end seats. Verified death of the owning Manager still ends its seats, and live seats still block update activation.
+
+Updates wait for hosted launches to settle and name any PTY launch still held at the deadline, with the command to clear it.

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { claimUpdateClosureAccess, clearUpdateRecovery, readUpdateRecovery, SEEDED_EXTENSIONS, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
@@ -17,6 +17,7 @@ import { serveDaemon } from "../daemon/server.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, unitReceiptFile } from "../daemon/install.js";
 import { currentParentWaits } from "../daemon/update-entry.js";
+import { daemonManagerRoot } from "../daemon/manager.js";
 import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 import { processStatFields, processStartToken } from "@cotal-ai/seat";
 
@@ -43,7 +44,7 @@ async function proveLaunchSettlementPolicy(): Promise<void> {
   assert.equal((await idle.run()).agentCount, 7);
   assert.deepEqual(idle.lines, []);
   for (const value of [undefined, ordinary, held]) {
-    const settling = fixture(t => observation(t < 400 ? 1 : 0), () => value);
+    const settling = fixture(t => observation(t < 400 ? 1 : 0), t => value && t >= 400 ? { reserved: 0, held: 0, names: [] } : value);
     assert.equal((await settling.run()).agentCount, 7);
     assert.equal(settling.elapsed(), 400);
     assert.deepEqual(settling.lines, [value === held ? "Waiting for a held hosted PTY launch to settle in space example." : "Waiting for a hosted spawn to settle in space example."]);
@@ -55,7 +56,7 @@ async function proveLaunchSettlementPolicy(): Promise<void> {
   const heldDeadline = fixture(() => observation(2), () => held);
   await assert.rejects(heldDeadline.run, error => error instanceof HostedLaunchSettlementTimeout && error.message.includes(`"${name}"`) && /daemon service-disconnect --space example`/.test(error.message) && error.message.includes("No installed packages were changed"));
   assert.equal(heldDeadline.elapsed(), 15_000);
-  const replaced = fixture(t => observation(1, t ? "successor" : "original"), () => held);
+  const replaced = fixture(t => observation(1, t ? "successor" : "original"), () => undefined);
   await assert.rejects(replaced.run, /identity changed/);
   assert.equal(replaced.inspections(), 1, "do not consult holds after a Manager identity change");
 }
@@ -182,10 +183,11 @@ if (process.platform === "linux") {
     const report = {};
     const close = await prepareUpdateParticipant({ env: process.env, project: process.cwd(), cotalHome: process.env.COTAL_HOME, report,
       async beforeManagedEnrollment(name) {
-        if (name !== 'update_during_spawn') return;
-        writeFileSync(${JSON.stringify(join(directory, "update-spawn-entered"))}, 'entered');
+        if (!['update_during_spawn', 'update_spawn_timeout', 'update_staged_spawn'].includes(name)) return;
+        const path = ${JSON.stringify(directory)} + '/' + name;
+        writeFileSync(path + '.entered', 'entered');
         const deadline = Date.now() + 30_000;
-        while (!existsSync(${JSON.stringify(join(directory, "update-spawn-release"))})) {
+        while (!existsSync(path + '.release')) {
           if (Date.now() >= deadline) throw new Error('enrollment fixture was not released');
           await new Promise(resolve => setTimeout(resolve, 20));
         }
@@ -228,11 +230,24 @@ if (process.platform === "linux") {
     await start();
     const before = await managerViaDaemon({ paths }, { op: "manager-start", space });
     assert.equal(before.state, "answering", JSON.stringify(before));
+    const fallback = "Shared PTY custody is unavailable because the Linux user service manager or cgroup v2 is unavailable. Seats run inside the Manager and cannot survive a restart.";
+    const managerLog = join(daemonManagerRoot(space, cotalHome), "manager.log");
+    if (sharedSkip?.startsWith("the daemon environment cannot reach")) {
+      for (let i = 0; i < 20 && (!existsSync(managerLog) || !readFileSync(managerLog, "utf8").includes(fallback)); i++) await briefly();
+      assert.ok(existsSync(managerLog));
+      assert.equal(readFileSync(managerLog, "utf8").split(fallback).length, 2, "the ineligible Manager logs the actual fallback once");
+    }
     if (sharedSkip === undefined) {
+      if (existsSync(managerLog)) assert.ok(!readFileSync(managerLog, "utf8").includes(fallback));
       const ctx = { start, daemon: () => daemon!, paths, space, entry, project, home, env };
       if (!("instanceId" in before) || !before.instanceId) throw new Error("the hosted fixture has no Manager instance");
-      await proveUpdateDuringSpawn(ctx, before.instanceId, directory, version);
-      await proveHostedPtyFailures(ctx);
+      const instanceId = before.instanceId;
+      await withPublicUpdateFixture(ctx, version, async run => {
+        await proveUpdateDuringSpawn(ctx, instanceId, directory, run, false);
+        await proveUpdateDuringSpawn(ctx, instanceId, directory, run, true);
+        await proveStagedPreinstallDuringSpawn(ctx, instanceId, directory, run);
+        await proveHostedPtyFailures(ctx, run);
+      });
       await start();
       const restored = await managerViaDaemon({ paths }, { op: "manager-start", space });
       assert.equal(restored.state, "answering", "the fixture restored hosting intent after the ordinary stop cell");
@@ -302,7 +317,7 @@ function addPtyFixture(entry: string, project: string, directory: string, env: N
     import { join } from 'node:path';
     registry.register({kind:'connector', name:'shared-pty-smoke', requires:['node'], waitsForOperator:()=> 'test terminal',
     buildLaunch:({name})=>{
-      if (name === 'update_during_spawn') throw new Error('ordinary spawn fixture stopped before process launch');
+      if (['update_during_spawn', 'update_spawn_timeout', 'update_staged_spawn'].includes(name)) throw new Error('ordinary spawn fixture stopped before process launch');
       return {command:${JSON.stringify(process.execPath)},args:[${JSON.stringify(seat)},name,join(${JSON.stringify(directory)},name+'.json')],env:{PATH:'/usr/bin:/bin'}};
     }});`);
   const added = spawnSync(process.execPath, [entry, "ext", "add", fixture], { env, cwd: project, encoding: "utf8", timeout: 90_000 });
@@ -327,44 +342,103 @@ function briefly(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 100));
 }
 
-async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, directory: string, version: string): Promise<void> {
-  const entered = join(directory, "update-spawn-entered"), release = join(directory, "update-spawn-release");
+type PublicCommand = { child: ChildProcess; exited: Promise<number | null>; text(): string };
+type PublicRun = (args: string[]) => PublicCommand;
+
+function spawnProof(ctx: HostedPtyProof, entry: string, args: string[], env = ctx.env): PublicCommand {
+  const child = spawn(process.execPath, [entry, ...args], { env, cwd: ctx.project, stdio: ["ignore", "pipe", "pipe"] });
+  let text = "", overflow = false;
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", data => {
+    if (overflow) return;
+    text += data;
+    if (text.length > 256_000) { overflow = true; text = text.slice(0, 256_000); void killAndAwaitExit(child).catch(() => {}); }
+  });
+  const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  const timeout = setTimeout(() => { void killAndAwaitExit(child).catch(() => {}); }, 60_000);
+  void exited.then(() => clearTimeout(timeout), () => clearTimeout(timeout));
+  return { child, exited, text: () => overflow ? `${text}\n[fixture output exceeded its limit]` : text };
+}
+
+async function withPublicUpdateFixture(ctx: HostedPtyProof, version: string, check: (run: PublicRun) => Promise<void>): Promise<void> {
   const registry = createServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
   await new Promise<void>((resolve, reject) => { registry.once("error", reject); registry.listen(0, "127.0.0.1", resolve); });
   const address = registry.address();
   if (!address || typeof address === "string") throw new Error("update metadata fixture did not listen");
-  const run = (args: string[]) => {
-    const child = spawn(process.execPath, [ctx.entry, ...args], {
-      env: { ...ctx.env, npm_config_registry: `http://127.0.0.1:${address.port}` }, cwd: ctx.project, stdio: ["ignore", "pipe", "pipe"],
-    });
-    let text = "";
-    for (const stream of [child.stdout, child.stderr]) stream.on("data", data => { text = (text + data).slice(-24_000); });
-    const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-    const timeout = setTimeout(() => { void killAndAwaitExit(child).catch(() => {}); }, 60_000);
-    void exited.then(() => clearTimeout(timeout), () => clearTimeout(timeout));
-    return { child, exited, text: () => text };
-  };
-  const launching = run(["spawn", "--agent", "shared-pty-smoke", "--name", "update_during_spawn", "--space", ctx.space, "--on", manager, "--detach", "--no-events"]);
-  let updating: ReturnType<typeof run> | undefined;
+  const run: PublicRun = args => spawnProof(ctx, ctx.entry, args, { ...ctx.env, npm_config_registry: `http://127.0.0.1:${address.port}` });
+  try { await check(run); }
+  finally { await new Promise<void>(resolve => registry.close(() => resolve())); }
+}
+
+async function waitForCommandText(command: PublicCommand, expected: string): Promise<void> {
+  for (let i = 0; i < 120 && command.child.exitCode === null && !command.text().includes(expected); i++) await briefly();
+  assert.ok(command.text().includes(expected), `expected ${expected}:\n${command.text()}`);
+}
+
+async function proveUpdateDuringSpawn(ctx: HostedPtyProof, manager: string, directory: string, run: PublicRun, expires: boolean): Promise<void> {
+  const name = expires ? "update_spawn_timeout" : "update_during_spawn";
+  const entered = join(directory, `${name}.entered`), release = join(directory, `${name}.release`);
+  const launching = run(["spawn", "--agent", "shared-pty-smoke", "--name", name, "--space", ctx.space, "--on", manager, "--detach", "--no-events"]);
+  let updating: PublicCommand | undefined;
   try {
     for (let i = 0; i < 100 && !existsSync(entered) && launching.child.exitCode === null; i++) await briefly();
     assert.ok(existsSync(entered), `ordinary spawn did not reach the held enrollment: ${launching.text()}`);
     assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager, 3_000), { reserved: 1, held: 0, names: [] });
     await assert.rejects(inspectHostedLaunches(ctx.paths, ctx.space, "wrong-instance", 3_000), /identity changed/);
     updating = run(["update", "--space", ctx.space]);
-    for (let i = 0; i < 120 && updating.child.exitCode === null && !updating.text().includes("Waiting for a hosted spawn to settle"); i++) await briefly();
-    assert.match(updating.text(), /Waiting for a hosted spawn to settle/, `the updater must observe the real reserved launch before release:\n${updating.text()}`);
+    await waitForCommandText(updating, "Waiting for a hosted spawn to settle");
+    if (expires) {
+      const observed = performance.now();
+      assert.equal(await updating.exited, 1, updating.text());
+      assert.ok(performance.now() - observed >= 13_000 && performance.now() - observed < 20_000, "the ordinary timeout is bounded");
+      assert.match(updating.text(), /still in progress\. No installed packages were changed\. When it finishes, retry/);
+      assert.doesNotMatch(updating.text(), /service-disconnect|PTY launch still held/);
+    }
     writeFileSync(release, "release");
     assert.notEqual(await launching.exited, 0, launching.text());
     assert.match(launching.text(), /ordinary spawn fixture stopped before process launch/);
-    assert.equal(await updating.exited, 0, updating.text());
-    assert.match(updating.text(), /Built-in connectors/);
+    if (!expires) {
+      assert.equal(await updating.exited, 0, updating.text());
+      assert.match(updating.text(), /Built-in connectors/);
+    }
     assert.equal(updating.text().split("Waiting for a hosted spawn to settle").length, 2, "the real CLI prints one wait line");
     assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager, 3_000), { reserved: 0, held: 0, names: [] });
   } finally {
     writeFileSync(release, "release");
     for (const command of [launching, updating]) if (command && command.child.exitCode === null && command.child.signalCode === null) await killAndAwaitExit(command.child);
-    await new Promise<void>(resolve => registry.close(() => resolve()));
+  }
+}
+
+async function proveStagedPreinstallDuringSpawn(ctx: HostedPtyProof, manager: string, directory: string, run: PublicRun): Promise<void> {
+  const name = "update_staged_spawn", entered = join(directory, `${name}.entered`), release = join(directory, `${name}.release`);
+  const native = join(directory, "preinstall-unit-lookup"), config = join(native, "config"), unit = "cotal-daemon.service";
+  const unitPath = join(config, "systemd", "user", unit), receipt = unitReceiptFile(ctx.paths);
+  const daemonArgv = [process.execPath, ctx.entry, "daemon", "serve"];
+  // Stage checks read the recorded source, not the active unit. Answer only its directory query
+  // and keep both files private and unregistered. The daemon, Manager and enrollment are real.
+  mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
+  writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== '--user show-environment') process.exit(99);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
+  const source = `ExecStart=${daemonArgv.map(value => JSON.stringify(value)).join(" ")}\n`;
+  writeFileSync(unitPath, source, { mode: 0o600 });
+  writeFileSync(receipt, JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600, flag: "wx" });
+  const launch = run(["spawn", "--agent", "shared-pty-smoke", "--name", name, "--space", ctx.space, "--on", manager, "--detach", "--no-events"]);
+  let stage: PublicCommand | undefined;
+  try {
+    for (let i = 0; i < 100 && !existsSync(entered) && launch.child.exitCode === null; i++) await briefly();
+    assert.ok(existsSync(entered), launch.text());
+    const request = { v: 1, nonce: "e".repeat(32), installedEntry: ctx.entry, daemonArgv, flags: { space: ctx.space } };
+    stage = spawnProof(ctx, join(dirname(ctx.entry), "execution-preinstall.js"), [JSON.stringify(request)], { ...ctx.env, PATH: `${native}:${ctx.env.PATH}` });
+    await waitForCommandText(stage, `COTAL_PREINSTALL_PROGRESS Waiting for a hosted spawn to settle in space ${ctx.space}.`);
+    assert.equal(stage.child.exitCode, null, "the target preinstall has not returned a receipt while the launch is pending");
+    writeFileSync(release, "release");
+    assert.notEqual(await launch.exited, 0, launch.text());
+    assert.equal(await stage.exited, 0, stage.text());
+    const result = /^COTAL_PREINSTALL_RESULT (.+)$/m.exec(stage.text());
+    assert.ok(result, stage.text());
+    assert.deepEqual(JSON.parse(result[1]!).admission, { disposition: "restart-empty", occupied: 0, hostedSpaces: [ctx.space] });
+  } finally {
+    writeFileSync(release, "release");
+    for (const command of [launch, stage]) if (command && command.child.exitCode === null && command.child.signalCode === null) await killAndAwaitExit(command.child);
+    rmSync(receipt);
   }
 }
 
@@ -425,6 +499,38 @@ function scopeFromRecord(record: { scope: string }): string {
 type HostedManagerIdentity = Lifetime & { id: string };
 type HostedPair = { manager: HostedManagerIdentity; host: HostedUnit; names: string[]; rows: Lifetime[] };
 
+async function proveUpdateWithHeldPty(ctx: HostedPtyProof, { manager, host, rows }: HostedPair, run: PublicRun): Promise<void> {
+  const settled = run(["update", "--space", ctx.space]);
+  assert.equal(await settled.exited, 1, settled.text());
+  assert.match(settled.text(), /cannot preserve running agents on this computer during update/);
+  assert.doesNotMatch(settled.text(), /Waiting for a hosted/);
+  assert.ok(rows.every(stillLive), "the ordinary update did not stop settled shared PTYs");
+  const name = "update_held_pty";
+  const manifest = join(dirname(ctx.entry), "../package.json"), bytes = readFileSync(manifest);
+  assert.ok(stillLive(host));
+  process.kill(host.pid, "SIGSTOP");
+  let launch: PublicCommand | undefined, update: PublicCommand | undefined;
+  try {
+    for (let i = 0; i < 20 && processStatFields(host.pid)?.[0] !== "T"; i++) await briefly();
+    assert.equal(processStatFields(host.pid)?.[0], "T");
+    launch = run(["spawn", "--agent", "shared-pty-smoke", "--name", name, "--space", ctx.space, "--on", manager.id, "--detach", "--no-events"]);
+    assert.equal(await launch.exited, 3, launch.text());
+    assert.match(launch.text(), /Its name remains held/);
+    assert.deepEqual(await inspectHostedLaunches(ctx.paths, ctx.space, manager.id, 3_000), { reserved: 1, held: 1, names: [name] });
+    update = run(["update", "--space", ctx.space]);
+    await waitForCommandText(update, "Waiting for a held hosted PTY launch to settle");
+    assert.equal(await update.exited, 1, update.text());
+    assert.ok(update.text().includes(`Hosted PTY launch still held in space ${ctx.space}: "${name}".`), update.text());
+    assert.match(update.text(), /No installed packages were changed\. Save work in this space before clearing the hold: `[^`]*cotal daemon service-disconnect --space [^`]+` stops its hosted Manager and seats/);
+    assert.equal(update.text().split("Waiting for a held hosted PTY launch to settle").length, 2);
+    assert.deepEqual(readFileSync(manifest), bytes);
+    assert.ok(stillLive(manager) && stillLive(host) && rows.every(stillLive), "a refused update did not stop the Manager, host, or seats");
+  } finally {
+    if (stillLive(host)) process.kill(host.pid, "SIGCONT");
+    for (const command of [launch, update]) if (command && command.child.exitCode === null && command.child.signalCode === null) await killAndAwaitExit(command.child);
+  }
+}
+
 async function proveUnresponsiveHost(ctx: HostedPtyProof, { manager, host, names, rows }: HostedPair): Promise<void> {
   assert.ok(stillLive(host));
   process.kill(host.pid, "SIGSTOP");
@@ -476,7 +582,7 @@ async function proveDeadParentFallback(ctx: HostedPtyProof, store: string, getMa
   assert.ok(hostedInventory(ctx, successor.id).every(row => row.name !== name));
 }
 
-async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
+async function proveHostedPtyFailures(ctx: HostedPtyProof, run: PublicRun): Promise<void> {
   const getManager = async (exclude?: Lifetime): Promise<HostedManagerIdentity> => {
     const deadline = Date.now() + 30_000;
     do {
@@ -582,6 +688,7 @@ async function proveHostedPtyFailures(ctx: HostedPtyProof): Promise<void> {
     await waitUnitGone(ctx, third.host);
     await waitHostCrashInventory(ctx, third.manager.id, third.names);
     const fourth = await launchPair("ordinary_stop");
+    await proveUpdateWithHeldPty(ctx, fourth, run);
     await assert.rejects(managerViaDaemon({ paths: ctx.paths }, { op: "managers-prepare-restart" }), /SEATS_ACTIVE/);
     assert.ok(fourth.rows.every(stillLive), "generation preparation kept both live PTYs");
     await managerViaDaemon({ paths: ctx.paths }, { op: "managers-stop" });

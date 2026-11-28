@@ -32,7 +32,7 @@ export function sharedUnitDescription(tag: string, lineage: string, owner: Share
 export function parseSharedUnitDescription(text: string): { tag: string; lineage: string; owner: SharedManagerIdentity } | undefined {
   const match = /^Cotal shared PTY ([a-f0-9]{64}) (p-[a-f0-9]{64}) (\d+) (\d+) ([a-f0-9-]{36})$/.exec(text);
   const pid = Number(match?.[3]);
-  if (!match || !Number.isSafeInteger(pid) || pid <= 1) return undefined;
+  if (!match) return undefined;
   return { tag: match[1]!, lineage: match[2]!, owner: { pid, start: match[4]!, bootId: match[5]! } };
 }
 
@@ -83,7 +83,7 @@ async function observeUnit(scope: string, tag: string, lineage?: string): Promis
     return undefined;
   }
   if (description.tag !== tag || (lineage !== undefined && description.lineage !== basename(lineage))) return undefined;
-  if (values.get("Transient") !== "yes" || (cgroup && cgroup !== sharedUnitCgroup(scope)))
+  if (values.get("Transient") !== "yes" || (cgroup && cgroup !== sharedUnitCgroup(scope)) || !Number.isSafeInteger(description.owner.pid) || description.owner.pid <= 1)
     throw new Error("shared PTY unit identity is unknown");
   return description.owner;
 }

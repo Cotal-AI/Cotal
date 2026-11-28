@@ -32,33 +32,35 @@ export async function waitForHostedLaunches(
 ): Promise<LaunchStatus> {
   const deadline = clock.now() + 15_000;
   let reported = false;
-  let held: HostedLaunches | undefined;
+  let launches: HostedLaunches | undefined;
   let privateSupported = true;
   const remaining = () => Math.ceil(deadline - clock.now());
   const cli = displayCmd();
   const retryCommand = `\`${cli} ${retry}\``;
   const timedOut = () => {
-    const named = held?.held ? `${held.names.map(name => JSON.stringify(name)).join(", ")}${held.held > held.names.length ? ` and ${held.held - held.names.length} more` : ""}` : undefined;
+    const named = launches?.held ? `${launches.names.map(name => JSON.stringify(name)).join(", ")}${launches.held > launches.names.length ? ` and ${launches.held - launches.names.length} more` : ""}` : undefined;
     return new HostedLaunchSettlementTimeout(named
-      ? `Hosted PTY launch still held in space ${space}: ${named}. No installed packages were changed. To clear the hold, run \`${cli} daemon service-disconnect --space ${shellPath(space)}\`, then retry ${retryCommand}.`
+      ? `Hosted PTY launch still held in space ${space}: ${named}. No installed packages were changed. Save work in this space before clearing the hold: \`${cli} daemon service-disconnect --space ${shellPath(space)}\` stops its hosted Manager and seats. Then retry ${retryCommand}.`
       : `A hosted spawn in space ${space} is still in progress. No installed packages were changed. When it finishes, retry ${retryCommand}.`);
   };
   for (;;) {
     if (remaining() <= 0) throw timedOut();
-    const status = await read(Math.min(3_000, remaining()));
-    if (status.instanceId !== instanceId) throw new Error(`Manager ${space} identity changed while checking launch settlement`);
-    const reserved = status.stopImpact?.reservedLaunches;
-    if (reserved === undefined || reserved === 0) return status;
-    if (!Number.isSafeInteger(reserved) || reserved < 0) throw new Error(`Manager ${space} returned an invalid launch reservation count`);
+    if (!launches?.reserved) {
+      const status = await read(Math.min(3_000, remaining()));
+      if (status?.instanceId !== instanceId) throw new Error(`Manager ${space} identity changed while checking launch settlement`);
+      const reserved = status.stopImpact?.reservedLaunches;
+      if (reserved === undefined || reserved === 0) return status;
+      if (!Number.isSafeInteger(reserved) || reserved < 0) throw new Error(`Manager ${space} returned an invalid launch reservation count`);
+    }
     if (privateSupported && remaining() > 0) {
-      held = await inspect(Math.min(3_000, remaining()));
-      privateSupported = held !== undefined;
+      launches = await inspect(Math.min(3_000, remaining()));
+      privateSupported = launches !== undefined;
       // The private observation is newer than the public status. Re-read the status for the
       // settled seat inventory rather than admitting from an older snapshot.
-      if (held?.reserved === 0 && remaining() > 0) continue;
+      if (launches?.reserved === 0 && remaining() > 0) continue;
     }
     if (!reported) {
-      report(held?.held ? `Waiting for a held hosted PTY launch to settle in space ${space}.` : `Waiting for a hosted spawn to settle in space ${space}.`);
+      report(launches?.held ? `Waiting for a held hosted PTY launch to settle in space ${space}.` : `Waiting for a hosted spawn to settle in space ${space}.`);
       reported = true;
     }
     if (remaining() > 0) await clock.sleep(Math.min(200, remaining()));
