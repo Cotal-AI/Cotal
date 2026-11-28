@@ -346,12 +346,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));
       };
-      if (req.op === "manager-start" || req.op === "manager-status") {
-        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
-        return;
-      }
-      if (req.op === "manager-launch-inspect") {
-        managerResult(() => managers.inspectLaunches(req.space));
+      if (req.op === "manager-start" || req.op === "manager-status" || req.op === "manager-launch-inspect") {
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space)
+          : req.op === "manager-status" ? managers.refresh(req.space) : managers.inspectLaunches(req.space));
         return;
       }
       if (req.op === "managers-stop") {
