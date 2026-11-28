@@ -140,11 +140,10 @@ try {
   process.env.PATH = `node_modules/.bin${delimiter}${absolute}`;
   const relative = await run(["status", "--plain"]);
   process.env.PATH = absolute;
-  check("a relative PATH entry names no command, and dropping it is the step that prints the sentence",
-    quiet(relative) && !relative.out.includes("daemon setup") && !relative.out.includes("daemon status"));
   const restored = await run(["status", "--plain"]);
-  check("the sentence returns once PATH holds only absolute entries",
-    restored.code === 0 && lineOf(restored.out, "Agent applications:").includes(sentence) && restored.out.includes("daemon setup"));
+  check("a relative PATH entry names no command, and dropping it is the step that prints the sentence",
+    quiet(relative) && !relative.out.includes("daemon setup") && !relative.out.includes("daemon status")
+    && restored.code === 0 && lineOf(restored.out, "Agent applications:").includes(sentence) && restored.out.includes("daemon setup"));
   const repairFile = serviceRepairFile(paths.state);
   writeSecretFile(repairFile, `${JSON.stringify({
     v: 1, receipt: JSON.parse(receipt(own)), previousSource: own, nextSource: own, enabled: true,
