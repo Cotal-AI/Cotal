@@ -57,10 +57,29 @@ export function rowView(app: AgentApp, activity: Activity | undefined, platform:
 
 /** What the app says once an install finished, and again once the sign-in that follows it finished, so
  *  a background service that has not picked the app up yet is still said, with its reason. */
-export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string }, signedIn = false): string {
+export const appManagementMessages = {
+  "other-copy": "Another copy of Cotal runs the background service on this computer, so this one can show your agent apps but can't change them.",
+  "version-conflict": "The app and the background service are different versions.",
+  "older-service": "This background service is too old to manage agent apps here.",
+  foreground: "Cotal is running without an installed background service. This app can show your agent apps, but it can’t change them.",
+  "unrecorded-service": "There's a background service on this computer that this copy of Cotal can't verify. It won't change your agent apps.",
+  "no-user-services": "Cotal can't reach this Linux session's user services. Open Cotal from a desktop session, then choose Check again.",
+  checking: "Checking the background service…",
+} as const;
+
+export type AppManagement = "service" | "local" | keyof typeof appManagementMessages;
+export const unknownAppChange = "Cotal couldn’t confirm whether the app changed. Choose Check again to see its current status.";
+export const appManagementRefusals: Partial<Record<string, AppManagement>> = {
+  APP_OTHER_COPY: "other-copy", APP_VERSION_CONFLICT: "version-conflict", APP_OLDER_SERVICE: "older-service",
+  APP_FOREGROUND: "foreground", APP_UNRECORDED_SERVICE: "unrecorded-service", APP_NO_USER_SERVICES: "no-user-services", APP_OWNER_CHECKING: "checking",
+};
+export type ServiceRefresh = { state: "refreshed" } | { state: "pending"; reason?: "agents-running" | "unconfirmed" };
+
+export function installedMessage(title: string, result: { serviceRefresh?: ServiceRefresh; pathAdded?: string }, signedIn = false): string {
   const state = signedIn ? "signed in" : "installed";
-  if (result.service === "waiting") return `${title} is ${state}. Your spaces can start it once the agents running on this computer stop.`;
-  if (result.service === "failed") return `${title} is ${state}, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`;
+  if (result.serviceRefresh?.state === "pending") return result.serviceRefresh.reason === "agents-running"
+    ? `${title} is ${state}. Your spaces can use it once the running agents finish.`
+    : `${title} is ${state}. Cotal couldn't confirm that the background service can use it. Choose Check again.`;
   const done = signedIn ? `${title} is ready.` : `${title} is installed.`;
   return result.pathAdded ? `${done} Cotal added its folder to PATH in ${result.pathAdded}.` : done;
 }

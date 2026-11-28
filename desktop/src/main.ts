@@ -830,7 +830,10 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
   if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
   renderAgentRows(status);
-  if (isTauri() && !agentApps.busy && Date.now() - appsLoadedAt > 30_000 && (agentApps.apps === undefined || (agentApps.waitingForAgents && runningAgents() === 0))) { appsLoadedAt = Date.now(); void agentApps.load(); }
+  if (isTauri()) {
+    agentApps.observeRunningAgents(runningAgents());
+    if (!agentApps.busy && Date.now() - appsLoadedAt > 30_000 && agentApps.apps === undefined) { appsLoadedAt = Date.now(); void agentApps.load(); }
+  }
   updateStatus = status.update as UpdateStatus | undefined;
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
@@ -1181,12 +1184,12 @@ function renderApps(): void {
   agentApps.renderPanel(el("app-list"), el("apps-message"), el<HTMLButtonElement>("apps-refresh"));
   const management = agentApps.management;
   el("apps-local").hidden = management !== "local" || stage === "finished";
-  el("apps-owner").hidden = !agentApps.readOnly;
-  el("apps-fix-connection").hidden = management !== "other-copy";
-  text("apps-owner", management === "other-copy" ? "Another copy of Cotal runs the background service on this computer, so this one can show your agent apps but can't change them."
-    : management === "checking" ? "Cotal is still checking the background service. You can change apps again in a moment." : "");
-  if (appsOpen && management === "checking") {
-    appsOwnerRetry ??= setTimeout(() => { appsOwnerRetry = undefined; if (appsOpen && management === agentApps.management) void agentApps.load(); }, 5000);
+  const ownerMessage = agentApps.ownerMessage;
+  el("apps-owner").hidden = !ownerMessage;
+  el("apps-fix-connection").hidden = !agentApps.showFixConnection;
+  text("apps-owner", ownerMessage);
+  if (appsOpen && agentApps.retryOwnerCheck) {
+    appsOwnerRetry ??= setTimeout(() => { appsOwnerRetry = undefined; if (appsOpen && agentApps.retryOwnerCheck) void agentApps.load(); }, 5000);
   } else if (appsOwnerRetry !== undefined) { clearTimeout(appsOwnerRetry); appsOwnerRetry = undefined; }
 }
 function openApps(): void {
