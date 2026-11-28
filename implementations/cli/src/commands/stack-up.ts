@@ -182,6 +182,8 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** True when a targeted restart accounts for all supplied CLI options. */
+  simpleTargetedStartup?: boolean;
   /** A complete, locally printable retry for an occupied recorded address, when available. */
   retryAtRecordedAddress?(): string | undefined;
   /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
@@ -423,7 +425,8 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
     const format = request.presentation === "rich" ? "" : ` --${request.presentation}`;
-    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry + format)} again`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options"
+      : request.simpleTargetedStartup ? `run ${codeSpan(retry + format)} again` : "repeat your original startup command from the same folder with the same options";
     throw localDiagnostic(new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
       remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
