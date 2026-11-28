@@ -1,5 +1,5 @@
 export function registryArrivalCell(options: {
-  scenario: "arrives" | "unavailable" | "integrity" | "reset" | "cache" | "archive-interrupted" | "closure-killed" | "closure-nospace" | "orphan" | "pending" | "reconcile-killed" | "closed-scope" | "min-release-age" | "before" | "offline-metadata" | "offline-archive" | "offline-closure" | "offline-staging" | "staging-refused" | "staging-killed" | "concurrent" | "extension-peers" | "extension-arrives" | "extension-unavailable" | "config-access-upgrade" | "config-access-auto" | "selection-upgrade" | "selection-rollback" | "version-named-node";
+  scenario: "arrives" | "unavailable" | "integrity" | "reset" | "cache" | "archive-interrupted" | "closure-killed" | "closure-nospace" | "orphan" | "pending" | "reconcile-killed" | "closed-scope" | "min-release-age" | "before" | "offline-metadata" | "offline-archive" | "offline-closure" | "offline-staging" | "staging-refused" | "staging-killed" | "concurrent" | "extension-peers" | "extension-arrives" | "extension-unavailable" | "config-access-upgrade" | "config-access-auto" | "selection-upgrade" | "selection-rollback" | "version-named-node" | "gate-env" | "gate-env-dash" | "gate-env-bash";
   entry?: string;
   parent?: string;
 }): Promise<{
@@ -11,3 +11,4 @@ export function registryArrivalCell(options: {
   requests: { at: number; path: string }[];
   output: string;
 }>;
+export function registryArrivalSkippedCount(): number;
