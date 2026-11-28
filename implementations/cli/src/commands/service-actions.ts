@@ -242,7 +242,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   // before anything is allocated.
   if (mode === "install" && definition.record.value.launch.type === "adapter") {
     const launch = definition.record.value.launch;
-    throw adapterInstallRefusal(space, name, launch.adapter, launch.options, commandName === "manager" || resolved?.preset === "manager" ? "manager" : undefined, target);
+    throw adapterInstallRefusal(space, name, launch.adapter, launch.options, commandName === "manager" || resolved?.preset === "manager" ? "manager" : undefined, target, args.values);
   }
   if (mode === "install" && values["dry-run"]) return previewNativeInstall(definition, selected, presentation, commandName);
   if (mode === "uninstall" && values["dry-run"]) return previewSystemdUninstall(definition, selected!, presentation, commandName);
