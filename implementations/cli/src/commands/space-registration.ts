@@ -461,7 +461,7 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
   const root = resolve(rootFlag ?? process.cwd());
   const kind = projectRootKind(root);
   if (kind !== "directory" && (kind !== "missing" || rootFlag === undefined || adopt))
-    throw usage(`--root ${root} is not a directory`, "pass an existing directory");
+    throw usage("the project root is not a directory", `pass an existing directory instead of ${codeSpan(root)}`);
   if (adopt) {
     // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
     let found: ReturnType<typeof journalRecordedElsewhere>;
