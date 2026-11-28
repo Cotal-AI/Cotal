@@ -246,9 +246,9 @@ function credentialReader(conn: Connection, mode?: ReturnType<CotalEndpoint["cha
     const lifecycleUid = oneLifecycle(claims);
     if (lifecycleUid === undefined) return { lifecycleUid, channels: [] };
     const scope = { space: conn.space, principal: { ...principal, lifecycleUid } };
-    const plugin = projectChannelGrants(permissions, { ...scope, mode }).history.filter((row) => row.kind === PLUGIN_CHANNEL_ROOT);
+    const routed = projectChannelGrants(permissions, { ...scope, mode }).history;
     const chat = projectChannelGrants(permissions, { ...scope, mode: "legacy" }).history.filter((row) => !hasPluginChannelRoot(row.channel));
-    return { lifecycleUid, channels: [...new Set([...chat, ...plugin].map((row) => row.channel))] };
+    return { lifecycleUid, channels: [...new Set([...chat, ...routed].map((row) => row.channel))] };
   }
   const filter = chatSubjectPrefix(conn.space, { owner: "*", actor: "*" });
   let lifecycleUid: string | undefined;
@@ -485,7 +485,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       if (/wildcard|not a valid channel|channel name/i.test((e as Error).message)) throw usage((e as Error).message);
       throw e;
     }
-    if (mode === undefined) rows = rows.filter((row) => !hasPluginChannelRoot(row.channel));
+    if (mode === undefined || (isolated && req.channel !== undefined)) rows = rows.filter((row) => !hasPluginChannelRoot(row.channel));
     if (rows.length > req.limit) previousSeq = rows.shift()?.seq;
     read = rows.map((row) => itemOf(row.msg, { seq: row.seq, channel: row.channel }));
     const retained = listed ? listed.filter((row) => channels.includes(row.channel)).reduce((sum, row) => sum + row.messages, 0) : undefined;
@@ -635,8 +635,8 @@ function historyTapSubjects(conn: Connection, channel: string | undefined, mode:
   if (mode === "isolated" && creds !== undefined && !conn.bearer) {
     const permissions = historySubjectPermissions(credsClaims(creds).nats ?? {});
     const chat = projectChannelGrants(permissions, { space, mode: "legacy" }).read.filter((row) => !hasPluginChannelRoot(row.channel));
-    const plugin = chatOnly ? [] : projectChannelGrants(permissions, { space, mode }).read.filter((row) => row.kind === PLUGIN_CHANNEL_ROOT);
-    return new Set([...chat, ...plugin].map((row) => row.subject));
+    const routed = projectChannelGrants(permissions, { space, mode }).read.filter((row) => !chatOnly || row.kind === "chat");
+    return new Set([...chat, ...routed].map((row) => row.subject));
   }
   if (granted === undefined) return new Set([chatWildcard(space)]);
   return new Set(granted.filter((ch) => mode !== undefined || !hasPluginChannelRoot(ch))

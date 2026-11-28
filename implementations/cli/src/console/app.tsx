@@ -26,6 +26,7 @@ import { offlineRecipientNotice } from "@cotal-ai/workspace";
 import { composeName, composePrompt } from "./compose-label.js";
 import { extensionNames } from "../ext-loader.js";
 import { spawnPersona } from "../lib/spawn-defaults.js";
+import { namedChannelMode } from "../lib/transient.js";
 import { launchAgent } from "./launch.js";
 import { NewAgent } from "./ui/NewAgent.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
@@ -425,16 +426,20 @@ export function App({
       const shown = composeName(name, id);
       return ep.getRoster().find((p) => p.card.id === id)?.status === "offline" ? `${lead}${shown}  ${offlineRecipientNotice(shown)}` : lead + shown;
     };
+    const post = async (channel: string, replyTo?: string) => {
+      namedChannelMode(ep.channelRoutingMode(), channel, ep.space);
+      return ep.multicast(text, { channel, replyTo, mentions: mentionsIn(text) });
+    };
     void ensureParticipant().then((ready) => {
       if (!ready) return;
       if (c.kind === "channel")
-        void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
+        void post(c.channel).then(ok("→ #" + c.channel)).catch(fail);
       else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok(dmLabel("→ ", c.toId, c.toName))).catch(fail);
       else {
         const e = c.entry;
         const channel = e.delivery === "multicast" && e.channel;
         const send = channel
-          ? ep.multicast(text, { channel, replyTo: e.id, mentions: mentionsIn(text) })
+          ? post(channel, e.id)
           : ep.unicast(e.from.id, text, { replyTo: e.id });
         void send.then(ok(channel ? "↩ " + composeName(e.from.name, e.from.id) : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
       }

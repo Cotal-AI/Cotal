@@ -12,7 +12,7 @@ import {
   CotalEndpoint, PLUGIN_CHANNEL_ROOT, createSpaceAuth, mintCreds, mintLifecycleUid,
   newIdentity, seedChannelRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, recordMesh, removeMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { emitSentinel, freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { bootBroker } from "../../manager/smoke/_boot-broker.js";
 import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
@@ -93,8 +93,60 @@ async function checkEnabledJoin(): Promise<void> {
       await killAndAwaitExit(ordinary.proc);
       await ordinary.exited;
     }
+    await fixture.writeProjection({});
+    const unreadable = cli(...args, "--channel", channel);
+    check("explicit join refuses an unreadable projection before holding presence", await unreadable.exited === 2 &&
+      unreadable.output().includes("PERMISSION_DENIED") && unreadable.output().includes("This credential cannot see plugin channels.") &&
+      !unreadable.output().includes("holding presence") && !unreadable.output().includes("cotal auth mint"), unreadable.output());
+    await fixture.writeProjection({ enabled: true, epoch: 1 });
+    await checkBareStaticJoin(fixture);
   } finally {
     await fixture.close();
+  }
+}
+
+async function checkBareStaticJoin(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>): Promise<void> {
+  const { space, servers, channel, chatChannel, auth } = fixture;
+  const root = join(dir, space);
+  mkdirSync(root);
+  saveSpaceAuth(authDir(root), auth);
+  recordMesh({ space, server: servers, root, mode: "auth", ts: new Date().toISOString() });
+  const args = ["join", "--space", space, "--name", "static-seat"];
+  try {
+    const reader = cli(...args, "--channel", channel);
+    try {
+      await until(() => reader.output().includes("holding presence") || reader.proc.exitCode !== null);
+      check("bare static join self-mints a seat on the admitted plugin channel", reader.proc.exitCode === null && reader.output().includes("holding presence"), reader.output());
+      const author = await fixture.mintAgent({ post: [channel] });
+      const file = join(dir, "static-join-plugin-author.creds");
+      writeFileSync(file, author.creds, { mode: 0o600 });
+      const text = "isolated post delivered to self-minted terminal seat";
+      const post = cli("send", "--space", space, "--creds", file, "-c", channel, text);
+      check("the scoped writer stores the isolated post", await post.exited === 0, post.output());
+      await until(() => reader.output().includes(text) || reader.proc.exitCode !== null);
+      check("the bare static seat receives the scoped isolated post", reader.proc.exitCode === null && reader.output().includes(text), reader.output());
+    } finally {
+      await killAndAwaitExit(reader.proc);
+      await reader.exited;
+    }
+
+    await fixture.writeAuthority({ version: 1, enabled: true, epoch: "bad" });
+    const refused = cli(...args, "--channel", channel);
+    check("bare static join refuses a malformed leader row before holding presence", await refused.exited === 2 &&
+      refused.output().includes("PERMISSION_DENIED") && refused.output().includes("This credential cannot see plugin channels.") &&
+      !refused.output().includes("holding presence") && !refused.output().includes("cotal auth mint"), refused.output());
+
+    const ordinary = cli(...args, "--channel", chatChannel);
+    try {
+      await until(() => ordinary.output().includes("holding presence") || ordinary.proc.exitCode !== null);
+      check("bare static join still admits ordinary CHAT with a malformed plugin leader row",
+        ordinary.proc.exitCode === null && ordinary.output().includes("holding presence"), ordinary.output());
+    } finally {
+      await killAndAwaitExit(ordinary.proc);
+      await ordinary.exited;
+    }
+  } finally {
+    removeMesh(space);
   }
 }
 

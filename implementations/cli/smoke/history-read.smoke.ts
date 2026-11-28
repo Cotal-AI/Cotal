@@ -20,7 +20,7 @@
  */
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect as connectSocket, createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -34,6 +34,7 @@ import {
   CotalEndpoint,
   PLUGIN_CHANNEL_ROOT,
   channelBucket,
+  channelRoute,
   chatStream,
   chatSubject,
   createSpaceAuth,
@@ -43,6 +44,7 @@ import {
   dmStream,
   idFromCreds,
   isReachable,
+  listSpaces,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -61,7 +63,7 @@ import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurren
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { startEnabledPluginSpace } from "../../../packages/core/smoke/fixtures/enabled-plugin-space.js";
 import { execWords } from "../src/lib/exec-words.js";
-import { clean, nodePty } from "./_console-pty.js";
+import { clean, ConsoleSession, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 
@@ -255,6 +257,7 @@ async function checkEnabledPluginHistory(): Promise<void> {
       grant?.read?.join() === channel && grant.post?.join() === channel, shown(whoami));
     await fixture.seedMembership(reader.principal, { live: [fixture.chatChannel, channel], durable: [fixture.chatChannel, hiddenChannel] });
     await checkEnabledObserverIsChatOnly(fixture, scope, save, send, reader.principal);
+    const scopedObserver = await checkEnabledScopedViews(fixture, scope, save, send, reader.principal);
     await checkEnabledLegacyCredential(fixture, scope, save);
 
     const live = follow(["history", channel, "--follow", "--creds", viewer, ...scope]);
@@ -271,6 +274,11 @@ async function checkEnabledPluginHistory(): Promise<void> {
       await killAndAwaitExit(live.child, "SIGINT");
     }
     await checkEnabledChatCursor(fixture, scope, save);
+    await checkEnabledSpaceOverview(fixture);
+    await checkDegradedConsoleSends(fixture, scopedObserver);
+    await fixture.writeProjection({ enabled: true, epoch: 1 });
+    await checkDegradedPluginProjection(fixture, scope, viewer, save);
+    await fixture.writeProjection({ enabled: true, epoch: 1 });
     await daemon.stop();
     await fixture.removePluginHistory();
     const absent = await history(channel);
@@ -280,6 +288,149 @@ async function checkEnabledPluginHistory(): Promise<void> {
   } finally {
     await fixture.close();
   }
+}
+
+async function checkEnabledScopedViews(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], save: (name: string, creds: string) => string,
+  sendPlugin: (destination: string, text: string) => Promise<{ status: number }>, member: string,
+): Promise<string> {
+  const { auth, space, channel, hiddenChannel } = fixture;
+  // Use the ordinary observer profile with one explicit signed live grant, not an agent renamed to pass the view's profile gate.
+  const id = newIdentity();
+  const { pub, sub } = credsClaims(await mintCreds(auth, id, "observer", { pluginChannelsEnabled: true })).nats!;
+  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  let scoped: string;
+  try {
+    const jwt = await encodeUser("observer", fromPublic(id.id), fromPublic(auth.account.pub), {
+      ...(pub ? { pub } : {}), sub: { ...sub, allow: [...(sub?.allow ?? []), channelRoute(space, "*", "*", channel, "isolated").subject] },
+    }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
+    scoped = save("enabled-scoped-observer.creds", credsFromJwt(jwt, id));
+  } finally {
+    signer.clear();
+  }
+  const watch = follow(["watch", "--view", "messages", "--creds", scoped, ...scope]);
+  const consoleView = follow(["console", "--plain", "--creds", scoped, ...scope.filter((arg) => arg !== "--json")]);
+  try {
+    const watchReady = await watch.until((line) => line.includes('"type":"snapshot"') && line.includes('"connected":true'));
+    const consoleReady = await consoleView.until((line) => line.includes(`watching space ${space}`));
+    const outside = await sendPlugin(hiddenChannel, "outside scoped terminal live grant");
+    const seen = await sendPlugin(channel, "inside scoped terminal live grant");
+    const watchSeen = await watch.until((line) => line.includes('"type":"event"') && line.includes("inside scoped terminal live grant"));
+    const consoleSeen = await consoleView.until((line) => line.includes("inside scoped terminal live grant"));
+    const membership = await watch.until((line) => {
+      const snapshot = JSON.parse(line).data?.membership?.snapshot as { members?: { id: string; live: string[] }[] } | undefined;
+      return snapshot?.members?.some((row) => row.id === member && row.live.includes(channel)) === true;
+    });
+    const outsideSeen = [...watch.lines, ...consoleView.lines].some((line) => line.includes(hiddenChannel) || line.includes("outside scoped terminal live grant"));
+    check("a scoped observer's watch and console surface its own isolated live post and no other plugin name or post",
+      watchReady && consoleReady && outside.status === 0 && seen.status === 0 && watchSeen && consoleSeen && membership && !outsideSeen,
+      { watch: watch.lines.slice(-4), console: consoleView.lines.slice(-4), stderr: consoleView.stderr() });
+  } finally {
+    await killAndAwaitExit(watch.child, "SIGINT");
+    await killAndAwaitExit(consoleView.child, "SIGINT");
+  }
+  return scoped;
+}
+
+async function checkDegradedConsoleSends(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, creds: string): Promise<void> {
+  const { servers, space, chatChannel, channel } = fixture;
+  const sockets = new Set<Socket>();
+  let connections = 0;
+  const proxy = createServer((client) => {
+    const upstream = connectSocket(Number(new URL(servers).port), "127.0.0.1");
+    connections++;
+    sockets.add(client);
+    client.on("close", () => { sockets.delete(client); upstream.destroy(); });
+    upstream.on("close", () => client.destroy());
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+    client.pipe(upstream).pipe(client);
+  });
+  await new Promise<void>((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen(0, "127.0.0.1", resolve);
+  });
+  const consoleEnv = { HOME: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, DO_NOT_TRACK: "1" };
+  let session: ConsoleSession | undefined;
+  try {
+    const cs = session = new ConsoleSession(["--space", space, "--server", `nats://127.0.0.1:${(proxy.address() as AddressInfo).port}", "--creds", creds], home,
+      consoleEnv, { cols: 160, rows: 36, cwd: shell });
+    const tab = new RegExp(`([1-9]): #${channel.replaceAll(".", "\\.")}\\b`);
+    if (!(await cs.waitFor(tab, 20_000))) throw new Error(`scoped console tab did not appear: ${clean(cs.out).slice(-1600)}`);
+    await cs.keys(tab.exec(clean(cs.out))![1]!);
+    const selected = `● ${space} · #${channel}`;
+    if (!(await cs.waitFor(selected, 5_000))) throw new Error(`console tab did not select: ${clean(cs.out).slice(-1600)}`);
+    const previous = connections;
+    const after = cs.mark();
+    await fixture.writeProjection({});
+    for (const socket of sockets) socket.destroy();
+    if (!(await cs.waitFor(selected, 25_000, after)) || connections <= previous)
+      throw new Error(`console did not reconnect with its cached selection: ${clean(cs.out.slice(after)).slice(-1600)}`);
+    const refusal = "This credential cannot see plugin channels.";
+    let mark = cs.mark();
+    await cs.compose("reserved cached compose must not be routed");
+    check("console refuses compose on the cached reserved selection after a degraded reconnect",
+      await cs.waitFor(`send: ${refusal}`, 6_000, mark), clean(cs.out.slice(mark)).slice(-1500));
+    mark = cs.mark();
+    await cs.command(`msg #${channel} reserved palette post must not be routed`);
+    check("console refuses the typed reserved palette destination on the degraded connection",
+      await cs.waitFor(`msg: ${refusal}`, 6_000, mark), clean(cs.out.slice(mark)).slice(-1500));
+    // Distinct from the reserved refusals: the read-only fixture still asks the broker for ordinary CHAT.
+    mark = cs.mark();
+    await cs.command(`msg #${chatChannel} ordinary chat broker control`);
+    check("ordinary console palette send still reaches the broker's read-only refusal", await cs.waitFor(/msg: .*permi/i, 8_000, mark), clean(cs.out.slice(mark)).slice(-1500));
+  } finally {
+    await session?.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => proxy.close(() => resolve()));
+  }
+}
+
+async function checkEnabledSpaceOverview(fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>): Promise<void> {
+  const { space, servers, chatChannel, hiddenChannel, channel } = fixture;
+  const observerCreds = await fixture.mintObserver();
+  const readerCreds = (await fixture.mintAgent({ read: [chatChannel, channel] })).creds;
+  const count = async (creds: string) => (await listSpaces({ servers, creds })).find((row) => row.space === space);
+  const observer = await count(observerCreds);
+  const scoped = await count(readerCreds);
+  check("the spaces overview counts the admitted plugin row only for its own viewer and never returns channel names",
+    observer?.channels === 1 && scoped?.channels === observer.channels + 1 && scoped.messages === observer.messages &&
+    !JSON.stringify({ observer, scoped }).includes(channel) && !JSON.stringify({ observer, scoped }).includes(hiddenChannel), { observer, scoped });
+}
+
+async function checkDegradedPluginProjection(
+  fixture: Awaited<ReturnType<typeof startEnabledPluginSpace>>, scope: string[], viewer: string,
+  save: (name: string, creds: string) => string,
+): Promise<void> {
+  const { auth, chatChannel, hiddenChannel, channel } = fixture;
+  const peer = await fixture.mintAgent();
+  const sender = fixture.endpoint({ creds: peer.creds, lifecycleUid: peer.lifecycleUid, consume: false, registerPresence: false,
+    card: { name: "degraded-dm-control", kind: "agent" } });
+  const note = "ordinary DM survives a malformed plugin projection";
+  await sender.start();
+  try { await sender.unicastAttributed(peer.principal, note); }
+  finally { await sender.stop(); }
+  const audit = save("projection-degraded-audit.creds", await mintCreds(auth, newIdentity(), "admin", { pluginChannelsEnabled: true }));
+  await fixture.writeProjection({});
+  const stock = save("projection-degraded-observer.creds", await fixture.mintObserver());
+  const writer = save("projection-degraded-writer.creds", (await fixture.mintAgent({ post: [chatChannel] })).creds);
+  const text = "ordinary CHAT survives a malformed plugin projection";
+  const sent = await run(["send", "-c", chatChannel, text, "--creds", writer, ...scope]);
+  const history = await run(["history", "--creds", stock, ...scope]);
+  const metadata = await run(["channel", "--creds", stock, ...scope]);
+  const dms = await run(["history", "--dms", "--creds", audit, ...scope]);
+  check("ordinary CLI send, history, and metadata survive malformed projection without exposing reserved rows",
+    sent.status === 0 && history.status === 0 && texts(history).includes(text) && metadata.status === 0 && metadata.stdout.includes(chatChannel) &&
+    dms.status === 0 && dms.envelope?.result?.items.some((row) => row.channel === null && row.text === note) === true &&
+    !history.stdout.includes(hiddenChannel) && !metadata.stdout.includes(hiddenChannel) && !dms.stdout.includes(hiddenChannel),
+    { sent: shown(sent), history: shown(history), metadata: shown(metadata), dms: shown(dms) });
+
+  const reservedRead = await run(["history", channel, "--creds", viewer, ...scope]);
+  const reservedSend = await run(["send", "-c", channel, "must not be routed", "--creds", viewer, ...scope]);
+  check("an otherwise scoped credential with a malformed projection cannot route named isolated reads or writes",
+    [reservedRead, reservedSend].every((r) => r.status === 2 && r.envelope?.error?.code === "PERMISSION_DENIED" &&
+      r.envelope.error.message === "This credential cannot see plugin channels." && r.envelope.error.remedy === undefined),
+    { read: shown(reservedRead), send: shown(reservedSend) });
 }
 
 async function checkEnabledLegacyCredential(

@@ -1,5 +1,6 @@
 import { userInfo } from "node:os";
 import * as readline from "node:readline";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint,
   PLUGIN_CHANNEL_ROOT,
@@ -24,6 +25,8 @@ import {
   isConsumerNotFound,
   DmDurableMissingError,
   isPublishPermissionDenied,
+  isStreamNotFound,
+  readPluginChannelSpaceAuthority,
   credsClaims,
   idFromCreds,
   DEV_OWNER,
@@ -137,6 +140,19 @@ async function preflightChannelMode(space: string, servers: string, creds: strin
   } finally {
     await ep.stop().catch(() => {});
   }
+}
+
+/** The signer reads authority before issuing the seat. Its provisioner credential never reaches the join. */
+async function staticJoinChannelMode(target: { server: string; space: string; tlsRequired: boolean; auth: SpaceAuth }, channel: string): Promise<boolean> {
+  if (!hasPluginChannelRoot(channel)) return false;
+  const { space, server, auth, tlsRequired } = target;
+  const creds = await mintCreds(auth, newIdentity(), "provisioner");
+  const mode = await withControlConnection(server, { creds, tls: tlsRequired }, async (nc) => {
+    const jsm = await jetstreamManager(nc, { checkAPI: false });
+    const snapshot = await readPluginChannelSpaceAuthority(jsm, space);
+    return snapshot.state.enabled ? "isolated" as const : "legacy" as const;
+  }).catch((error: unknown) => isStreamNotFound(error) ? "legacy" as const : undefined);
+  return namedChannelMode(mode, channel, space) === "isolated";
 }
 
 /** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
@@ -347,7 +363,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth: spaceAuth };
       const thisSeat = { actor: identity.id, alias: identity.id, lifecycleUid };
       try {
-        await withProvisioner({ space, servers: server, auth: spaceAuth }, "join-provisioner", async (prov) => {
+        const pluginChannelsEnabled = await staticJoinChannelMode(seatTarget, channel);
+        await withProvisioner({ space, servers: server, tls: seatTarget.tlsRequired, auth: spaceAuth }, "join-provisioner", async (prov) => {
           await activateTerminalSeat(seatTarget, thisSeat);
           retireSeat = async () => {
             await retireTerminalSeat(seatTarget, thisSeat);
@@ -373,6 +390,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               subscribe: [channel],
               allowSubscribe: [channel],
               allowPublish: [channel],
+              pluginChannelsEnabled,
               role: values.role,
               lifecycleUid,
               expiresAt: issue.expiresAt,
