@@ -70,6 +70,7 @@ event records the code without collecting the stream message or stack. If `up` r
 legacy membership store, the local error target names the space; the reported message omits its name.
 When a startup mode conflicts with the space's existing user authentication, the CLI names the state directory locally. The command event reports `CONFLICT` without the message or stack.
 When `run validate`, `run plan` or `run simulate` rejects an invalid cotal-lang program, the command event reports `refused` and, at the regular level, `SCHEMA_INVALID`. The source path and validation findings stay in the local report.
+When `doctor auth` reports a credential finding with `OPERATION_FAILED`, regular telemetry records the code. The finding, renewal owner and local report stay on the machine.
 When a subscription falls outside `allowSubscribe`, the local diagnostic names the channels. The event
 reports the mismatch without the subscription or the allowed channels.
 When a service preset has never started, its refusal names the space locally. Telemetry records the
