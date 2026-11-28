@@ -694,8 +694,7 @@ export function ensureRootForSpace(space: string, separateRootNeedsPreparation =
     const problem = projectRootProblem(prepared.root);
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, {
       target: { space, root: prepared.root },
-      remedy: problem === "missing" ? `forget it with \`cotal space forget ${space}\`, then start it here`
-        : problem ? preparedRootRemedy(space, problem)
+      remedy: problem ? preparedRootRemedy(space, problem, "start it here")
         : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
     });
   }

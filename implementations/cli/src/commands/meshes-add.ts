@@ -7,6 +7,7 @@ import {
   authDir,
   canonicalRoot,
   classifyJoinTarget,
+  codeSpan,
   findCotalRoot,
   findMesh,
   findPreparedSpace,
@@ -140,9 +141,14 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
 export function checkRoot(flag: string | undefined, cwd: string): Check<string> {
   if (flag) {
     const dir = resolve(flag);
-    return isDir(dir)
-      ? good(dir)
-      : bad(`✗ --root ${dir} is not a directory - pass an existing folder; for an open space it may be empty`, "USAGE_INVALID");
+    try {
+      if (statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return good(dir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") return { ok: false, code: code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : "TARGET_UNAVAILABLE",
+        message: "✗ this account could not inspect the registration root", remedy: `check access to ${codeSpan(dir)} and its parent directories, then retry` };
+    }
+    return { ok: false, code: "USAGE_INVALID", message: "✗ --root must name an existing directory", remedy: `pass an existing folder instead of ${codeSpan(dir)}; for an open space it may be empty` };
   }
   const root = findCotalRoot(cwd);
   if (!isDir(join(root, ".cotal")) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))

@@ -105,11 +105,20 @@ ${scenario === "desktop" ? `writeFileSync(${JSON.stringify(join(installed, "desk
 const {connectorConfigDir,retainConnectorConfig,inheritConnectorConfig,canRecoverConnectorConfig,prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
 function assertRootPermissionRefusal(path) {
   if (process.getuid?.()===0) return;
+  const ino=fs.lstatSync(path).ino, chmod=fs.chmodSync;
   fs.chmodSync(path,0o200);
   try {
     assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
-    assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
-  } finally { fs.chmodSync(path,0o700); }
+    fs.chmodSync=(target,mode)=>{if(fs.lstatSync(target,{throwIfNoEntry:false})?.ino===ino)throw Object.assign(new Error('read-only filesystem'),{code:'EROFS'});return chmod(target,mode);};
+    syncBuiltinESMExports();
+    assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable') && error.remedy.includes('read and search') && error.native?.outcome==='not-executed' && !error.message.includes('restore it there from a backup'));
+    fs.chmodSync=chmod;
+    syncBuiltinESMExports();
+    fs.chmodSync(path,0);
+    prepareConnectorConfigForUpdate();
+    assert.equal(fs.statSync(path).mode&0o777,0o700);
+    assert.equal(connectorConfigDir(),path);
+  } finally { fs.chmodSync=chmod; syncBuiltinESMExports(); fs.chmodSync(path,0o700); }
 }
 const original=${JSON.stringify(join(config, "cotal"))};
 const metadata=${JSON.stringify(join(installed, "package.json"))};
