@@ -983,8 +983,7 @@ export class Manager {
     if (!state) return undefined;
     const identity = this.serviceIdentityObservation();
     if (state.grant.endpoint !== identity.endpoint || state.grant.instanceId !== identity.instanceId || state.grant.owner !== identity.principal.owner) throw new Error("the manager's local service observation does not match its owned serve incarnation");
-    const stopImpact = this.managerStatusData(undefined).stopImpact;
-    if (!stopImpact) throw new Error("the manager did not expose its own native stop policy");
+    const stopImpact = this.statusAndModelsComponent.stopImpactData(undefined);
     // The local receipt keeps its revision-32 shape: an older controller's closed reader refuses an
     // extra key. The preserved-exit check reads the binding through `localPreservation` instead.
     const { preservation: _preservation, ...ordinary } = stopImpact;
@@ -994,7 +993,7 @@ export class Manager {
   /** The attempt and inventory digest this embedding holds while maintenance is not `active`, for
    *  its own native child only. Absent when active or before an inventory exists. */
   localPreservation(): { attemptId: string; inventorySha256: string } | undefined {
-    return this.managerStatusData(undefined).stopImpact?.preservation;
+    return this.statusAndModelsComponent.stopImpactData(undefined).preservation;
   }
 
   protected serviceIdentityObservation(): ManagerServiceIdentity {

@@ -227,30 +227,35 @@ export class StatusAndModels {
       connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
-      stopImpact: {
-        agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
-        observedAt: new Date().toISOString(),
-        maintenance: this.maintenanceState,
-        resumeRequired: this.resumeRequired,
-        stopping: this.leaseStopping,
-        ...this.deps.pendingWork(),
-        agents: [...this.agents.values()]
-          .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
-          .map((a): ManagerStopImpact["agents"][number] => ({
-            name: a.name,
-            id: a.id,
-            lifecycleUid: a.lifecycleUid,
-            mode: a.handle.kind,
-            defaultAction: this.maintenanceState !== "active" || this.resumeRequired
-              ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
-            withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
-          })),
-        // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
-        // resume name one inventory.
-        ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
-          ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
-          : {}),
-      },
+      stopImpact: this.stopImpactData(ownerFilter),
+    };
+  }
+
+  /** Native stop policy and pending-work snapshot without refreshing connector binaries. */
+  stopImpactData(ownerFilter: string | undefined): ManagerStopImpact {
+    return {
+      agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
+      observedAt: new Date().toISOString(),
+      maintenance: this.maintenanceState,
+      resumeRequired: this.resumeRequired,
+      stopping: this.leaseStopping,
+      ...this.deps.pendingWork(),
+      agents: [...this.agents.values()]
+        .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
+        .map((a): ManagerStopImpact["agents"][number] => ({
+          name: a.name,
+          id: a.id,
+          lifecycleUid: a.lifecycleUid,
+          mode: a.handle.kind,
+          defaultAction: this.maintenanceState !== "active" || this.resumeRequired
+            ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
+          withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
+        })),
+      // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
+      // resume name one inventory.
+      ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
+        ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
+        : {}),
     };
   }
 

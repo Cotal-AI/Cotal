@@ -164,9 +164,9 @@ function missingServiceDefinition(space: string, name: string, mode: string, com
   const verb = commandName === "down" ? "down" : `${commandName} ${mode}`;
   const remedy = mode === "stop" && values["dry-run"]
     ? stopPreviewStep(space, values, stackName ? { name: stackName, verb } : undefined)
-    : values["dry-run"] ? serviceListStep(space, values)
+    : values["dry-run"] || (reading && !stackName) ? serviceListStep(values, space)
     : stackName ? `this space's controller stack names it ${stackName}: use \`cotal ${verb} ${stackName} --space ${space}\`${mode === "stop" ? ", or bare `cotal down` to stop the whole stack" : ""}`
-    : reading ? `list this space's saved definitions with \`cotal service --space ${shellWord(space)}\`` : unsavedServiceStep(name, mode, space);
+    : unsavedServiceStep(name, mode, space);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; ${effect}`, { target: { space, name }, remedy });
 }
 
