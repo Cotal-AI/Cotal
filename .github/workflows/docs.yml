@@ -68,12 +68,15 @@ on:
   release:
     types: [published]
 
-# A new push to a PR supersedes the build already running for it. Runs for main queue in order,
-# and so do runs for one release tag, because a deploy result is the record for that commit.
+# A new push to a PR supersedes the build already running for it. On main the deploy in progress
+# finishes and only the newest waiting push is kept: a deploy publishes the whole site at its commit,
+# so the newest one covers every push before it, and a queue of one deploy per push fell 13 hours
+# behind main on a day with many merges. Runs for one release tag still queue in order, because a
+# snapshot is the record for that tag.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
+  queue: ${{ github.event_name == 'release' && 'max' || 'single' }}
 
 permissions:
   contents: read
