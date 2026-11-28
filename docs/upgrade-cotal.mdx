@@ -587,6 +587,12 @@ Retired records stay in a timestamped `update-recovery-retained-<timestamp>-<suf
 Cotal home, normally `~/.cotal`. The command prints that folder. It never changes the snapshot
 named by a retired record. Daemon startup uses the same rules for restoring or retaining a rollback snapshot.
 
+On Linux and macOS, if two installations share a Cotal home, `cotal spawn --detach` can
+still reach an existing local Manager when the interrupted update record and snapshot both identify
+the other installation and the local connectors are ready. The installation that owns the record
+still needs recovery. If Cotal cannot establish ownership or an update is still running, this
+exception does not apply.
+
 If the interrupted update prevented `cotal up` from starting any member, run `cotal update --self`
 before trying `cotal up` again. The update can reconcile the installation without starting the
 stack when it confirms the recorded processes are gone and the broker address has no listener.

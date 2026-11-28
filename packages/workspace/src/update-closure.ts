@@ -7,6 +7,10 @@ import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "./advisory-lock.js";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { liveWindowsUpdateClosureOwner } from "./update-closure-win32.js";
+import { foreignUpdateInstallation } from "./connector-retention.js";
+import { probeLiveness } from "./liveness.js";
+import { readLocalRecordSource } from "./local-record-source.js";
+import { protectedLocalDirectory } from "./protected-records.js";
 
 const ownerStart = (pid: number) => {
   if (process.platform !== "win32") return processStartToken(pid);
@@ -22,9 +26,35 @@ let held: HeldLock | undefined;
 let references = 0;
 const lockPath = () => join(homeCotalDir(), ".update-closure.lock");
 
+const interruptedUpdate = () => new Error("an interrupted update needs restoration; run `cotal update --self`");
+
+function abandonedForeignUpdate(record: UpdateRecovery): boolean {
+  try {
+    if (process.platform !== "linux" && process.platform !== "darwin") return false;
+    const owner = record.owner;
+    if (!owner?.start || !owner.nonce || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return false;
+    if (probeLiveness(owner.pid) !== "dead") {
+      const start = processStartToken(owner.pid);
+      if (!start || start === owner.start) return false;
+    }
+    protectedLocalDirectory(homeCotalDir());
+    const bytes = readLocalRecordSource(join(homeCotalDir(), "update-recovery.json"), 256 * 1024, true);
+    return !!bytes && JSON.stringify(JSON.parse(bytes.toString("utf8"))) === JSON.stringify(record) && foreignUpdateInstallation(record);
+  } catch { return false; }
+}
+
 /** Wait without acquiring on read-only boot gates. A wait on another command's installation change
  *  says so after one second, so a command that prints nothing yet is not mistaken for a hang. */
 export function waitForUpdateClosure(): boolean {
+  return waitForClosure();
+}
+
+/** A local launch can pass foreign recovery only when its own connectors need no writes. */
+export function waitForLocalLaunchClosure(ready: () => boolean): boolean {
+  return waitForClosure(ready);
+}
+
+function waitForClosure(ready?: () => boolean): boolean {
   let waitedForUpdate = false;
   const started = Date.now();
   const deadline = started + 300_000;
@@ -35,7 +65,11 @@ export function waitForUpdateClosure(): boolean {
     const current = inspectLock(lockPath());
     const record = readUpdateRecovery();
     if (current.state !== "active") {
-      if (record && record.phase !== "verified-ready") throw new Error("an interrupted update needs restoration; run `cotal update --self`");
+      if (record && record.phase !== "verified-ready") {
+        if (!ready || !abandonedForeignUpdate(record) || !ready()) throw interruptedUpdate();
+        if (inspectLock(lockPath()).state === "active") continue;
+        if (JSON.stringify(readUpdateRecovery()) !== JSON.stringify(record)) throw interruptedUpdate();
+      }
       return waitedForUpdate;
     }
     if (String(current.owner.pid) === process.env[OWNER] && current.owner.nonce === process.env[NONCE]) return false;
@@ -64,13 +98,22 @@ export function installationWriter(): { pid: number } | undefined {
 
 /** Reserve the outer closure barrier before taking seed or extension writer locks. */
 export function claimUpdateClosureAccess(recover = false): () => void {
+  return claimClosure(recover);
+}
+
+/** A seat reservation writes only its own selected connector set, under the ordinary barrier. */
+export function claimLocalLaunchClosure(): () => void {
+  return claimClosure(false, true);
+}
+
+function claimClosure(recover: boolean, localLaunch = false): () => void {
   const owner = process.env[OWNER];
   const nonce = process.env[NONCE];
   if (!held && (owner !== undefined || nonce !== undefined)) {
     const record = readUpdateRecovery();
     if (!record && process.env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") {
       delete process.env[OWNER]; delete process.env[NONCE]; delete process.env[START]; delete process.env.COTAL_UPDATE_CLOSURE_TRANSACTION;
-      return claimUpdateClosureAccess();
+      return claimClosure(false, localLaunch);
     }
     const current = inspectLock(lockPath());
     const matchesStart = process.platform === "win32" && process.env[START] === "" && record
@@ -82,9 +125,16 @@ export function claimUpdateClosureAccess(recover = false): () => void {
     return () => {};
   }
   if (!held) {
-    if (!recover) waitForUpdateClosure();
+    if (!recover) waitForClosure(localLaunch ? () => true : undefined);
     const start = ownerStart(process.pid) ?? "";
-    held = acquireLock(lockPath(), { label: "a closure writer", waitMs: 300_000 });
+    const lock = acquireLock(lockPath(), { label: "a closure writer", waitMs: 300_000 });
+    if (localLaunch) {
+      try {
+        const record = readUpdateRecovery();
+        if (record && record.phase !== "verified-ready" && !abandonedForeignUpdate(record)) throw interruptedUpdate();
+      } catch (error) { lock.release(); throw error; }
+    }
+    held = lock;
     process.env[OWNER] = String(process.pid);
     process.env[NONCE] = held.nonce;
     process.env[START] = start;

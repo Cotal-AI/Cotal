@@ -18,6 +18,57 @@ const childEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
 let passed = 0;
 try {
+  if (process.platform === "linux" || process.platform === "darwin") {
+    const foreign = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {chmodSync,mkdirSync,mkdtempSync,realpathSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {dirname,join} from 'node:path';
+const entry=realpathSync.native(${JSON.stringify(entry)});
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:entry,loadedEntry:entry})});
+process.env.COTAL_HOME=join(realpathSync.native(${JSON.stringify(root)}),'foreign-home');
+process.env.XDG_CONFIG_HOME=join(realpathSync.native(${JSON.stringify(root)}),'foreign-config');
+const {foreignUpdateInstallation,retainConnectorConfig,retainConnectorSeat}=await import(${JSON.stringify(module)});
+const workspace=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/index.ts")).href)});
+const own=retainConnectorConfig();
+const lib=join(dirname(process.env.COTAL_HOME),'other/lib');
+const installed=join(lib,'node_modules/cotal-ai'), other=join(installed,'dist/cotal.js');
+mkdirSync(dirname(other),{recursive:true,mode:0o700});
+writeFileSync(other,'// foreign entry');
+const store=join(lib,'.cotal-generations'), transaction=join(store,'.transaction-case');
+mkdirSync(transaction,{recursive:true,mode:0o700});
+const execution=join(transaction,'execution.json'), id='a'.repeat(32), previous='0.165.4', target='0.165.5';
+const journal={v:1,installed,launchEntry:other,previous:{manifest:JSON.stringify({name:'cotal-ai',version:previous,bin:{cotal:'./dist/cotal.js'}}),bootstrap:'',descriptor:null},target:{id,version:target,root:join(store,id,'cotal-ai'),inventorySha256:'a'.repeat(64)}};
+writeFileSync(execution,JSON.stringify(journal),{mode:0o600});
+const hash=createHash('sha256').update(other).digest('hex');
+const config=join(process.env.XDG_CONFIG_HOME,'cotal','installs',hash,'sets',previous,'cotal');
+mkdirSync(config,{recursive:true,mode:0o700});
+const snapshot=mkdtempSync(join(config,'.update-snapshot-'));
+const abandoned={previous,target,installed:previous,phase:'replacing',reason:'interrupted update',owner:{pid:2147483647,start:'dead-start',nonce:'old-owner'},execution,snapshot};
+workspace.writeUpdateRecovery(abandoned);
+assert.equal(foreignUpdateInstallation(workspace.readUpdateRecovery()),true,'two protected paths identify B');
+assert.throws(()=>retainConnectorSeat('manager','ordinary'),/interrupted update needs restoration/,'non-launch access still blocks');
+const holder=retainConnectorSeat('manager','accepted',true);
+assert.equal(holder.active,true,'A reserves its own connector holder');
+holder.ended();
+assert.equal(workspace.updateActivationBlocked(),true,'hosted activation stays blocked');
+workspace.writeUpdateRecovery({...abandoned,owner:{pid:process.pid,start:workspace.processStartToken(process.pid),nonce:'live-owner'}});
+assert.throws(()=>retainConnectorSeat('manager','active',true),/interrupted update needs restoration/,'a live recorded updater is not abandoned');
+workspace.writeUpdateRecovery(abandoned);
+assert.equal(foreignUpdateInstallation({...abandoned,snapshot:join(own,'.update-snapshot-wrong')}),false,'wrong installation is not proof');
+chmodSync(execution,0o644);
+assert.throws(()=>retainConnectorSeat('manager','exposed',true),/interrupted update needs restoration/,'an unprotected execution record blocks');
+chmodSync(execution,0o600);
+chmodSync(snapshot,0o755);
+assert.equal(foreignUpdateInstallation(abandoned),false,'non-private snapshot blocks');
+rmSync(snapshot,{recursive:true});
+const replacement=mkdtempSync(join(config,'other-'));
+symlinkSync(replacement,snapshot,'dir');
+assert.equal(foreignUpdateInstallation(abandoned),false,'linked snapshot blocks');
+`], { env: childEnv, encoding: "utf8", timeout: 30_000 });
+    assert.equal(foreign.status, 0, `${foreign.stdout}${foreign.stderr}`);
+    passed++;
+  }
   const freshConfig = join(root, "fresh");
   mkdirSync(freshConfig, { mode: 0o700 });
   const fresh = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `

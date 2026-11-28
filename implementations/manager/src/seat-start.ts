@@ -953,7 +953,7 @@ export class SeatStart {
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(cotalConfig, role) };
-        handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
+        handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody, !this.userMode && !this.remoteAuthority);
       }
       if (onceTask && !handle.waitForExit)
         throw new Error(`once: runtime "${handle.kind}" cannot prove the seat's exit, which is what ends its task when the seat goes first`);
