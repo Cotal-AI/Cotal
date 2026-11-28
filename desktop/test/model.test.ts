@@ -58,6 +58,8 @@ test("approval guidance refers to this computer", () => {
 test("launch readiness requires an answering registered Manager with an available application", () => {
   for (const manager of [undefined, {}, { state: "answering" }, { state: "restarting", instanceId: "m", connectors: [{ state: "available" }] }, { state: "answering", instanceId: "m", connectors: [{ state: "unavailable" }] }]) assert.equal(launchReady(manager), false);
   assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }] }), true);
+  // A Manager that lost its connection still answers its daemon, but nothing can launch through it.
+  assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }], connection: { state: "offline", reason: "this computer cannot look up cotal.cloud (ENOTFOUND)" } }), false);
   assert.equal(connectionView("launch-ready").title, "This computer is connected");
   assert.equal(machinesUrl("https://cloud.cotal.ai/api/auth", "sp_636f74616c5f636c6f7564", "manager&exact"), "https://cloud.cotal.ai/machines?space=sp_636f74616c5f636c6f7564&machine=manager%26exact");
 });
@@ -135,6 +137,18 @@ test("expired credentials and pending approval refusals map to their recovery ac
     description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
     action: "refresh",
     label: "Try again",
+  });
+  assert.deepEqual(refusalView("OFFLINE"), {
+    title: "No internet connection",
+    description: "Cotal reconnects by itself when this computer is back online.",
+    action: "refresh",
+    label: "Check again",
+  });
+  assert.deepEqual(refusalView("SPACE_UNREACHABLE"), {
+    title: "Can't reach your space",
+    description: "Cotal reconnects by itself when the space answers again. Details shows the reason.",
+    action: "refresh",
+    label: "Check again",
   });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",

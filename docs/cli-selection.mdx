@@ -1191,8 +1191,10 @@ their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh 
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
 lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
 `cotal setup --skills`. The compact report shows out-of-date `.agents` skills even when no agent
-application is set up. If the skills ownership manifest is corrupt, restore a valid manifest at the
-reported path before running `cotal setup --skills`. `status` takes `--space` / `--server` to pick the
+application is set up. Setup refuses a malformed skills ownership manifest with `SCHEMA_INVALID`
+(exit 1). Restore a valid copy at the reported path before running `cotal setup --skills`. If the
+account cannot read the manifest, setup reports `PERMISSION_DENIED` (exit 2). Restore read access
+and retry without replacing the file. `status` takes `--space` / `--server` to pick the
 mesh to inspect. It starts nothing.
 
 When `status` would suggest restarting the selected stopped local stack,

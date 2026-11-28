@@ -598,7 +598,8 @@ if (process.platform !== "win32") {
   try {
     const read = run(["config", "--json"]);
     check("a symlinked preferences file is refused with PERMISSION_DENIED, exit 2, naming the link and its target",
-      read.status === 2 && read.envelope?.error?.code === "PERMISSION_DENIED" && (read.envelope.error.message ?? "").includes(`${file} is a symbolic link to ${target}`), shown(read));
+      read.status === 2 && read.envelope?.error?.code === "PERMISSION_DENIED" && read.envelope.error.message.includes("the preferences file is a symbolic link")
+        && !read.envelope.error.message.includes(file) && !read.envelope.error.message.includes(target) && read.envelope.error.remedy?.includes(`${file} points to ${target}`) === true, shown(read));
     const other = run(["ext", "root"]);
     check("it stops other commands too, as an invalid file does", other.status === 2 && other.stderr.includes(target), shown(other));
     const version = run(["version"]);
