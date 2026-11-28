@@ -1,6 +1,7 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { dmStream, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "../../src/index.js";
+import { openChannelRegistry, writeChannelDefaults } from "../../src/channels.js";
 import type { EndpointConsumers } from "../../src/endpoint-consumers.js";
 import type { ConnectionState } from "../../src/endpoint-connection-state.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "../../src/types.js";
@@ -9,6 +10,8 @@ import { isConsumerNotFound } from "../../src/jetstream-missing.js";
 import { startEnabledPluginSpace } from "./enabled-plugin-space.js";
 
 type Check = (label: string, ok: boolean, detail?: unknown) => void;
+type EnabledPluginSpace = Awaited<ReturnType<typeof startEnabledPluginSpace>>;
+type Received = { id: string; historical: boolean };
 const internals = (ep: CotalEndpoint) => ep as unknown as { consumers: EndpointConsumers; conn: ConnectionState };
 const until = async (predicate: () => boolean) => {
   for (let i = 0; i < 120 && !predicate(); i++) await wait(50);
@@ -25,7 +28,7 @@ export async function checkPluginJoinReplay(check: Check): Promise<void> {
       registerPresence: false, watchPresence: false, card: { kind: "agent", name: "join-writer" } });
     const reader = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [hiddenChannel],
       registerPresence: false, watchPresence: false, card: { kind: "agent", name: "join-reader" } });
-    const received: { id: string; historical: boolean }[] = [];
+    const received: Received[] = [];
     let otherLive = 0;
     reader.on("message", (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => {
       if (msg.channel === channel) received.push({ id: msg.id, historical: meta.historical });
@@ -94,6 +97,103 @@ export async function checkPluginJoinReplay(check: Check): Promise<void> {
     check("one joined channel's 8193 broker live receipts cannot evict another channel's receipt", sawLive && pressureObserved &&
       consumers.pluginReceiptSnapshot(hiddenChannel).size === 8192 && received.filter(({ id }) => id === live.id).length === 1,
       { otherLive, observed: received.filter(({ id }) => id === live.id).length });
+    await checkSameSubscriptionEviction(check, fixture, sender, writer, reader, received);
+  } finally { await fixture.close(); }
+  await checkFailedPluginFrontierRecovery(check);
+}
+
+async function checkSameSubscriptionEviction(check: Check, fixture: EnabledPluginSpace, sender: { owner: string; actor: string },
+  writer: CotalEndpoint, reader: CotalEndpoint, received: Received[]): Promise<void> {
+  const { endpoint, mintAgent, space, channel } = fixture;
+  // Send the burst on a different sender subject so EXT's per-subject retention cannot trim
+  // the oldest test post. All posts match the same concrete subscription on the reader.
+  const burstSender = await mintAgent({ post: [channel] });
+  const burstWriter = endpoint({ creds: burstSender.creds, lifecycleUid: burstSender.lifecycleUid, consume: false,
+    registerPresence: false, watchPresence: false, card: { kind: "agent", name: "burst-writer" } });
+  await burstWriter.start();
+  const wire = internals(burstWriter).conn.nc!;
+  const { consumers } = internals(reader);
+  const subject = pluginChannelSubject(space, sender.owner, sender.actor, channel);
+  const burstSubject = pluginChannelSubject(space, burstSender.owner, burstSender.actor, channel);
+  const count = (id: string) => received.filter((row) => row.id === id).length;
+  const oldest = await writer.multicast("oldest receipt before the same-subscription burst", { channel });
+  const sawOldest = await until(() => count(oldest.id) === 1);
+  const template = await burstWriter.multicast("start the same-subscription burst", { channel });
+  const sawStart = await until(() => count(template.id) === 1);
+  for (let i = 0; i < 8190; i++) wire.publish(burstSubject, JSON.stringify({ ...template, id: `same-channel-${i}` }));
+  await wire.flush();
+  const sawBurst = await until(() => received.filter(({ id }) => id.startsWith("same-channel-")).length === 8190);
+  const oldestKey = JSON.stringify([subject, oldest.id]);
+  const atLimit = consumers.pluginReceiptSnapshot(channel);
+  const newest = await writer.multicast("one receipt beyond the same-subscription bound", { channel });
+  const sawNewest = await until(() => count(newest.id) === 1);
+  const overLimit = consumers.pluginReceiptSnapshot(channel);
+  const beforeRecovery = received.length;
+  await reader.reconnect();
+  check("the same subscription retains 8192 receipts and repeats only the evicted post on recovery", sawOldest && sawStart && sawBurst && sawNewest &&
+    atLimit.size === 8192 && atLimit.has(oldestKey) && overLimit.size === 8192 && !overLimit.has(oldestKey) &&
+    overLimit.has(JSON.stringify([subject, newest.id])) && count(oldest.id) === 2 && count(newest.id) === 1 &&
+    received.length === beforeRecovery + 1,
+    { oldest: count(oldest.id), newest: count(newest.id), atLimit: atLimit.size, overLimit: overLimit.size, sawBurst,
+      repeats: received.length - beforeRecovery });
+}
+
+async function checkFailedPluginFrontierRecovery(check: Check): Promise<void> {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, endpoint, mintAgent, provisioner, space } = fixture;
+  try {
+    // Plugin channels use space defaults, not the legacy CHAT registry entry for the same name.
+    const registry = await openChannelRegistry(internals(provisioner).conn.nc!, space);
+    await writeChannelDefaults(registry, { replay: false });
+    const sender = await mintAgent({ post: [channel] });
+    const recipient = await mintAgent({ read: [channel] });
+    const writer = endpoint({ creds: sender.creds, lifecycleUid: sender.lifecycleUid, consume: false,
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "frontier-writer" } });
+    let beforeBind: (() => Promise<void>) | undefined;
+    const reader = endpoint({ creds: recipient.creds, lifecycleUid: recipient.lifecycleUid, channels: [],
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "frontier-reader" },
+      beforeBind: async () => { await beforeBind?.(); } });
+    const received: Received[] = [];
+    reader.on("message", (msg, delivery, meta) => {
+      if (msg.channel === channel) received.push({ id: msg.id, historical: meta.historical });
+      delivery.ack();
+    });
+    await Promise.all([reader.start(), writer.start()]);
+    const retained = await writer.multicast("retained before joining with replay off", { channel });
+    const api = internals(reader).conn.js!.consumers;
+    const get = api.get.bind(api);
+    const failure = new Error("fixture transient EXT frontier read failure");
+    let failed = false;
+    let warnings = 0;
+    reader.on("warning", (error) => { if (error === failure) warnings++; });
+    api.get = async (...args) => {
+      const consumer = await get(...args);
+      if (!failed && args[0] === pluginChannelStream(space)) {
+        failed = true;
+        consumer.fetch = async () => { throw failure; };
+      }
+      return consumer;
+    };
+    const joined = await reader.joinChannel(channel).finally(() => { api.get = get; });
+    const live = await writer.multicast("live after joining without a frontier", { channel });
+    const count = (id?: string) => received.filter((row) => row.id === id).length;
+    const sawLive = await until(() => count(live.id) === 1);
+    await reader.reconnect();
+    const recoveredWithoutReplay = count(retained.id) === 0 && count(live.id) === 1;
+    const offline: CotalMessage[] = [];
+    beforeBind = async () => {
+      const post = await writer.multicast("missed after a successful frontier read", { channel });
+      if (count(post.id) !== 0) throw new Error("fixture post arrived before the new reader subscribed");
+      offline.push(post);
+    };
+    await reader.reconnect();
+    beforeBind = undefined;
+    await reader.reconnect();
+    const missed = offline[0];
+    check("a failed plugin join frontier honors replay off on retry, then catches up once from the real frontier",
+      joined.joined && joined.backfilled === 0 && failed && warnings === 1 && sawLive && recoveredWithoutReplay &&
+      count(retained.id) === 0 && count(live.id) === 1 && offline.length === 1 && !!missed && count(missed.id) === 1 &&
+      received.some(({ id, historical }) => id === missed?.id && !historical), { failed, warnings, received, missed: missed?.id });
   } finally { await fixture.close(); }
 }
 

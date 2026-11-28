@@ -38,6 +38,9 @@ const ANYCAST_CONTROL_OPS: ReadonlySet<string> = new Set([ANYCAST_STATUS_OP, ANY
 
 /** How long the trusted writer reuses its read of the DLV count before reading it again. */
 const DELIVERY_LIMIT_READ_MS = 5_000;
+const DAEMON_ROUTE_RETRY_MIN_MS = 250;
+const DAEMON_ROUTE_RETRY_MAX_MS = 4_000;
+const DAEMON_ROUTE_DEFER_MS = 1_000;
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -142,11 +145,19 @@ export class EndpointDeliveryPlane {
     admitted?: NativeConnectionBinding;
     validating?: symbol;
     boundRoute?: PluginChannelSpaceState;
+    armed?: boolean;
+    pluginFanout?: Promise<void>;
+    retry?: ReturnType<typeof setTimeout>;
+    retryDelay?: number;
   };
   private daemonRouteUnknown = false;
 
   private withheldChannel(channel: string): boolean {
-    return this.daemonRouteUnknown && isRoutedPluginChannel(true, channel);
+    return this.daemonRouteUnknown && this.routeChannel(channel);
+  }
+
+  private routeChannel(channel: string): boolean {
+    return isRoutedPluginChannel(true, channel);
   }
   /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
@@ -230,8 +241,10 @@ export class EndpointDeliveryPlane {
   async validateDaemonPluginRoute(nc: NatsConnection): Promise<boolean> {
     if (!this.plane3?.readPluginChannelAuthority) return true;
     if (this.lifecycle.stopped || this.conn.nc !== nc || nc.isClosed()) return false;
-    if (this.daemonRouteWire?.nc !== nc)
+    if (this.daemonRouteWire?.nc !== nc) {
+      clearTimeout(this.daemonRouteWire?.retry);
       this.daemonRouteWire = { nc, watch: watchNativeConnection(nc, "delivery plugin channel authority") };
+    }
     const wire = this.daemonRouteWire;
     let binding: NativeConnectionBinding;
     try { binding = wire.watch.binding(); }
@@ -247,21 +260,58 @@ export class EndpointDeliveryPlane {
     const state = "snapshot" in result ? result.snapshot.state : (isStreamNotFound(cause)
       ? { version: 1, enabled: false, epoch: 0 } as const : undefined);
     const bound = wire.boundRoute;
-    if (state && wire.admitted !== undefined && (bound
-      ? bound.epoch !== state.epoch || bound.enabled !== state.enabled
-      : state.enabled))
+    if (state && bound && (bound.epoch !== state.epoch || bound.enabled !== state.enabled)) {
+      this.daemonRouteUnknown = true;
       throw new Error("delivery plugin channel authority changed; a full endpoint bind is required");
+    }
     const report = !state && !this.daemonRouteUnknown;
+    const changedAdmission = !wire.admitted || this.daemonRouteUnknown !== !state ||
+      binding.serverId !== wire.admitted.serverId || binding.cid !== wire.admitted.cid;
     this.daemonRouteUnknown = !state;
     if (state) wire.boundRoute = state;
     this.conn.pluginChannelsEnabled = state?.enabled ?? false;
     this.conn.pluginChannelEpoch = state?.epoch;
-    wire.admitted = binding;
+    if (changedAdmission) wire.admitted = binding;
     wire.validating = undefined;
     if (report) {
       this.emit("warning", new Error(`plugin channel authority unavailable; continuing CHAT delivery: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }));
     }
-    return true;
+    if (wire.armed) await this.finishDaemonRoute(wire);
+    return this.onDaemonRouteWire(nc, binding);
+  }
+
+  private async finishDaemonRoute(wire: NonNullable<EndpointDeliveryPlane["daemonRouteWire"]>): Promise<void> {
+    if (!wire.armed || !wire.admitted || this.daemonRouteWire !== wire ||
+        !this.onDaemonRouteWire(wire.nc, wire.admitted) || !this.plane3MayAct()) return;
+    if (!this.daemonRouteUnknown) {
+      try {
+        if (wire.boundRoute?.enabled) {
+          await (wire.pluginFanout ??= this.bindPluginFanout());
+        }
+        if (!this.daemonRouteUnknown) {
+          clearTimeout(wire.retry);
+          wire.retry = undefined;
+          wire.retryDelay = undefined;
+          return;
+        }
+      } catch (error) {
+        wire.pluginFanout = undefined;
+        if (this.daemonRouteWire === wire && !this.lifecycle.stopped) this.emit("warning", error as Error);
+      }
+    }
+    if (wire.retry || !wire.armed || this.daemonRouteWire !== wire || !this.plane3MayAct()) return;
+    const delay = wire.retryDelay ?? DAEMON_ROUTE_RETRY_MIN_MS;
+    wire.retryDelay = Math.min(2 * delay, DAEMON_ROUTE_RETRY_MAX_MS);
+    wire.retry = setTimeout(() => {
+      wire.retry = undefined;
+      if (this.daemonRouteWire !== wire || this.conn.nc !== wire.nc || this.lifecycle.stopped || !this.plane3MayAct() || wire.validating) return;
+      void this.validateDaemonPluginRoute(wire.nc).catch(async (error: Error) => {
+        if (this.daemonRouteWire !== wire || this.conn.nc !== wire.nc || this.lifecycle.stopped) return;
+        this.emit("warning", error);
+        await this.parts.credentials.closeWithoutLibraryReconnect(wire.nc);
+      }).catch((error: Error) => { if (!this.lifecycle.stopped) this.emit("warning", error); });
+    }, delay);
+    wire.retry.unref();
   }
 
   /** Whether an ALREADY-DISPATCHED unit of Plane-3 work may still take effect.
@@ -279,16 +329,16 @@ export class EndpointDeliveryPlane {
    *  message is not lost by refusing: a stopped consumer redelivers it to whoever holds the shard
    *  next, which is the same property quiescing already relies on. */
   plane3MayAct(): boolean {
-    if (this.plane3Quiesced) return false;
-    if (!this.plane3?.readPluginChannelAuthority) return true;
-    const wire = this.daemonRouteWire;
-    return wire?.admitted !== undefined && wire.validating === undefined && this.onDaemonRouteWire(wire.nc, wire.admitted);
+    return !this.plane3Quiesced;
   }
 
-  private plane3DispatchFence(nc: NatsConnection | undefined): () => boolean {
-    const admitted = this.daemonRouteWire?.admitted;
-    return () => this.conn.nc === nc && this.plane3MayAct() &&
-      (!this.plane3?.readPluginChannelAuthority || this.daemonRouteWire?.admitted === admitted);
+  private plane3DispatchFence(nc: NatsConnection | undefined, routeDependent = false): () => boolean {
+    const current = () => this.conn.nc === nc && this.plane3MayAct();
+    if (!routeDependent || !this.plane3?.readPluginChannelAuthority) return current;
+    const wire = this.daemonRouteWire;
+    const admitted = wire?.admitted;
+    return () => current() && wire !== undefined && admitted !== undefined && this.daemonRouteWire === wire &&
+      wire.admitted === admitted && !wire.validating && !this.daemonRouteUnknown && this.onDaemonRouteWire(wire.nc, admitted);
   }
 
   /** Serve one runtime durable-membership control request (the server-side delivery daemon). The caller
@@ -358,6 +408,8 @@ export class EndpointDeliveryPlane {
   private async deliveryJoin(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
     const channel = this.checkDurableChannelArg(args, "durableJoin", { family: true });
     if (typeof channel !== "string") return channel; // a ControlReply error
+    const unavailable = { ok: false as const, error: `durableJoin: channel "${channel}" is not available yet. Retry the join.` };
+    if (this.withheldChannel(channel)) return unavailable;
     // The caller arrives as an ALIAS (the control subject carries owner+actor, never a uid): resolve
     // its single live lifecycle-keyed ACL row SERVER-SIDE — the trusted registry, never a caller
     // assertion, decides which lifecycle joins. Two live rows (a reservation breach / unfinished
@@ -365,12 +417,14 @@ export class EndpointDeliveryPlane {
     let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; lifecycleUid: string } | undefined;
     try { acl = await this.parts.durableBackstop.aclForAlias(caller); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
+    const plugin = isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
+    if (this.withheldChannel(channel) || (plugin && !this.plane3DispatchFence(this.conn.nc, true)())) return unavailable;
     if (acl === undefined)
       return { ok: false, error: `durableJoin: no read ACL on record for ${caller} (not provisioned for durable delivery)` };
-    if (this.withheldChannel(channel) || !membershipInAllow(acl.allowSubscribe, channel, this.conn.pluginChannelsEnabled) ||
-        (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel) && !membershipInAllow(acl.issuedAllowSubscribe, channel, true)))
+    if (!membershipInAllow(acl.allowSubscribe, channel, this.conn.pluginChannelsEnabled) ||
+        (plugin && !membershipInAllow(acl.issuedAllowSubscribe, channel, true)))
       return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
-    if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) return { ok: true, data: { durable: false } };
+    if (plugin) return { ok: true, data: { durable: false } };
     const uid = acl.lifecycleUid;
     // The lookup above may be stale by the time the row is written (a retirement can fence and purge
     // this lifecycle meanwhile), so the write re-checks the exact ACL row itself (`aclFence`).
@@ -504,7 +558,9 @@ export class EndpointDeliveryPlane {
     // something older exists behind the page and `complete` is false. Cheaper and more honest than a
     // separate count, which could race the page it describes.
     if (this.withheldChannel(channel)) return { ok: false, error: "readHistory: plugin channel authority is unavailable" };
-    const mayAct = this.plane3DispatchFence(this.conn.nc);
+    const plugin = isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel);
+    const mayAct = this.plane3DispatchFence(this.conn.nc, plugin);
+    if (plugin && !mayAct()) return { ok: false, error: "readHistory: delivery binding could not be verified" };
     let page: CotalMessage[];
     try { page = await this.parts.history.channelHistory(channel, { limit: limit + 1 }); }
     catch (e) {
@@ -513,8 +569,11 @@ export class EndpointDeliveryPlane {
       // otherwise reach the caller as an empty page and render as "no history".
       return { ok: false, error: `readHistory: ${(e as Error).message}` };
     }
-    if (isRoutedPluginChannel(true, channel) && !mayAct())
+    if (plugin && !mayAct())
       return { ok: false, error: "readHistory: delivery binding could not be verified" };
+    if (!plugin && this.routeChannel(channel) &&
+        (this.withheldChannel(channel) || isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)))
+      return { ok: false, error: "readHistory: plugin channel authority is unavailable" };
     const reachedStart = page.length <= limit;
     const wanted = reachedStart ? page : page.slice(-limit);
 
@@ -545,7 +604,7 @@ export class EndpointDeliveryPlane {
       return { ok: false, error: `${op}: expected a concrete channel, message ID and positive safe sequence` };
     if (!isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel))
       return { ok: false, error: `${op}: channel is not on the isolated plugin rail` };
-    const mayAct = this.plane3DispatchFence(this.conn.nc);
+    const mayAct = this.plane3DispatchFence(this.conn.nc, true);
     const permits = (acl: Awaited<ReturnType<typeof this.parts.durableBackstop.aclForAlias>>) => acl !== undefined &&
       channelInAllow(acl.allowSubscribe, channel, true) && channelInAllow(acl.issuedAllowSubscribe, channel, true);
     const refused = { ok: false, error: `${op}: access or delivery binding could not be verified` };
@@ -584,6 +643,13 @@ export class EndpointDeliveryPlane {
    *  up, because the daemon still has to ask the broker who owns the shard. */
   async quiescePlane3(): Promise<void> {
     this.plane3Quiesced = true;
+    const wire = this.daemonRouteWire;
+    if (wire) {
+      clearTimeout(wire.retry);
+      wire.retry = undefined;
+      wire.armed = false;
+      wire.pluginFanout = undefined;
+    }
     if (this.deliveryServeSub) {
       try { this.deliveryServeSub.unsubscribe(); } catch { /* already dead */ }
       this.deliveryServeSub = undefined;
@@ -648,13 +714,22 @@ export class EndpointDeliveryPlane {
     if (this.plane3Quiesced) return;
     const nc = this.conn.nc;
     if (!nc || !(await this.validateDaemonPluginRoute(nc))) throw new Error("transport changed during delivery plugin channel authority validation");
+    const wire = this.daemonRouteWire;
     await this.parts.consumers.manager(); // the manager runs consume:false, so this.conn.jsm is lazy — ensure it
     if (this.conn.nc !== nc || !this.plane3MayAct()) throw new Error("delivery transport or lease changed before Plane-3 could bind");
     this.armDeliveryControl();
     await this.parts.anycastRail.armAnycastRequests();
-    await this.runFanout();
+    await this.bindChannelFanout(chatStream(this.identity.space), FANOUT_DURABLE, "chat", fanoutDurableConfig(this.identity.space, { ackWaitMs: this.identity.ackWaitMs }));
+    if (this.conn.pluginChannelsEnabled) {
+      if (wire) await (wire.pluginFanout ??= this.bindPluginFanout());
+      else await this.bindPluginFanout();
+    }
     await this.runReader();
     if (this.conn.nc !== nc || !this.plane3MayAct()) throw new Error("delivery transport or lease changed while Plane-3 was binding");
+    if (wire) {
+      wire.armed = true;
+      await this.finishDaemonRoute(wire);
+    }
   }
 
   /** (Re)register the `ctl.delivery` control responder on the CURRENT connection. A reconnect drains the
@@ -927,18 +1002,12 @@ export class EndpointDeliveryPlane {
     }
   }
 
-  /** Fan-out loop: bind the privileged `fanout` durable on CHAT and route each message (routing only —
-   *  the trusted reader is the auth gate). */
-  private async runFanout(): Promise<void> {
+  private async bindPluginFanout(): Promise<void> {
     const space = this.identity.space;
-    await this.bindChannelFanout(chatStream(space), FANOUT_DURABLE, "chat", fanoutDurableConfig(space, { ackWaitMs: this.identity.ackWaitMs }));
-    if (this.conn.pluginChannelsEnabled) {
-      // The first writer may bind after the first accepted post. Use the same start-sequence
-      // shape as a restored consumer so it starts at the first retained post, not at bind time.
-      await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, {
-        ...pluginFanoutDurableConfig(space), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: 1,
-      });
-    }
+    // The first writer may bind after the first accepted post. Start at the first retained post.
+    await this.bindChannelFanout(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE, PLUGIN_CHANNEL_ROOT, {
+      ...pluginFanoutDurableConfig(space), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: 1,
+    });
   }
 
   private async bindChannelFanout(
@@ -947,16 +1016,19 @@ export class EndpointDeliveryPlane {
     kind: "chat" | typeof PLUGIN_CHANNEL_ROOT,
     config: Partial<ConsumerConfig>,
   ): Promise<void> {
-    if (!this.conn.js || !this.conn.jsm) return;
-    const nc = this.conn.nc;
+    const { nc, js, jsm } = this.conn;
+    if (!nc || !js || !jsm) return;
+    const lease = this.plane3DispatchFence(nc);
     await this.addPlane3Durable(stream, config);
-    const consumer = await this.conn.js.consumers.get(stream, name);
+    if (!lease() || this.lifecycle.stopped) return;
+    const consumer = await js.consumers.get(stream, name);
     const msgs = await consumer.consume();
+    if (!lease() || this.lifecycle.stopped) { msgs.stop(); return; }
     this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
         const mayAct = this.plane3DispatchFence(nc);
-        try { await this.fanOutMessage(m, kind, mayAct); }
+        try { await this.fanOutMessage(m, kind, nc, mayAct); }
         catch (e) {
           if (!this.lifecycle.stopped) this.emit("error", e as Error);
           if (mayAct()) try { m.nak(); } catch { /* draining */ }
@@ -969,7 +1041,7 @@ export class EndpointDeliveryPlane {
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  On either class, a mention of an agent whose read ACL excludes the channel is reported to the
    *  sender with a mention notice. Fan-out checks the broker's membership revision before routing. */
-  private async fanOutMessage(m: JsMsg, kind: "chat" | typeof PLUGIN_CHANNEL_ROOT, mayAct: () => boolean): Promise<void> {
+  private async fanOutMessage(m: JsMsg, kind: "chat" | typeof PLUGIN_CHANNEL_ROOT, nc: NatsConnection, mayAct: () => boolean): Promise<void> {
     // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
     // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
     // this daemon no longer serves. Returning WITHOUT acking is the whole point - a stopped consumer
@@ -979,12 +1051,9 @@ export class EndpointDeliveryPlane {
     const parsed = parseSubject(m.subject);
     if (!parsed || parsed.kind !== kind || !channelSubjectInSpace(this.identity.space, m.subject) || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const channel = parsed.rest;
-    if (this.withheldChannel(channel)) {
-      // Do not let reserved CHAT backlog occupy the shared consumer's ACK window. EXT has
-      // its own cursor, so delay isolated fan-out until authority is known again.
-      if (kind === "chat") m.ack();
-      else m.nak(30_000);
-      return;
+    if (kind !== "chat" || this.routeChannel(channel)) {
+      mayAct = this.plane3DispatchFence(nc, true);
+      if (!mayAct()) { m.nak(DAEMON_ROUTE_DEFER_MS); return; }
     }
     if ((kind !== "chat") !== isRoutedPluginChannel(this.conn.pluginChannelsEnabled, channel)) { m.ack(); return; }
     let msg: CotalMessage;
@@ -1104,7 +1173,7 @@ export class EndpointDeliveryPlane {
     void (async () => {
       for await (const m of msgs) {
         const mayAct = this.plane3DispatchFence(nc);
-        try { await this.readerHandle(m, mayAct); }
+        try { await this.readerHandle(m, nc, mayAct); }
         catch (e) {
           if (!this.lifecycle.stopped) this.emit("error", e as Error);
           if (mayAct()) try { m.nak(); } catch { /* draining */ }
@@ -1140,7 +1209,7 @@ export class EndpointDeliveryPlane {
   /** Re-authorize ONE mixed-inbox entry and transfer it to the owner's DELIVER store. Deny (drop) on a
    *  revoked/narrowed ACL or out-of-interval seq; on transfer success, ack the mixed entry (durability
    *  has moved to DLV — an §8 equivalent per-member at-least-once mechanism). The agent acks DLV. */
-  private async readerHandle(m: JsMsg, mayAct: () => boolean): Promise<void> {
+  private async readerHandle(m: JsMsg, nc: NatsConnection | undefined, mayAct: () => boolean): Promise<void> {
     // FENCE, same rule as the fan-out writer: no effect and no ack once this daemon has stopped
     // serving the shard. The entry redelivers to the holder rather than being consumed here.
     if (!mayAct()) return;
@@ -1150,10 +1219,10 @@ export class EndpointDeliveryPlane {
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
     if (!isRecord(entry)) { m.ack(); return; } // non-object envelope — permanently invalid
-    if (typeof entry.channel === "string" && (this.withheldChannel(entry.channel) ||
-        isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel))) {
-      m.ack();
-      return;
+    if (typeof entry.channel === "string" && this.routeChannel(entry.channel)) {
+      mayAct = this.plane3DispatchFence(nc, true);
+      if (!mayAct()) { m.nak(DAEMON_ROUTE_DEFER_MS); return; }
+      if (isRoutedPluginChannel(this.conn.pluginChannelsEnabled, entry.channel)) { m.ack(); return; }
     }
     const redeliveries = m.info?.deliveryCount ?? 1; // JsMsg delivery attempts (1 on first delivery)
     // Lifecycle-exact ACL re-auth (SPEC 13.1): the entry was addressed to pr.lifecycleUid's inbox, so

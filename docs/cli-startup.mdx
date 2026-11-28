@@ -98,7 +98,8 @@ root can keep using these flags.
 
 If a separately started manager service blocks `up`, the refusal names the command to stop that
 instance. When you used `--root` from another project, the retry keeps the target root and space.
-A broker-only retry also keeps `--no-manager`. For a foreground start, stop the named service
+The printed retry keeps `--json` or `--plain` when requested. A broker-only retry also keeps `--no-manager`.
+For a foreground start, stop the named service
 instance and repeat your original command from the same folder. This keeps the stack attached to
 your terminal and preserves the broker options you chose.
 

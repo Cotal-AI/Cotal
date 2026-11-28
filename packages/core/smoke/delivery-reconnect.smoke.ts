@@ -23,6 +23,8 @@ import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openChannelRegistry, readChannelRegistry } from "../src/channels.js";
 import type { ConnectionState } from "../src/endpoint-connection-state.js";
+import type { EndpointDurableBackstop } from "../src/endpoint-durable-backstop.js";
+import type { EndpointHistory } from "../src/endpoint-history.js";
 import { recordsBucket } from "../src/endpoint-records.js";
 import { PLUGIN_CHANNEL_PROJECTION_KEY } from "../src/plugin-channel-projection.js";
 import { pluginChannelSpaceStateSubject } from "../src/plugin-channel-space-state.js";
@@ -31,7 +33,7 @@ import { CONTROL_DELIVERY, FANOUT_DURABLE, MENTION_NOTICE_KEY, chatStream, chatS
   dlvStream, dmStream, inboxStream, membersBucket, type CotalMessage, type Delivery, type MessageMeta, type PluginMentionPointer } from "../src/index.js";
 import { PLUGIN_FANOUT_DURABLE, pluginChannelStream, pluginChannelSubject } from "../src/plugin-channel-route.js";
 import { PLUGIN_MENTION_POINTER_KEY } from "../src/types.js";
-import { isStreamNotFound } from "../src/jetstream-missing.js";
+import { isConsumerNotFound, isStreamNotFound } from "../src/jetstream-missing.js";
 import { startEnabledPluginSpace } from "./fixtures/enabled-plugin-space.js";
 import { checkEnabledUnreadableAuthority, checkPluginFirstFanout, checkPluginJoinReplay } from "./fixtures/plugin-join-replay.js";
 import { checkCliViewerSeam } from "./fixtures/cli-viewer-seam.js";
@@ -575,6 +577,89 @@ async function checkStopWhileRedialing(dir: string, space: string): Promise<void
   }
 }
 
+async function checkLateDeliveryAuthority() {
+  const fixture = await startEnabledPluginSpace();
+  const { channel, endpoint, mintAgent, space } = fixture;
+  try {
+    await fixture.writeAuthority({ version: 1, enabled: true, epoch: "invalid" });
+    const daemon = await fixture.startDelivery();
+    const state = (daemon as unknown as { conn: ConnectionState }).conn;
+    const wire = state.nc!;
+    const cid = wire.info!.client_id;
+    let transportChanges = 0;
+    daemon.on("transport", () => { transportChanges++; });
+    const absent = await state.jsm!.consumers.info(pluginChannelStream(space), PLUGIN_FANOUT_DURABLE)
+      .then(() => false, (error) => isConsumerNotFound(error));
+    const sender = await mintAgent({ post: [channel] });
+    const target = await mintAgent({ read: [channel] });
+    const writer = endpoint({ creds: sender.creds, lifecycleUid: sender.lifecycleUid, consume: false,
+      registerPresence: false, watchPresence: false, card: { kind: "agent", name: "late-authority-writer" } });
+    const reader = endpoint({ creds: target.creds, lifecycleUid: target.lifecycleUid, channels: [],
+      watchPresence: false, card: { kind: "agent", name: "late-authority-target" } });
+    const pointers: unknown[] = [];
+    reader.on("message", (msg, delivery) => {
+      const pointer = messageData(msg, PLUGIN_MENTION_POINTER_KEY);
+      if (pointer !== undefined) pointers.push(pointer);
+      delivery.ack();
+    });
+    await Promise.all([writer.start(), reader.start()]);
+    if (!(await until(() => daemon.getRoster().some(({ card }) => card.name === "late-authority-target"))))
+      throw new Error("late authority fixture never saw its mention target");
+    const post = await writer.multicast("mention retained before authority is readable", { channel, mentions: ["late-authority-target"] });
+    const seq = await reader.channelFrontier(channel);
+    await wait(10_000);
+    const unavailable = state.pluginChannelEpoch === undefined && pointers.length === 0;
+    await fixture.writeAuthority({ version: 1, enabled: true, epoch: 1 });
+    const recovered = await until(() => pointers.length !== 0);
+    check("authority readable ten seconds after startup binds EXT and sends the pending pointer on the original native wire",
+      absent && unavailable && recovered && state.pluginChannelEpoch === 1 && state.nc === wire && wire.info?.client_id === cid &&
+      transportChanges === 0 && JSON.stringify(pointers) === JSON.stringify([{ channel, message: post.id, seq }]),
+      { absent, unavailable, pointers, transportChanges, epoch: state.pluginChannelEpoch });
+  } finally { await fixture.close(); }
+}
+
+async function checkHistoryDuringDaemonRouteRead(daemon: CotalEndpoint, reader: CotalEndpoint, channel: string, id: string, records: string) {
+  const { conn, history } = daemon as unknown as { conn: ConnectionState; history: EndpointHistory };
+  const wire = conn.nc!;
+  const cid = wire.info!.client_id;
+  const read = history.channelHistory;
+  const request = wire.request;
+  let releasePage!: () => void, releaseAuthority!: () => void;
+  const pageGate = new Promise<void>((resolve) => { releasePage = resolve; });
+  const authorityGate = new Promise<void>((resolve) => { releaseAuthority = resolve; });
+  let hasPage = false, hasAuthority = false, ready = false;
+  const onTransport = (event: { connected: boolean }) => { if (event.connected) ready = true; };
+  daemon.on("transport", onTransport);
+  history.channelHistory = async (...args) => {
+    const page = await read.apply(history, args);
+    if (args[0] === channel) { hasPage = true; await pageGate; }
+    return page;
+  };
+  wire.request = async (...args) => {
+    const reply = await request.apply(wire, args);
+    if (args[0] === `$JS.API.STREAM.MSG.GET.${records}`) { hasAuthority = true; await authorityGate; }
+    return reply;
+  };
+  try {
+    const result = reader.readHistory(channel).then((page) => page.items.some((item) => item.id === id), (error: Error) => error.message);
+    if (!(await until(() => hasPage))) throw new Error("legacy history fixture did not complete the broker pull");
+    await wire.reconnect();
+    if (!(await until(() => hasAuthority))) throw new Error("legacy history fixture did not hold the native authority read");
+    releasePage();
+    const matched = await Promise.race([result, wait(1_500).then(() => "waiting for plugin authority")]);
+    check("known-off reserved CHAT readHistory returns the retained page while native authority validation is blocked",
+      matched === true && !ready && conn.nc === wire && wire.info?.client_id !== cid && conn.pluginChannelEpoch === 0,
+      { matched, ready, cid, current: wire.info?.client_id });
+  } finally {
+    history.channelHistory = read;
+    wire.request = request;
+    releasePage();
+    releaseAuthority();
+    await until(() => ready || wire.isClosed());
+    daemon.off("transport", onTransport);
+  }
+}
+
 async function checkKnownOffDeliveryAuthority(space: string, auth: Awaited<ReturnType<typeof createSpaceAuth>>,
   provisioner: CotalEndpoint, daemon: CotalEndpoint) {
   const chat = "authority-chat", reserved = `${PLUGIN_CHANNEL_ROOT}.authority.test`;
@@ -594,11 +679,14 @@ async function checkKnownOffDeliveryAuthority(space: string, auth: Awaited<Retur
   const subject = pluginChannelSpaceStateSubject(space);
   const publish = (body: string, marker?: ReturnType<typeof headers>) => jetstream(authorityWriter).publish(subject, body,
     { expect: { streamName: records }, ...(marker ? { headers: marker } : {}) });
-  const received = new Set<string>();
+  const received = new Map<string, number>();
   let replacement: CotalEndpoint | undefined;
   reader.on("error", () => {});
   writer.on("error", () => {});
-  reader.on("message", (msg, delivery) => { if (delivery.durable) received.add(msg.id); delivery.ack(); });
+  reader.on("message", (msg, delivery) => {
+    if (delivery.durable) received.set(msg.id, (received.get(msg.id) ?? 0) + 1);
+    delivery.ack();
+  });
 
   const startDaemon = async () => {
     const next = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"),
@@ -619,6 +707,8 @@ async function checkKnownOffDeliveryAuthority(space: string, auth: Awaited<Retur
     const legacy = await writer.multicast("reserved authority control", { channel: reserved });
     if (!(await reader.durableJoinChannel(chat)).durable || !(await reader.readHistory(reserved)).items.some(({ id }) => id === legacy.id))
       throw new Error("known-off authority fixture did not establish CHAT membership and legacy reserved history");
+    await reader.durableJoinChannel(reserved);
+    await checkHistoryDuringDaemonRouteRead(daemon, reader, reserved, legacy.id, records);
 
     // The same native wire rereads a real broker tombstone, not a mocked API failure.
     const state = (daemon as unknown as { conn: ConnectionState }).conn;
@@ -637,6 +727,26 @@ async function checkKnownOffDeliveryAuthority(space: string, auth: Awaited<Retur
         state.nc === wire && !wire.isClosed() && state.pluginChannelEpoch === undefined && !state.pluginChannelsEnabled &&
         warnings.some(({ message }) => message === "plugin channel authority unavailable; continuing CHAT delivery: invalid plugin channel space authority record or deletion marker") &&
         await reader.readHistory(reserved).then(() => false, refused) && await chatWorks("CHAT after unreadable authority on native reconnect"), warnings);
+      const retry = await reader.durableJoinChannel(reserved).then(() => undefined, (error: unknown) => (error as Error).message);
+      check("withheld legacy durableJoin names a transient unavailable channel instead of an ACL refusal",
+        retry === `durableJoin: channel "${reserved}" is not available yet. Retry the join.`, retry);
+
+      const fanout = await writer.multicast("reserved CHAT post made while the mode is unknown", { channel: reserved });
+      const queued = { ...fanout, id: `${fanout.id}-already-in-inbox` };
+      const durable = (daemon as unknown as { durableBackstop: EndpointDurableBackstop }).durableBackstop;
+      await durable.publishDinbox(reader.ref().id, readerUid, { msg: queued, channel: reserved, seq: 0, reason: "live-mention", generation: 0 });
+      // Flush normal CHAT through both shared consumers while the two reserved units are pending.
+      // A single wait spans a delayed NAK on each rail before we make the record readable.
+      const unaffected = await chatWorks("ordinary CHAT passes deferred reserved work");
+      await wait(1_100);
+      const withheld = !received.has(fanout.id) && !received.has(queued.id);
+      await publish(JSON.stringify({ version: 1, enabled: false, epoch: 0 }));
+      const delivered = await until(() => received.has(fanout.id) && received.has(queued.id));
+      await wait(1_100);
+      check("reserved CHAT fan-out and its queued inbox copy are each delivered once after off authority returns",
+        unaffected && withheld && delivered && ready === 1 && state.nc === wire && state.pluginChannelEpoch === 0 &&
+        received.get(fanout.id) === 1 && received.get(queued.id) === 1,
+        { unaffected, withheld, delivered, ready, fanout: received.get(fanout.id), queued: received.get(queued.id) });
     } finally {
       daemon.off("transport", onTransport);
       daemon.off("warning", recordWarning);
@@ -1014,6 +1124,7 @@ try {
   await checkPluginJoinReplay(check);
   await checkPluginFirstFanout(check);
   await checkEnabledUnreadableAuthority(check);
+  await checkLateDeliveryAuthority();
   await checkCliViewerSeam(check);
   await checkScopedSpaces(check);
   await checkOpenSpaces(check);
