@@ -1,7 +1,7 @@
 /** Repair's plan asks before anything that stops or starts what the person may be using, never
  *  downgrades the service, acts only on what the plan named, and reports a step that fails partway. */
 import assert from "node:assert/strict";
-import { planFrom, runSteps, startSpaces, type RepairProbe, type RepairStep } from "../daemon/repair.js";
+import { pickupOutcome, planFrom, runSteps, startSpaces, type RepairProbe, type RepairStep } from "../daemon/repair.js";
 import type { DaemonStatus, HostedManager } from "../daemon/protocol.js";
 
 const VERSION = "2.4.0";
@@ -73,4 +73,12 @@ await cell("finding 9: a failed step returns the partial result and runs nothing
   assert.equal(done[1]!.detail, "raw daemon text", "Details keeps what the service said");
 });
 
-if (failed.length) { console.log(`${failed.length} of 5 cells failed`); process.exit(1); }
+await cell("agent apps: only a confirmed pickup is fixed; agents running is waiting; no confirmation fails the step", () => {
+  const apps = { apps: [], management: "service" as const };
+  assert.equal(pickupOutcome({ ...apps, serviceRefresh: { state: "refreshed" } }), "The background service looked for your agent apps again.");
+  assert.equal(pickupOutcome({ ...apps, serviceRefresh: { state: "pending", reason: "agents-running" } }), "The background service picks up your agent apps once the running agents finish.");
+  assert.throws(() => pickupOutcome({ ...apps, serviceRefresh: { state: "pending", reason: "unconfirmed" } }), /did not confirm/);
+  assert.throws(() => pickupOutcome({ ...apps, management: "other-copy" }), /did not confirm/, "a read-only reply without serviceRefresh is not a pickup");
+});
+
+if (failed.length) { console.log(`${failed.length} of 6 cells failed`); process.exit(1); }

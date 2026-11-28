@@ -87,7 +87,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
         { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
         { step: "account", outcome: "needs-you", space: COTAL_CLOUD_IDP, found: "This computer was removed from your account. Sign in to add it back." },
       ] : options.recovery ? [
-        { step: "service-owner", outcome: "fix", consent: "takeover", owner: { kind: "cli", location: "/usr/lib/node_modules/cotal-ai" }, agents: [{ space: "team", name: "reviewer", application: "Claude Code" }], found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service. 1 agent stops." },
+        { step: "service-owner", outcome: "fix", consent: "takeover", owner: { kind: "cli" }, agents: [{ space: "team", name: "reviewer", application: "Claude Code" }], found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service. 1 agent stops." },
         { step: "service-running", outcome: "ok", found: "Checked after the service is set up." },
       ] : [
         { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." },
@@ -103,7 +103,7 @@ async function app(options: { repairPlan?: Record<string, unknown>; repairApply?
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
-      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli", location: "/usr/lib/node_modules/cotal-ai" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : connected ? [manager] : [] });
+      const statusPayload = () => ({ ...(options.recovery ? { recovery: { reason: "another-installation", owner: { kind: "cli" } } } : {}), account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: options.managerRefused ? [{ space: "team", state: "refused", restarts: 3, reason: "Manager cleanup identity differs from its recorded instance", next: "inspect the registration, then run `cotal endpoint deregister manager i-old --space team --yes`" }] : connected ? [manager] : [] });
       if (r.op === "status-watch") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
@@ -498,7 +498,7 @@ test("finding 4: starting a stopped service asks first and sends the start-stopp
 });
 
 test("finding 5: a newer copy of Cotal is not replaced; the one button checks for an update to this app", async () => {
-  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [{ step: "service-owner", outcome: "cannot", action: "update", owner: { kind: "app", location: "/Applications/Cotal.app" }, found: "A newer copy of Cotal runs the background service. Update this app, then repair again." }] } });
+  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [{ step: "service-owner", outcome: "cannot", action: "update", owner: { kind: "app" }, found: "A newer copy of Cotal runs the background service. Update this app, then repair again." }] } });
   try {
     await a.click("login"); await a.login();
     await a.emit("desktop-open-repair");
@@ -511,7 +511,7 @@ test("finding 5: a newer copy of Cotal is not replaced; the one button checks fo
 });
 
 test("finding 6: a move whose agents cannot be read says any agents it runs stop", async () => {
-  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [{ step: "service-owner", outcome: "fix", consent: "takeover", agentsUnknown: true, agents: [], owner: { kind: "cli", location: "/opt/cotal" }, found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service. Any agents it runs stop." }] } });
+  const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [{ step: "service-owner", outcome: "fix", consent: "takeover", agentsUnknown: true, agents: [], owner: { kind: "cli" }, found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service. Any agents it runs stop." }] } });
   try {
     await a.click("login"); await a.login();
     await a.emit("desktop-open-repair");
@@ -533,7 +533,7 @@ test("finding 8: after applying, the list shows what changed and what a new chec
 });
 
 test("finding 9: a step that fails shows where Repair stopped, keeps the service's words in Details, and does not offer the same plan as new", async () => {
-  const move = { step: "service-owner", outcome: "fix", consent: "takeover", agents: [], owner: { kind: "cli", location: "/opt/cotal" }, found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service." };
+  const move = { step: "service-owner", outcome: "fix", consent: "takeover", agents: [], owner: { kind: "cli" }, found: "A command-line install of Cotal runs the background service.", change: "Use this app for the background service." };
   const a = await app({ installed: true, connected: true, repairPlan: { digest: DIGEST, steps: [move, stoppedService] }, repairApply: { repaired: false, steps: [{ ...move, failed: "This app's service did not start, so the other copy of Cotal runs the background service again. The agents it ran stopped and do not start again by themselves.", detail: "this installation's background service did not start (it did not answer within 60s)" }, stoppedService] } });
   try {
     await a.click("login"); await a.login();

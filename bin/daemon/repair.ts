@@ -19,14 +19,15 @@ import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths, PeerPid, PeerUid } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { answeringAt, applyInstall, applyMove, installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startInstalled } from "./install.js";
+import { answeringAt, applyInstall, applyMove, installationOwner, installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startInstalled } from "./install.js";
 import { unitReceiptFile } from "./install-receipt.js";
-import { refreshServiceForApplication, type InstallOptions } from "./setup.js";
+import { desktopAppRequest } from "./desktop-app-routing.js";
+import type { AgentAppResult } from "./desktop-agent-apps.js";
 import type { DaemonStatus, HostedManager } from "./protocol.js";
-import { serviceOwner, type ServiceOwner } from "./service-owner.js";
 import { withAppMutation } from "./agent-app-admission.js";
 
-export { serviceOwner, type ServiceOwner };
+/** Which Cotal copy runs the background service. Only its kind is public, never its path. */
+export type ServiceOwner = ReturnType<typeof installationOwner>;
 
 export type RepairStepName = "service-owner" | "service-running" | "agent-apps" | "spaces" | "stale-registration" | "account";
 export const REPAIR_CONSENTS = ["takeover", "start-stopped", "remove-old-registration"] as const;
@@ -166,7 +167,7 @@ function ownerStep(probe: RepairProbe, version: string): RepairStep {
     return { step: "service-owner", outcome: "fix", found: "The background service is not set up.", change: "Set up the background service." };
   }
   if (service.kind === "this") return { step: "service-owner", outcome: "ok", found: "This copy of Cotal runs the background service." };
-  const owner = serviceOwner(service.entry);
+  const owner = installationOwner(service.entry);
   // A move never replaces a newer service with this older app.
   if (service.version && (compareVersions(service.version, version) ?? 0) > 0)
     return { step: "service-owner", outcome: "cannot", owner, action: "update", found: "A newer copy of Cotal runs the background service. Update this app, then repair again." };
@@ -300,8 +301,16 @@ export async function applyRepair(opts: RepairOptions & { readonly digest: strin
   return { steps: done, repaired: failure === undefined && remaining?.length === 0, ...(remaining ? { remaining } : {}) };
 }
 
+/** What the agent-apps pickup answered, in plain words. A reply that does not confirm the service
+ *  picked the apps up is a failed step; agents still running is waiting, not fixed. */
+export function pickupOutcome(result: AgentAppResult): string {
+  const refresh = result.serviceRefresh;
+  if (refresh?.state === "refreshed") return "The background service looked for your agent apps again.";
+  if (refresh?.state === "pending" && refresh.reason === "agents-running") return "The background service picks up your agent apps once the running agents finish.";
+  throw new Error("the background service did not confirm it picked up your agent apps");
+}
+
 async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
-  const install: InstallOptions = { paths: opts.paths, daemonHome: opts.daemonHome, peerUid: opts.peerUid, peerPid: opts.peerPid, version: opts.version, report: line => opts.report?.(line) };
   if (step.step === "service-owner" && step.consent === "takeover") {
     // The agent-app admission gate: no change that takes it runs across the handoff.
     // The new service's startup never takes it, so waiting for it to answer cannot deadlock.
@@ -334,8 +343,8 @@ async function fix(opts: RepairOptions, step: RepairStep): Promise<string> {
     return "The background service was restarted with this version.";
   }
   if (step.step === "agent-apps") {
-    const outcome = await refreshServiceForApplication(install, []);
-    return outcome === "refreshed" ? "The background service looked for your agent apps again." : "Nothing needed to change.";
+    // The agent-app routing's pickup entry takes the agent-app admission itself, so no gate wraps it here.
+    return pickupOutcome(await desktopAppRequest({ paths: opts.paths, home: opts.daemonHome, version: opts.version, peerUid: opts.peerUid, peerPid: opts.peerPid }, { op: "agent-apps", refresh: true }, line => opts.report?.(line)));
   }
   if (step.step === "stale-registration") {
     const result = await managerViaDaemon(opts, { op: "manager-repair-cleanup", space: step.space! }) as HostedManager & { repair?: { message?: unknown } };

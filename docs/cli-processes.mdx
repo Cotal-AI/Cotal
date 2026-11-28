@@ -676,7 +676,13 @@ fixes. A step that fails stops the run, and the command refuses with that step's
 app instead receives `{steps, repaired, remaining}`: each step has `changed` or `failed` plus
 `detail`, steps after a failed one did not run, and `remaining` is what a new check still finds.
 `bin/daemon/repair.ts` exports `planRepair`, `applyRepair`, `planFrom`, `probeRepair`, `runSteps`,
-`startSpaces`, `accountSteps` and `compareVersions`.
+`startSpaces`, `pickupOutcome`, `accountSteps` and `compareVersions`.
+
+The agent-apps step asks the bridge's agent-app routing for a fresh inventory with a pickup
+(`agent-apps {refresh: true}`), the same entry the Agent apps pane uses, which takes the agent-app
+admission lock itself. The step is fixed only when the reply's `serviceRefresh` is `refreshed`. While
+agents run (`pending`, `agents-running`) the step reports that the service picks the apps up once they
+finish. Any other reply, including one without `serviceRefresh`, fails the step.
 
 When another Cotal installation runs the service, the plan moves it to this installation. A move
 needs consent `takeover` and lists the agents that stop. When the service's status or an agent row
@@ -710,10 +716,10 @@ the tray menu. Its bridge requests are `repair-plan` and `repair-apply {digest, 
 `repair-apply` sends `repair-progress {line}` events while it runs.
 Its `status` reply and each pushed `status-watch` status frame add `recovery: {reason: "another-installation", owner}`
 while another installation runs the service, so the window offers Repair without a manual refresh.
+`owner` is `{kind: "app" | "cli"}`; the owner's path is never sent.
 A move holds the agent-app admission lock (`agent-app.lock`) for the whole handoff and refuses
-`LIFECYCLE_BLOCKED` while another holder has it. Agent-app installs and sign-ins take the same lock
-once #10941 lands, so until then a move does not wait for them. The new service's startup never
-takes that lock.
+`LIFECYCLE_BLOCKED` while an agent-app install, sign-in or pickup holds it, so none of those runs
+across the handoff. The new service's startup never takes that lock.
 
 Daemon launches keep the invoked Node path when it resolves to the running Node in the same
 directory, including a distribution's stable `node` symlink. Links through another directory,
@@ -971,6 +977,13 @@ available connector. Open dashboard is the primary action on that screen and on 
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
 reports, while original diagnostics and exact refusals remain under Details. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
+
+In the desktop app, **Connection**, **Agent apps**, and **Settings** are separate views. You can
+open **Agent apps** before connecting, including while Cotal sign-in is waiting. The app can list,
+install, and start sign-in for supported agent apps on this computer without setting up Cotal first.
+Once the background service runs, it uses the same installed apps and app-owned sign-ins. A service
+owned by another copy of Cotal allows viewing the apps but not changing them from this copy. While
+ownership is uncertain, the app checks again automatically. Checking apps does not restart the service.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` (`NOT_ANSWERING`), includes a
 startup refusal from that launch's `daemon.log` when one was written, and offers Check status in
@@ -1100,8 +1113,9 @@ restarts its recorded native service, and waits for the matching daemon. A diffe
 is never restarted. Setup uses it when its protocol and hosting operations are compatible.
 Otherwise the refusal names both installations and asks you to run setup from the daemon's
 installation, or to move the service to this installation with `cotal daemon repair` (below).
-The refusal carries `cause: {code: "ANOTHER_INSTALLATION", detail: {owner: {kind, location}}}`;
+The refusal carries `cause: {code: "ANOTHER_INSTALLATION", detail: {owner: {kind}}}`;
 `kind` is `app` when the owning installation is the desktop app's bundled runtime and `cli` otherwise.
+The owner's path is never sent.
 An occupied legacy Manager blocks that preparation and remains running. Stop its seats before
 retrying setup. Aborting preparation restores the Manager's standing-credential and run-hosting
 renewal schedules. Active seats refuse `SEATS_ACTIVE` with the space and the command to stop them.

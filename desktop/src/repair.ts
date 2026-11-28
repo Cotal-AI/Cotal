@@ -2,7 +2,7 @@
  *  that stops agents or moves the background service, then run that plan and nothing else. */
 import type { Request } from "./model";
 
-export interface RepairStepView { step: string; outcome: "ok" | "fix" | "needs-you" | "cannot"; found: string; change?: string; changed?: string; failed?: string; detail?: string; consent?: "takeover" | "start-stopped" | "remove-old-registration"; space?: string; spaces?: string[]; action?: "update"; agentsUnknown?: true; agents?: { space: string; name: string; application: string }[]; owner?: { kind: "app" | "cli"; location: string } }
+export interface RepairStepView { step: string; outcome: "ok" | "fix" | "needs-you" | "cannot"; found: string; change?: string; changed?: string; failed?: string; detail?: string; consent?: "takeover" | "start-stopped" | "remove-old-registration"; space?: string; spaces?: string[]; action?: "update"; agentsUnknown?: true; agents?: { space: string; name: string; application: string }[]; owner?: { kind: "app" | "cli" } }
 export interface RepairPlanView { digest: string; steps: RepairStepView[] }
 /** What applying returned: each step as applied, and what a new check finds still needs fixing. */
 export interface RepairResultView { steps: RepairStepView[]; repaired: boolean; remaining?: RepairStepView[] }
