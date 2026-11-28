@@ -487,7 +487,7 @@ for (const level of ["regular", "minimal"]) {
     const other = new CommandFailure("refused", code, "no available target", { target: { space } });
     check(`an unpinned ${code} diagnostic still reports its reason`, telemetryErrorText("ps", other).message === other.message);
   }
-  const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "stop");
+  const recorded = recordedProcessRefusal("manager", { pid: 3123, label: "Manager" }, space, "/fixture", "stop", "json");
   const refused = telemetryErrorText("down", recorded);
   check("a service control refusal names the process locally only", recorded.code === "UNSUPPORTED" && recorded.message.includes(space) && recorded.message.includes("3123") && refused.message === null && refused.stack === null);
   const service = liveServicesRefusal(space, [{ definition: "fixture-worker", instanceId: "fixture-instance", host: "fixture-host", process: "running", recordedState: "running", action: "stop-first", reason: null, remedy: null }], "down --preserve-state");
