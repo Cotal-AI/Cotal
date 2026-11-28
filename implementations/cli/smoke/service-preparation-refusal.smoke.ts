@@ -122,6 +122,12 @@ check("rig: the space is prepared and not started", created.status === 0, shown(
 const added = run(["service", "add", "mymgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", "b1"]);
 check("rig: the manager preset is saved without starting anything", added.status === 0 && added.envelope?.outcome === "ok", shown(added));
 
+for (const format of ["--json", "--plain"]) {
+  const absent = run(["service", "start", "web", "--space", "b1", "--no-open", "--dry-run", format]);
+  const next = format === "--json" ? absent.envelope?.error?.remedy ?? "" : absent.stderr;
+  check(`a missing dashboard start preview offers only a catalog read in ${format}`, absent.status === 2 && next.includes(`service --space b1 ${format}`)
+    && !next.includes("ext add") && !next.includes("service start web"), shown(absent));
+}
 const first = run(["service", "start", "mymgr", "--space", "b1"]);
 check("rig: the start reached allocation; the binary is a verified entry for an adapter launch", first.envelope?.error?.code !== "UNSUPPORTED", shown(first));
 const instance = first.envelope?.target?.instanceId;

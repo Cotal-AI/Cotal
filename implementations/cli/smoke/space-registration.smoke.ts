@@ -1885,13 +1885,13 @@ if (process.platform === "linux") {
     { status: repairedComponents.status, health: repairedHealth, stderr: repairedComponents.stderr });
   unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and effective broker inputs. A different --server
-  // or --host refuses before anything is written, naming the recorded value and the bare up
-  // that starts the stack there.
+  // or --host refuses before anything is written and names how to start at the recorded value.
   const recordedRoot = realpathSync(fresh), journalBefore = readFileSync(stackJournalPath(fresh), "utf8");
   const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
-  check("up --server naming another address is CONFLICT, exit 2, naming the recorded address and bare cotal up from the root",
+  const retryAtRecorded = `repeat your original startup command from the same folder with \`--server ${server}\` and all other options unchanged`;
+  check("up --server naming another address is CONFLICT, exit 2, changing only the address in the retry",
     refused(moved, 2, "CONFLICT") && (moved.env?.error?.message ?? "").includes(`recorded at ${server}`) &&
-      moved.env?.error?.remedy === `run bare \`cotal up\` from ${recordedRoot} to start it at ${server}`, shown(moved));
+      moved.env?.error?.remedy === retryAtRecorded, shown(moved));
   // While another program holds the recorded address, bare up refuses too, so this refusal names that
   // address and the process of this account that listens there, and says no command moves the stack.
   const occupier = createServer();
@@ -1900,7 +1900,7 @@ if (process.platform === "linux") {
     const held = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("...and while another program holds that address, it names the address and that process, and says no command moves the stack",
       refused(held, 2, "CONFLICT") && new RegExp(`a recorded stack is not moved to another address, and another process holds that address 127\\.0\\.0\\.1:${port}, where process ${process.pid} \\(\\S+\\) of this account listens$`).test(held.env?.error?.message ?? "") &&
-        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then run bare \`cotal up\` from ${recordedRoot}; no command moves a stack that ran to another address, so it starts only at ${server}`, shown(held));
+        held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then ${retryAtRecorded}`, shown(held));
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   // Omit --server to use the recorded address and reach the recorded-input comparison.
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);
