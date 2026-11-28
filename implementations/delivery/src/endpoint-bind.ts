@@ -36,7 +36,7 @@ import {
   epServeGrantRows, EpEnvelopeError, idFromCreds, parseEndpointGate, principalKey, readSvcRecordLeader,
   recordSpecKey, RECORD_KINDS, serveEndpoint, standaloneConnectOpts, watchNativeConnection, DEV_OWNER,
   type ClusterDocument, type ContractClosureManifest, type EpCommandDef, type EpServeGrant,
-  type EpServeHandle, type NativeConnectionBinding, type ServiceNameAuthority,
+  type EpServeHandle, type EndpointReply, type NativeConnectionBinding, type ServiceNameAuthority,
 } from "@cotal-ai/core";
 
 /** What a daemon-served endpoint brings to its bind: its name, its built-in contract, the handlers for
@@ -254,6 +254,19 @@ export class DaemonEndpointBinder {
     },
   };
 
+  /** The reply gate for `generation`'s connection, run by the serve loop synchronously immediately
+   *  before each publish (E18): once the generation ended, no reply it computed goes out, success or
+   *  refusal. The replacement keeps `not-executed` only when the reply itself said nothing ran; a
+   *  success or any other refusal may follow a landed write, so it says `unknown`. */
+  private replyGate(generation: number): (reply: EndpointReply) => EndpointReply {
+    return (reply) => {
+      if (this.live.has(generation) && this.leaseHeld) return reply;
+      const outcome = !reply.ok && reply.error?.outcome === "not-executed" ? "not-executed" : "unknown";
+      return { v: 1, id: reply.id, ok: false, error: { code: "unavailable", outcome,
+        message: `${this.opts.endpoint.endpoint}: the serving generation ended before the reply was sent; ${outcome === "not-executed" ? "nothing was done" : "an effect of this request may have landed"}, retry` } };
+    };
+  }
+
   /** Bind a candidate credential. Resolves with the state it bound at; rejects and keeps last-good on
    *  any refusal. Binds run one at a time. `jsm` is the delivery connection's JetStream manager, handed
    *  over by the adoption: the gate and spec leader reads ride it. */
@@ -298,7 +311,7 @@ export class DaemonEndpointBinder {
       // A request the candidate takes before `bound()` settles is served by the same handlers, against
       // the last-good store connections until the commit below; its reply row was proven by the claims
       // check above.
-      handle = serveEndpoint(nc, this.opts.space, grant, this.opts.endpoint.defs({ generation, fence: this.fence }), { public: true });
+      handle = serveEndpoint(nc, this.opts.space, grant, this.opts.endpoint.defs({ generation, fence: this.fence }), { public: true }, { replyGate: this.replyGate(generation) });
       await handle.bound();
       await this.opts.hold?.("bound");
       stillOurs("while the serve candidate bound");

@@ -198,6 +198,9 @@ export class ArtifactVerbs {
       const { index, objects } = this.stores("put-commit");
       await this.deps.locks.run(digest, async () => {
         await this.deps.hold?.("commit-locked");
+        // The generation first: a lease lost while this commit waited for the digest is a fence
+        // refusal, which keeps the upload, never a storage refusal, which would release it (E18).
+        scope.fence.check(scope.generation, "the commit's storage check");
         // The limit for THIS artifact, read again right before the reservation: it can have dropped
         // since put-begin, or while this commit waited for the digest (E23).
         const tooSmall = objects.storeRefusal(s.size);

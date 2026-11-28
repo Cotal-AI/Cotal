@@ -46,7 +46,7 @@ import { deriveDaemonServeGrant, DaemonEndpointBinder } from "../src/endpoint-bi
 import { artifactsServedEndpoint } from "../src/artifacts-endpoint.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 35;
+const EXPECTED_CELLS = 36;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -412,6 +412,43 @@ try {
       && log.some((l) => /a frozen registration was completed/.test(l)), { healed, healedGate });
   const afterHeal = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
   check("list answers on the replacement daemon after the recovery", afterHeal.ok, afterHeal);
+
+  // ---- E18a: a lease lost AFTER a handler returned and BEFORE its reply is published ----
+  // The daemon goes away, and a binder of the cell's own takes the same registration: the real
+  // endpoint, the real gate, the minted serve credential, so it is the only server. Its `list` handler
+  // is the real one, wrapped so that once it has resolved (its own last fence check passed) the binder
+  // is quiesced from a reaction queued behind that resolution, ahead of the serve loop's publish. What
+  // reaches the agent's wire is decided by the binder's reply gate at the publish.
+  await handle.close();
+  handle = undefined;
+  let afterReturn: (() => void) | undefined;
+  // The ACL reads ride a delivery-profile endpoint, as they do on the daemon's own connection.
+  const aclId = newIdentity();
+  const aclReader = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, aclId, "delivery"), channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+    card: { id: aclId.id, name: "acl-reader", kind: "endpoint" } });
+  aclReader.on("error", () => {});
+  endpoints.push(aclReader);
+  await aclReader.start();
+  const realEndpoint = artifactsServedEndpoint({ space, servers, tls: false, store, delivery: { aclForAlias: (p) => aclReader.aclForAlias(p) }, deliveryJsm: () => readerJsm, log: () => {} });
+  const gated = new DaemonEndpointBinder({
+    space, servers, tls: false, log: () => {},
+    endpoint: { ...realEndpoint, defs: (scope) => realEndpoint.defs(scope).map((def) => def.command !== ARTIFACTS_LIST_COMMAND ? def : {
+      ...def, handler: (ctx) => {
+        const result = Promise.resolve(def.handler(ctx));
+        void result.then(() => { const lose = afterReturn; afterReturn = undefined; lose?.(); }, () => { /* the serve loop reports a refusal */ });
+        return result;
+      },
+    }) },
+  });
+  const gatedBound = await gated.adopt({ creds: (await store.get(daemonEndpointKey(space, ARTIFACTS_ENDPOINT, DAEMON_ENDPOINT_SERVE_CREDS_KIND)))!, instanceId: instanceId!,
+    serveId: (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT))!, adoptionOpId: mintLifecycleUid(), jsm: readerJsm }).then(() => "bound", (e: Error) => e.message);
+  const gatedControl = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  afterReturn = () => { void gated.quiesce("lost the lease after the handler returned"); };
+  const gatedLate = (await member.invokeService(ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, { channel, limit: 1 })).reply;
+  check("a lease lost after a handler returned and before its reply was published sends the gate's unavailable/unknown, not the rows; the same call before the loss lists",
+    gatedBound === "bound" && gatedControl.ok && !gatedLate.ok && gatedLate.error?.code === "unavailable" && gatedLate.error?.outcome === "unknown"
+      && /ended before the reply was sent/.test(gatedLate.error?.message ?? "") && !("data" in gatedLate), { gatedBound, gatedControl, gatedLate });
+  await gated.close();
 } catch (e) {
   check("the cell ran to completion", false, (e as Error).stack ?? String(e));
 } finally {

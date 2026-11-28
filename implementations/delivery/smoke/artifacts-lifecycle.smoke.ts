@@ -44,7 +44,7 @@ import type { ChatEntryForConfirm } from "../src/artifact-chat-read.js";
 import { DaemonEndpointBinder, type ServeScope } from "../src/endpoint-bind.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 24;
+const EXPECTED_CELLS = 25;
 const { check, finish, passed, failed } = createSuite();
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -336,6 +336,30 @@ try {
     const renewed = await refusal(verbs.putCommit(s)(ctx(dave, { uploadId: st.uploadId })));
     check("a commit fenced at its reservation, before any write, keeps the upload for the renewed generation",
       /not-executed/.test(r) && renewed === "ok" && await metaPresent(d), { r, renewed });
+  }
+  {
+    // E18b: the lease ends while a commit waits for its digest AND the limit drops. The fence answers
+    // first, so the upload is kept; once the limit is valid again the renewed generation commits it.
+    const info = { max_payload: 1 << 20 };
+    const shrinking = new ArtifactObjects(new Proxy(nc!, { get: (t, p) => p === "info" ? info : Reflect.get(t, p) }) as NatsConnection, space);
+    const shrinkVerbs = new ArtifactVerbs({ space, stores: () => ({ index, objects: shrinking }), locks,
+      fenceCaller: async (c) => ({ owner: c.owner, actor: c.actor, uid: c.uid }), mayReadChannel: async () => {}, readChatEntry: async () => undefined,
+      hold: (point) => hold(`shrink-${point}`) });
+    const bytes = bytesOf(4_000, 63), d = sha(bytes);
+    const { uploadId } = await shrinkVerbs.putBegin(s)(ctx(dave, { name: "g", mediaType: "x/y", size: bytes.byteLength, digest: d }));
+    await shrinkVerbs.putChunk(s)(ctx(dave, { uploadId, seq: 0, data: Buffer.from(bytes).toString("base64") }));
+    const held = arm("shrink-commit-locked");
+    const stale = refusal(shrinkVerbs.putCommit(s)(ctx(dave, { uploadId })));
+    await held.reached;
+    await binder.quiesce("lost the lease");
+    info.max_payload = 1_000;
+    held.release();
+    const r = await stale;
+    s = scope();
+    info.max_payload = 1 << 20;
+    const renewed = await refusal(shrinkVerbs.putCommit(s)(ctx(dave, { uploadId })));
+    check("a lease lost while a commit waits, with the limit dropped too, answers the fence and keeps the upload; the renewed generation commits that upload once the limit is valid",
+      /"code":"unavailable"/.test(r) && /not-executed/.test(r) && !/resource-exhausted/.test(r) && renewed === "ok" && await metaPresent(d), { r, renewed });
   }
 
   // ---- E22: interleavings through the real handlers, each held before its first write ----

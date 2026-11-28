@@ -292,6 +292,10 @@ interface RouteSteps<P extends ParsedEpRequest | ParsedEpPrincipalRequest, C, D 
   replySubject(parsed: P): string;
   /** Whether a reply may still go out. A route whose stop has stopped waiting drops a late one. */
   mayReply?(): boolean;
+  /** The reply as it will be sent, decided in the same synchronous step as the publish: no await
+   *  separates it from the wire. A route whose serving authority can end while a handler runs
+   *  replaces a reply that authority does not cover. */
+  finalReply?(reply: EndpointReply): EndpointReply;
 }
 
 const enc = new TextEncoder();
@@ -381,6 +385,9 @@ async function runRequest<P extends ParsedEpRequest | ParsedEpPrincipalRequest, 
     const stated = !dispatched ? "not-executed" : returned ? "executed" : undefined;
     reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: stated === undefined ? error : { ...error, outcome: stated } };
   }
+  // Everything from here to the publish is synchronous, so the route's final decision on the reply
+  // is taken in the same step that puts it on the wire.
+  if (steps.finalReply) reply = steps.finalReply(reply);
   // Replacing a reply that cannot be serialized or published changes nothing about whether the
   // command ran, so each replacement below keeps the outcome the replaced reply stated, and a
   // success states `executed`.
@@ -431,6 +438,46 @@ export interface EpServeHandle {
    *  serve row cannot read as bound. Serving stays up either way: the caller decides whether a
    *  rejection means `stop()`. */
   bound(): Promise<void>;
+}
+
+/** The serve table's dispatch rows, one per declared def, each checked against the granted registered
+ *  surface: a granted ephemeral command, served once, never `describe`, with compiled contracts whose
+ *  closure digests EQUAL the registered declaration's (SPEC 13.7, 13.9). */
+function activeDefs(serve: EpServeGrant, commands: EpCommandDef[]): { defs: ActiveDef[]; seen: Set<string> } {
+  const seen = new Set<string>();
+  const defs: ActiveDef[] = [];
+  for (const def of commands) {
+    assertCommandToken(def.command);
+    if (def.command === "describe")
+      throw new Error("describe is reserved and built from the serve artifact; a custom describe def would bypass the authorization seam (SPEC 13.7)");
+    if (seen.has(def.command)) throw new Error(`command "${def.command}" is served twice`);
+    seen.add(def.command);
+    const decl = serve.surface[def.command];
+    if (decl === undefined)
+      throw new Error(`command "${def.command}" is not granted by the serve artifact; the serve table is exactly the granted registered surface (SPEC 13.9)`);
+    if (decl.class !== "ephemeral")
+      throw new Error(`command "${def.command}" is registered class "${decl.class}": only ephemeral commands are rail-served, so a journal command takes NO rail def; journal work rides epj submissions (SPEC 13.4/13.5)`);
+    // §13.7 digest-bound validators: the def carries provenance-BRANDED compiled contracts
+    // (a structural {validate, closureDigest} pair refuses — an arbitrary validator cannot
+    // wear a registered digest), and their closure digests must EQUAL the verified registered
+    // declaration's, so the schema the caller pinned at describe time is the schema this
+    // boundary enforces.
+    const input = assertCompiledContract(def.contract?.input, `command "${def.command}" input contract`);
+    const output = assertCompiledContract(def.contract?.output, `command "${def.command}" output contract`);
+    if (input.closureDigest !== decl.inputDigest || output.closureDigest !== decl.outputDigest)
+      throw new Error(`command "${def.command}" compiled contracts ${input.closureDigest}/${output.closureDigest} do not equal the registered declaration ${decl.inputDigest}/${decl.outputDigest} (SPEC 13.7: the registered cluster document is the schema authority)`);
+    defs.push({
+      command: def.command,
+      class: decl.class,
+      digests: { input: decl.inputDigest, output: decl.outputDigest },
+      validate: { args: input.validate, output: output.validate },
+      targeted: decl.targeted,
+      targetModes: new Set(decl.modes),
+      governed: decl.traits.some((t) => GOVERNED_TRAIT_URNS.includes(t)),
+      handler: def.handler,
+    });
+  }
+  return { defs, seen };
 }
 
 /**
@@ -493,6 +540,9 @@ export function serveEndpoint(
      *  The serve credential still grants the class rows; this only changes what this process
      *  consumes. `describe` is reserved and is never omitted. */
     omitClassCommands?: readonly string[];
+    /** Called synchronously right before each publish; a lease holder replaces a reply its ended
+     *  authority does not cover. */
+    replyGate?: (reply: EndpointReply) => EndpointReply;
   } = {},
 ): EpServeHandle {
   assertServeGrantAuthorized(serve); // §13.9: the serve table consumes ONLY registry-authorized serve authority
@@ -508,39 +558,7 @@ export function serveEndpoint(
   const e = endpointToken(identity.endpoint);
   const iId = assertLifecycleToken(identity.instanceId, "instanceId");
   const incarnationQueue = `${e}.${iId}.${identity.epoch}`;
-  const seen = new Set<string>();
-  const defs: ActiveDef[] = [];
-  for (const def of commands) {
-    assertCommandToken(def.command);
-    if (def.command === "describe")
-      throw new Error("describe is reserved and built from the serve artifact; a custom describe def would bypass the authorization seam (SPEC 13.7)");
-    if (seen.has(def.command)) throw new Error(`command "${def.command}" is served twice`);
-    seen.add(def.command);
-    const decl = serve.surface[def.command];
-    if (decl === undefined)
-      throw new Error(`command "${def.command}" is not granted by the serve artifact; the serve table is exactly the granted registered surface (SPEC 13.9)`);
-    if (decl.class !== "ephemeral")
-      throw new Error(`command "${def.command}" is registered class "${decl.class}": only ephemeral commands are rail-served, so a journal command takes NO rail def; journal work rides epj submissions (SPEC 13.4/13.5)`);
-    // §13.7 digest-bound validators: the def carries provenance-BRANDED compiled contracts
-    // (a structural {validate, closureDigest} pair refuses — an arbitrary validator cannot
-    // wear a registered digest), and their closure digests must EQUAL the verified registered
-    // declaration's, so the schema the caller pinned at describe time is the schema this
-    // boundary enforces.
-    const input = assertCompiledContract(def.contract?.input, `command "${def.command}" input contract`);
-    const output = assertCompiledContract(def.contract?.output, `command "${def.command}" output contract`);
-    if (input.closureDigest !== decl.inputDigest || output.closureDigest !== decl.outputDigest)
-      throw new Error(`command "${def.command}" compiled contracts ${input.closureDigest}/${output.closureDigest} do not equal the registered declaration ${decl.inputDigest}/${decl.outputDigest} (SPEC 13.7: the registered cluster document is the schema authority)`);
-    defs.push({
-      command: def.command,
-      class: decl.class,
-      digests: { input: decl.inputDigest, output: decl.outputDigest },
-      validate: { args: input.validate, output: output.validate },
-      targeted: decl.targeted,
-      targetModes: new Set(decl.modes),
-      governed: decl.traits.some((t) => GOVERNED_TRAIT_URNS.includes(t)),
-      handler: def.handler,
-    });
-  }
+  const { defs, seen } = activeDefs(serve, commands);
   // Exact coverage applies to the EPHEMERAL (rail-served) subset only: every ephemeral command
   // needs a def (a rail nobody serves is a construction bug), while journal commands stay in the
   // credential/descriptor surface but ride epj submissions, never a rail def — so a journal-only
@@ -689,6 +707,7 @@ export function serveEndpoint(
       return ctx;
     },
     replySubject: (parsed) => deriveReplySubject(space, parsed, identity),
+    ...(opts.replyGate ? { finalReply: opts.replyGate } : {}),
   };
 
   let refusal: Error | undefined;
