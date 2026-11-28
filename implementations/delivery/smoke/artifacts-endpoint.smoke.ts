@@ -34,7 +34,7 @@ import {
   ARTIFACTS_CAPABILITY, ARTIFACTS_ENDPOINT, ARTIFACTS_LIST_COMMAND, CotalEndpoint, DEV_OWNER, RECORD_KINDS, SERVICE_READY,
   artifactAttachBucket, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, credsFingerprint, idFromCreds, provisionAgentDurables,
   isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, readSvcRecordLeader, recordStatusKey,
-  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, EpEnvelopeError, endpointRegistrationBarrier, type SecretStore,
+  serverConfig, setupSpaceStreams, epAuthBucket, epgateKey, EpEnvelopeError, endpointRegistrationBarrier, artifactsClusterArtifacts, principalKey, type SecretStore,
 } from "@cotal-ai/core";
 import {
   DAEMON_ENDPOINT_BOOTSTRAPS, DAEMON_ENDPOINT_SERVE_CREDS_KIND, ARTIFACT_SWEEPER_CREDS_KIND, bootstrapDaemonEndpoint, daemonEndpointKey,
@@ -42,9 +42,10 @@ import {
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService, type DeliveryServiceHandle } from "../src/index.js";
+import { deriveDaemonServeGrant } from "../src/endpoint-bind.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 31;
+const EXPECTED_CELLS = 32;
 const { check, finish, passed, failed } = createSuite();
 
 class MemoryStore implements SecretStore {
@@ -286,6 +287,33 @@ try {
   // Put the gate back exactly as it was, so the restart below starts from a real registration.
   const cur = (await authKv.get(gateKey))!;
   await authKv.update(gateKey, JSON.stringify(openRow), cur.revision);
+
+  // ---- E16: an ordered write between the two gate reads of one derive ----
+  // The derive reads the gate, then the spec, then the gate again. A wrapper lands a real gate write
+  // (generation + 1, still open) after the FIRST gate read returns and before the second one is sent,
+  // so the change is ordered between them, not raced. A clean derive at the same point is the control.
+  const servePrincipal = principalKey(DEV_OWNER, (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT))!).key;
+  const served = { endpoint: ARTIFACTS_ENDPOINT, cluster: artifactsClusterArtifacts(), defs: () => [] };
+  const readerJsm = await jetstreamManager(reader);
+  const gateSubject = `$KV.${epAuthBucket(space)}.${gateKey}`;
+  const control = await deriveDaemonServeGrant(readerJsm, { space, endpoint: served, instanceId: instanceId!, servePrincipal }).then(() => "derived", (e: Error) => e.message);
+  let gateReads = 0;
+  const interleaved = new Proxy(readerJsm, { get: (target, prop) => prop !== "streams" ? Reflect.get(target, prop) : new Proxy(target.streams, {
+    get: (streams, sp) => sp !== "getMessage" ? Reflect.get(streams, sp) : async (stream: string, q: { last_by_subj?: string }) => {
+      const m = await streams.getMessage(stream, q as never);
+      if (q?.last_by_subj === gateSubject && ++gateReads === 1) {
+        const now = (await authKv.get(gateKey))!;
+        const row = JSON.parse(new TextDecoder().decode(now.value)) as Record<string, unknown>;
+        await authKv.update(gateKey, JSON.stringify({ ...row, generation: (row.generation as number) + 1 }), now.revision);
+      }
+      return m;
+    },
+  }) });
+  const raced = await deriveDaemonServeGrant(interleaved, { space, endpoint: served, instanceId: instanceId!, servePrincipal }).then(() => "derived", (e: Error) => e.message);
+  check("a gate write ordered between the derive's two gate reads refuses the grant; the same derive without it succeeds",
+    control === "derived" && gateReads === 2 && /changed between its two reads/.test(raced), { control, gateReads, raced });
+  const moved = (await authKv.get(gateKey))!;
+  await authKv.update(gateKey, JSON.stringify(openRow), moved.revision);
 
   // ---- restart takeover: the same instance re-registers, the epoch advances, the old family goes ----
   const oldServeId = (await readDaemonEndpointServeId(store, space, ARTIFACTS_ENDPOINT))!;
