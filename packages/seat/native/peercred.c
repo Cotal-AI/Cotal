@@ -16,6 +16,7 @@
 #include <dlfcn.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <sys/proc.h>
 #include <sys/sysctl.h>
 #include <sys/ucred.h>
 #include <sys/un.h>
@@ -152,6 +153,89 @@ static napi_value ProcessStartTime(napi_env env, napi_callback_info info) {
   snprintf(buf, sizeof(buf), "%lld.%06d", (long long)kp.kp_proc.p_starttime.tv_sec, (int)kp.kp_proc.p_starttime.tv_usec);
   napi_create_string_utf8(env, buf, NAPI_AUTO_LENGTH, &out);
   return out;
+}
+
+/* Session membership is queried from the process, not KERN_PROC_SESSION. A changed or
+ * unreadable row is not usable evidence. Never turn an incomplete scan into an empty session. */
+static int ReadProcess(pid_t pid, struct kinfo_proc *out) {
+  int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+  size_t size = sizeof(*out);
+  if (sysctl(mib, 4, out, &size, NULL, 0) != 0) return -1;
+  if (size == 0) return 0;
+  if (size != sizeof(*out) || out->kp_proc.p_pid != pid || out->kp_proc.p_starttime.tv_sec <= 0 ||
+      out->kp_proc.p_starttime.tv_usec < 0 || out->kp_proc.p_starttime.tv_usec >= 1000000) return -1;
+  return 1;
+}
+
+static int SameProcess(const struct kinfo_proc *a, const struct kinfo_proc *b) {
+  return a->kp_proc.p_pid == b->kp_proc.p_pid &&
+    a->kp_proc.p_starttime.tv_sec == b->kp_proc.p_starttime.tv_sec &&
+    a->kp_proc.p_starttime.tv_usec == b->kp_proc.p_starttime.tv_usec;
+}
+
+static napi_value ProcessSession(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1], row, value;
+  int32_t pid;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, argv[0], &pid) != napi_ok || pid <= 1) {
+    napi_throw_type_error(env, NULL, "pid must be a process ID above one");
+    return NULL;
+  }
+  struct kinfo_proc before, after;
+  int state = ReadProcess(pid, &before);
+  if (state == 0) { napi_get_undefined(env, &row); return row; }
+  if (state < 0) goto uncertain;
+  pid_t sid = getsid(pid);
+  if (sid < 0 || ReadProcess(pid, &after) != 1 || !SameProcess(&before, &after) ||
+      before.kp_eproc.e_pgid != after.kp_eproc.e_pgid || before.kp_eproc.e_ppid != after.kp_eproc.e_ppid ||
+      before.kp_eproc.e_ucred.cr_uid != after.kp_eproc.e_ucred.cr_uid ||
+      (before.kp_proc.p_stat == SZOMB) != (after.kp_proc.p_stat == SZOMB))
+    goto uncertain;
+  char token[64];
+  snprintf(token, sizeof(token), "%lld.%06d", (long long)after.kp_proc.p_starttime.tv_sec, (int)after.kp_proc.p_starttime.tv_usec);
+  if (napi_create_object(env, &row) != napi_ok || napi_create_string_utf8(env, token, NAPI_AUTO_LENGTH, &value) != napi_ok ||
+      napi_set_named_property(env, row, "start", value) != napi_ok) return NULL;
+  const char *keys[] = { "pid", "parent", "group", "session", "uid", "exited" };
+  uint32_t values[] = { (uint32_t)pid, (uint32_t)after.kp_eproc.e_ppid, (uint32_t)after.kp_eproc.e_pgid,
+    (uint32_t)sid, after.kp_eproc.e_ucred.cr_uid, after.kp_proc.p_stat == SZOMB };
+  for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+    if (napi_create_uint32(env, values[i], &value) != napi_ok || napi_set_named_property(env, row, keys[i], value) != napi_ok) return NULL;
+  }
+  return row;
+uncertain:
+  napi_throw_error(env, NULL, "Darwin process membership changed or could not be read");
+  return NULL;
+}
+
+static napi_value AccountProcesses(napi_env env, napi_callback_info info) {
+  (void)info;
+  int mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_UID, (int)getuid() };
+  size_t size = 0;
+  const size_t limit = 8192 * sizeof(struct kinfo_proc);
+  struct kinfo_proc *rows = NULL;
+  const char *why = "Darwin process list is incomplete";
+  napi_value list = NULL;
+  if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0 || size > limit - 32 * sizeof(*rows)) goto done;
+  size += 32 * sizeof(*rows);
+  size_t capacity = size;
+  rows = malloc(capacity);
+  if (!rows || sysctl(mib, 4, rows, &size, NULL, 0) != 0 || size >= capacity || size % sizeof(*rows) != 0) goto done;
+  if (napi_create_array(env, &list) != napi_ok) goto done;
+  uint32_t index = 0;
+  for (size_t i = 0; i < size / sizeof(*rows); i++) {
+    pid_t pid = rows[i].kp_proc.p_pid;
+    if (pid <= 1 || rows[i].kp_proc.p_stat == SZOMB) continue;
+    if (rows[i].kp_eproc.e_ucred.cr_uid != getuid()) goto done;
+    napi_value value;
+    if (napi_create_int32(env, pid, &value) != napi_ok || napi_set_element(env, list, index++, value) != napi_ok) goto done;
+  }
+  why = NULL;
+done:
+  free(rows);
+  if (!why) return list;
+  napi_throw_error(env, NULL, why);
+  return NULL;
 }
 
 static napi_value BootSession(napi_env env, napi_callback_info info) {
@@ -303,6 +387,8 @@ static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "flockExclusiveNb", FlockExclusiveNb);
 #ifdef __APPLE__
   Export(env, exports, "processStartTime", ProcessStartTime);
+  Export(env, exports, "processSession", ProcessSession);
+  Export(env, exports, "accountProcesses", AccountProcesses);
   Export(env, exports, "bootSession", BootSession);
   Export(env, exports, "userCacheDir", UserCacheDir);
   Export(env, exports, "launchdJob", LaunchdJob);
