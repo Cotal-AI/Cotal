@@ -352,8 +352,9 @@ try {
     }
   }
   const outside = await openRun(["--agent", "fg-probe-live", "--subscribe", "other"]);
-  check("a foreground subscription outside the persona policy refuses before launch with a code and remedy",
-    outside.exited === 1 && outside.opts === undefined && outside.stderr.includes("USAGE_INVALID") && outside.stderr.includes("omit the conflicting channel override"), outside.stderr);
+  check("a foreground subscription outside the persona policy refuses before launch and explains how to retry",
+    outside.exited === 1 && outside.opts === undefined && outside.stderr.includes('subscribe "other" is not within allowSubscribe') &&
+    outside.stderr.includes("omit the conflicting channel override"), outside.stderr);
   // CONTROL FIRST. Without it every assertion below could be passing because the launch never
   // reached the connector at all, which is exactly how the first draft of this suite fooled itself.
   {
