@@ -38,7 +38,8 @@ export function nativeStub(scenario) {
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
-      if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
+      if (command === "set_connection_state") { state.tray = [...(state.tray ?? []), args]; return null; }
+      if (command === "open_browser" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
@@ -383,6 +384,7 @@ export const scenarios = [
       assert.equal(await page.locator("#connection-description").textContent(), description);
       assert.equal(await page.locator("#tray-label").textContent(), pill);
       assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(224, 98, 90)");
+      assert.deepEqual(await page.evaluate(() => window.__renderState.tray?.at(-1)), { connected: false, label: pill }, "the tray tooltip must use the pill's words");
       assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), icon);
       assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
       assert.equal(await page.locator('[data-space="research"] small').last().textContent(), `${row}: ${reason}`);

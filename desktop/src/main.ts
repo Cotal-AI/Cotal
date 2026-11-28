@@ -590,6 +590,7 @@ function showStage(next: Stage, focus = false): void {
     const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
     const lost = summary === "offline" || summary === "unreachable" ? summary : undefined;
     text("tray-label", signInRequired ? "Sign in required" : lost ? CONNECTION_COPY[lost].pill : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
+    if (isTauri()) void invoke("set_connection_state", { connected: summary === "connected", label: el("tray-label").textContent ?? "" }).catch(() => undefined);
     el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
     el("tray-indicator").classList.toggle("error", Boolean(signInRequired || lost || summary === "attention"));
     if (!anyConnected) {
