@@ -26,7 +26,7 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isDiskFull, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isDiskFull, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, saveUpdateSettings } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
@@ -42,7 +42,17 @@ function managerResultError(op: string, error: unknown, log: (message: string) =
   log(`daemon: ${op} refused: ${cause}`);
   if (error instanceof HostedManagerRefusal) return { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) };
   if (op !== "agent-stop" && op !== "agent-terminal") {
-    if (isDiskFull(error)) return { code: "OPERATION_FAILED" as const, message: "The disk is full, so this change wasn't saved. Free up space on this computer, then try again." };
+    if (isDiskFull(error)) {
+      // Three honest sentences. "wasn't saved" only for one atomic write (temp file then
+      // rename): name and update-settings publish one record and nothing else. Every other
+      // op that changes something may have landed part of its change, so it says what is
+      // not confirmed. Read-only ops change nothing, so they say what could not be done.
+      if (op === "name" || op === "update-settings")
+        return { code: "OPERATION_FAILED" as const, message: "The disk is full, so this change wasn't saved. Free up space on this computer, then try again." };
+      if (op === "status" || op === "update-check" || op === "manager-status")
+        return { code: "OPERATION_FAILED" as const, message: "Cotal couldn't complete this because the disk is full. Free up space on this computer, then try again." };
+      return { code: "OPERATION_FAILED" as const, message: "Cotal couldn't confirm this change because the disk is full. Check it again once there is room." };
+    }
     return managerUnavailable(op, cause);
   }
   const failure = isConnectRefusal(error) ? error.failure() : error;
@@ -172,9 +182,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   // One disk-full state for every write this daemon performs on its own records. Set by a failed
   // write (ENOSPC/EDQUOT), cleared by a later success or the minute recheck; status carries it as
   // DaemonStatus.diskFull so the window, pill, tray and CLI agree without computing it again.
-  const diskFull = createDiskFullState();
+  const diskFull = createDiskFullState(machineHome);
   const observeDiskFull = observeDiskFullWith(diskFull, () => notifyStatusWatchers());
-  startDiskFullRecheck(diskFull, machineHome, () => notifyStatusWatchers());
+  const stopDiskFullRecheck = startDiskFullRecheck(diskFull, () => notifyStatusWatchers());
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   let loginActive = false;
   let logoutActive = false;
@@ -189,7 +199,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let watchNotifyQueued = false;
   let notifyStatusWatchers = (): void => {};
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers(), observeDiskFull);
   const reconciler = createAccountReconciler(machineHome, services, managers);
   const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
   const startedAt = new Date();
@@ -221,7 +231,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       generation: s.generation,
     });
   };
-  const snapshotStatus = async (cachedAgents: boolean): Promise<DaemonStatus> => diskFullAwareRead(diskFull, machineHome, async () => {
+  const snapshotStatus = (cachedAgents: boolean): Promise<DaemonStatus> => diskFullAwareRead(diskFull, async (): Promise<DaemonStatus> => {
     if (!cachedAgents) await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
     const result = { ...status(), agents: await managers.agents(cachedAgents) };
     if (!result.update) return result;
@@ -339,7 +349,6 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => {
-          if (req.op === "name" || req.op === "update-settings") diskFull.clear();
           if (req.op !== "status") notifyStatusWatchers();
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
@@ -388,16 +397,20 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
             if (!opts.updateCheck) throw new Error("Update checks are unavailable in this daemon.");
             await opts.updateCheck();
           } else {
-            readUpdateSettings();
-            if (req.auto !== undefined) setUpdateSetting("auto", req.auto);
-            if (req.notify !== undefined) setUpdateSetting("notify", req.notify);
+            // One publication per request, even when both fields change: the saved file
+            // is written once, so the request is all-or-nothing like any atomic write. The
+            // write itself clears the disk-full state only when it succeeds.
+            const settings = { ...readUpdateSettings() };
+            if (req.auto !== undefined) settings.auto = req.auto;
+            if (req.notify !== undefined) settings.notify = req.notify;
+            if (req.auto !== undefined || req.notify !== undefined) diskFull.guard(() => { saveUpdateSettings(settings); });
           }
           return status();
         });
         return;
       }
       if (req.op === "name") {
-        managerResult(async () => { if (req.name !== undefined) await account.rename(req.name); return status(); });
+        managerResult(async () => { if (req.name !== undefined) diskFull.guard(() => { account.rename(req.name as string); }); return status(); });
         return;
       }
       if (req.op === "spaces") {
@@ -422,7 +435,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "connect-check") {
-        replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
+        replyTask(connectCheck(req.space, machineHome).catch((error: unknown): ConnectCheckResult => {
+            observeDiskFull(error);
+            return { outcome: "refused", space: req.space, message: "the daemon could not complete the check" };
+          })
           .then((result) => {
             counters.connectChecksAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
@@ -430,7 +446,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "register") {
-        replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
+        replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((error: unknown): RegisterResult => {
+            observeDiskFull(error);
+            return { outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" };
+          })
           .then((result) => {
             counters.registersAnswered++;
             notifyStatusWatchers();
@@ -468,7 +487,17 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
             finally { disconnected = await disconnect!; }
             return disconnected;
             }));
-          })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
+          })().catch((error: unknown): ServiceConnectionResult => {
+            // A disk-full write in this chain keeps the raw errno out of the reply: the state
+            // must carry the fact, and no private path reaches a person.
+            if (isDiskFull(error)) {
+              observeDiskFull(error);
+              return { space: req.space, state: "unavailable", message: req.op === "service-connect"
+                ? "Cotal couldn't connect this space because the disk is full. Free up space on this computer, then try again."
+                : "Cotal couldn't disconnect this space because the disk is full. Check the space's connection again once there is room." };
+            }
+            return { space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." };
+          });
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
@@ -665,6 +694,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
 
   const close = (): Promise<void> => {
     closed ??= (async () => {
+      stopDiskFullRecheck();
       const servicesClosed = services.close();
       const managersClosed = managers.close();
       await account.close();

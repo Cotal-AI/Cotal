@@ -112,7 +112,7 @@ function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
   };
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void, onWriteError?: (error: unknown) => void) {
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
@@ -617,9 +617,14 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     });
     child.stderr?.setEncoding("utf8");
     const logged = (text: string) => {
-      try { append(text); }
-      catch (error) {
-        l.view = { ...l.view, logError: isDiskFull(error)
+      try {
+        append(text);
+        // A later successful append proves the log write works again, so the row goes away.
+        if (l.view.logError !== undefined) { l.view = { ...l.view, logError: undefined }; notify(); }
+      } catch (error) {
+        const diskFull = isDiskFull(error);
+        if (diskFull) { try { onWriteError?.(error); } catch {} }
+        l.view = { ...l.view, logError: diskFull
           ? "the hosted Manager log could not be written because the disk is full; free space and it is written again"
           : "the hosted Manager log could not be written; inspect its private state directory" };
       }

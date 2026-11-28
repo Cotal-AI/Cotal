@@ -697,7 +697,13 @@ async function run(args: ParsedArgs): Promise<void> {
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
     catch (error) { throw asFailure(error, home); }
-    if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", reply.error.message, { ...(reply.error.remedy ? { remedy: reply.error.remedy } : {}) });
+    if (!reply.ok) {
+      // A usage refusal (an invalid name) keeps the refused path it always had; only a real
+      // write failure is an operation failure, so no exit status changes for bad input.
+      if (reply.error.code === "BAD_FIELD" || reply.error.code === "USAGE_INVALID")
+        throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message, { ...(reply.error.remedy ? { remedy: reply.error.remedy } : {}), native: { code: reply.error.code } });
+      throw new CommandFailure("failed", "OPERATION_FAILED", reply.error.message, { ...(reply.error.remedy ? { remedy: reply.error.remedy } : {}) });
+    }
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
     writeResult(presentationOf(args.values), { command: "daemon name", target: null, result }, () => ({ sections: [{ title: "Computer", blocks: [{ kind: "lines", lines: [result.computer] }] }] }));

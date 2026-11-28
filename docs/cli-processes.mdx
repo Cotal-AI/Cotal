@@ -832,8 +832,11 @@ space, status carries an optional `diskFull` boolean set to true. Human output a
 naming it and the next step. The field is absent when the disk is not the obstacle, and it clears
 on the next status read once space has returned, without a restart: every status read rechecks the
 filesystem, and a daemon-side timer rechecks once a minute when nobody is reading. A refused write
-names the full disk in its message, and record writes keep the previous record: the atomic
-temp-and-rename publication leaves the prior bytes in place when the write fails.
+names the full disk in its message, and the wording depends on the write: an atomic single-write
+change (the computer name, update settings) says it was not saved, because the atomic
+temp-and-rename publication leaves the prior bytes in place when the write fails. Every other
+change, whose steps may already have landed partly, says Cotal could not confirm the change, and
+to check it again once there is room.
 
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not

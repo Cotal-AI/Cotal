@@ -1,16 +1,17 @@
-/** The daemon's view of "the disk is full": one flag, set by a failed write, cleared by reality.
- *  Every surface reads the same flag from {@link DaemonStatus.diskFull}, so the window, the pill,
- *  the tray and `cotal daemon status` cannot disagree about it.
+/** The daemon's view of "the disk is full": one flag, set by a failed write, cleared by a
+ *  write that succeeds. Every surface reads the same flag from {@link DaemonStatus.diskFull},
+ *  so the window, the pill, the tray and `cotal daemon status` cannot disagree about it.
+ *
+ *  The flag is never cleared by a free-space number: reserved blocks, a quota or a failed write
+ *  on another filesystem can all leave gigabytes free to a number while writes still fail, and
+ *  a quota is invisible to any of them. Only a real write to the same filesystem the daemon
+ *  writes its records to clears it.
  */
-import { statfs } from "node:fs/promises";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { isDiskFull } from "@cotal-ai/workspace";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 import type { DaemonStatus } from "./protocol.js";
-
-/** A free-space headroom under which the disk counts as full for the recheck: ENOSPC can strike
- *  with a few blocks still nominally free (the write needs a full page), and a recheck that waits
- *  for literal zero would report health while writes still fail. */
-const FREE_HEADROOM_BYTES = 4096;
 
 export interface DiskFullState {
   /** Whether the last observed write failed because the disk was full. */
@@ -21,13 +22,25 @@ export interface DiskFullState {
   clear(): void;
   /** Run a write, mark the flag from its outcome, and return its result or rethrow its error. */
   guard<T>(write: () => T): T;
-  /** Re-read the filesystem: free space beyond the headroom clears the flag, nothing else sets it. */
-  recheck(path: string): Promise<boolean>;
+  /** Try one real write in the folder the daemon writes its records to: only its success
+   *  clears the flag; its failure leaves the flag as it was. Returns the flag. */
+  recheck(): Promise<boolean>;
 }
 
-/** Create the shared disk-full state. {@link DiskFullState.recheck} re-reads any path on the
- *  filesystem whose health decides the flag. */
-export function createDiskFullState(): DiskFullState {
+/** A write the daemon can attempt anywhere its records live: one small file, created and
+ *  removed again, whose failure is a full disk exactly as a record write would see it. */
+async function probeWrite(folder: string): Promise<void> {
+  const probe = mkdtempSync(join(folder, "disk-full-probe-"));
+  try {
+    writeFileSync(join(probe, "probe"), "1");
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+/** Create the shared disk-full state. {@link DiskFullState.recheck} writes a small temporary
+ *  file in `folder`, the folder the daemon's own records live in. */
+export function createDiskFullState(folder: string): DiskFullState {
   let full = false;
   return {
     full: () => full,
@@ -46,19 +59,19 @@ export function createDiskFullState(): DiskFullState {
         throw error;
       }
     },
-    async recheck(target: string) {
+    async recheck() {
       if (!full) return full;
       try {
-        const fs = await statfs(target, { bigint: true });
-        if (BigInt(fs.bsize) * BigInt(fs.bfree) > BigInt(FREE_HEADROOM_BYTES)) full = false;
-      } catch { /* The recheck is advisory; a failed read keeps the last observed state. */ }
+        await probeWrite(folder);
+        full = false;
+      } catch { /* A probe that cannot write leaves the last observed state. */ }
       return full;
     },
   };
 }
 
-/** Mark the state from a failed operation's error and notify the daemon's status watchers at once:
- *  a write that failed for space is the one fact status must carry right away. */
+/** Mark the state from a failed operation's error and notify the daemon's status watchers at
+ *  once: a write that failed for space is the one fact status must carry right away. */
 export function observeDiskFullWith(state: DiskFullState, notify: () => void): (error: unknown) => void {
   return (error: unknown) => {
     state.observe(error);
@@ -66,19 +79,22 @@ export function observeDiskFullWith(state: DiskFullState, notify: () => void): (
   };
 }
 
-/** Re-read the filesystem once a minute so the flag clears within a minute when nobody is
- *  watching. Unref'd: the timer never keeps the daemon alive on its own. */
-export function startDiskFullRecheck(state: DiskFullState, path: string, notify: () => void): void {
-  const timer = setInterval(() => { void state.recheck(path).then(full => { if (!full) notify(); }); }, 60_000);
+/** Re-attempt the probe write once a minute so the flag clears within a minute when nobody is
+ *  reading. Unref'd: the timer never keeps the daemon alive on its own. Returns the stop
+ *  handle; `close()` must call it on every exit path. */
+export function startDiskFullRecheck(state: DiskFullState, notify: () => void): () => void {
+  const timer = setInterval(() => {
+    void state.recheck().then(was => { if (!was) notify(); });
+  }, 60_000);
   timer.unref();
+  return () => clearInterval(timer);
 }
 
-/** A status read that first rechecks the disk. Rule 1: every answer about the disk is re-derived
- *  from the filesystem at the moment it is asked, so a person who frees space and reads status
- *  again sees the state clear without a restart. */
-export function diskFullAwareRead<T>(state: DiskFullState, path: string, read: () => Promise<T>): () => Promise<T> {
+/** A status read that first re-attempts the probe write, so a person who frees space and reads
+ *  status again sees the state clear without a restart or a new request. */
+export function diskFullAwareRead<T>(state: DiskFullState, read: () => Promise<T>): () => Promise<T> {
   return async () => {
-    await state.recheck(path);
+    await state.recheck();
     return read();
   };
 }

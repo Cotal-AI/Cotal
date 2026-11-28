@@ -1,4 +1,4 @@
-# A full disk is its own state: the real daemon on a real 8m tmpfs recognises ENOSPC/EDQUOT in
-# its status frame, keeps the previous record intact, and recovers without a restart once space
-# returns. Added with the suite that owns it.
+# A full disk is its own state: the real daemon on a real 8m tmpfs recognises ENOSPC in
+# its status frame, keeps the previous record intact, and recovers without a restart once
+# space returns, through a write and through a status read. Added with the suite that owns it.
 smoke:daemon-disk-full
