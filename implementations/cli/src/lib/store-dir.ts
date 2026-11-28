@@ -277,7 +277,7 @@ function checkStoreDirPath(path: string, root: string, purpose: "start" | "resto
     const remedy = purpose === "restore"
       ? "make the parent directory writable by this account or choose a path under a writable parent. Leave the store directory absent so the restore can create it."
       : "name a store directory this account can create, or create it with the right owner first";
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy });
+    throw localDiagnostic(new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy }));
   }
 }
 

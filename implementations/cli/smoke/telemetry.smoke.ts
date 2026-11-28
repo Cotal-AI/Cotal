@@ -346,6 +346,12 @@ for (const level of ["regular", "minimal"]) {
     const denied = await s.run(["space", "create", space, "--root", root, "--json"]), event = denied.sent.find(body => body.event === "command");
     check("an unwritable project is named only in the local preparation refusal", denied.status === 2 && denied.stdout.includes(root) && !existsSync(join(root, ".cotal")) &&
       event?.errorCode === "PERMISSION_DENIED" && event.errorMessage === null && event.errorStack === null && !JSON.stringify(denied.sent).includes(marker), shown(denied));
+    const store = join(root, "store");
+    for (const args of [["up"], ["backup", "restore", "artifact"]]) {
+      const r = await s.run([...args, "--store-dir", store, "--json"]), reported = r.sent.find(body => body.event === "command");
+      check(`${args.join(" ")} keeps an unwritable store parent local`, r.status === 2 && r.stdout.includes(store) && !existsSync(store) &&
+        reported?.errorCode === "PERMISSION_DENIED" && reported.errorMessage === null && reported.errorStack === null && !JSON.stringify(r.sent).includes(marker), shown(r));
+    }
   }
   const add = await s.run(["space", "add", space, "--server", "nats://127.0.0.1:1", "--root", file, "--json"]);
   const addEvent = add.sent.find(body => body.event === "command");
