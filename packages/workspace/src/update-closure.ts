@@ -29,6 +29,7 @@ export function waitForUpdateClosure(): boolean {
   const started = Date.now();
   const deadline = started + 300_000;
   let updateDeadline: number | undefined;
+  let restoreDeadline: number | undefined;
   let announced = false;
   let announcedWriter = false;
   for (;;) {
@@ -44,6 +45,12 @@ export function waitForUpdateClosure(): boolean {
       waitedForUpdate = true;
       updateDeadline ??= Date.now() + 120_000;
       if (!announced) { console.error("waiting for a Cotal update to finish"); announced = true; }
+      // The restoring writer may be waiting for this caller's Manager lifecycle to drain.
+      // Refuse before the Manager's ten-second fence expires, without borrowing the writer's lock.
+      if (record?.phase === "restoring") {
+        restoreDeadline ??= Date.now() + 2_000;
+        if (Date.now() >= restoreDeadline) throw new Error("an update is in progress, retry in a minute");
+      } else restoreDeadline = undefined;
     } else if (!announcedWriter && Date.now() - started >= 1_000) {
       console.error(`waiting for another cotal command (pid ${current.owner.pid}) to finish changing this installation`);
       announcedWriter = true;

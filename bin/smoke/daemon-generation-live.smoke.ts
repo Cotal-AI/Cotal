@@ -58,7 +58,10 @@ if (args.includes("--cold-reconcile") || args.includes("--cold-reconcile-quota")
   process.exit(0);
 } else {
   const cases = args.includes("--manual-admission-repros")
-    ? [["--update-repro", "--manual-admission-race-repro"], ["--update-repro", "--manual-admission-empty-repro"]]
+    ? [["--update-repro", "--manual-admission-race-repro"], ["--update-repro", "--manual-admission-empty-repro"],
+       ["--update-repro", "--manual-admission-empty-repro", "--round-three-rollback-private"],
+       ["--update-repro", "--manual-admission-empty-repro", "--round-three-rollback-private", "--rollback-wait-bound"],
+       ["--update-repro", "--manual-admission-empty-repro", "--rollback-obstruction"]]
     : [args.length ? args : ["--upgrade-active-repro", "--watcher-seat-repro"]];
   const failures: unknown[] = [];
   for (const flags of cases) {

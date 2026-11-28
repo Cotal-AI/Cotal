@@ -123,6 +123,18 @@ export function writeUpdateRecovery(record: Omit<UpdateRecovery, "v" | "recorded
   save("update-recovery.json", { ...record, v: 1, recordedAt: new Date().toISOString() });
 }
 
+export const waitingRestore = "The restore is waiting for the Manager to become idle. It will finish on the next automatic update or daemon start.";
+
+export function isWaitingRestore(record: UpdateRecovery | undefined): boolean {
+  return record?.phase === "restoring" && record.installed === record.previous && record.reason === waitingRestore;
+}
+
+/** A rollback needs a retry even when the failed installation was started manually. */
+export function scheduleWaitingRestore(target: string): void {
+  const previous = readRecord("update-attempt.json") as { version?: string; failures?: number } | undefined;
+  save("update-attempt.json", { version: target, failures: previous?.version === target ? previous.failures ?? 0 : 0, result: waitingRestore, next: Date.now() + 60_000 });
+}
+
 /** Record completion from the updater itself, which can outlive the daemon generation. */
 export function recordUpdateCompletion(version: string, result: string, success: boolean): void {
   const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;

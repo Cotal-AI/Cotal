@@ -1,5 +1,5 @@
 import { readWindowsUpdatePause, WINDOWS_INTERRUPTED_UPDATE } from "./update-windows-state.js";
-import { readUpdateRecovery } from "./updates.js";
+import { isWaitingRestore, readUpdateRecovery } from "./updates.js";
 import { recoveryDisposition } from "./update-recovery.js";
 import { spawn } from "node:child_process";
 import { acquireLock, acquireLockAsync } from "@cotal-ai/core";
@@ -95,7 +95,7 @@ export function cachedUpdateSummary(current: string): string {
     const recovery = readUpdateRecovery();
     if (recovery) {
       const decision = recoveryDisposition(recovery);
-      return decision.action === "active" ? decision.instruction : `update needs repair: installed ${recovery.installed}; ${decision.instruction}`;
+      return decision.action === "active" || decision.action === "restore" && isWaitingRestore(recovery) ? decision.instruction : `update needs repair: installed ${recovery.installed}; ${decision.instruction}`;
     }
   } catch { return "update state unreadable; automatic updates paused"; }
   const cached = readUpdateCheck();

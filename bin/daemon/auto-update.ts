@@ -3,7 +3,7 @@ import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { checkForUpdate, homeCotalDir, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { checkForUpdate, homeCotalDir, isWaitingRestore, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanWindowsUpdate, startWindowsUpdate } from "./update-windows.js";
 import { WINDOWS_INTERRUPTED_UPDATE, readWindowsUpdatePause } from "@cotal-ai/workspace";
@@ -60,8 +60,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       const recovery = readUpdateRecovery();
       if (recovery) {
         const decision = recoveryDisposition(recovery);
-        if (decision.action !== "retire") automatic = false;
-        reason = `automatic updates ${decision.action === "retire" ? "can resume" : "paused"}: installed ${recovery.installed}; ${recovery.reason}; ${decision.instruction}`;
+        const waiting = decision.action === "restore" && isWaitingRestore(recovery);
+        if (decision.action !== "retire" && !waiting) automatic = false;
+        reason = waiting ? decision.instruction : `automatic updates ${decision.action === "retire" ? "can resume" : "paused"}: installed ${recovery.installed}; ${recovery.reason}; ${decision.instruction}`;
       }
       if (process.platform === "win32" && readWindowsUpdatePause()) { automatic = false; reason = WINDOWS_INTERRUPTED_UPDATE; }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
@@ -114,9 +115,11 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       const recorded = JSON.parse(readFileSync(file, "utf8"));
       if (recorded && Number.isInteger(recorded.failures) && recorded.failures >= 0 && typeof recorded.result === "string" && Number.isFinite(recorded.next)) state = recorded;
     } catch { /* Keep the last validated attempt state when unreadable. */ }
-    const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
     const recovery = readUpdateRecovery();
-    const retiring = recovery !== undefined && recoveryDisposition(recovery).action === "retire";
+    const decision = recovery && recoveryDisposition(recovery);
+    const restoring = decision?.action === "restore" && isWaitingRestore(recovery);
+    const cached = !restoring && process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
+    const retiring = decision?.action === "retire";
     if (closed || !retiring && Date.now() < state.next) return;
     if (desktop) {
       state = { ...state, next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS };
@@ -125,17 +128,20 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     }
     if (host.eligible() !== true || !status().automatic) return;
     if (closed) return;
-    if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
-    const reconciling = !retiring && !newerUpdate(cached.latest, host.version) && reconciliationPending(host.version);
-    if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
-    if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
-    if (!retiring && !reconciling && !newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
-    if (!retiring && !reconciling && Date.now() - (cached.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
+    const latest = restoring ? recovery!.target : cached?.latest;
+    if (!latest || !restoring && cached?.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
+    if (!restoring) {
+      const reconciling = !retiring && !newerUpdate(latest, host.version) && reconciliationPending(host.version);
+      if (state.version !== latest) state = { version: latest, failures: 0, result: "new release observed", next: 0 };
+      if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
+      if (!retiring && !reconciling && !newerUpdate(latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
+      if (!retiring && !reconciling && Date.now() - (cached?.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached?.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
+    }
     try { await host.prepare(); }
     catch (error) { state = { ...state, result: `waiting for idle Managers: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + 60_000 }; persist(); return; }
     try {
       if (closed || host.eligible() !== true || !status().automatic) return;
-      state = { ...state, failures: state.failures, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
+      state = { ...state, failures: state.failures, result: restoring ? "finishing pending update restore" : `updating to ${latest}`, next: Date.now() + UPDATE_HOUR_MS };
       persist();
       if (process.platform === "win32") {
         try { windowsPending = true; startWindowsUpdate(state.failures); }

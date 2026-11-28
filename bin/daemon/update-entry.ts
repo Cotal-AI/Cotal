@@ -8,7 +8,7 @@ import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
-import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
+import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, isWaitingRestore, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -27,6 +27,7 @@ import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "
 import { reclaimInterruptedUpdateSnapshots } from "./update-snapshot-cleanup.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
+import { prepareRestoreFence } from "./update-restore-fence.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
  *  from before that marker never waits there, so its child keeps the line. */
@@ -420,7 +421,9 @@ const composed: Command = { ...command, async run(args) {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    if (readUpdateRecovery()?.phase === "restoring") { preparedRestart = false; if (admission?.disposition !== "deferred") admission = undefined; }
+    const recovery = readUpdateRecovery(), restoring = recovery?.phase === "restoring";
+    if (restoring) { preparedRestart = false; if (admission?.disposition !== "deferred") admission = undefined; }
+    if (isWaitingRestore(recovery)) daemonObserved = await observeUpdateDaemon() !== undefined;
     let paths: DaemonPaths | undefined;
     try { if (process.platform !== "win32" || daemonObserved) paths = daemonPaths(); }
     catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
@@ -435,13 +438,12 @@ const composed: Command = { ...command, async run(args) {
       targetAdmissionChecked = true;
       return async () => {};
     }
-    try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }
+    try {
+      if (restoring) { if (!await prepareRestoreFence(paths)) return async () => {}; }
+      else await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    }
     catch (error) {
-      if (readUpdateRecovery()?.phase === "restoring" && error instanceof EndpointRefusal && error.code === "NOT_RUNNING") {
-        const exclusion = excludeLifetime(paths.lock);
-        exclusion.release();
-        return async () => {};
-      }
+      if (restoring) throw error;
       if (!admission) throw new Error(`daemon unavailable or refused update preparation: ${error instanceof Error ? error.message : String(error)}`);
       deferActivation(`restart preparation was not confirmed: ${error instanceof Error ? error.message : String(error)}`);
       return async () => {};

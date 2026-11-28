@@ -46,6 +46,12 @@ requires an empty Manager. If verification fails after deferred activation, the
 updater restores the previous release without restarting the daemon. Existing seats keep running,
 and the same Manager can accept new work after reconciliation.
 
+If a launch is in progress while a failed update restores the previous release, the updater waits
+up to 30 seconds for Manager admission. It does not stop the launch or bypass the installation lock.
+If the wait expires, `cotal update --check` reports a waiting restore. The next automatic update
+attempt or daemon start continues the restore. A damaged installation that cannot be restored still
+reports that repair is needed.
+
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure

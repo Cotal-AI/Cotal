@@ -44,7 +44,7 @@ import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { readReceipt } from "./install-receipt.js";
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
-import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
+import { isWaitingRestore, liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 const daemonFlags = [
@@ -565,7 +565,8 @@ async function serve(args: ParsedArgs): Promise<void> {
   const deferredRecovery = readUpdateRecovery();
   const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
-  if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  const restoredAtStartup = !automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true);
+  if (restoredAtStartup && !(isWaitingRestore(deferredRecovery) && restoredAtStartup.version === binVersion())) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
   const { paths, home } = resolveTarget(args);
   let running;
@@ -628,6 +629,7 @@ async function serve(args: ParsedArgs): Promise<void> {
         const record = readUpdateRecovery();
         if (!record) { clearInterval(recoveryTimer); return; }
         if (liveUpdateClosureOwner(record)) return;
+        if (isWaitingRestore(record)) { clearInterval(recoveryTimer); return; }
         recoveryBusy = true;
         clearInterval(recoveryTimer);
         process.stderr.write("daemon: observed updater ended; checking guarded interrupted-update recovery\n");

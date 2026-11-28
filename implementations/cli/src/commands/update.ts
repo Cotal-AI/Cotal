@@ -15,6 +15,7 @@ import {
   updateClosureOwner, withWindowsUpdateIdentity,
   homeCotalDir,
   readUpdateRecovery,
+  isWaitingRestore, waitingRestore,
   clearUpdateRecovery,
   writeUpdateRecovery,
   readUpdateSettings,
@@ -42,6 +43,8 @@ import {
   UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
 import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
+import { keepRestorePending } from "../lib/update-restore-pending.js";
+export { RestoreAdmissionPending } from "../lib/update-restore-pending.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, connectorConfigPreflightFailure, manifestAccessReporter, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection, restoreUpdateManifestAccess } from "../lib/update-connector-config.js";
@@ -457,6 +460,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       const root = selected.stdout.trim();
       if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
       const releaseGlobal = rt.claimGlobalUpdate(root);
+      let releaseAdmission: (() => Promise<void>) | undefined;
       try {
         if (completedRollback) {
           const version = rt.version();
@@ -492,10 +496,16 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           entry = rt.verifyGlobalEntry(root, record.previous);
         }
         snapshot.restore();
+        if (!startup && isWaitingRestore(record) && rt.prepareReplacement) {
+          releaseAdmission = await rt.prepareReplacement();
+          const recovery = readUpdateRecovery();
+          if (!recovery) throw new Error("update recovery journal is missing");
+          writeUpdateRecovery({ ...recovery, preparedRestart: rt.preparedRestart?.() ?? false });
+        }
         const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid), ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
         const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
         if (reconciled.status !== 0) throw new Error(failure(reconciled));
-        if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
+        if (!startup && (rt.env.COTAL_AUTO_UPDATE !== "1" || isWaitingRestore(record))) {
           const currentRecovery = readUpdateRecovery();
           if (currentRecovery && currentRecovery.phase !== "verified-ready") writeUpdateRecovery({ ...currentRecovery, installed: record.previous, phase: "verified-ready" });
           await rt.waitForInstalledGeneration?.(record.previous);
@@ -503,11 +513,14 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
         snapshot.discard();
         clearUpdateRecovery();
         recoveredExecution?.complete?.();
+        if (isWaitingRestore(record)) recordUpdateCompletion(record.target, `update failed; restored and reconciled ${record.previous}`, false);
         rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
-        return { entry, version: record.previous };
-      } finally { releaseGlobal(); }
+        return { entry, version: record.previous, ...(isWaitingRestore(record) ? { resumed: true } as const : {}) };
+      } finally { try { await releaseAdmission?.(); } finally { releaseGlobal(); } }
     } catch (error) {
-      writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
+      if (keepRestorePending(error, record.previous)) throw new CommandFailure("failed", "OPERATION_FAILED", waitingRestore);
+      const recovery = readUpdateRecovery();
+      if (recovery) writeUpdateRecovery({ ...recovery, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
       throw error;
     }
   } finally { release(); }
@@ -1169,6 +1182,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run \`cotal update --self\` to try again.`);
       return interrupted || failureStatus;
     } catch (error) {
+      if (keepRestorePending(error, current)) { rt.err(waitingRestore); return interrupted || failureStatus; }
       let installedVersion = "unknown";
       try { installedVersion = JSON.parse(readFileSync(join(root, "cotal-ai", "package.json"), "utf8")).version ?? "unknown"; } catch { /* Report an unknown install instead of claiming the previous tree survived. */ }
       const detail = `${reason}; repair failed: ${message(error)}`;

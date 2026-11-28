@@ -1,4 +1,4 @@
-import { isCommandFailure, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
+import { isCommandFailure, isWaitingRestore, loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
 
 const receiptRepair = "Run `cotal update --self` to reconcile this installation.";
 export const manifestRepair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
@@ -20,7 +20,7 @@ export function readUpdatePending(current: string): UpdatePending {
   }
   if (recovery) {
     const decision = recoveryDisposition(recovery);
-    return { kind: "receipt", recovery, instruction: decision.action === "active" ? decision.instruction : `Reconciliation pending: ${decision.instruction}` };
+    return { kind: "receipt", recovery, instruction: decision.action === "active" || decision.action === "restore" && isWaitingRestore(recovery) ? decision.instruction : `Reconciliation pending: ${decision.instruction}` };
   }
   try {
     const extensions = loadExtensionsManifest().extensions

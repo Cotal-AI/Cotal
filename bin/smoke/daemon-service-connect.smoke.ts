@@ -127,6 +127,9 @@ const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
+const restoreWait = process.argv.includes("--round-three-rollback-private");
+const restoreBound = process.argv.includes("--rollback-wait-bound");
+const restoreObstructed = process.argv.includes("--rollback-obstruction");
 const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
 if (manualAdmissionRace && (!process.argv.includes("--hosting-only") || !process.argv.includes("--update-repro"))) throw new Error("manual admission repro requires --hosting-only --update-repro");
 const setupHintsOnly = process.argv.includes("--setup-hints-only");
@@ -169,6 +172,64 @@ let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
+async function exerciseRestoreWait(opts: {
+  root: string; home: string; space: string; managerPid: number; bound: boolean;
+  start(name: string): Promise<{ ok: boolean; error?: string }>;
+  status(): Promise<{ ok: boolean; data?: unknown }>;
+  finished: Promise<number | null>; output(): string;
+  runUpdate(...args: string[]): Promise<{ code: number | null; text: string }>;
+}) {
+  const { root, home, space, managerPid, status, start, finished, output, bound, runUpdate } = opts;
+  const gate = join(root, "updater-release");
+  const waitFor = async (label: string, ready: () => boolean, limit = 60_000) => {
+    const deadline = Date.now() + limit;
+    while (!ready()) { if (Date.now() >= deadline) throw new Error(`${label}: ${output()}`); await sleep(20); }
+  };
+  let suspended = false;
+  try {
+    await waitFor("fresh rollback fence", () => existsSync(join(root, "updater-entered")));
+    assert.equal(readUpdateRecovery()?.phase, "restoring");
+    const managerLog = join(home, "daemon", spaceSegment(space), "manager", "manager.log");
+    const waits = () => (readFileSync(managerLog, "utf8").match(/waiting for a Cotal update to finish/g) ?? []).length;
+    const emptyBefore = await status();
+    const rows = emptyBefore.data as { agentCount: number; stopImpact: { reservedLaunches: number } };
+    assert.ok(emptyBefore.ok && rows.agentCount === 0 && rows.stopImpact.reservedLaunches === 0);
+    const prior = waits();
+    let outcome: Awaited<ReturnType<typeof start>> | undefined;
+    const launching = start("restore_waiting_launch").then(reply => { outcome = reply; return reply; });
+    void launching.catch(() => {});
+    await waitFor("ordinary Manager launch waiting for closure access", () => {
+      assert.equal(outcome, undefined, "launch returned before it waited on the closure");
+      return waits() > prior;
+    });
+    console.log("ROLLBACK ordinary launch reached the held closure before the fresh fence");
+    if (bound) { process.kill(managerPid, "SIGSTOP"); suspended = true; }
+    const releasedAt = Date.now();
+    writeFileSync(gate, "ready");
+    if (!bound) {
+      const result = await launching;
+      check("Restore lets the waiting launch settle with the existing refusal", !result.ok && /an update is in progress, retry in a minute|lifecycle\/control work is fenced/.test(result.error ?? ""), result);
+      check("Restore reconciles without operator repair after the launch settles", await finished === 1 && !readUpdateRecovery() && output().includes("was restored and reconciled") && !output().includes("Automatic updates are paused."), output());
+      return;
+    }
+    assert.equal(await finished, 1, output());
+    const elapsed = Date.now() - releasedAt;
+    const pending = readUpdateRecovery();
+    check("Restore remains pending when its 30-second admission wait expires", elapsed >= 29_000 && elapsed < 50_000 && pending?.phase === "restoring" && pending.installed === "0.151.2" && pending.reason.includes("restore is waiting") && output().includes(pending.reason) && !output().includes("Automatic updates are paused."), { elapsed, pending, output: output() });
+    const report = await runUpdate("--check", "--json");
+    const reconciliation = JSON.parse(report.text).result.reconciliation;
+    check("Update check reports a waiting restore, not a repair", report.code === 0 && reconciliation.recovery.phase === "restoring" && reconciliation.instruction === pending?.reason && !reconciliation.instruction.includes("repair"), report);
+    process.kill(managerPid, "SIGCONT"); suspended = false;
+    const result = await launching;
+    check("The contending launch did not start a seat", !result.ok, result);
+    await waitFor("automatic restore to clear the journal", () => !readUpdateRecovery(), 150_000);
+    const log = readFileSync(join(home, "update-attempt.log"), "utf8");
+    check("The automatic update run completed the restore without a command", log.includes("Restored cotal-ai@0.151.2 after an interrupted update.") && !existsSync(pending!.snapshot!), log);
+  } finally {
+    if (suspended) process.kill(managerPid, "SIGCONT");
+    writeFileSync(gate, "ready");
+  }
+}
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--renewal-resume-only") && !/^(C1 |C2 |C15 |C6d |C14 |C8 |C11 |C10 )/.test(title)) return;
   if (process.argv.includes("--renewal-only") && !/^(C1 |C2 |C15 |C12 |C10 )/.test(title)) return;
@@ -2215,9 +2276,9 @@ process.stdin.once('data', () => {
           writeFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/desktop-runtime.json"), "{}\n");
           writeFileSync(join(home, "update-attempt.log"), "desktop fixture retained log\n");
         }
-        if (process.argv.includes("--auto-admission-race-repro") || process.argv.includes("--rollback-busy-repro")) {
+        if (process.argv.includes("--auto-admission-race-repro") || process.argv.includes("--rollback-busy-repro") || restoreWait) {
           const gate = join(root, "updater-gate.cjs");
-          writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart') && (${!process.argv.includes("--rollback-busy-repro")} || (fs.existsSync(${JSON.stringify(join(home, "update-recovery.json"))}) && JSON.parse(fs.readFileSync(${JSON.stringify(join(home, "update-recovery.json"))}, 'utf8'))?.phase === 'restoring'))) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
+          writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart') && (${!restoreWait && !process.argv.includes("--rollback-busy-repro")} || (fs.existsSync(${JSON.stringify(join(home, "update-recovery.json"))}) && JSON.parse(fs.readFileSync(${JSON.stringify(join(home, "update-recovery.json"))}, 'utf8'))?.phase === 'restoring'))) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
           Object.assign(env, { NODE_OPTIONS: `--require=${gate}` });
         }
         seedUnitReceipt(cliEntry, true);
@@ -3456,6 +3517,7 @@ process.exit(result.status ?? 93);
               check("Manual empty install fences real spawn before connector loading", !started.ok && started.answered === true && started.outcome === "not-executed" && /fenced/.test(started.error ?? ""), started);
               assert.ok(!during.ok && during.answered === true && during.outcome === "not-executed" && /fenced/.test(during.error ?? ""), "ordinary status must report its real maintenance refusal");
               assert.ok(evidence?.prepared === true && evidence.managers.some((row: any) => row.space === ON && row.fenced === true && row.seats === 0) && inventory?.state === "read" && inventory.agents.length === 0, "prepared install must retain empty fenced evidence and independent IPC inventory");
+              if (restoreObstructed) mkdirSync(join(journal.snapshot, "failed-extensions"));
             } else {
               const started = await start("manual_install_race");
               raceSeat = started.ok;
@@ -3492,6 +3554,7 @@ process.exit(result.status ?? 93);
             // Do not strand a held npm child or an updater finishing its owned rollback.
             const timer = setTimeout(() => { if (updater.exitCode === null && updater.signalCode === null) updater.kill("SIGKILL"); }, 180_000);
             try {
+              if (restoreWait) await exerciseRestoreWait({ root, home, space: ON, managerPid: manager.pid!, status, start, finished, output: () => output, bound: restoreBound, runUpdate });
               const code = await finished;
               console.log("MANUAL_ADMISSION updater completed", JSON.stringify({ code, output, npm: readFileSync(npmLog, "utf8") }));
               const { selectExecutionProgram } = await import("../cotal.js");
@@ -3499,11 +3562,17 @@ process.exit(result.status ?? 93);
               const version = JSON.parse(readFileSync(join(selected.root, "package.json"), "utf8")).version;
               const pending = readUpdateRecovery() !== undefined;
               const reconciled = output.includes("was restored and reconciled");
-              check("Manual failed install restores and reconciles the old generation", code === 1 && output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && reconciled && version === "0.151.2" && !pending, { code, reconciled, version, pending });
-              if (manualAdmissionEmpty) check("Manual empty rollback verifies a fresh empty restart fence", output.includes("daemon verified prepared fences and zero seats"), output);
-              else check("Manual live-seat rollback does not report a finished update or ask to stop agents", !output.includes("software update finished") && !output.includes("--stop-agents"), output);
+              if (restoreObstructed) {
+                const recovery = readUpdateRecovery();
+                check("A blocked snapshot restore still pauses for operator repair", code === 1 && version === "0.151.2" && recovery?.phase === "paused" && recovery.reason.includes("restore destination already exists") && output.includes("Automatic updates are paused.") && output.includes("Run `cotal update --self` to repair this installation."), { code, recovery, output });
+              } else if (!restoreBound) {
+                check("Manual failed install restores and reconciles the old generation", code === 1 && output.includes("MANUAL_TARGET_VERIFICATION_FAILED_AFTER_PUBLICATION") && reconciled && version === "0.151.2" && !pending, { code, reconciled, version, pending });
+                if (manualAdmissionEmpty) check("Manual empty rollback verifies a fresh empty restart fence", output.includes("daemon verified prepared fences and zero seats"), output);
+                else check("Manual live-seat rollback does not report a finished update or ask to stop agents", !output.includes("software update finished") && !output.includes("--stop-agents"), output);
+              }
             } finally { clearTimeout(timer); }
           }
+          if (restoreObstructed) return;
           try {
             const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
             check("Manual install failure retains same answering hosted Manager", after.state === "answering" && after.instanceId === manager.instanceId && after.pid === manager.pid, after);

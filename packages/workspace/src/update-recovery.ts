@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
 import { processStartToken } from "./advisory-lock.js";
 import { homeCotalDir } from "./cotal-home.js";
-import type { UpdateRecovery } from "./updates.js";
+import { isWaitingRestore, waitingRestore, type UpdateRecovery } from "./updates.js";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { updateSnapshotConfig } from "./connector-retention.js";
 
@@ -86,7 +86,7 @@ export function recoveryDisposition(record: UpdateRecovery, now = Date.now(), lo
     if (start !== undefined && (start === owner.start || (process.platform === "win32" && owner.start === "")))
       return { action: "active", problem, instruction: `${facts}An update is in progress in pid ${owner.pid}. Wait for it to finish.` };
   }
-  if (!problem) return { action: "restore", instruction: "Run `cotal update --self` to restore the interrupted update." };
+  if (!problem) return { action: "restore", instruction: isWaitingRestore(record) ? waitingRestore : "Run `cotal update --self` to restore the interrupted update." };
   if (owner) return { action: "retire", problem, instruction: `${facts}Run \`cotal update --self\` to retain these unusable records and continue the update.` };
   try {
     const first = firstObserved(fingerprint());
