@@ -55,6 +55,16 @@ export function rowView(app: AgentApp, activity: Activity | undefined, platform:
   return { tone: "missing", status: `Not installed · ${installsFrom(app)}`, action: { kind: "install", label: "Install" } };
 }
 
+/** What the app says once an install finished, and again once the sign-in that follows it finished, so
+ *  a background service that has not picked the app up yet is still said, with its reason. */
+export function installedMessage(title: string, result: { service?: string; serviceError?: string; pathAdded?: string }, signedIn = false): string {
+  const state = signedIn ? "signed in" : "installed";
+  if (result.service === "waiting") return `${title} is ${state}. Your spaces can start it once the agents running on this computer stop.`;
+  if (result.service === "failed") return `${title} is ${state}, but the background service has not picked it up yet: ${result.serviceError ?? "it did not say why"}. Choose Check again to try once more.`;
+  const done = signedIn ? `${title} is ready.` : `${title} is installed.`;
+  return result.pathAdded ? `${done} Cotal added its folder to PATH in ${result.pathAdded}.` : done;
+}
+
 /** Where Install downloads from, said before the click: the executables when they are not the app's
  *  own (Hermes installs uv), the installer's host, and the package of a connector that is not Cotal's. */
 export function installsFrom(app: AgentApp): string {
