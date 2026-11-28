@@ -2441,9 +2441,31 @@ process.stdin.once('data', () => {
             await killAndAwaitExit(child, "SIGTERM");
             rmSync(pathUnit);
             rmSync(pathReceipt);
-            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
             writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
             check("J0 clean setup starts with no installed service", !existsSync(pathUnit) && !existsSync(pathReceipt));
+            const cancelSetup = async (signal: NodeJS.Signals, ...args: string[]) => {
+              const proc = spawn(cliNode, [cliEntry, "daemon", "setup", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
+              let out = "", err = "", signalled = false;
+              proc.stdout.on("data", b => { out += String(b); });
+              proc.stderr.on("data", b => {
+                err += String(b);
+                if (!signalled && err.includes("Approval code:")) { signalled = true; proc.kill(signal); }
+              });
+              const code = await new Promise<number | null>((resolve, reject) => { proc.once("error", reject); proc.once("close", resolve); });
+              return { code, doc: JSON.parse(out) as Record<string, any>, err };
+            };
+            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nif(process.argv[2]==='show-user'){console.log('Linger=no');process.exit(0)}process.exit(99);\n`, { mode: 0o700 });
+            const noNativeChange = pathCalls.length;
+            for (const signal of ["SIGINT", "SIGHUP"] as const) {
+              const cancelled = await cancelSetup(signal);
+              check(`J0 ${signal} leaves a fresh account signed out and the service absent`, cancelled.code === 1 && cancelled.doc.error?.cause?.code === "CANCELLED" && cancelled.err.includes("Approval code:") && !existsSync(pathUnit) && !existsSync(pathReceipt) && loadIdpSession(home, idpUrl) === undefined && pathCalls.length === noNativeChange, cancelled);
+            }
+            deviceFailure = "expired";
+            try {
+              const expired = await cli("setup");
+              check("J0 expired approval leaves a fresh account signed out and the service absent", expired.code === 2 && expired.doc.error?.message.includes("approval code expired") && !existsSync(pathUnit) && !existsSync(pathReceipt) && loadIdpSession(home, idpUrl) === undefined && pathCalls.length === noNativeChange, expired);
+            } finally { deviceFailure = undefined; }
+            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
             const before = deviceCodeRequests;
             // Other registered fixture spaces still identify this provider, even without a sign-in.
             const fresh = await cli("setup");
@@ -2506,6 +2528,10 @@ process.stdin.once('data', () => {
             deleteIdpSession(home, idpUrl);
             const unsigned = await cli("setup");
             check("J12 no sign-in names provider flag without approval", unsigned.code !== 0 && unsigned.doc.error?.message.includes("not signed in") && unsigned.doc.error.message.includes("--idp <url>") && deviceCodeRequests === before + 1, unsigned);
+            const callsWithService = pathCalls.length;
+            const installedReceipt = readFileSync(pathReceipt, "utf8");
+            const abandoned = await cancelSetup("SIGINT", "--idp", idpUrl);
+            check("J13 abandoned sign-in leaves a preexisting service unchanged", abandoned.code === 1 && abandoned.doc.error?.cause?.code === "CANCELLED" && existsSync(pathUnit) && readFileSync(pathReceipt, "utf8") === installedReceipt && pathCalls.length === callsWithService && (await cli("status")).doc.result?.pid === child.pid, abandoned);
             return;
           }
           if (process.argv.includes("--account-setup-gaps")) {
