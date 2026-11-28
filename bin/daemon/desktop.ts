@@ -220,7 +220,7 @@ async function runningAgentNames(paths: QueryOptions["paths"], opts: Pick<Deskto
   }
   if (!reply.ok) return undefined;
   const names: string[] = [];
-  for (const manager of reply.result.managers ?? []) if (manager.state === "starting") names.push(manager.space);
+  for (const manager of reply.result.managers ?? []) if (manager.state === "starting") names.push(`Manager for ${manager.space}`);
   for (const inventory of reply.result.agents ?? []) {
     if (inventory.state !== "read") return undefined;
     for (const agent of inventory.agents) if (agent.state === "running") names.push(agent.name);

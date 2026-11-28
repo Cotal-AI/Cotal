@@ -164,7 +164,10 @@ interface WindowsTaskService extends NativeService {
 function disableOwned(receipt: UnitReceipt, owned: (receipt: UnitReceipt, requireInstances?: boolean) => RegisteredTask, step: (args: readonly string[]) => void): void {
   const task = owned(receipt, true);
   if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; nothing was stopped");
-  if (task.enabled) step(["/Change", "/TN", receipt.unit, "/DISABLE"]);
+  if (task.enabled) {
+    try { step(["/Change", "/TN", receipt.unit, "/DISABLE"]); }
+    catch (error) { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start could not be turned off, so the service was not stopped", { remedy: "run `cotal daemon stop` again", cause: error }); }
+  }
   const disabled = owned(receipt, true);
   if (!disabled.present || disabled.enabled !== false) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm disabled state; it was not ended");
 }
@@ -183,7 +186,7 @@ async function endOwned(receipt: UnitReceipt, owned: (receipt: UnitReceipt, requ
     if (ended.instances === 0) { markPending(false); return; }
     if (attempt < 2) await delay(250);
   }
-  throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start is already off, and the task still has a running instance. Start it again with `cotal daemon start` to turn automatic start back on.");
+  throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "automatic start is already off, and the task still has a running instance. Run `cotal daemon stop` again.");
 }
 
 export function scheduledTaskService(run: NativeRun): WindowsTaskService {

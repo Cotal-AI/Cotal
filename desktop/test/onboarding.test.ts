@@ -416,9 +416,10 @@ test("a stop the person made reads Service stopped in the window and the tray", 
     await a.click("login"); await a.login();
     await a.stopByYou();
     await a.tick();
-    assert.equal(a.node("connection-title").textContent, "Service stopped");
-    assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it again to continue.");
-    assert.equal(a.node("tray-label").textContent, "Service stopped");
+    assert.equal(a.node("connection-title").textContent, "The background service is stopped");
+    assert.equal(a.node("connection-description").textContent, "You stopped the background service. Start it to run agents on this computer again.");
+    assert.equal(a.node("sidebar-status-word").textContent, "Service stopped");
+    assert.equal(a.node("recover").textContent, "Start");
   } finally { a.dom.window.close(); }
 });
 

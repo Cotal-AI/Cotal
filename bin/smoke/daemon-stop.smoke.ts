@@ -107,8 +107,9 @@ if (process.platform === "linux") {
     status.doc?.error);
   const resumed = run("start");
   const resumedOps = operations().slice(stoppedOps.length + before);
+  const resumedMarker = join(resolvedHome, "service-stopped-by-you");
   check("start turns automatic start back on and then starts", resumed.status === 0
-    && resumedOps.indexOf("enable") >= 0 && resumedOps.indexOf("enable") < resumedOps.lastIndexOf("start"), resumedOps);
+    && resumedOps.indexOf("enable") >= 0 && resumedOps.indexOf("enable") < resumedOps.lastIndexOf("start") && !existsSync(resumedMarker), resumedOps);
   const desktop = (body: Record<string, unknown>) => {
     const result = spawnSync(process.execPath, [daemon, "daemon", "desktop", "--daemon-home", home], {
       cwd: root, env, encoding: "utf8", timeout: 30_000, input: `${JSON.stringify(body)}\n`,
@@ -146,11 +147,15 @@ if (process.platform === "linux") {
   const noTerminal = run("stop");
   check("no terminal and no --yes stops nothing", noTerminal.status !== 0 && (noTerminal.doc?.error?.message ?? "").includes("There is no terminal") && !operations().slice(askedAgain).includes("disable"), noTerminal.doc?.error);
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled", failStop: true })}\n`);
+  const beforeHalf = operations().length;
+  const markerBeforeHalf = existsSync(marker);
   const half = run("stop", ["--yes"]);
-  check("a stop that fails after automatic start is off says so and names cotal daemon start", half.status !== 0 && (half.doc?.error?.message ?? "").includes("automatic start is already off") && (half.doc?.error?.message ?? "").includes("cotal daemon start"), half.doc?.error);
+  const halfOps = operations().slice(beforeHalf);
+  check("a stop that fails after automatic start is off says so and names cotal daemon start", !markerBeforeHalf && half.status !== 0 && (half.doc?.error?.message ?? "").includes("automatic start is already off") && (half.doc?.error?.message ?? "").includes("cotal daemon start") && JSON.stringify(halfOps) === JSON.stringify(["directory-read", "directory-read", "disable", "autostart-read", "stop"]) && !existsSync(marker), { error: half.doc?.error, halfOps });
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), failStop: false })}\n`);
   const units = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { unit?: string }).unit).filter((unit): unit is string => !!unit) : [];
-  check("the fixture recorded one service", context.units.length === 1 && context.units[0] === unitName && units.every((unit) => unit === unitName), context.units);
+  const saved = JSON.parse(readFileSync(contextFile, "utf8")) as { units?: string[]; unitFileState?: string };
+  check("the fixture recorded one service", saved.units?.length === 1 && saved.units[0] === unitName && saved.unitFileState === "disabled" && units.every((unit) => unit === unitName), saved);
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
   const marked = run("stop", ["--yes"]);
   const markedStatus = run("status");
@@ -177,9 +182,12 @@ if (process.platform === "linux") {
   const birth = processBirth(process.pid);
   writeFileSync(livePaths.lock, `${JSON.stringify({ v: 1, pid: process.pid, start: birth, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
   let answers = 0;
+  let thirdChanges = false;
   const statusFor = (which: number) => {
-    const managers = which < 3 ? [{ space: "acme", state: "starting", restarts: 0 }] : [];
-    const agents = which < 3 ? [] : which === 3 ? [{ space: "s", state: "read", observedAt: "t", agents: [{ name: "ada", application: "app", cwd: "/", startedAt: "t", state: "running" }] }]
+    const managers = (thirdChanges ? which < 2 : which < 3) ? [{ space: "acme", state: "starting", restarts: 0 }] : [];
+    const agents = thirdChanges
+      ? (which < 2 ? [] : [{ space: "s", state: "read", observedAt: "t", agents: [{ name: "ada", application: "app", cwd: "/", startedAt: "t", state: "running" }, { name: "bev", application: "app", cwd: "/", startedAt: "t", state: "running" }] }])
+      : which < 3 ? [] : which === 3 ? [{ space: "s", state: "read", observedAt: "t", agents: [{ name: "ada", application: "app", cwd: "/", startedAt: "t", state: "running" }] }]
       : [{ space: "s", state: "read", observedAt: "t", agents: [{ name: "ada", application: "app", cwd: "/", startedAt: "t", state: "running" }, { name: "bev", application: "app", cwd: "/", startedAt: "t", state: "running" }] }];
     return { state: "ready", protocol: 1, version: "test", pid: process.pid, startedAt: "t", uptimeMs: 1, managers, agents };
   };
@@ -208,7 +216,7 @@ if (process.platform === "linux") {
   const disables = () => operations().filter((op) => op === "disable").length;
   const beforeDisables = disables();
   const named = await live("stop", ["--yes"]);
-  check("a starting Manager is named and the stop includes it", named.status === 0 && named.doc?.result?.agents?.includes("acme") === true && disables() === beforeDisables + 1, named);
+  check("a starting Manager is named and the stop includes it", named.status === 0 && named.doc?.result?.agents?.includes("Manager for acme") === true && named.stderr.includes("Stopping these: Manager for acme.") && disables() === beforeDisables + 1, named);
   const conflicted = await live("stop", ["--yes"]);
   check("a changed agent list refuses and disables nothing", conflicted.status !== 0 && conflicted.doc?.error?.message === "the running agents changed to: ada, bev. Nothing was stopped" && disables() === beforeDisables + 1, conflicted.doc?.error);
   const confirmed = await new Promise<{ frame?: { result?: { state?: string } } }>((resolve) => {
@@ -220,13 +228,24 @@ if (process.platform === "linux") {
   });
   check("the app stop with the matching list stops", confirmed.frame?.result?.state === "stopped" && disables() === beforeDisables + 2, confirmed.frame);
   answers = 0;
+  thirdChanges = true;
+  const changedUnderLock = await new Promise<{ frame?: { result?: { state?: string; agents?: string[] }; error?: { native?: { code?: string } } } }>((resolve) => {
+    const child = spawn(process.execPath, [daemon, "daemon", "desktop", "--daemon-home", home], { cwd: root, env: liveEnv });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stdin.end(`${JSON.stringify({ op: "stop", confirm: true, agents: ["Manager for acme"] })}\n`);
+    child.on("close", () => { const frames = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { result?: { state?: string; agents?: string[] }; error?: { native?: { code?: string } } }); resolve({ frame: frames.at(-1) }); });
+  });
+  check("a list that changes under the lock is not stopped", changedUnderLock.frame?.result?.state === "needs-confirm" && changedUnderLock.frame.result.agents?.includes("ada") === true && changedUnderLock.frame.result.agents?.includes("bev") === true && disables() === beforeDisables + 2, changedUnderLock.frame);
+  thirdChanges = false;
+  answers = 0;
   const confirmedYes = await new Promise<{ code: number; text: string }>((resolve) => {
     let text = "";
     const pty = ptySpawn(process.execPath, [daemon, "daemon", "stop", "--daemon-home", home, "--yes", "--json"], { name: "xterm-256color", cols: 100, rows: 30, cwd: root, env: liveEnv as Record<string, string> });
     pty.onData((data) => { text += data; });
     pty.onExit((event) => resolve({ code: event.exitCode, text }));
   });
-  const yesLine = confirmedYes.text.indexOf("Stopping these agents: acme.");
+  const yesLine = confirmedYes.text.indexOf("Stopping these: Manager for acme.");
   const yesJson = confirmedYes.text.indexOf('"state":"stopped"');
   check("--yes on a terminal names the agents before the stop", confirmedYes.code === 0 && yesLine >= 0 && yesJson > yesLine, { code: confirmedYes.code, text: confirmedYes.text });
   answers = 0;
@@ -237,7 +256,7 @@ if (process.platform === "linux") {
     pty.onData((data) => { text += data; if (open && text.includes("[y/N]")) { open = false; pty.write("n\n"); } });
     pty.onExit((event) => resolve({ code: event.exitCode, text }));
   });
-  check("a declined prompt names the agents, says nothing was stopped, and exits 0", declined.code === 0 && declined.text.includes("acme") && declined.text.includes("Nothing was stopped."), { code: declined.code, text: declined.text });
+  check("a declined prompt names the Manager, says nothing was stopped, and exits 0", declined.code === 0 && declined.text.includes("Manager for acme") && declined.text.includes("Nothing was stopped.") && !declined.text.includes("90 seconds") && !declined.text.includes("start again with the service"), { code: declined.code, text: declined.text });
   server.close();
   writeFileSync(contextFile, `${JSON.stringify({ ...JSON.parse(readFileSync(contextFile, "utf8")), unitFileState: "enabled" })}\n`);
   const lockPath = join(resolvedHome, "service-repair.lock");

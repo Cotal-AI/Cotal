@@ -135,12 +135,6 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "install",
     label: "Start service",
   });
-  assert.deepEqual(refusalView("NOT_RUNNING", [], true), {
-    title: "Service stopped",
-    description: "You stopped the background service. Start it again to continue.",
-    action: "install",
-    label: "Start service",
-  });
   assert.deepEqual(refusalView("NOT_ANSWERING"), {
     title: "The background service has not started",
     description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.",

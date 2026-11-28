@@ -57,7 +57,7 @@ const daemonFlags = [
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this separate absolute directory, not the Cotal home. Use mode 0700 and your own account as owner on POSIX. On Windows, use an ACL that grants access only to you, SYSTEM or Administrators, with one of those as owner. Without this flag, use the default daemon in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall, stop: report the service it would write, remove or stop, and change nothing" },
-  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script. stop: confirm stopping while agents are running" },
+  { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script. stop: confirm stopping whatever is running, including agents and a Manager that is still starting" },
   { name: "wait", type: "string", value: "<seconds>", description: "setup --no-manager only: how long to wait for machine approval (default 900, 0 reports what it reached)" },
   { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
   { name: "space", short: "s", type: "string", value: "<s>", description: "target space (required except for status, where it selects one hosted Manager)" },
@@ -185,7 +185,7 @@ async function runningAgentNames(paths: DaemonPaths): Promise<string[] | undefin
   }
   if (!reply.ok) return undefined;
   const names: string[] = [];
-  for (const manager of reply.result.managers ?? []) if (manager.state === "starting") names.push(manager.space);
+  for (const manager of reply.result.managers ?? []) if (manager.state === "starting") names.push(`Manager for ${manager.space}`);
   for (const inventory of reply.result.agents ?? []) {
     if (inventory.state !== "read") return undefined;
     for (const agent of inventory.agents) if (agent.state === "running") names.push(agent.name);
@@ -215,13 +215,13 @@ async function stop(args: ParsedArgs): Promise<void> {
   const shown = await runningAgentNames(paths);
   if (shown === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry once it can be read` });
   if (values.yes !== true && (!process.stdout.isTTY || !process.stdin.isTTY)) {
-    const listed = shown.length ? ` Stopping the background service also stops these agents: ${shown.join(", ")}.` : "";
+    const listed = shown.length ? ` Stopping the background service also stops these: ${shown.join(", ")}.` : "";
     throw new CommandFailure("refused", "USAGE_INVALID", `There is no terminal to ask.${listed} Confirm with --yes; nothing was stopped`);
   }
   if (shown.length && values.yes !== true) {
     const { createInterface } = await import("node:readline/promises");
     const io = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = (await io.question(`Stopping the background service also stops these agents: ${shown.join(", ")}. Their managers are asked to stop. Anything still running after 90 seconds is ended, and they start again with the service. Stop it? [y/N] `)).trim().toLowerCase();
+    const answer = (await io.question(`Stopping the background service also stops these: ${shown.join(", ")}. Their managers are asked to stop. Stop it? [y/N] `)).trim().toLowerCase();
     io.close();
     if (answer !== "y" && answer !== "yes") {
       writeResult(presentation, { command: "daemon stop", target: { unit: plan.unit }, result: { state: "not-stopped", agents: shown } }, () => ({ sections: [
@@ -230,7 +230,7 @@ async function stop(args: ParsedArgs): Promise<void> {
       return;
     }
   }
-  if (values.yes === true && shown.length && process.stdout.isTTY) process.stdout.write(`Stopping these agents: ${shown.join(", ")}.\n`);
+  if (values.yes === true && shown.length) process.stderr.write(`Stopping these: ${shown.join(", ")}.\n`);
   const fresh = await runningAgentNames(paths);
   if (fresh === undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the running agents could not be read again, so the background service was not stopped", { remedy: `run ${codeSpan(daemonCommandCopy("status", home))} and retry once it can be read` });
   if (!sameNames(shown, fresh)) throw new CommandFailure("refused", "CONFLICT", `the running agents changed to: ${fresh.length ? fresh.join(", ") : "none"}. Nothing was stopped`, { remedy: "run the stop again so it names the current agents" });

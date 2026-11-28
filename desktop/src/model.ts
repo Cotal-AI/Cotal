@@ -183,7 +183,7 @@ export function connectionView(state: string): { title: string; description: str
 }
 
 export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install" | "none"; label: string }
-export function refusalView(code: string, applications: readonly string[] = [], stoppedByYou = false): RefusalView {
+export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent app is installed", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an agent app"} from Agent apps, then check again.`, action: "connect", label: "Check again" };
     case "SEATS_ACTIVE": return { title: "Agent sessions are still running", description: "The connection cannot be updated while agent applications are using it. Stop those sessions, then check again.", action: "connect", label: "Check again" };
@@ -191,9 +191,7 @@ export function refusalView(code: string, applications: readonly string[] = [], 
     case "EXPIRED": return { title: "Your code has expired", description: "This code can no longer approve your sign-in. Get a new code to continue in your browser.", action: "login", label: "Get a new code" };
     case "CREDENTIAL_EXPIRED": return { title: "Sign in again", description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.", action: "login", label: "Sign in again" };
     case "SETUP_INTERRUPTED": return { title: "Setup was interrupted", description: "Run the installer again to finish updating Cotal.", action: "refresh", label: "Check again" };
-    case "NOT_RUNNING": return stoppedByYou
-      ? { title: "Service stopped", description: "You stopped the background service. Start it again to continue.", action: "install", label: "Start service" }
-      : { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
+    case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "DAEMON_LOST": return { title: "The background service stopped", description: "It stopped before this could finish, so nothing was completed. This clears when the service is running again.", action: "refresh", label: "Check status" };
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
     case "OFFLINE": return { title: CONNECTION_COPY.offline.title, description: CONNECTION_COPY.offline.description, action: "refresh", label: "Check again" };

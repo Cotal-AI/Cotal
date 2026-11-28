@@ -380,6 +380,20 @@ try {
     power.calls.length = 0;
     powerService.start(receipt, true);
     check("macOS start enables the stopped job and then kickstarts it", power.calls.map((call) => call.args[0]).join(" ") === "print print-disabled enable print kickstart", power.calls);
+    power.calls.length = 0;
+    disabled = true;
+    let failEnable = true;
+    const failedEnable = recorder((call) => {
+      if (call.args[0] === "print") return { status: 0 };
+      if (call.args[0] === "enable" && failEnable) return { status: 1, detail: "enable failed" };
+      if (call.args[0] === "enable") disabled = false;
+      if (call.args[0] === "print-disabled") return { status: 0, stdout: `disabled services = {\n\t"${label}" => ${disabled ? "disabled" : "false"}\n}\n` };
+      return { status: 0 };
+    });
+    const failedService = launchAgentService(failedEnable.run, () => originalJob);
+    let enableFailure = "";
+    try { failedService.start(receipt, true); } catch (error) { enableFailure = error instanceof CommandFailure ? error.message : String(error); }
+    check("a macOS enable that fails does not start the job and leaves it disabled", enableFailure.includes("enable failed") && !failedEnable.calls.some((call) => call.args[0] === "kickstart" || call.args[0] === "bootstrap") && failedService.isEnabled?.(receipt) === false, { enableFailure, calls: failedEnable.calls.map((call) => call.args[0]) });
     printStatus = 113;
 
     const failing = recorder((c) => c.args[0] === "bootstrap" ? { status: 5, detail: "Bootstrap failed: 5: Input/output error" } : { status: c.args[0] === "print" ? 113 : 0 });
@@ -580,11 +594,12 @@ try {
 
     let nativeFailure = false;
     let keepRunning = false;
+    let ignoreDisable = false;
     const refreshRunner = recorder(c => {
       if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
       if (c.file.endsWith("powershell.exe")) return { stdout: JSON.stringify(task) };
       if (nativeFailure) return { status: 1, detail: "ambiguous native result" };
-      if (c.args.includes("/DISABLE")) task.enabled = false;
+      if (c.args.includes("/DISABLE") && !ignoreDisable) task.enabled = false;
       if (c.args.includes("/ENABLE")) task.enabled = true;
       if (c.args[0] === "/End" && !keepRunning) task.instances = 0;
       if (c.args[0] === "/Run") task.instances = 1;
@@ -619,6 +634,17 @@ try {
     check("the person's stop ends the task only after it is disabled", endAt > 0 && disabledBeforeEnd && !finished.some((call) => call.args.includes("/DISABLE")) && task.enabled === false && task.instances === 0, finished);
     refreshRunner.calls.length = 0;
     task = { ...runningTask, enabled: true, instances: 1 };
+    ignoreDisable = true;
+    let unconfirmed = "";
+    try { refreshService.prepareStop(receipt); } catch (error) { unconfirmed = error instanceof CommandFailure ? error.message : String(error); }
+    ignoreDisable = false;
+    check("a disable that does not confirm is not ended", unconfirmed.includes("did not confirm disabled") && !refreshRunner.calls.some((call) => call.args[0] === "/End") && task.enabled === true, unconfirmed);
+    refreshRunner.calls.length = 0;
+    let endedEnabled = "";
+    try { await refreshService.finishStop(receipt); } catch (error) { endedEnabled = error instanceof CommandFailure ? error.message : String(error); }
+    check("an enabled task is not ended", endedEnabled.includes("not disabled, so it was not ended") && !refreshRunner.calls.some((call) => call.args[0] === "/End"), endedEnabled);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, enabled: true, instances: 1 };
     await refreshService.stop(receipt);
     check("Windows stop disables the task and then ends it", schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE | /End /TN ${name}` && task.enabled === false && task.instances === 0, refreshRunner.calls);
     refreshRunner.calls.length = 0;
@@ -642,7 +668,7 @@ try {
     refreshRunner.calls.length = 0;
     let endMessage = "";
     try { await refreshService.finishStop(receipt); } catch (error) { endMessage = error instanceof CommandFailure ? error.message : String(error); }
-    check("an end that leaves an instance says automatic start is already off", endMessage.includes("automatic start is already off") && endMessage.includes("cotal daemon start") && task.enabled === false, endMessage);
+    check("an end that leaves an instance says automatic start is already off", endMessage.includes("automatic start is already off") && endMessage.includes("cotal daemon stop") && !endMessage.includes("cotal daemon start") && task.enabled === false, endMessage);
     task = { ...runningTask };
     check("Disabled state alone cannot prove End completed", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN");
     refreshRunner.calls.length = 0;
