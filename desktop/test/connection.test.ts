@@ -202,8 +202,12 @@ test("launch readiness, application retry and polling follow the selected space"
     await releaseBeforeReselect();
     assert.equal(title(), disconnectedTitle(), "returning to the same space does not revive an old refresh");
     assert.equal(button("connect").disabled, false);
-    daemonVersion = "older";
+    managers.set("first", { space: "first", state: "refused", reason: "The space could not be verified.", next: "Run cotal daemon restart" });
     button("refresh").click(); await settle();
+    assert.equal(doc.getElementById("refusal-detail")!.textContent, "DEPENDENCY_UNAVAILABLE\nThe space could not be verified.");
+    managers.delete("first");
+    daemonVersion = "older";
+    button("recover").click(); await settle();
     assert.equal(button("connect").disabled, false, "an app replacement keeps stock setup available");
     assert.equal(title(), "Your connection needs an update");
   } finally { win.close(); }

@@ -874,7 +874,8 @@ async function showStatus(status: Record<string, unknown>, current: () => boolea
     const service = await request({ op: "service-status", space });
     if (!current()) return;
     state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
-    if (manager?.reason) refusal(new DaemonRefusal("DEPENDENCY_UNAVAILABLE", `${manager.reason}${manager.next ? `\nNext: ${manager.next}` : ""}`));
+    // Manager next steps target the CLI. Details keeps the reason, not the terminal instructions.
+    if (manager?.reason) refusal(new DaemonRefusal("DEPENDENCY_UNAVAILABLE", manager.reason));
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
 }
