@@ -11,6 +11,10 @@ export interface AccountComputerStatus {
   lastRegistration?: string;
   desiredRevision?: number;
   message?: string;
+  /** Set only when this computer was removed from the account. */
+  reason?: string;
+  /** Present while a Cloud read is being retried. `notice` is the one sentence every view shows. */
+  cloud?: { state: "retrying"; since?: string; reason?: string; notice?: string };
   /** `observed` is launch readiness. `machineService` is set while that separate registration is not connected. */
   spaces: { space: string; desired: boolean; observed: string; machineService?: string; lastRefusal?: string; custodyRecovery?: { holder: string; candidate: string } }[];
 }
@@ -26,6 +30,8 @@ export function validAccountComputerStatus(raw: unknown): raw is AccountComputer
     && (r.lastRegistration === undefined || (typeof r.lastRegistration === "string" && Number.isFinite(Date.parse(r.lastRegistration))))
     && (r.desiredRevision === undefined || (Number.isSafeInteger(r.desiredRevision) && Number(r.desiredRevision) >= 0))
     && (r.message === undefined || typeof r.message === "string")
+    && (r.reason === undefined || typeof r.reason === "string")
+    && validAccountCloud(r.cloud)
     && Array.isArray(r.spaces) && r.spaces.every((row: unknown) => {
       if (!row || typeof row !== "object") return false;
       const s = row as Record<string, unknown>;
@@ -33,4 +39,14 @@ export function validAccountComputerStatus(raw: unknown): raw is AccountComputer
       if (recovery !== undefined && (!recovery || typeof recovery !== "object" || typeof recovery.holder !== "string" || typeof recovery.candidate !== "string" || !/^[0-9a-f]{64}$/.test(recovery.candidate))) return false;
       return typeof s.space === "string" && typeof s.desired === "boolean" && typeof s.observed === "string" && (s.machineService === undefined || typeof s.machineService === "string") && (s.lastRefusal === undefined || typeof s.lastRefusal === "string");
     });
+}
+
+function validAccountCloud(raw: unknown): boolean {
+  if (raw === undefined) return true;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const cloud = raw as Record<string, unknown>;
+  return (cloud.state === "retrying")
+    && (cloud.since === undefined || (typeof cloud.since === "string" && Number.isFinite(Date.parse(cloud.since))))
+    && (cloud.reason === undefined || typeof cloud.reason === "string")
+    && (cloud.notice === undefined || typeof cloud.notice === "string");
 }

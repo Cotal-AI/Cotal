@@ -2890,7 +2890,7 @@ process.stdin.once('data', () => {
             await powerCut();
             accountHttp = 503;
             child = await startDaemon();
-            await waitAccount(s => s.account?.message === "account computer request failed; existing connections are unchanged" && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A10 unavailable account preserves saved-intent recovery");
+            await waitAccount(s => s.account?.cloud?.state === "retrying" && s.account?.mode === "account" && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A10 unavailable account preserves saved-intent recovery");
             check("A10 participant sees saved Manager during account outage", (await participantPs()).kind === "seats");
             return;
             } finally { await killAndAwaitExit(otherManager, "SIGTERM"); }

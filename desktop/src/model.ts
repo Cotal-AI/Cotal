@@ -158,7 +158,7 @@ export function canonicalProvider(value: string): string {
   return url.origin + (path || "/api/auth");
 }
 
-export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; message?: string; cloud?: { state?: string; notice?: string }; spaces: ComputerSpace[] }
 
 /** The name the settings account line shows beside the host. A missing or whitespace-only label is not
  *  one, so the line uses the subject. Both blank leaves the host by itself. */

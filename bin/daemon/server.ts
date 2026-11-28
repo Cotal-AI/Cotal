@@ -213,7 +213,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const services = createServiceConnections(machineHome);
   const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
   const reconciler = createAccountReconciler(machineHome, services, managers);
-  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
+  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers(), log);
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
