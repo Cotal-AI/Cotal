@@ -21,6 +21,7 @@ import {
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { DAEMON_ENDPOINT_BOOTSTRAPS, DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, bootstrapDaemonEndpoint, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, isWorkspaceTargetError, listenForLocalStop, loadSpaceAuth, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import type { JetStreamManager } from "@nats-io/jetstream";
 import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
@@ -710,7 +711,6 @@ async function runStartedDelivery(
     space, servers: server, tls, names: serveNames, catalog: SERVED_ENDPOINT_CATALOG,
     store: store ?? workspaceSecretStore(root),
     delivery: ep,
-    jsm: () => ep.deliveryJetStreamManager(),
     log: (line) => log.err(line),
   });
   const servedNow = served;
@@ -749,7 +749,7 @@ async function runStartedDelivery(
     reloadStoreIdentity: () => reloadStoreIdentity,
     onDeliveryCredsAdopted: () => health.adopted(),
     startupComplete: () => startedUp,
-    ...(servedNow !== undefined ? { servedEndpoints: { adopt: (endpoint: string, opId: string) => servedNow.adopt(endpoint, opId), state: (endpoint: string) => servedNow.state(endpoint) } } : {}),
+    ...(servedNow !== undefined ? { servedEndpoints: { adopt: (endpoint: string, opId: string, jsm: JetStreamManager) => servedNow.adopt(endpoint, opId, jsm), state: (endpoint: string) => servedNow.state(endpoint) } } : {}),
   });
   // The peer-readable liveness responder (#1577), bound BEFORE the ready flip below and
   // deliberately so. It answers from the lease at PROBE time, so during the window between binding

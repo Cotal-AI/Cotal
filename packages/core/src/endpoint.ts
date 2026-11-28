@@ -1611,12 +1611,6 @@ export class CotalEndpoint extends EventEmitter {
     return this.deliveryPlane.plane3IsQuiesced();
   }
 
-  /** The JetStream manager of this endpoint's own connection: the delivery daemon's leader reads for
-   *  a served endpoint's bind ride it, under the delivery credential's grants. */
-  deliveryJetStreamManager(): Promise<JetStreamManager> {
-    return this.consumers.manager();
-  }
-
   /** Resume serving Plane-3 after {@link quiescePlane3}, once ownership has been re-established.
    *  Idempotent, and a no-op when the daemon was never quiesced.
    *

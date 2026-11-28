@@ -20,7 +20,11 @@ import {
 } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { assertServeCandidateClaims, DaemonEndpointBinder } from "../src/endpoint-bind.js";
+import type { JetStreamManager } from "@nats-io/jetstream";
 import { attachmentIndexKey, attachmentKey, attachmentKeyDigest, channelAttachmentsFilter, digestToken, principalDigestKey } from "../src/artifact-keys.js";
+
+/** A manager no cell reaches: an adoption refused before the bind starts never reads the gate. */
+const unreachedJsm = new Proxy({}, { get: () => { throw new Error("no broker in this cell"); } }) as JetStreamManager;
 
 const EXPECTED_CELLS = 18;
 const { check, finish, passed, failed } = createSuite();
@@ -91,7 +95,6 @@ check("a candidate that authenticates with no rows is refused", emptyRefused?.st
 const binder = new DaemonEndpointBinder({
   space, servers: "nats://127.0.0.1:1", tls: false,
   endpoint: { endpoint: ARTIFACTS_ENDPOINT, cluster, defs: () => [] },
-  jsm: async () => { throw new Error("no broker in this cell"); },
   log: () => {},
 });
 const live = (binder as unknown as { live: Set<number> }).live;
@@ -120,10 +123,10 @@ check("after the quiesce nothing is bound, and serveState says why",
   (() => { const s = binder.serveState(); return s.bound === false && /re-checked/.test(s.cause); })());
 binder.leaseRegained();
 check("a regained lease does not revive a generation the quiesce ended", refusal(() => binder.fence.check(gen, "a write"))?.startsWith("unavailable") === true);
-const adoptWhileQuiesced = new DaemonEndpointBinder({ space, servers: "nats://127.0.0.1:1", tls: false, endpoint: { endpoint: ARTIFACTS_ENDPOINT, cluster, defs: () => [] }, jsm: async () => { throw new Error("unreached"); }, log: () => {} });
+const adoptWhileQuiesced = new DaemonEndpointBinder({ space, servers: "nats://127.0.0.1:1", tls: false, endpoint: { endpoint: ARTIFACTS_ENDPOINT, cluster, defs: () => [] }, log: () => {} });
 await adoptWhileQuiesced.quiesce("lost the lease");
 let quiescedAdopt: string | undefined;
-try { await adoptWhileQuiesced.adopt({ creds: credsWith0, instanceId, serveId: serve.id, adoptionOpId: "op" }); } catch (e) { quiescedAdopt = (e as Error).message; }
+try { await adoptWhileQuiesced.adopt({ creds: credsWith0, instanceId, serveId: serve.id, adoptionOpId: "op", jsm: unreachedJsm }); } catch (e) { quiescedAdopt = (e as Error).message; }
 check("an adoption while the lease is not held binds nothing and says so", quiescedAdopt !== undefined && /stopped serving its shard before the bind started; nothing was bound/.test(quiescedAdopt), quiescedAdopt);
 
 // ---- the key builders (S13) ----

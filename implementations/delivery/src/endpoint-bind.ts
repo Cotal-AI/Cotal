@@ -227,8 +227,6 @@ export class DaemonEndpointBinder {
     servers: string;
     tls: boolean;
     endpoint: DaemonServedEndpoint;
-    /** The delivery connection's JetStream manager: the gate and spec leader reads ride it. */
-    jsm: () => Promise<JetStreamManager>;
     log: (line: string) => void;
   }) {
     this.unbound = `${opts.endpoint.endpoint}: no serve credential adopted yet`;
@@ -242,14 +240,15 @@ export class DaemonEndpointBinder {
   };
 
   /** Bind a candidate credential. Resolves with the state it bound at; rejects and keeps last-good on
-   *  any refusal. Binds run one at a time. */
-  adopt(args: { creds: string; instanceId: string; serveId: string; adoptionOpId: string }): Promise<ServeState> {
+   *  any refusal. Binds run one at a time. `jsm` is the delivery connection's JetStream manager, handed
+   *  over by the adoption: the gate and spec leader reads ride it. */
+  adopt(args: { creds: string; instanceId: string; serveId: string; adoptionOpId: string; jsm: JetStreamManager }): Promise<ServeState> {
     const run = (this.binding ?? Promise.resolve()).catch(() => undefined).then(() => this.bindCandidate(args));
     this.binding = run.catch(() => undefined);
     return run;
   }
 
-  private async bindCandidate(args: { creds: string; instanceId: string; serveId: string; adoptionOpId: string }): Promise<ServeState> {
+  private async bindCandidate(args: { creds: string; instanceId: string; serveId: string; adoptionOpId: string; jsm: JetStreamManager }): Promise<ServeState> {
     const { endpoint } = this.opts.endpoint;
     // Captured BEFORE any await: every await below can span a quiesce and a rearm, and only a bind that
     // started under the incarnation that still holds may install.
@@ -260,7 +259,7 @@ export class DaemonEndpointBinder {
     };
     stillOurs("before the bind started");
     const servePrincipal = principalKey(DEV_OWNER, args.serveId).key;
-    const grant = await deriveDaemonServeGrant(await this.opts.jsm(), { space: this.opts.space, endpoint: this.opts.endpoint, instanceId: args.instanceId, servePrincipal });
+    const grant = await deriveDaemonServeGrant(args.jsm, { space: this.opts.space, endpoint: this.opts.endpoint, instanceId: args.instanceId, servePrincipal });
     assertServeCandidateClaims(args.creds, grant, args.serveId);
     stillOurs("while the grant was derived");
     // Stage the store candidates and prove them before anything dials the serve candidate. Nothing that

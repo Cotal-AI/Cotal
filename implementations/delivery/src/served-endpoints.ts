@@ -57,7 +57,6 @@ export class ServedEndpoints {
     /** The store the signer holder writes each endpoint's material to: the delivery cred's store. */
     store: SecretStore;
     delivery: Pick<CotalEndpoint, "aclForAlias">;
-    jsm: () => Promise<JetStreamManager>;
     log: (line: string) => void;
   }) {
     const ctx: ServedEndpointContext = { space: opts.space, servers: opts.servers, tls: opts.tls, store: opts.store, delivery: opts.delivery, log: opts.log };
@@ -65,7 +64,7 @@ export class ServedEndpoints {
       const factory = opts.catalog[name];
       if (factory === undefined) throw new Error(`delivery: no served endpoint named ${name}`);
       this.binders.set(name, new DaemonEndpointBinder({
-        space: opts.space, servers: opts.servers, tls: opts.tls, endpoint: factory(ctx), jsm: opts.jsm, log: opts.log,
+        space: opts.space, servers: opts.servers, tls: opts.tls, endpoint: factory(ctx), log: opts.log,
       }));
     }
   }
@@ -81,8 +80,9 @@ export class ServedEndpoints {
     return binder;
   }
 
-  /** delivery-admin `adoptEndpointCreds`: re-read the endpoint's material and bind it. */
-  async adopt(endpoint: string, adoptionOpId: string): Promise<ServeState> {
+  /** delivery-admin `adoptEndpointCreds`: re-read the endpoint's material and bind it. `jsm` is the
+   *  daemon's own connection's manager; the bind's gate and spec reads ride it. */
+  async adopt(endpoint: string, adoptionOpId: string, jsm: JetStreamManager): Promise<ServeState> {
     const binder = this.binder(endpoint);
     const { store, space } = this.opts;
     const [creds, instanceId, serveId] = await Promise.all([
@@ -92,7 +92,7 @@ export class ServedEndpoints {
     ]);
     if (creds === undefined || instanceId === undefined || serveId === undefined)
       throw new Error(`${endpoint}: the signer holder has not registered it yet (no ${[creds === undefined ? "serve credential" : "", instanceId === undefined ? "instance id" : "", serveId === undefined ? "serve identity" : ""].filter(Boolean).join(", ")}); nothing adopted`);
-    return binder.adopt({ creds, instanceId, serveId, adoptionOpId });
+    return binder.adopt({ creds, instanceId, serveId, adoptionOpId, jsm });
   }
 
   /** delivery-admin `serveState`. */
