@@ -30,7 +30,7 @@ import {
   claimGlobalNpmUpdateLock,
   launcherInstallRoot,
   logicalExecutionEntry,
-  loadExtensionsManifest, extensionPackageDir,
+  loadExtensionsManifest,
   provenance,
   SEEDED_EXTENSIONS,
   type InstalledExtension,
@@ -166,7 +166,7 @@ export interface UpdateRuntime {
   waitForInstalledGeneration?(version: string): Promise<string | void>;
   /** Explain whether the machine daemon can act on the saved automatic-update preference. */
   automaticUpdateAdvice(): Promise<string | undefined>;
-  extensions(presentOnly?: boolean): readonly InstalledExtension[];
+  extensions(): readonly InstalledExtension[];
   /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
   claimUpdatePass(): () => void;
@@ -239,7 +239,7 @@ export const updateRuntime: UpdateRuntime = {
   },
   reportRunningManager: (target) => reportRunningManagers(target),
   automaticUpdateAdvice: async () => "Automatic installation requires the machine daemon service. Run `cotal daemon install`, then inspect `cotal daemon status`.",
-  extensions: (presentOnly) => loadExtensionsManifest().extensions.filter((entry) => !presentOnly || existsSync(join(extensionPackageDir(entry.pkg), "package.json"))),
+  extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait }),
@@ -534,7 +534,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   const warnings: OutputWarning[] = [];
   let extensions: { package: string; version: string; firstParty: boolean; matchesCli: boolean | null }[] | null;
   try {
-    extensions = rt.extensions(true).map((entry) => {
+    extensions = rt.extensions().map((entry) => {
       if (!entry || typeof entry.pkg !== "string" || typeof entry.version !== "string" || !STRICT_SEMVER.test(entry.version)) throw new Error("invalid extension version entry");
       const firstParty = entry.pkg.startsWith("@cotal-ai/");
       return { package: entry.pkg, version: entry.version, firstParty, matchesCli: firstParty ? entry.version === current : null };
@@ -570,7 +570,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   }, (r) => ({ sections: [
     ...(r.reconciliation.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [r.reconciliation.instruction] }] }]),
     { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },
-    { title: "Extensions on disk", blocks: [r.extensions === null ? { kind: "lines", lines: [{ text: "Inventory unavailable. No repair was attempted.", tone: "waiting" }] } : r.extensions.length ? { kind: "table", columns: [{ key: "package", label: "Package" }, { key: "version", label: "Recorded version" }, { key: "state", label: "Generation" }], rows: r.extensions.map((entry) => ({ package: entry.package, version: entry.version, state: !entry.firstParty ? { text: "third party", tone: "hint" } : entry.matchesCli ? { text: "matches running CLI", tone: "ok" } : { text: "differs from running CLI", tone: "waiting" } })) } : { kind: "lines", lines: ["No recorded extensions are present on disk."] }, { kind: "lines", lines: [{ text: "Versions are from the inventory. Package contents, signatures and running processes were not checked. No installation was reconciled or restarted.", tone: "hint" }] }] },
+    { title: "Recorded extensions", blocks: [r.extensions === null ? { kind: "lines", lines: [{ text: "Inventory unavailable. No repair was attempted.", tone: "waiting" }] } : r.extensions.length ? { kind: "table", columns: [{ key: "package", label: "Package" }, { key: "version", label: "Recorded version" }, { key: "state", label: "Generation" }], rows: r.extensions.map((entry) => ({ package: entry.package, version: entry.version, state: !entry.firstParty ? { text: "third party", tone: "hint" } : entry.matchesCli ? { text: "matches running CLI", tone: "ok" } : { text: "differs from running CLI", tone: "waiting" } })) } : { kind: "lines", lines: ["No extensions in the recorded inventory."] }, { kind: "lines", lines: [{ text: "Version records only. Package contents, signatures and running processes were not checked. No installation was reconciled or restarted.", tone: "hint" }] }] },
     ...(manifestUnreadable ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: rt.checkout() ? "Install the verified latest CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] }]),
   ] }));
 }

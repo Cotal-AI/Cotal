@@ -98,9 +98,52 @@ registry.register({ kind: 'command', name: '${command}', summary: 'Print a test 
     const inventory = JSON.parse(readFileSync(join(extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; spec: string }[] };
     check("update retains the operator's recorded path", inventory.extensions.find(item => item.pkg === pkg)?.spec === source);
     check("npm checks the latest CLI without asking for the local package", requests.filter(path => path === "/cotal-ai").length >= 4 && !requests.includes(`/${pkg}`), requests);
+    await run("ext", "remove", pkg);
   } finally {
     await new Promise<void>((resolveClose, reject) => registry.close(error => error ? reject(error) : resolveClose()));
   }
+}
+
+function checkUnavailableOperator(entry: string, cwd: string, env: NodeJS.ProcessEnv, extensions: string, builtIns: readonly string[]): void {
+  const pkg = "@cotal-ai/cmux";
+  const run = (args: string[], extra: NodeJS.ProcessEnv = {}) =>
+    spawnSync(process.execPath, [entry, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8" });
+  const add = run(["ext", "add", `${pkg}@0.183.0`]);
+  check("the operator package installs from the public registry", add.status === 0, add.stderr);
+  if (add.status !== 0) return;
+  const seed = join(dirname(extensions), "seed");
+  const stampPath = join(seed, "stamp.json");
+  const cursor = join(seed, "reconcile.cursor.json");
+  const stamp = readFileSync(stampPath, "utf8");
+  const installed = join(extensions, "node_modules");
+  const inodes = () => builtIns.map((name) => lstatSync(join(installed, name)).ino).join(",");
+  const before = inodes();
+  rmSync(join(installed, pkg), { recursive: true });
+  const offline = { npm_config_offline: "true", npm_config_cache: join(env.HOME!, "empty-npm-cache") };
+  const root = mkdtempSync(join(env.HOME!, "operator-space-"));
+  const ordinary = run(["space", "create", "operator-offline", "--root", root], offline);
+  check("the packed CLI warns once and runs the ordinary command while the operator is unavailable",
+    ordinary.status === 0 && ordinary.stderr.split(`! Could not fetch ${pkg}`).length === 2 &&
+    existsSync(join(seed, "operator-fetch.retry")), ordinary.stdout + ordinary.stderr);
+  const update = run(["update"], offline);
+  check("offline update names the absent operator and fails without a seed cursor or success report",
+    update.status === 1 && update.stderr.includes(`: ${pkg}:`) && update.stderr.includes("ENOTCACHED") &&
+    !/(connectors reconciled|✓.*current generation)/.test(update.stdout) && !existsSync(cursor), update.stdout + update.stderr);
+  check("the failed operator-only update leaves all seven packed built-ins and the stamp in place",
+    builtIns.length === 7 && inodes() === before && readFileSync(stampPath, "utf8") === stamp &&
+    !/reinstalling every built-in|Reconciling built-in/.test(update.stderr), update.stderr);
+
+  writeFileSync(join(installed, "@cotal-ai/web", "damaged.txt"), "changed built-in payload\n");
+  const mixed = run(["update"], offline);
+  const savedCursor = existsSync(cursor) ? readFileSync(cursor, "utf8") : "";
+  const blocked = run(["space", "create", "mixed-failure", "--root", root], offline);
+  const remove = run(["ext", "remove", pkg], offline);
+  check("a changed packed built-in retains the failed cursor, and ext remove can drop the optional entry",
+    mixed.status === 1 && /"failed"/.test(savedCursor) && mixed.stderr.includes("Reconciling built-in web") &&
+    blocked.status !== 0 && /previous connector seed failed/.test(blocked.stderr) &&
+    remove.status === 0 && remove.stdout.includes(`removed ${pkg}`) && readFileSync(cursor, "utf8") === savedCursor &&
+    !readFileSync(join(extensions, "extensions.json"), "utf8").includes(`"${pkg}"`),
+    mixed.stderr + blocked.stderr + remove.stderr);
 }
 
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
@@ -418,6 +461,7 @@ try {
     check("an update through the physical path keeps the installed built-ins", !/reinstalling every built-in|Reconciling built-in/.test(physicalUpdate), physicalUpdate);
   }
   if (process.platform === "linux") await checkLocalOperatorUpdate(invokedBin, prefix, seedEnv, umbrellaVersion, extensionPrefix);
+  if (process.platform !== "win32") checkUnavailableOperator(invokedBin, prefix, seedEnv, extensionPrefix, firstParty);
 } finally {
   rmSync(base, { recursive: true, force: true });
 }

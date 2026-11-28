@@ -526,8 +526,8 @@ function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
 
 /** The installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
  *  versions. The root plus an explicit empty state answers "where do these live / is anything
- *  installed", which is ambiguous on a fresh binary before its first seed. Packages need on-disk
- *  metadata. Versions are the manifest pin, not a byte or host-compatibility check. */
+ *  installed", which is ambiguous on a fresh binary before its first seed. Versions are the manifest
+ *  pin (add-time), not a live on-disk/host-compat check. */
 function readExtensions(gaps: Gaps): StatusResult["extensions"] {
   let root: string;
   try { root = extensionsDir(); }
@@ -538,7 +538,7 @@ function readExtensions(gaps: Gaps): StatusResult["extensions"] {
     gaps.add("EXTENSIONS_UNREADABLE", error.message);
     return { root: globalConfigDir(), items: null };
   }
-  const { versions, unreadable, remedy } = readExtensionVersions(true);
+  const { versions, unreadable, remedy } = readExtensionVersions();
   if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}${remedy ? `. ${remedy}` : ""}`);
   return { root, items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
 }

@@ -43,6 +43,9 @@ try {
     writeJson(marker, { state: "live", parentPid: 2147483646, nonce, ts: 1, childPid: child.pid, childStart: processStartToken(child.pid!) });
     const live = cotal(cfg, ["ext", "seed", "--repair"]);
     check("live child with dead parent blocks", live.status !== 0 && /still installing/.test(live.stderr) && existsSync(marker), live);
+    const remove = cotal(cfg, ["ext", "remove", "@cotal-ai/web"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
+    check("ext remove refuses the live child under the prefix writer lock",
+      remove.status !== 0 && /still installing/.test(remove.stderr) && existsSync(marker), remove);
   } finally {
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     child.kill();

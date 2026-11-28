@@ -75,21 +75,17 @@ try {
 
   // ── a failed seed beside an absent package: repair, remove, reset ────────────────────────────────
   {
-    const { cfg } = fixture(false);
+    const { cfg, dir } = fixture(false);
     // `node` and nothing else on PATH, so the seed child's `npm install` cannot start.
     const bin = track(mkdtempSync(join(tmpdir(), "cotal-seed-no-npm-")));
     symlinkSync(process.execPath, join(bin, "node"));
     const failed = boot(cfg, { PATH: bin });
     check("absent extension recovery: a seed without npm fails and keeps its cursor", failed.status !== 0 && existsSync(cursorPath(cfg)), failed.stderr);
-    const removed = cotal(cfg, ["ext", "remove", PKG]);
-    check("absent extension recovery: remove drops the entry while the failed seed stays recorded",
-      removed.status === 0 && /removed @fixture\/cotal-absent-ext/.test(removed.stdout) && !recorded(cfg).includes(PKG) && existsSync(cursorPath(cfg)), removed.stderr);
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("absent extension recovery: --repair exits 0", repair.status === 0, repair.stderr);
+    check("absent extension recovery: --repair names the absent package, never its spec", repair.status === 0 && warned(repair, dir), repair.stderr);
     check("absent extension recovery: --repair seeds all seven built-ins and clears the cursor", seededAll(cfg), recorded(cfg));
     const remove = cotal(cfg, ["ext", "remove", PKG]);
-    check("absent extension recovery: a second remove finds the entry already gone",
-      remove.status === 0 && /already absent/.test(remove.stdout) && !recorded(cfg).includes(PKG), remove.stderr);
+    check("absent extension recovery: remove then drops the entry", remove.status === 0 && !recorded(cfg).includes(PKG), remove.stderr);
     const reset = cotal(cfg, ["ext", "seed", "--reset"]);
     check("absent extension recovery: a later --reset exits 0 with no absent-package warning", reset.status === 0 && !reset.stderr.includes(PKG) && seededAll(cfg), reset.stderr);
   }

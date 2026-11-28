@@ -34,9 +34,6 @@ const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => 
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
 mkdirSync(extensions, { recursive: true, mode: 0o700 });
-const tmux = join(extensions, "node_modules", "@cotal-ai", "tmux");
-mkdirSync(tmux, { recursive: true });
-writeFileSync(join(tmux, "package.json"), JSON.stringify({ name: "@cotal-ai/tmux", version: "0.155.0" }));
 writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [
   { pkg: "@cotal-ai/tmux", version: "0.155.0", spec: "@cotal-ai/tmux@0.155.0", provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
 ] }));

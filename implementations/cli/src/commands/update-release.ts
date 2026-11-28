@@ -239,11 +239,20 @@ export class DependencyCheckNoSpace extends Error {}
 
 const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
 
+export function npmRegistryFailure(detail: string): "timeout" | "network" | "offline" | undefined {
+  const code = /^(?:target staging failed: )?npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/m.exec(detail)?.[1];
+  if (code === "FETCH_ERROR" && /^npm (?:error|ERR!) network timeout at: \S/m.test(detail)) return "timeout";
+  if (code === "ENOTCACHED") return "offline";
+  if (NETWORK_ERROR_CODE.test(code ?? "")) return "network";
+  if (code && code !== "FETCH_ERROR") return undefined;
+  const requestCode = /^npm (?:error|ERR!) request to \S+ failed: (?:connect |getaddrinfo )?([A-Z_]+)\b/m.exec(detail)?.[1];
+  if (NETWORK_ERROR_CODE.test(requestCode ?? "")) return "network";
+}
+
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
   const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
-  return code !== undefined && NETWORK_ERROR_CODE.test(code);
+  return npmRegistryFailure(detail) === "network";
 }
 
 export function offlineUpdateMessage(repaired: boolean): string {
@@ -252,8 +261,7 @@ export function offlineUpdateMessage(repaired: boolean): string {
 
 export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
   const detail = message(error);
-  const fetchTimedOut = /^target staging failed: npm (?:error|ERR!) code FETCH_ERROR\r?\n/.test(detail) &&
-    /^npm (?:error|ERR!) network timeout at: \S/m.test(detail);
+  const fetchTimedOut = detail.startsWith("target staging failed: ") && npmRegistryFailure(detail) === "timeout";
   if (fetchTimedOut || (error instanceof RegistryUnavailable || error instanceof StagingTimeout || detail.startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
     recordUpdateDeferral(version, "waiting for registry access", true);
     rt.out(fetchTimedOut

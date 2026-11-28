@@ -12,7 +12,7 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation, npmLifecycleEnvironment } from "../lib/npm-invocation.js";
 import { assertExtensionCorePeer } from "../lib/extension-core-peer.js";
-import { runSeed } from "../seed/reconcile.js";
+import { assertSeedRemovalIdle, runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
 import { codeSpan, CorruptExtensionPackageError, CorruptExtensionsManifestError, inspectLock, extensionNpmMutationPath, oneLine, windowsShellWord, type OutputWarning } from "@cotal-ai/workspace";
@@ -284,7 +284,7 @@ function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?:
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
   announce: (line: string) => void = console.error,
-  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean },
+  opts?: { isolate?: boolean; localOperand?: string; offline?: true; checkCorePeer?: boolean; registryFetchTimeoutMs?: number },
 ): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = connectorConfigDir();
@@ -335,13 +335,17 @@ export async function installExtensionSet(
     const mutationPath = extensionNpmMutationPath();
     const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
     // npm's own update notifier can query the registry even in offline mode.
-    const cacheOnly = opts?.offline ? ["--offline", "--update-notifier=false"] : [];
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...specs], npmPrefix);
-    if (existsSync(mutationPath)) stage.retain();
+    const cacheOnly = opts?.offline ? ["--offline"] : [];
+    const boundedFetch = opts?.registryFetchTimeoutMs === undefined ? [] : ["--fetch-retries=0", `--fetch-timeout=${opts.registryFetchTimeoutMs}`];
+    if (cacheOnly.length || boundedFetch.length) boundedFetch.push("--update-notifier=false");
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...cacheOnly, ...boundedFetch, ...specs], npmPrefix);
+    const pendingMutation = existsSync(mutationPath);
+    if (pendingMutation) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) {
       const localFailure = opts?.localOperand === undefined ? undefined : localTarballFailure(result.output, npmPrefix, requests[0]!, opts.localOperand);
-      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`, { cause: result.output });
+      const stopped = result.status !== null && !pendingMutation;
+      throw new Error(localFailure ?? `extension set npm install failed: ${npmInstallFailure(result.output)}`, stopped ? { cause: result.output } : undefined);
     }
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
@@ -705,6 +709,7 @@ function packageNameFromSpec(resolved: string, isPath: boolean): string {
 async function remove(pkg: string): Promise<void> {
   const releaseMutation = claimExtensionMutation();
   try {
+    assertSeedRemovalIdle();
     await removeUnlocked(pkg);
   } finally {
     releaseMutation();

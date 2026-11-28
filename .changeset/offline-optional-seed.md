@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-A missing optional extension no longer makes an update reinstall every built-in connector or leave a failed seed cursor. `cotal update` reports that one extension and exits non-zero. An ordinary command prints one warning and runs, and the next command installs the extension once the registry answers. `cotal ext remove` can still drop the entry, except while a recovery journal is pending.
+When the built-in connectors already verify, `cotal update` reports an unfetchable optional extension without reinstalling the built-ins or leaving a failed seed cursor, and `cotal ext remove` can drop the entry after a failed seed if no recovery or installer is pending.

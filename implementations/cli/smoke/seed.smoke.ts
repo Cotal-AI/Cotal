@@ -136,6 +136,8 @@ if (process.platform === "win32") {
   excluded["absent-extension.smoke.ts"] = "its failed-seed PATH and dangling package link are symlinks, which need a privilege on Windows";
   files.splice(files.indexOf("config-modes.smoke.ts"), 1);
   excluded["config-modes.smoke.ts"] = "POSIX folder modes; Windows has no group write to repair";
+  files.splice(files.indexOf("offline-optional.smoke.ts"), 1);
+  excluded["offline-optional.smoke.ts"] = "a failed Windows npm intermediary does not prove its descendants stopped";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
@@ -165,7 +167,7 @@ try {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
     // The manifest-repair and store-cleanup permission cells run only for a non-root user.
     const permissionChecks = process.getuid && process.getuid() !== 0 ? 5 : 0;
-    const expected = (process.platform === "win32" ? 138 : process.platform === "linux" ? 213 : 207) + permissionChecks;
+    const expected = (process.platform === "win32" ? 123 : process.platform === "linux" ? 214 : 208) + permissionChecks;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });

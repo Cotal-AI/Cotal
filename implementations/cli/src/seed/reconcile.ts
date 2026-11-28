@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   CommandFailure,
@@ -28,11 +28,11 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import type { ExtensionInstallRequest } from "../commands/ext.js";
-import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
+import { displayCmd, selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath, writeJsonAtomic } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -150,6 +150,15 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
   if (child.kind !== "none") return;
   if (cursor && interruptedUpgrade(cursor, generation)) return;
   return seedRepairRefusal(cursor, generation);
+}
+
+/** Removal can leave a stopped failure for repair, but cannot race recovery or an orphaned child. */
+export function assertSeedRemovalIdle(): void {
+  const cursor = readCursor();
+  const child = seedChildStatus();
+  if (child.kind === "live") throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
+  if (child.kind === "ambiguous") throw ambiguousSeedChild(child.path);
+  if (recoveryPending() || (cursor && !cursor.failed)) throw seedRepairRefusal(cursor, seedGeneration());
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
@@ -299,7 +308,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      }, checkInterrupted, resumeFirstSeed);
+      }, checkInterrupted, resumeFirstSeed, automatic);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
@@ -415,7 +424,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean, automatic: boolean): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -612,28 +621,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     for (const entry of operators) verifyOperatorInstalled(entry.pkg, generation);
   } else if (operators.length) {
     clearCursor();
-    const { installExtensionSet } = await import("../commands/ext.js");
-    for (const entry of operators) console.error(c.dim(`Reconciling extension ${entry.pkg}@${generation}`));
-    try {
-      await installExtensionSet(operators, console.error, { isolate: true });
-      for (const entry of operators) {
-        verifyOperatorInstalled(entry.pkg, generation);
-        refreshed.push(entry.pkg);
-      }
-    } catch (error) {
-      if (mode === "auto" && await warnUnfetchedOperators(error, operators.map((entry) => entry.pkg)))
-        return { noop: false, seeded, refreshed, verified, removedKept };
-      const detail = error instanceof Error ? error.message : String(error);
-      const desktop = isBundledDesktopRuntime();
-      throw new CommandFailure(
-        "refused",
-        "DEPENDENCY_UNAVAILABLE",
-        desktop
-          ? `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail}`
-          : `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail} - run \`cotal update --self\` to reconcile this installation`,
-        { cause: error, ...(desktop ? {} : { remedy: "run `cotal update --self` to reconcile this installation" }) },
-      );
-    }
+    if (!await reconcileOperators(operators, generation, mode === "auto" && automatic))
+      return { noop: false, seeded, refreshed, verified, removedKept };
+    refreshed.push(...operators.map(({ pkg }) => pkg));
   }
 
   // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
@@ -658,24 +648,42 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   return { noop: false, seeded, refreshed, verified, removedKept };
 }
 
-/** Print the one warning and report whether an automatic reconcile should continue. The stamp
- *  stays where it is, so the next command with the registry reachable installs the packages. */
-async function warnUnfetchedOperators(error: unknown, packages: readonly string[]): Promise<boolean> {
-  if (!(error instanceof Error) || typeof error.cause !== "string") return false;
-  const { registryNetworkFailure } = await import("../commands/update-release.js");
-  const output = error.cause;
-  // A failed request can carry the network code instead of a separate npm code line.
-  const requestCode = /^npm (?:error|ERR!) request to \S+ failed: (?:connect |getaddrinfo )?([A-Z_]+)\b/m.exec(output)?.[1];
-  if (!/^npm (?:error|ERR!) code ENOTCACHED\b/m.test(output) && !registryNetworkFailure(output) &&
-      !(requestCode && registryNetworkFailure(`npm error code ${requestCode}`))) return false;
-  console.error(c.yellow(operatorFetchWarning(packages)));
-  return true;
-}
+const OPERATOR_FETCH_TIMEOUT_MS = 3_000;
+const OPERATOR_RETRY_MS = 60_000;
 
-/** One warning for an automatic reconcile whose registry fetch cannot complete. */
-function operatorFetchWarning(packages: readonly string[]): string {
-  const listed = packages.join(", ");
-  return `! ${listed} could not be fetched, so this command left ${packages.length === 1 ? "it" : "them"} as recorded. The next command installs ${packages.length === 1 ? "it" : "them"} once the registry answers.`;
+/** A retry hint is not a seed journal. Only the automatic path consults it under the seed lock. */
+async function reconcileOperators(requests: readonly ExtensionInstallRequest[], generation: string, automatic: boolean): Promise<boolean> {
+  const retry = join(seedDir(), "operator-fetch.retry");
+  const key = createHash("sha256").update(JSON.stringify(requests)).digest("hex");
+  if (automatic) {
+    try {
+      const age = Date.now() - statSync(retry).mtimeMs;
+      if (age >= 0 && age < OPERATOR_RETRY_MS && readFileSync(retry, "utf8").trim() === JSON.stringify(key)) return false;
+    } catch { /* An absent or unreadable hint does not prevent an attempt. */ }
+  }
+  const { installExtensionSet } = await import("../commands/ext.js");
+  for (const { pkg } of requests) console.error(c.dim(`Reconciling extension ${pkg}@${generation}`));
+  try {
+    await installExtensionSet(requests, console.error, { isolate: true, ...(automatic ? { registryFetchTimeoutMs: OPERATOR_FETCH_TIMEOUT_MS } : {}) });
+    for (const { pkg } of requests) verifyOperatorInstalled(pkg, generation);
+    return true;
+  } catch (error) {
+    if (automatic && error instanceof Error && typeof error.cause === "string" &&
+        (await import("../commands/update-release.js")).npmRegistryFailure(error.cause)) {
+      try { writeJsonAtomic(retry, key); } catch { /* A retry hint must not block the command. */ }
+      const listed = requests.map(({ pkg }) => pkg).join(", ");
+      const manual = isBundledDesktopRuntime() ? "" : `, or run \`${displayCmd()} update\` to retry now`;
+      console.error(c.yellow(`! Could not fetch ${listed}. Automatic reconciliation will retry after ${OPERATOR_RETRY_MS / 1000} seconds${manual}.`));
+      return false;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    const desktop = isBundledDesktopRuntime();
+    const packages = requests.map(({ pkg }) => `${pkg}@${generation}`).join(", ");
+    const remedy = "run `cotal update --self` to reconcile this installation";
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE",
+      desktop ? `failed to reconcile ${packages}: ${detail}` : `failed to reconcile ${packages}: ${detail} - ${remedy}`,
+      { cause: error, ...(desktop ? {} : { remedy }) });
+  }
 }
 
 /** A verify pass stages one set. When only operators need installing, name them in the failure. */

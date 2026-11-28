@@ -570,13 +570,15 @@ file it judged.
 
 The reconcile journals a crash cursor before each connector mutation. A verify pass installs the
 built-ins and the optional extensions together, into one stage, and promotes that stage once.
-A missing operator package does not void the proof of a built-in that is already identical, so
-the built-ins are not reinstalled and no cursor is written for that package. `cotal update`
-reports the operator reinstall itself, loud and non-zero, naming the package. The automatic
-reconcile that runs before an ordinary command prints one warning when that fetch cannot
-complete, either because the package is not cached or because the registry cannot be reached,
-and lets the command run. It does not advance the stamp, so the next command with the registry
-reachable installs the package. On a setup retry, reconcile checks the staged add and the seed
+A missing first-party operator package does not void the proof of a built-in that is already
+identical. The check still includes hoisted dependencies. If only the operator reinstall fails,
+`cotal update` names the package, exits non-zero and leaves no seed cursor. If the same update
+also needed to reinstall a built-in, the failed cursor stays. For automatic operator reconciliation,
+npm makes one install attempt with a three-second timeout per registry request and no fetch retries.
+If the installer has stopped and npm reports an unavailable registry or uncached package, the CLI
+warns once and runs the command without advancing the seed stamp. Automatic reconciliation can
+try again after 60 seconds. `cotal update` retries immediately. Explicit `cotal ext seed` still
+reports the failure and exits non-zero. On a setup retry, reconcile checks the staged add and the seed
 records under both locks. When those records identify an interrupted first install and no
 installer is active or ambiguous, setup uses the same verified reinstall as `cotal ext seed
 --repair`. A missing generation stamp alone is not enough.
