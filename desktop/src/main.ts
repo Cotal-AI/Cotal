@@ -580,7 +580,7 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
-    if (!anyConnected) {
+    if (!anyConnected || surface.dot === "problem") {
       el("connection-icon").dataset.tone = surface.dot === "problem" ? "error" : surface.dot === "waiting" ? "waiting" : "neutral";
       setIcon(el("connection-icon"), signInRequired ? "browser" : surface.dot === "problem" ? "warning" : surface.dot === "waiting" ? "clock" : "computer");
     }
