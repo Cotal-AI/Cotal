@@ -263,8 +263,10 @@ async function resumeSource(values: RunValues, planes: Planes, endpoint: string,
   }
   const source = sourceOf(values.file);
   if (recorded !== undefined && recorded.source !== source) {
-    console.error(`run ${runId}: ${values.file} is not the program this run was started from; a resume takes the recorded source (omit --file), and an edited program is a migration or a fork`);
-    process.exit(1);
+    throw new CommandFailure("refused", "CONFLICT", "the supplied workflow source does not match the recorded program; nothing was resumed", {
+      target: { space: planes.space, endpoint, run: runId, file: values.file },
+      remedy: "omit --file and its value to resume the recorded program; use a migration or fork for edited source",
+    });
   }
   return source;
 }

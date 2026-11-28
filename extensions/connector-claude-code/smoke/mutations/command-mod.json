@@ -322,8 +322,8 @@
     {
       "name": "take a subagent's turn as the main turn",
       "file": "extensions/connector-claude-code/hooks/commands.js",
-      "find": "    if (e.agentId === undefined) turnId = e.turnId;",
-      "replace": "    turnId = e.turnId;",
+      "find": "  on('turn.start', { turnId: /./ }, async ($, e, next) => {\n    if (e.agentId === undefined) {",
+      "replace": "  on('turn.start', { turnId: /./ }, async ($, e, next) => {\n    if (true) {",
       "expectRed": "aborts the main-loop turn, not a subagent turn",
       "cell": "aborts the main-loop turn, not a subagent turn"
     },
@@ -346,7 +346,7 @@
     {
       "name": "stop backgrounded tools of earlier turns too",
       "file": "extensions/connector-claude-code/hooks/commands.js",
-      "find": "messages.slice(messages.findLastIndex(isPrompt) + 1)",
+      "find": "messages.slice(start)",
       "replace": "messages",
       "expectRed": "stops each tool the abort moved to the background",
       "cell": "stops each tool the abort moved to the background"
