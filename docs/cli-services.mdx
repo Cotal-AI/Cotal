@@ -83,6 +83,7 @@ adapter's foreground and multi-instance capabilities even before the definition 
 The manager preset does not support `--new-instance`, so `cotal service start manager --help`
 omits it. Generic `cotal service start --help` lists it for services that support it.
 Named start help lists `--idle-exit` only for `manager` or a saved manager definition.
+When a preset option has the wrong numeric type or falls outside its range, the error gives the required type or bound without printing the supplied value.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
 named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
 it before adding the missing flags. A default the space cannot fill yet, such as the `web`
